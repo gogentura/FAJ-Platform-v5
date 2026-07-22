@@ -117,13 +117,12 @@ def get_all():
     return result
     def is_updated_today(team_name):
     """
-    Проверка актуальности паспорта.
     Совместимость FAJ Platform v5.1
     """
 
     passport = load_passport(team_name)
 
-    if not passport:
-        return False
+    if passport:
+        return True
 
-    return True
+    return False
