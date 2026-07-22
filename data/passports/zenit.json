@@ -1,0 +1,25 @@
+{
+  "team": "Зенит",
+  "league": "РПЛ",
+
+  "attack": 88,
+  "defense": 82,
+  "control": 86,
+  "form_index": 84,
+
+  "efficiency": 85,
+  "mentality": 88,
+
+  "home_rating": 93,
+  "away_rating": 87,
+
+  "historical_xg_value": 1.85,
+
+  "coach_factor": 1.05,
+
+  "injury_index": 95,
+  "fatigue_index": 90,
+
+  "version": "5.1",
+  "last_updated": "2026-07-22"
+}
