@@ -70,43 +70,40 @@ def load_passport(team_name: str):
 
     path = _path(team_name)
 
-    print("DEBUG PASSPORT PATH:", path)
+    abs_path = os.path.abspath(path)
 
+    print("=" * 60)
+    print("FAJ DEBUG")
+    print("TEAM:", team_name)
+    print("RELATIVE PATH:", path)
+    print("ABSOLUTE PATH:", abs_path)
+    print("FILE EXISTS:", os.path.exists(abs_path))
 
-    if not os.path.exists(path):
-
-        print("DEBUG PASSPORT NOT FOUND")
-
+    if not os.path.exists(abs_path):
+        print("PASSPORT NOT FOUND")
+        print("=" * 60)
         return None
-
 
     try:
 
         with open(
-            path,
+            abs_path,
             "r",
             encoding="utf-8"
         ) as f:
 
             passport = json.load(f)
 
-
-        print(
-            "DEBUG PASSPORT DATA:",
-            passport
-        )
-
+        print("PASSPORT CONTENT:")
+        print(json.dumps(passport, ensure_ascii=False, indent=2))
+        print("=" * 60)
 
         return passport
 
-
     except Exception as e:
 
-        print(
-            "DEBUG PASSPORT ERROR:",
-            e
-        )
-
+        print("LOAD ERROR:", e)
+        print("=" * 60)
         return None
 
 
