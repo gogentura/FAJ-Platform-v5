@@ -1,0 +1,6 @@
+aiogram==3.13.1
+aiohttp
+python-dotenv
+requests
+pytz
+rapidfuzz
