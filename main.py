@@ -13,7 +13,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("FAJ")
 
 async def main():
-    logger.info("Запуск FAJ Platform v5.1 (минимальная версия)")
+    logger.info("Запуск FAJ Platform v5.1 (чистая установка)")
     init_db()
     core = FAJCore()
     journal = Journal()
