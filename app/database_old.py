@@ -6,9 +6,9 @@ from datetime import datetime
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 
-# ==========================================
+# =====================================================
 # CONNECTION
-# ==========================================
+# =====================================================
 
 def get_db():
 
@@ -29,8 +29,6 @@ def get_db():
             print("POSTGRES ERROR:", e)
 
 
-    # fallback SQLite
-
     conn = sqlite3.connect(
         "faj.db"
     )
@@ -41,24 +39,30 @@ def get_db():
 
 
 
-# ==========================================
+# =====================================================
 # POSTGRES WRAPPER
-# ==========================================
+# =====================================================
 
 class PostgresWrapper:
 
 
     def __init__(self, conn):
+
         self.conn = conn
 
 
 
-    def execute(self, query, params=()):
+    def execute(
+        self,
+        query,
+        params=()
+    ):
 
         query = query.replace(
             "?",
             "%s"
         )
+
 
         cursor = self.conn.cursor()
 
@@ -83,9 +87,9 @@ class PostgresWrapper:
 
 
 
-# ==========================================
-# INIT DATABASE
-# ==========================================
+# =====================================================
+# DATABASE INIT
+# =====================================================
 
 def init_db():
 
@@ -93,9 +97,9 @@ def init_db():
 
 
 
-    # ======================================
+    # =================================================
     # PASSPORTS
-    # ======================================
+    # =================================================
 
     conn.execute(
     """
@@ -107,16 +111,21 @@ def init_db():
 
 
         attack INTEGER,
+
         defense INTEGER,
+
         control INTEGER,
+
         form_index INTEGER,
 
 
         efficiency INTEGER,
+
         mentality INTEGER,
 
 
         home_rating INTEGER,
+
         away_rating INTEGER,
 
 
@@ -124,22 +133,27 @@ def init_db():
 
 
         injury_index INTEGER,
+
         fatigue_index INTEGER,
 
 
         historical_xg_value REAL,
+
         historical_xg_source TEXT,
 
 
         avg_goals_value REAL,
+
         avg_goals_source TEXT,
 
 
         avg_goals_conceded_value REAL,
+
         avg_goals_conceded_source TEXT,
 
 
         avg_possession_value REAL,
+
         avg_possession_source TEXT,
 
 
@@ -147,6 +161,7 @@ def init_db():
 
 
         created TEXT,
+
         updated TEXT,
 
 
@@ -158,9 +173,11 @@ def init_db():
 
 
 
-    # ======================================
+
+    # =================================================
     # JOURNAL
-    # ======================================
+    # =================================================
+
 
     conn.execute(
     """
@@ -169,26 +186,46 @@ def init_db():
         id SERIAL PRIMARY KEY,
 
 
+        match TEXT,
+
+
         home_team TEXT,
+
         away_team TEXT,
+
 
         league TEXT,
 
 
         winner TEXT,
 
+
         winner_prob REAL,
 
 
         home_prob REAL,
+
         draw_prob REAL,
+
         away_prob REAL,
 
 
         expected_score TEXT,
 
 
+        top_scores TEXT,
+
+
+        btts REAL,
+
+
+        over25 REAL,
+
+
         actual_winner TEXT,
+
+
+        actual_score TEXT,
 
 
         data_version TEXT,
@@ -205,21 +242,33 @@ def init_db():
 
 
 
-    # ======================================
+    # =================================================
     # JOURNAL MIGRATION
-    # ======================================
+    # =================================================
+
 
     journal_columns = [
+
+        "match TEXT",
 
         "winner_prob REAL",
 
         "actual_winner TEXT",
 
+        "actual_score TEXT",
+
         "data_version TEXT",
 
-        "date TEXT"
+        "date TEXT",
+
+        "top_scores TEXT",
+
+        "btts REAL",
+
+        "over25 REAL"
 
     ]
+
 
 
     for column in journal_columns:
@@ -239,9 +288,11 @@ def init_db():
 
 
 
-    # ======================================
+
+    # =================================================
     # TEAM ALIASES
-    # ======================================
+    # =================================================
+
 
     conn.execute(
     """
@@ -257,9 +308,10 @@ def init_db():
 
 
 
-    # ======================================
+    # =================================================
     # API USAGE
-    # ======================================
+    # =================================================
+
 
     conn.execute(
     """
@@ -281,9 +333,10 @@ def init_db():
 
 
 
-    # ======================================
+    # =================================================
     # MODEL CONFIG
-    # ======================================
+    # =================================================
+
 
     conn.execute(
     """
@@ -305,9 +358,9 @@ def init_db():
 
 
 
-# ==========================================
+# =====================================================
 # HELPERS
-# ==========================================
+# =====================================================
 
 def count_passports():
 
@@ -316,7 +369,7 @@ def count_passports():
 
     row = conn.execute(
         """
-        SELECT COUNT(*) as cnt
+        SELECT COUNT(*) AS cnt
         FROM passports
         """
     ).fetchone()
@@ -334,14 +387,23 @@ def count_passports():
 
 
 
-def database_info():
+def database_type():
+
+    if DATABASE_URL:
+
+        return "PostgreSQL Railway"
+
+
+    return "SQLite"
+
+
+
+def database_status():
 
     return {
 
-        "type":
-        "PostgreSQL"
-        if DATABASE_URL
-        else "SQLite",
+        "database":
+        database_type(),
 
         "time":
         datetime.now().isoformat()
