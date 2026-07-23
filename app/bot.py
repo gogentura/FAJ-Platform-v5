@@ -1,3 +1,5 @@
+# app/bot.py
+
 import logging
 
 from aiogram import Bot, Dispatcher
@@ -9,7 +11,6 @@ from app.config import Config
 from app.core.faj_core import FAJCore
 from app.journal import Journal
 
-
 from app.handlers.start import cmd_start
 from app.handlers.predict import handle_predict
 from app.handlers.journal import cmd_journal
@@ -18,8 +19,10 @@ from app.handlers.health import cmd_health
 from app.handlers.load_passports import cmd_load_passports
 from app.handlers.database_check import cmd_dbcheck
 
-from app.handlers.passport import cmd_passport
-
+from app.handlers.passport import (
+    cmd_passport,
+    button_passport
+)
 
 from app.handlers.keyboard import get_main_keyboard
 
@@ -27,16 +30,13 @@ from app.handlers.keyboard import get_main_keyboard
 logger = logging.getLogger(__name__)
 
 
-
 async def run_bot(core: FAJCore, journal: Journal):
 
 
     if not Config.TELEGRAM_TOKEN:
-
         logger.error(
             "TELEGRAM_TOKEN отсутствует"
         )
-
         return
 
 
@@ -50,20 +50,14 @@ async def run_bot(core: FAJCore, journal: Journal):
 
 
 
-    # =================================
-    # КОМАНДЫ С /
-    # =================================
+    # ==========================
+    # СЛЕШ КОМАНДЫ
+    # ==========================
 
 
     dp.message.register(
         cmd_start,
         Command("start")
-    )
-
-
-    dp.message.register(
-        cmd_status,
-        Command("status")
     )
 
 
@@ -98,111 +92,135 @@ async def run_bot(core: FAJCore, journal: Journal):
 
 
 
-
-    # =================================
-    # КНОПКИ МЕНЮ БЕЗ /
-    # =================================
-
+    # ==========================
+    # РУССКИЕ КОМАНДЫ БЕЗ /
+    # ==========================
 
 
-    # -------- СТАТУС --------
-
-    @dp.message(
-        lambda m:
-        m.text
-        and m.text.lower()
-        .replace("📊","")
-        .strip()
+    dp.message.register(
+        cmd_status,
+        lambda message:
+        message.text
+        and message.text.lower()
         == "статус"
     )
-    async def status_button(message: Message):
+
+
+    dp.message.register(
+        cmd_journal,
+        lambda message:
+        message.text
+        and message.text.lower()
+        == "журнал"
+    )
+
+
+    dp.message.register(
+        cmd_health,
+        lambda message:
+        message.text
+        and message.text.lower()
+        == "проверка"
+    )
+
+
+    dp.message.register(
+        cmd_load_passports,
+        lambda message:
+        message.text
+        and "загрузить" in message.text.lower()
+    )
+
+
+    dp.message.register(
+        cmd_passport,
+        lambda message:
+        message.text
+        and message.text.lower().startswith("паспорт")
+    )
+
+
+
+    # ==========================
+    # КНОПКИ МЕНЮ
+    # ==========================
+
+
+    @dp.message(
+        lambda message:
+        message.text == "📊 Статус"
+    )
+    async def button_status(
+        message: Message
+    ):
 
         await cmd_status(message)
 
 
 
-
-    # -------- ЖУРНАЛ --------
-
     @dp.message(
-        lambda m:
-        m.text
-        and "журнал" in m.text.lower()
+        lambda message:
+        message.text == "📋 Журнал"
     )
-    async def journal_button(message: Message):
+    async def button_journal(
+        message: Message
+    ):
 
         await cmd_journal(message)
 
 
 
-
-    # -------- ПРОВЕРКА --------
-
     @dp.message(
-        lambda m:
-        m.text
-        and "проверка" in m.text.lower()
+        lambda message:
+        message.text == "❤️ Проверка"
     )
-    async def health_button(message: Message):
+    async def button_health(
+        message: Message
+    ):
 
         await cmd_health(message)
 
 
 
-
-    # -------- ЗАГРУЗКА ПАСПОРТОВ --------
-
     @dp.message(
-        lambda m:
-        m.text
-        and (
-            "загрузить паспорта" in m.text.lower()
-            or
-            "загрузить_паспорта" in m.text.lower()
-        )
+        lambda message:
+        message.text == "📥 Загрузить паспорта"
     )
-    async def load_button(message: Message):
+    async def button_load(
+        message: Message
+    ):
 
         await cmd_load_passports(message)
 
 
 
-
-    # -------- ПАСПОРТ КОМАНДЫ --------
-
     @dp.message(
-        lambda m:
-        m.text
-        and m.text.lower().startswith("паспорт")
+        lambda message:
+        message.text == "📁 Паспорт"
     )
-    async def passport_button(message: Message):
+    async def button_pass(
+        message: Message
+    ):
 
-        await cmd_passport(message)
+        await button_passport(message)
 
 
 
-
-    # =================================
+    # ==========================
     # ПРОГНОЗ
-    # =================================
+    # ==========================
 
 
     @dp.message(
-        lambda m:
-        m.text
-        and not m.text.startswith("/")
-        and len(m.text.split()) >= 2
-        and not m.text.lower().startswith(
-            (
-                "паспорт",
-                "статус",
-                "журнал",
-                "проверка",
-                "загрузить"
-            )
-        )
+        lambda msg:
+        msg.text
+        and not msg.text.startswith("/")
+        and len(msg.text.split()) >= 2
     )
-    async def prediction_handler(message: Message):
+    async def predict_text(
+        message: Message
+    ):
+
 
         logger.info(
             f"Запрос прогноза: {message.text}"
@@ -217,18 +235,19 @@ async def run_bot(core: FAJCore, journal: Journal):
 
 
 
-
-    # =================================
-    # ВСЕ ОСТАЛЬНОЕ
-    # =================================
+    # ==========================
+    # ПО УМОЛЧАНИЮ
+    # ==========================
 
 
     @dp.message()
-    async def default_message(message: Message):
+    async def default_message(
+        message: Message
+    ):
 
 
-        text = """
-
+        await message.answer(
+            """
 ⚽ FAJ Platform v5.1
 
 
@@ -270,12 +289,7 @@ FAJ анализирует:
 • защиту
 • вероятности
 • точные счета
-
-"""
-
-
-        await message.answer(
-            text,
+""",
             reply_markup=get_main_keyboard()
         )
 
@@ -284,7 +298,6 @@ FAJ анализирует:
     logger.info(
         "FAJ Platform v5.1 бот запущен"
     )
-
 
 
     await dp.start_polling(bot)
