@@ -1,93 +1,43 @@
 import os
 from pathlib import Path
 
-
 class Config:
-
-    # ==========================
-    # PROJECT
-    # ==========================
-
-    PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-    DATA_DIR = PROJECT_ROOT / "data"
-
-    PASSPORT_DIR = DATA_DIR / "passports"
-
-    ALIASES_DIR = DATA_DIR / "aliases"
-
-    ALIASES_FILE = ALIASES_DIR / "teams.json"
-
-    # ==========================
-    # TOKENS (Railway Variables)
-    # ==========================
+    BASE_DIR = Path(__file__).parent.parent
 
     TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
-
     API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY", "")
-
+    API_FOOTBALL_URL = "https://v3.football.api-sports.io"
     FOOTBALL_DATA_KEY = os.getenv("FOOTBALL_DATA_KEY", "")
+    ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "")
 
-    # ==========================
-    # LEAGUES
-    # ==========================
+    MODEL_VERSION = "5.1"
+    DATA_VERSION = "2026.07"
+    SIMULATION_COUNT = 10000
 
     SUPPORTED_LEAGUES = {
-
         "RPL": "api-football",
-
         "EPL": "football-data",
-
         "LaLiga": "football-data",
-
-        "SerieA": "football-data",
-
         "Bundesliga": "football-data",
-
-        "Ligue1": "football-data"
-
+        "SerieA": "football-data",
+        "Ligue1": "football-data",
+        "UCL": "football-data",
     }
-
-    # ==========================
-    # TEAMS
-    # ==========================
 
     LEAGUE_TEAMS = {
-
-        "RPL": [
-
-            "Зенит",
-
-            "Спартак",
-
-            "ЦСКА",
-
-            "Краснодар",
-
-            "Динамо",
-
-            "Локомотив",
-
-            "Ростов",
-
-            "Рубин",
-
-            "Крылья Советов",
-
-            "Ахмат",
-
-            "Акрон",
-
-            "Балтика",
-
-            "Факел",
-
-            "Пари НН",
-
-            "Оренбург",
-
-            "Сочи"
-
-        ]
-
+        "RPL": ["Зенит", "Спартак", "ЦСКА", "Динамо М", "Локомотив", "Краснодар",
+                "Ростов", "Ахмат", "Рубин", "Крылья Советов", "Факел", "Оренбург",
+                "Балтика", "Акрон", "Динамо Мх", "Родина"],
+        "EPL": [],
+        "LaLiga": [],
+        "Bundesliga": [],
+        "SerieA": [],
+        "Ligue1": [],
+        "UCL": [],
     }
+
+    @classmethod
+    def ensure_directories(cls):
+        (cls.BASE_DIR / "data").mkdir(exist_ok=True)
+        (cls.BASE_DIR / "logs").mkdir(exist_ok=True)
+        (cls.BASE_DIR / "data" / "passports").mkdir(exist_ok=True)
