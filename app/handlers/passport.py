@@ -1,34 +1,25 @@
+import logging
+
 from aiogram import types
 
-from app.passport_manager import (
-    get_team_by_alias,
-    load_passport
-)
-
+from app.passport_manager import load_passport, get_team_by_alias
 from app.handlers.keyboard import get_main_keyboard
 
 
+logger = logging.getLogger(__name__)
 
-async def cmd_passport(
-    message: types.Message
-):
 
-    # Получаем название после слова "Паспорт"
+async def cmd_passport(message: types.Message):
 
     text = message.text.strip()
 
-    team_name = (
-        text
-        .replace("Паспорт", "")
-        .replace("паспорт", "")
-        .strip()
-    )
+    parts = text.split(maxsplit=1)
 
 
-    if not team_name:
+    if len(parts) < 2:
 
         await message.answer(
-            "📁 Раздел паспортов\n\n"
+            "📁 Паспорт команды\n\n"
             "Пример:\n"
             "Паспорт Зенит",
             reply_markup=get_main_keyboard()
@@ -38,17 +29,26 @@ async def cmd_passport(
 
 
 
-    # Проверяем алиасы
+    team_input = parts[1].strip()
 
-    team = get_team_by_alias(
-        team_name
-    )
+
+    team = get_team_by_alias(team_input)
 
 
     if not team:
 
+        team = team_input
+
+
+
+    passport = load_passport(team)
+
+
+
+    if not passport:
+
         await message.answer(
-            f"❌ Паспорт команды {team_name} не найден.\n\n"
+            f"❌ Паспорт команды {team_input} не найден.\n\n"
             "Проверь название команды.",
             reply_markup=get_main_keyboard()
         )
@@ -57,84 +57,85 @@ async def cmd_passport(
 
 
 
-    # Загружаем паспорт
-
-    passport = load_passport(
-        team
-    )
-
-
-    if not passport:
-
-        await message.answer(
-            f"❌ Паспорт {team} отсутствует в базе.",
-            reply_markup=get_main_keyboard()
-        )
-
-        return
-
-
-
-    # Формируем вывод
-
-
     answer = f"""
-📁 Паспорт команды
-⚽ {team}
+⚽ Паспорт: {passport['team']}
 
-🏆 Лига:
-{passport.get('league','RPL')}
+🏆 Лига: {passport['league']}
 
 ──────────────
+
+📊 Сила команды
 
 ⚔️ Атака:
-{passport.get('attack',0)}
+{passport['attack']}
 
 🛡 Защита:
-{passport.get('defense',0)}
+{passport['defense']}
 
 🎯 Контроль:
-{passport.get('control',0)}
+{passport['control']}
 
 📈 Форма:
-{passport.get('form_index',0)}
+{passport['form_index']}
 
 ──────────────
 
-⚽ Исторический xG:
-{passport.get('historical_xg_value',0)}
+📊 Исторические данные
 
-🥅 Средние голы:
-{passport.get('avg_goals_value',0)}
+xG:
+{passport['historical_xg_value']}
 
-🛡 Пропущенные:
-{passport.get('avg_goals_conceded_value',0)}
+Голы:
+{passport['avg_goals_value']}
 
-🎯 Владение:
-{passport.get('avg_possession_value',0)}%
+Пропущено:
+{passport['avg_goals_conceded_value']}
+
+Владение:
+{passport['avg_possession_value']}%
 
 ──────────────
 
-👔 Тренерский фактор:
-{passport.get('coach_factor',0)}
+🧠 Дополнительно
 
-🏠 Домашний рейтинг:
-{passport.get('home_rating',0)}
+Тренер:
+{passport['coach_factor']}
 
-✈️ Выездной рейтинг:
-{passport.get('away_rating',0)}
+Дом:
+{passport['home_rating']}
+
+Выезд:
+{passport['away_rating']}
+
+Травмы:
+{passport['injury_index']}
+
+Усталость:
+{passport['fatigue_index']}
 
 ──────────────
 
 📌 Версия паспорта:
-{passport.get('version',1)}
+{passport['version']}
 
-🕒 Обновлён:
-{passport.get('updated','-')}
+Обновлён:
+{passport['updated']}
 """
 
 
     await message.answer(
         answer,
+        reply_markup=get_main_keyboard()
+    )
+
+
+
+async def button_passport(message: types.Message):
+
+    await message.answer(
+        "📁 Раздел паспортов\n\n"
+        "Пример:\n\n"
+        "Паспорт Зенит\n\n"
+        "Доступны паспорта команд РПЛ.",
         reply_markup=get_main_keyboard()
     )
