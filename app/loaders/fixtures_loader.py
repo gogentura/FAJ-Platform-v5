@@ -19,10 +19,7 @@ def normalize_team(team):
     if not team:
         return ""
 
-    return (
-        team
-        .strip()
-    )
+    return team.strip()
 
 
 
@@ -55,6 +52,8 @@ def save_fixture(
             home_team,
             away_team,
             status,
+            result,
+            winner,
             prediction_created,
             created
         )
@@ -69,34 +68,27 @@ def save_fixture(
             ?,
             ?,
             ?,
+            ?,
+            ?,
             ?
         )
-
 
         ON CONFLICT DO NOTHING
 
         """,
 
         (
-
             league,
-
             season,
-
             round_number,
-
             match_date,
-
             normalize_team(home_team),
-
             normalize_team(away_team),
-
             "scheduled",
-
+            "",
+            "",
             False,
-
             datetime.now().isoformat()
-
         )
 
         )
@@ -134,26 +126,6 @@ def load_fixtures(
 ):
 
 
-    """
-    Универсальная загрузка календаря
-
-
-    Формат:
-
-    fixtures = [
-
-        {
-            "round":1,
-            "date":"2026-07-19",
-            "home":"Зенит",
-            "away":"Спартак"
-        }
-
-    ]
-
-    """
-
-
     loaded = 0
 
     errors = []
@@ -164,7 +136,6 @@ def load_fixtures(
 
 
         try:
-
 
             save_fixture(
 
@@ -231,7 +202,8 @@ def load_fixtures(
 
 def get_fixtures(
     league=None,
-    season=None
+    season=None,
+    limit=50
 ):
 
 
@@ -244,7 +216,6 @@ def get_fixtures(
     FROM fixtures
 
     WHERE 1=1
-
     """
 
     params = []
@@ -277,9 +248,13 @@ def get_fixtures(
 
     query += """
 
-    ORDER BY match_date
+    ORDER BY match_date ASC
+
+    LIMIT ?
 
     """
+
+    params.append(limit)
 
 
 
@@ -305,7 +280,7 @@ def get_fixtures(
 
 
 # =====================================================
-# GET UPCOMING FIXTURES
+# UPCOMING FIXTURES
 # =====================================================
 
 def get_upcoming_fixtures(
@@ -317,9 +292,9 @@ def get_upcoming_fixtures(
     conn = get_db()
 
 
-
     rows = conn.execute(
     """
+
     SELECT *
 
     FROM fixtures
@@ -328,26 +303,21 @@ def get_upcoming_fixtures(
 
     AND status = 'scheduled'
 
-    ORDER BY match_date
+    ORDER BY match_date ASC
 
     LIMIT ?
 
     """,
 
     (
-
         league,
-
         limit
-
     )
 
     ).fetchall()
 
 
-
     conn.close()
-
 
 
     return [
@@ -361,12 +331,60 @@ def get_upcoming_fixtures(
 
 
 # =====================================================
-# MARK FIXTURE PREDICTED
+# FIND FIXTURE
+# =====================================================
+
+def find_fixture(
+    home_team,
+    away_team,
+    league="RPL"
+):
+
+
+    conn = get_db()
+
+
+    row = conn.execute(
+    """
+
+    SELECT *
+
+    FROM fixtures
+
+    WHERE league = ?
+
+    AND home_team = ?
+
+    AND away_team = ?
+
+    LIMIT 1
+
+    """,
+
+    (
+        league,
+        home_team,
+        away_team
+    )
+
+    ).fetchone()
+
+
+    conn.close()
+
+
+    return dict(row) if row else None
+
+
+
+# =====================================================
+# MARK PREDICTION CREATED
 # =====================================================
 
 def mark_prediction_created(
     home_team,
-    away_team
+    away_team,
+    league="RPL"
 ):
 
 
@@ -375,28 +393,24 @@ def mark_prediction_created(
 
     conn.execute(
     """
+
     UPDATE fixtures
 
-    SET
+    SET prediction_created = ?
 
-    prediction_created = ?
+    WHERE league = ?
 
-    WHERE
-
-    home_team = ?
+    AND home_team = ?
 
     AND away_team = ?
 
     """,
 
     (
-
         True,
-
+        league,
         home_team,
-
         away_team
-
     )
 
     )
@@ -425,6 +439,7 @@ def count_fixtures(
 
         row = conn.execute(
         """
+
         SELECT COUNT(*) AS cnt
 
         FROM fixtures
@@ -445,6 +460,7 @@ def count_fixtures(
 
         row = conn.execute(
         """
+
         SELECT COUNT(*) AS cnt
 
         FROM fixtures
@@ -456,7 +472,6 @@ def count_fixtures(
 
 
     conn.close()
-
 
 
     return row["cnt"] if row else 0
