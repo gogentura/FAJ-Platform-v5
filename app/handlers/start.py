@@ -1,5 +1,4 @@
 from aiogram import types
-from aiogram.filters import Command
 from app.handlers.keyboard import get_main_keyboard
 
 async def cmd_start(message: types.Message):
