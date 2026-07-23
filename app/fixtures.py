@@ -1,6 +1,12 @@
-# app/fixtures.py
+# =====================================================
+# FAJ Platform v5.2
+# Fixtures Manager
+# Управление календарём матчей
+# =====================================================
+
 
 from datetime import datetime
+
 from app.database import get_db
 
 
@@ -9,12 +15,14 @@ from app.database import get_db
 # SAVE FIXTURE
 # =====================================================
 
+
 def save_fixture(
-    league,
-    round_number,
-    date,
-    home_team,
-    away_team
+    league: str,
+    season: str,
+    round_number: int,
+    match_date: str,
+    home_team: str,
+    away_team: str
 ):
 
     conn = get_db()
@@ -25,16 +33,20 @@ def save_fixture(
     INSERT INTO fixtures
     (
         league,
+        season,
         round,
-        date,
+        match_date,
         home_team,
         away_team,
         status,
+        prediction_created,
         created
     )
 
     VALUES
     (
+        ?,
+        ?,
         ?,
         ?,
         ?,
@@ -50,13 +62,25 @@ def save_fixture(
     """,
 
     (
+
         league,
+
+        season,
+
         round_number,
-        date,
+
+        match_date,
+
         home_team,
+
         away_team,
+
         "scheduled",
+
+        False,
+
         datetime.now().isoformat()
+
     )
 
     )
@@ -69,89 +93,12 @@ def save_fixture(
 
 
 # =====================================================
-# GET UPCOMING FIXTURES
+# GET NEXT MATCHES
 # =====================================================
 
-def get_upcoming_fixtures(
-    league=None,
-    limit=20
-):
 
-    conn = get_db()
-
-
-    if league:
-
-
-        rows = conn.execute(
-        """
-        SELECT *
-
-        FROM fixtures
-
-        WHERE league = ?
-
-        AND status = 'scheduled'
-
-        ORDER BY date
-
-        LIMIT ?
-
-        """,
-
-        (
-            league,
-            limit
-        )
-
-        ).fetchall()
-
-
-    else:
-
-
-        rows = conn.execute(
-        """
-        SELECT *
-
-        FROM fixtures
-
-        WHERE status = 'scheduled'
-
-        ORDER BY date
-
-        LIMIT ?
-
-        """,
-
-        (
-            limit,
-        )
-
-        ).fetchall()
-
-
-
-    conn.close()
-
-
-
-    return [
-
-        dict(row)
-
-        for row in rows
-
-    ]
-
-
-
-# =====================================================
-# GET TEAM FIXTURES
-# =====================================================
-
-def get_team_fixtures(
-    team,
+def get_next_matches(
+    league="RPL",
     limit=10
 ):
 
@@ -164,23 +111,19 @@ def get_team_fixtures(
 
     FROM fixtures
 
-    WHERE
+    WHERE league = ?
 
-    home_team = ?
+    AND status = 'scheduled'
 
-    OR
-
-    away_team = ?
-
-    ORDER BY date
+    ORDER BY match_date
 
     LIMIT ?
 
     """,
 
     (
-        team,
-        team,
+        league,
+
         limit
     )
 
@@ -203,18 +146,186 @@ def get_team_fixtures(
 
 
 # =====================================================
-# FINISH MATCH
+# GET ROUND
 # =====================================================
+
+
+def get_round_matches(
+    league,
+    round_number
+):
+
+
+    conn = get_db()
+
+
+    rows = conn.execute(
+    """
+    SELECT *
+
+    FROM fixtures
+
+    WHERE league = ?
+
+    AND round = ?
+
+    ORDER BY match_date
+
+    """,
+
+    (
+
+        league,
+
+        round_number
+
+    )
+
+    ).fetchall()
+
+
+
+    conn.close()
+
+
+
+    return [
+
+        dict(row)
+
+        for row in rows
+
+    ]
+
+
+
+# =====================================================
+# GET TEAM CALENDAR
+# =====================================================
+
+
+def get_team_calendar(
+    team,
+    limit=20
+):
+
+
+    conn = get_db()
+
+
+    rows = conn.execute(
+    """
+    SELECT *
+
+    FROM fixtures
+
+    WHERE
+
+    home_team = ?
+
+    OR
+
+    away_team = ?
+
+    ORDER BY match_date
+
+    LIMIT ?
+
+    """,
+
+    (
+
+        team,
+
+        team,
+
+        limit
+
+    )
+
+    ).fetchall()
+
+
+
+    conn.close()
+
+
+
+    return [
+
+        dict(row)
+
+        for row in rows
+
+    ]
+
+
+
+# =====================================================
+# MARK PREDICTED
+# =====================================================
+
+
+def mark_predicted(
+    home_team,
+    away_team
+):
+
+
+    conn = get_db()
+
+
+    conn.execute(
+    """
+    UPDATE fixtures
+
+    SET
+
+    status = ?,
+
+    prediction_created = ?
+
+    WHERE
+
+    home_team = ?
+
+    AND
+
+    away_team = ?
+
+    """,
+
+    (
+
+        "predicted",
+
+        True,
+
+        home_team,
+
+        away_team
+
+    )
+
+    )
+
+
+    conn.commit()
+
+    conn.close()
+
+
+
+# =====================================================
+# FINISH FIXTURE
+# =====================================================
+
 
 def finish_fixture(
     home_team,
     away_team,
     score
 ):
-
-
-    conn = get_db()
-
 
 
     home_goals, away_goals = map(
@@ -238,6 +349,9 @@ def finish_fixture(
 
         winner = "Ничья"
 
+
+
+    conn = get_db()
 
 
 
@@ -288,10 +402,15 @@ def finish_fixture(
 
 
 # =====================================================
-# DELETE OLD FIXTURES
+# DELETE SEASON
 # =====================================================
 
-def clear_fixtures():
+
+def clear_season(
+    league,
+    season
+):
+
 
     conn = get_db()
 
@@ -299,10 +418,63 @@ def clear_fixtures():
     conn.execute(
     """
     DELETE FROM fixtures
-    """
+
+    WHERE league = ?
+
+    AND season = ?
+
+    """,
+
+    (
+
+        league,
+
+        season
+
+    )
+
     )
 
 
     conn.commit()
 
     conn.close()
+
+
+
+# =====================================================
+# COUNT FIXTURES
+# =====================================================
+
+
+def count_fixtures(
+    league="RPL"
+):
+
+
+    conn = get_db()
+
+
+    row = conn.execute(
+    """
+    SELECT COUNT(*) AS cnt
+
+    FROM fixtures
+
+    WHERE league = ?
+
+    """,
+
+    (
+        league,
+    )
+
+    ).fetchone()
+
+
+
+    conn.close()
+
+
+
+    return row["cnt"] if row else 0
