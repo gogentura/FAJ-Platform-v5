@@ -7,13 +7,12 @@
 from aiogram import types
 
 from app.loaders.fixtures_loader import get_upcoming_fixtures
-
 from app.handlers.keyboard import get_main_keyboard
 
 
 
 # =====================================================
-# SHOW UPCOMING FIXTURES
+# SHOW FIXTURES
 # =====================================================
 
 
@@ -32,8 +31,13 @@ async def cmd_fixtures(
     if not fixtures:
 
         await message.answer(
-            "📅 Календарь пуст\n\n"
-            "Матчи ещё не загружены.",
+            """
+📅 Календарь пуст
+
+Матчи ещё не загружены.
+
+Сначала загрузите календарь РПЛ.
+""",
             reply_markup=get_main_keyboard()
         )
 
@@ -41,107 +45,38 @@ async def cmd_fixtures(
 
 
 
-    text = (
-        "📅 *Ближайшие матчи РПЛ*\n"
-        "──────────────\n\n"
-    )
+    text = """
+📅 *Ближайшие матчи РПЛ*
+
+──────────────
+"""
 
 
 
-    for i, match in enumerate(
-        fixtures,
-        start=1
-    ):
+    for match in fixtures:
 
 
         text += (
-
-            f"{i}️⃣ "
-            f"{match['home_team']} — "
+            f"⚽ {match['home_team']} — "
             f"{match['away_team']}\n"
-
             f"📆 {match['match_date']}\n"
-
-            f"🏆 Тур {match.get('round', '?')}\n"
-
-            f"──────────────\n"
-
+            f"🏆 Тур: {match['round']}\n"
         )
 
 
+        if match.get(
+            "prediction_created"
+        ):
 
-    await message.answer(
-        text,
-        parse_mode="Markdown",
-        reply_markup=get_main_keyboard()
-    )
-
+            text += "📊 Прогноз создан\n"
 
 
-# =====================================================
-# SHOW ROUND
-# =====================================================
+        else:
+
+            text += "⏳ Прогноз не создан\n"
 
 
-async def cmd_round(
-    message: types.Message,
-    round_number: int = 1
-):
-
-
-    from app.loaders.fixtures_loader import get_fixtures
-
-
-
-    fixtures = get_fixtures(
-        league="RPL",
-        season="2026/27"
-    )
-
-
-
-    round_games = [
-
-        f for f in fixtures
-
-        if f.get("round") == round_number
-
-    ]
-
-
-
-    if not round_games:
-
-
-        await message.answer(
-            f"❌ Тур {round_number} не найден",
-            reply_markup=get_main_keyboard()
-        )
-
-        return
-
-
-
-    text = (
-        f"🏆 *РПЛ 2026/27*\n"
-        f"Тур {round_number}\n"
-        "──────────────\n\n"
-    )
-
-
-
-    for game in round_games:
-
-
-        text += (
-
-            f"⚽ "
-            f"{game['home_team']} — "
-            f"{game['away_team']}\n"
-
-            f"📆 {game['match_date']}\n\n"
-
-        )
+        text += "──────────────\n"
 
 
 
