@@ -33,7 +33,7 @@ class Journal:
 
     def get_all(self, limit: int = 10):
         conn = get_db()
-        # ИСПРАВЛЕНО: параметризованный LIMIT
+        # Используем параметризованный запрос
         rows = conn.execute("SELECT * FROM journal ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         conn.close()
         return [dict(r) for r in rows]
