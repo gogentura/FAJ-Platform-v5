@@ -1,72 +1,55 @@
-from aiogram.types import Message
-from app.core.faj_core import FAJCore
+from aiogram import types
+from app.utils.formatter import format_prediction
+from app.utils.explainer import explain_prediction
+from app.passport_manager import load_passport, get_team_by_alias
+from app.journal import Journal
+from app.handlers.keyboard import get_main_keyboard
 
-
-async def handle_predict(message: Message):
-
-    if not message.text:
-        return
-
+async def handle_predict(message: types.Message, core, journal):
     parts = message.text.split()
-
     if len(parts) < 2:
-        await message.answer(
-            "Формат:\nКоманда1 Команда2\n\nПример:\nЗенит Спартак"
-        )
+        await message.answer("❌ Напиши две команды: Зенит Спартак", reply_markup=get_main_keyboard())
         return
-
-
-    home_team = parts[0]
-    away_team = parts[1]
-
-
-    await message.answer(
-        f"⏳ FAJ считает матч:\n"
-        f"{home_team} — {away_team}"
-    )
-
-
+    
+    raw_home, raw_away = parts[0], parts[1]
+    home = get_team_by_alias(raw_home) or raw_home
+    away = get_team_by_alias(raw_away) or raw_away
+    
+    league = parts[2].upper() if len(parts) >= 3 and parts[2].upper() in ["EPL", "RPL", "UCL"] else "RPL"
+    
+    await message.answer(f"⏳ Анализирую {home} — {away} ({league})...", reply_markup=get_main_keyboard())
+    
     try:
-
-        core = FAJCore()
-
-        result = core.predict_match(
-            home_team,
-            away_team
-        )
-
-
-        if result.get("error"):
-
-            await message.answer(
-                f"❌ {result['error']}"
-            )
+        result = core.predict_match(home, away, league)
+        if "error" in result:
+            await message.answer(f"❌ {result['error']}", reply_markup=get_main_keyboard())
             return
-
-
-        await message.answer(
-            f"""
-⚽ FAJ Prediction v5.1
-
-{home_team} — {away_team}
-
-📊 xG:
-{result.get('xg')}
-
-🎯 Решение:
-{result.get('decision')}
-
-🏆 Топ счета:
-{result.get('top_scores')}
-
-🧠 Версия:
-{result.get('version')}
-"""
+        
+        home_pass = load_passport(home) or {}
+        away_pass = load_passport(away) or {}
+        factors = explain_prediction(home_pass, away_pass, result["xg"]["predicted"]["home"], result["xg"]["predicted"]["away"], league)
+        
+        text = format_prediction(
+            home, away, league,
+            result["xg"]["predicted"],
+            result["decision"],
+            result.get("top_scores", []),
+            result.get("btts", 0.0),
+            result.get("over25", 0.0),
+            factors
         )
-
-
+        
+        journal.save(
+            match=f"{home} — {away}",
+            prediction={
+                "winner": result["decision"]["winner_name"],
+                "winner_probability": result["decision"]["winner_probability"],
+                "xg_home": result["xg"]["predicted"]["home"],
+                "xg_away": result["xg"]["predicted"]["away"],
+                "expected_score": result["decision"]["expected_score"],
+                "confidence": result["decision"]["confidence"]
+            }
+        )
+        await message.answer(text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
     except Exception as e:
-
-        await message.answer(
-            f"❌ Ошибка прогноза:\n{type(e).__name__}: {e}"
-        )
+        await message.answer("⚠️ Ошибка. Попробуйте позже.", reply_markup=get_main_keyboard())
