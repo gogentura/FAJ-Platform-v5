@@ -123,7 +123,7 @@ EXPERT_PASSPORTS = [
 ]
 
 async def cmd_load_passports(message: types.Message):
-    # Проверка, что это админ (по chat_id из конфига)
+    # Проверка, что это админ
     from app.config import Config
     if str(message.from_user.id) != Config.ADMIN_CHAT_ID:
         await message.answer("⛔ Только для администратора.", reply_markup=get_main_keyboard())
