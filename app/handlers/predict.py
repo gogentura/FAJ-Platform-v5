@@ -7,6 +7,10 @@ from app.database import get_db
 from app.handlers.keyboard import get_main_keyboard
 
 
+# =====================================================
+# LOAD PASSPORT
+# =====================================================
+
 def load_passport(team):
 
     conn = get_db()
@@ -26,6 +30,10 @@ def load_passport(team):
 
 
 
+# =====================================================
+# PREDICT HANDLER
+# =====================================================
+
 async def handle_predict(
     message: types.Message,
     core,
@@ -34,6 +42,38 @@ async def handle_predict(
 
     text = (message.text or "").strip()
 
+
+
+    # ===============================
+    # IGNORE MENU BUTTONS
+    # ===============================
+
+    ignore_buttons = [
+
+        "📈 Прогноз",
+
+        "📋 Последние прогнозы",
+
+        "⚽ Статус",
+
+        "📁 Паспорта",
+
+        "🔄 Загрузить паспорта",
+
+        "/start"
+
+    ]
+
+
+    if text in ignore_buttons:
+
+        return
+
+
+
+    # ===============================
+    # REMOVE PREFIX
+    # ===============================
 
     if text.lower().startswith("прогноз "):
 
@@ -45,15 +85,11 @@ async def handle_predict(
 
 
 
-    if len(parts) < 2:
+    # ===============================
+    # CHECK MATCH FORMAT
+    # ===============================
 
-        await message.answer(
-            "❌ Напиши:\n\n"
-            "Зенит Спартак\n\n"
-            "или\n\n"
-            "Прогноз Зенит Спартак",
-            reply_markup=get_main_keyboard()
-        )
+    if len(parts) < 2:
 
         return
 
@@ -62,6 +98,7 @@ async def handle_predict(
     home = parts[0]
 
     away = parts[1]
+
 
     league = "RPL"
 
@@ -72,6 +109,7 @@ async def handle_predict(
         lg = parts[2].upper()
 
         if lg in [
+
             "RPL",
             "EPL",
             "UCL",
@@ -79,6 +117,7 @@ async def handle_predict(
             "SERIEA",
             "BUNDESLIGA",
             "LIGUE1"
+
         ]:
 
             league = lg
@@ -86,9 +125,12 @@ async def handle_predict(
 
 
     await message.answer(
+
         f"⏳ Анализирую матч\n\n"
         f"{home} — {away}",
+
         reply_markup=get_main_keyboard()
+
     )
 
 
@@ -96,20 +138,28 @@ async def handle_predict(
     try:
 
 
+        # ===============================
+        # CORE
+        # ===============================
+
         result = core.predict_match(
+
             home,
+
             away,
+
             league
+
         )
 
 
 
-        # защита от ошибок FAJ Core
-
         if "error" in result:
 
             raise Exception(
+
                 result["error"]
+
             )
 
 
@@ -117,35 +167,56 @@ async def handle_predict(
         if "xg" not in result:
 
             raise Exception(
-                "FAJ Core не вернул xG данные"
+
+                "FAJ Core не вернул xG"
+
             )
 
 
 
-        xg_data = result["xg"].get(
-            "predicted",
-            {}
-        )
+        # ===============================
+        # XG
+        # ===============================
 
+        xg = result["xg"].get(
+
+            "predicted",
+
+            {}
+
+        )
 
 
         xg_home = float(
-            xg_data.get(
-                "home",
-                0
-            )
-        )
 
+            xg.get(
+
+                "home",
+
+                0
+
+            )
+
+        )
 
 
         xg_away = float(
-            xg_data.get(
+
+            xg.get(
+
                 "away",
+
                 0
+
             )
+
         )
 
 
+
+        # ===============================
+        # PASSPORTS
+        # ===============================
 
         home_pass = load_passport(home) or {}
 
@@ -154,121 +225,200 @@ async def handle_predict(
 
 
         factors = explain_prediction(
+
             home_pass,
+
             away_pass,
+
             xg_home,
+
             xg_away,
+
             league
+
         )
 
 
 
-        text = format_prediction(
+        # ===============================
+        # FORMAT MESSAGE
+        # ===============================
+
+        answer = format_prediction(
+
             home,
+
             away,
+
             league,
+
             {
                 "home": xg_home,
+
                 "away": xg_away
+
             },
+
             result["decision"],
+
             result.get(
+
                 "top_scores",
+
                 []
+
             ),
+
             result.get(
+
                 "btts",
+
                 0
+
             ),
+
             result.get(
+
                 "over25",
+
                 0
+
             ),
+
             factors
+
         )
 
 
 
-        # запись в журнал
+        # ===============================
+        # JOURNAL
+        # ===============================
 
         journal.save(
+
             match=f"{home} — {away}",
+
 
             prediction={
 
+
                 "winner":
+
                 result["decision"].get(
+
                     "winner_name",
+
                     ""
+
                 ),
 
 
                 "winner_probability":
+
                 float(
+
                     result["decision"].get(
+
                         "winner_probability",
+
                         0
+
                     )
+
                 ),
 
 
                 "xg_home":
+
                 xg_home,
 
 
                 "xg_away":
+
                 xg_away,
 
 
                 "expected_score":
+
                 result["decision"].get(
+
                     "expected_score",
+
                     ""
+
                 ),
 
 
                 "confidence":
+
                 float(
+
                     result["decision"].get(
+
                         "confidence",
+
                         0
+
                     )
+
                 ),
 
 
                 "top_scores":
+
                 result.get(
+
                     "top_scores",
+
                     []
+
                 ),
 
 
                 "btts":
+
                 float(
+
                     result.get(
+
                         "btts",
+
                         0
+
                     )
+
                 ),
 
 
                 "over25":
+
                 float(
+
                     result.get(
+
                         "over25",
+
                         0
+
                     )
+
                 )
 
             }
+
         )
 
 
 
         await message.answer(
-            text,
+
+            answer,
+
             parse_mode="Markdown",
+
             reply_markup=get_main_keyboard()
+
         )
 
 
@@ -277,15 +427,18 @@ async def handle_predict(
 
 
         print(
-            traceback.format_exc()
-        )
 
+            traceback.format_exc()
+
+        )
 
 
         await message.answer(
 
             "❌ Ошибка модели\n\n"
+
             f"{type(e).__name__}\n\n"
+
             f"{str(e)}",
 
             reply_markup=get_main_keyboard()
