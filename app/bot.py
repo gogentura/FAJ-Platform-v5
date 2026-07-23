@@ -13,32 +13,41 @@ from aiogram.types import Message
 
 from app.config import Config
 
+
 from app.core.faj_core import FAJCore
 from app.journal import Journal
 
 
 
-# ==========================
+# =====================================================
 # HANDLERS
-# ==========================
+# =====================================================
 
 from app.handlers.start import cmd_start
+
 from app.handlers.predict import handle_predict
+
 from app.handlers.journal import cmd_journal
+
 from app.handlers.status import cmd_status
+
 from app.handlers.health import cmd_health
 
 from app.handlers.load_passports import cmd_load_passports
+
 from app.handlers.database_check import cmd_dbcheck
+
 
 from app.handlers.passport import (
     cmd_passport,
     button_passport
 )
 
+
 from app.handlers.fixtures import cmd_fixtures
 
 from app.handlers.load_fixtures import cmd_load_fixtures
+
 
 from app.handlers.keyboard import get_main_keyboard
 
@@ -48,27 +57,37 @@ logger = logging.getLogger(__name__)
 
 
 
+
 # =====================================================
-# BUTTONS BLACKLIST
+# SERVICE BUTTONS
 # =====================================================
 
-SERVICE_BUTTONS = [
+
+SERVICE_BUTTONS = {
 
     "📊 Статус",
+
     "📁 Паспорт",
+
     "📅 Матчи",
+
     "📥 Загрузить календарь",
+
     "📥 Загрузить паспорта",
+
     "📋 Журнал",
+
     "❤️ Проверка"
 
-]
+}
+
 
 
 
 # =====================================================
 # RUN BOT
 # =====================================================
+
 
 async def run_bot(
     core: FAJCore,
@@ -144,7 +163,7 @@ async def run_bot(
 
 
     # =================================================
-    # BUTTON HANDLERS
+    # BUTTONS
     # =================================================
 
 
@@ -152,7 +171,7 @@ async def run_bot(
         lambda m:
         m.text == "📊 Статус"
     )
-    async def button_status(
+    async def status_button(
         message: Message
     ):
 
@@ -164,7 +183,7 @@ async def run_bot(
         lambda m:
         m.text == "📋 Журнал"
     )
-    async def button_journal(
+    async def journal_button(
         message: Message
     ):
 
@@ -176,7 +195,7 @@ async def run_bot(
         lambda m:
         m.text == "❤️ Проверка"
     )
-    async def button_health(
+    async def health_button(
         message: Message
     ):
 
@@ -188,7 +207,7 @@ async def run_bot(
         lambda m:
         m.text == "📁 Паспорт"
     )
-    async def button_passport_handler(
+    async def passport_button(
         message: Message
     ):
 
@@ -200,7 +219,7 @@ async def run_bot(
         lambda m:
         m.text == "📅 Матчи"
     )
-    async def button_fixtures_handler(
+    async def fixtures_button(
         message: Message
     ):
 
@@ -212,7 +231,7 @@ async def run_bot(
         lambda m:
         m.text == "📥 Загрузить календарь"
     )
-    async def button_load_fixtures_handler(
+    async def load_fixtures_button(
         message: Message
     ):
 
@@ -224,11 +243,12 @@ async def run_bot(
         lambda m:
         m.text == "📥 Загрузить паспорта"
     )
-    async def button_load_passports_handler(
+    async def load_passports_button(
         message: Message
     ):
 
         await cmd_load_passports(message)
+
 
 
 
@@ -243,7 +263,7 @@ async def run_bot(
         and
         m.text.lower().startswith("паспорт")
     )
-    async def passport_text_handler(
+    async def passport_text(
         message: Message
     ):
 
@@ -264,7 +284,11 @@ async def run_bot(
         and
         m.text not in SERVICE_BUTTONS
         and
-        len(m.text.split()) >= 2
+        (
+            m.text.lower().startswith("прогноз")
+            or
+            len(m.text.split()) == 2
+        )
     )
     async def predict_handler(
         message: Message
@@ -272,7 +296,7 @@ async def run_bot(
 
 
         logger.info(
-            f"FAJ прогноз: {message.text}"
+            f"FAJ prediction request: {message.text}"
         )
 
 
@@ -336,8 +360,9 @@ FAJ анализирует:
 
 
     logger.info(
-        "FAJ Platform v5.2 бот запущен"
+        "FAJ Platform v5.2 started"
     )
+
 
 
     await dp.start_polling(bot)
