@@ -24,7 +24,7 @@ class Journal:
             actual.get("score", "") if actual else "",
             actual.get("winner", "") if actual else "",
             prediction.get("confidence", 0),
-            "5.0.1 RC",
+            "5.1",
             datetime.now().strftime("%Y-%m-%d"),
             "pending"
         ))
@@ -33,6 +33,7 @@ class Journal:
 
     def get_all(self, limit: int = 10):
         conn = get_db()
+        # ИСПРАВЛЕНО: параметризованный LIMIT
         rows = conn.execute("SELECT * FROM journal ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         conn.close()
         return [dict(r) for r in rows]
