@@ -1,13 +1,14 @@
 import os
 import sqlite3
-from contextlib import contextmanager
+from datetime import datetime
+
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 
-# =====================================
-# DATABASE CONNECTION
-# =====================================
+# ==========================================
+# CONNECTION
+# ==========================================
 
 def get_db():
 
@@ -17,22 +18,15 @@ def get_db():
             import psycopg2
             from psycopg2.extras import RealDictCursor
 
-
             conn = psycopg2.connect(
                 DATABASE_URL,
                 cursor_factory=RealDictCursor
             )
 
-
-            return PostgresConnection(conn)
-
+            return PostgresWrapper(conn)
 
         except Exception as e:
-
-            print(
-                "PostgreSQL connection error:",
-                e
-            )
+            print("POSTGRES ERROR:", e)
 
 
     # fallback SQLite
@@ -47,31 +41,24 @@ def get_db():
 
 
 
-# =====================================
+# ==========================================
 # POSTGRES WRAPPER
-# =====================================
+# ==========================================
 
-
-class PostgresConnection:
+class PostgresWrapper:
 
 
     def __init__(self, conn):
-
         self.conn = conn
 
 
 
-    def execute(
-        self,
-        query,
-        params=()
-    ):
+    def execute(self, query, params=()):
 
         query = query.replace(
             "?",
             "%s"
         )
-
 
         cursor = self.conn.cursor()
 
@@ -79,7 +66,6 @@ class PostgresConnection:
             query,
             params
         )
-
 
         return cursor
 
@@ -97,10 +83,9 @@ class PostgresConnection:
 
 
 
-# =====================================
+# ==========================================
 # INIT DATABASE
-# =====================================
-
+# ==========================================
 
 def init_db():
 
@@ -108,36 +93,30 @@ def init_db():
 
 
 
-    # -------------------------------
+    # ======================================
     # PASSPORTS
-    # -------------------------------
-
+    # ======================================
 
     conn.execute(
     """
-
     CREATE TABLE IF NOT EXISTS passports (
 
         team TEXT PRIMARY KEY,
 
         league TEXT,
 
+
         attack INTEGER,
-
         defense INTEGER,
-
         control INTEGER,
-
         form_index INTEGER,
 
 
         efficiency INTEGER,
-
         mentality INTEGER,
 
 
         home_rating INTEGER,
-
         away_rating INTEGER,
 
 
@@ -145,27 +124,22 @@ def init_db():
 
 
         injury_index INTEGER,
-
         fatigue_index INTEGER,
 
 
         historical_xg_value REAL,
-
         historical_xg_source TEXT,
 
 
         avg_goals_value REAL,
-
         avg_goals_source TEXT,
 
 
         avg_goals_conceded_value REAL,
-
         avg_goals_conceded_source TEXT,
 
 
         avg_possession_value REAL,
-
         avg_possession_source TEXT,
 
 
@@ -173,35 +147,29 @@ def init_db():
 
 
         created TEXT,
-
         updated TEXT,
 
 
         data TEXT
 
     )
-
     """
     )
 
 
 
-
-
-    # -------------------------------
+    # ======================================
     # JOURNAL
-    # -------------------------------
-
+    # ======================================
 
     conn.execute(
     """
-
     CREATE TABLE IF NOT EXISTS journal (
 
         id SERIAL PRIMARY KEY,
 
-        home_team TEXT,
 
+        home_team TEXT,
         away_team TEXT,
 
         league TEXT,
@@ -213,9 +181,7 @@ def init_db():
 
 
         home_prob REAL,
-
         draw_prob REAL,
-
         away_prob REAL,
 
 
@@ -228,26 +194,57 @@ def init_db():
         data_version TEXT,
 
 
+        date TEXT,
+
+
         created TEXT
 
-
     )
-
     """
     )
 
 
 
+    # ======================================
+    # JOURNAL MIGRATION
+    # ======================================
+
+    journal_columns = [
+
+        "winner_prob REAL",
+
+        "actual_winner TEXT",
+
+        "data_version TEXT",
+
+        "date TEXT"
+
+    ]
 
 
-    # -------------------------------
-    # ALIASES
-    # -------------------------------
+    for column in journal_columns:
 
+        try:
+
+            conn.execute(
+                f"""
+                ALTER TABLE journal
+                ADD COLUMN {column}
+                """
+            )
+
+        except Exception:
+
+            pass
+
+
+
+    # ======================================
+    # TEAM ALIASES
+    # ======================================
 
     conn.execute(
     """
-
     CREATE TABLE IF NOT EXISTS team_aliases (
 
         team TEXT NOT NULL,
@@ -255,7 +252,48 @@ def init_db():
         alias TEXT PRIMARY KEY
 
     )
+    """
+    )
 
+
+
+    # ======================================
+    # API USAGE
+    # ======================================
+
+    conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS api_usage (
+
+        id SERIAL PRIMARY KEY,
+
+        service TEXT,
+
+        used INTEGER DEFAULT 0,
+
+        limit_value INTEGER,
+
+        updated TEXT
+
+    )
+    """
+    )
+
+
+
+    # ======================================
+    # MODEL CONFIG
+    # ======================================
+
+    conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS model_config (
+
+        key TEXT PRIMARY KEY,
+
+        value TEXT
+
+    )
     """
     )
 
@@ -267,10 +305,9 @@ def init_db():
 
 
 
-# =====================================
-# CHECK DATABASE
-# =====================================
-
+# ==========================================
+# HELPERS
+# ==========================================
 
 def count_passports():
 
@@ -294,3 +331,19 @@ def count_passports():
 
 
     return 0
+
+
+
+def database_info():
+
+    return {
+
+        "type":
+        "PostgreSQL"
+        if DATABASE_URL
+        else "SQLite",
+
+        "time":
+        datetime.now().isoformat()
+
+    }
