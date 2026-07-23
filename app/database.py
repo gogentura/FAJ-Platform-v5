@@ -1,7 +1,6 @@
 import sqlite3
 from pathlib import Path
 
-
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 
@@ -21,10 +20,27 @@ def get_db():
     return conn
 
 
+def add_column(conn, table, column, column_type):
+    columns = [
+        row["name"]
+        for row in conn.execute(
+            f"PRAGMA table_info({table})"
+        ).fetchall()
+    ]
+
+    if column not in columns:
+        conn.execute(
+            f"ALTER TABLE {table} ADD COLUMN {column} {column_type}"
+        )
+
+
 def init_db():
 
     conn = get_db()
 
+    # ===========================
+    # PASSPORTS
+    # ===========================
 
     conn.execute("""
     CREATE TABLE IF NOT EXISTS passports (
@@ -48,22 +64,17 @@ def init_db():
         injury_index INTEGER,
         fatigue_index INTEGER,
 
-
         historical_xg_value REAL,
         historical_xg_source TEXT,
-
 
         avg_goals_value REAL,
         avg_goals_source TEXT,
 
-
         avg_goals_conceded_value REAL,
         avg_goals_conceded_source TEXT,
 
-
         avg_possession_value REAL,
         avg_possession_source TEXT,
-
 
         version INTEGER DEFAULT 1,
 
@@ -74,6 +85,9 @@ def init_db():
     )
     """)
 
+    # ===========================
+    # JOURNAL
+    # ===========================
 
     conn.execute("""
     CREATE TABLE IF NOT EXISTS journal (
@@ -88,17 +102,36 @@ def init_db():
 
         prediction TEXT,
 
+        winner_prob REAL,
+
         xg_home REAL,
         xg_away REAL,
 
         expected_score TEXT,
 
         actual_score TEXT,
+        actual_winner TEXT,
+
+        confidence INTEGER,
+
+        model_version TEXT,
+        data_version TEXT,
 
         accuracy TEXT
     )
     """)
 
+    # Автоматические миграции
+
+    add_column(conn, "journal", "winner_prob", "REAL")
+    add_column(conn, "journal", "actual_winner", "TEXT")
+    add_column(conn, "journal", "confidence", "INTEGER")
+    add_column(conn, "journal", "model_version", "TEXT")
+    add_column(conn, "journal", "data_version", "TEXT")
+
+    # ===========================
+    # API
+    # ===========================
 
     conn.execute("""
     CREATE TABLE IF NOT EXISTS api_usage (
@@ -111,15 +144,18 @@ def init_db():
     )
     """)
 
+    # ===========================
+    # АЛИАСЫ
+    # ===========================
 
     conn.execute("""
     CREATE TABLE IF NOT EXISTS team_aliases (
 
         team TEXT,
+
         alias TEXT PRIMARY KEY
     )
     """)
-
 
     conn.commit()
     conn.close()
