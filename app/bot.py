@@ -1,18 +1,22 @@
 import logging
 
 from aiogram import Bot, Dispatcher
-from aiogram.types import Message
 from aiogram.filters import Command
+from aiogram.types import Message
 
 from app.config import Config
 from app.core.faj_core import FAJCore
 from app.journal import Journal
 
+from app.handlers.start import cmd_start
 from app.handlers.predict import handle_predict
-from app.handlers.status import cmd_status
 from app.handlers.journal import cmd_journal
+from app.handlers.status import cmd_status
 from app.handlers.health import cmd_health
 from app.handlers.load_passports import cmd_load_passports
+from app.handlers.database_check import cmd_dbcheck
+
+from app.handlers.keyboard import get_main_keyboard
 
 
 logger = logging.getLogger(__name__)
@@ -20,234 +24,186 @@ logger = logging.getLogger(__name__)
 
 async def run_bot(core: FAJCore, journal: Journal):
 
-    bot = Bot(token=Config.TELEGRAM_TOKEN)
+    if not Config.TELEGRAM_TOKEN:
+        logger.error("TELEGRAM_TOKEN отсутствует")
+        return
+
+
+    bot = Bot(
+        token=Config.TELEGRAM_TOKEN
+    )
+
     dp = Dispatcher()
 
 
-    # ------------------------
-    # /start
-    # ------------------------
+    # ==========================
+    # КОМАНДЫ БОТА
+    # ==========================
 
-    @dp.message(Command("start"))
-    async def start(message: Message):
-
-        await message.answer(
-            """
-⚽ FAJ Platform v5.1
-
-Команды:
-
-📊 Статус
-📁 Паспорт команда
-📈 Прогноз команда команда
-🏆 Таблица
-⚽ Команды
-🌍 Лиги
-📋 Журнал
-❤️ Проверка
+    dp.message.register(
+        cmd_start,
+        Command(
+            "start"
+        )
+    )
 
 
-Пример:
+    dp.message.register(
+        cmd_status,
+        Command(
+            "статус"
+        )
+    )
 
-Прогноз Зенит Спартак
 
-или просто:
+    dp.message.register(
+        cmd_journal,
+        Command(
+            "журнал"
+        )
+    )
 
-Зенит Спартак
+
+    dp.message.register(
+        cmd_health,
+        Command(
+            "проверка"
+        )
+    )
 
 
-FAJ анализирует:
+    dp.message.register(
+        cmd_load_passports,
+        Command(
+            "загрузить_паспорта"
+        )
+    )
 
-• паспорта команд
-• xG
-• форму
-• силу атаки
-• защиту
-• вероятности
-• точные счета
-            """
+
+    dp.message.register(
+        cmd_dbcheck,
+        Command(
+            "база"
+        )
+    )
+
+
+    # ==========================
+    # КНОПКИ МЕНЮ
+    # ==========================
+
+
+    @dp.message(
+        lambda message:
+        message.text == "📊 Статус"
+    )
+    async def button_status(message: Message):
+
+        await cmd_status(message)
+
+
+
+    @dp.message(
+        lambda message:
+        message.text == "📋 Журнал"
+    )
+    async def button_journal(message: Message):
+
+        await cmd_journal(message)
+
+
+
+    @dp.message(
+        lambda message:
+        message.text == "❤️ Проверка"
+    )
+    async def button_health(message: Message):
+
+        await cmd_health(message)
+
+
+
+    @dp.message(
+        lambda message:
+        message.text == "📥 Загрузить паспорта"
+    )
+    async def button_load(message: Message):
+
+        await cmd_load_passports(message)
+
+
+
+    # ==========================
+    # ПРОГНОЗ
+    # ==========================
+
+    @dp.message(
+        lambda msg:
+        msg.text
+        and not msg.text.startswith("/")
+        and len(msg.text.split()) >= 2
+    )
+    async def predict_text(message: Message):
+
+        logger.info(
+            f"Запрос прогноза: {message.text}"
+        )
+
+        await handle_predict(
+            message,
+            core,
+            journal
         )
 
 
-    # ------------------------
-    # Старые команды
-    # ------------------------
 
-    dp.message.register(cmd_status, Command("status"))
-    dp.message.register(cmd_journal, Command("journal"))
-    dp.message.register(cmd_health, Command("health"))
-    dp.message.register(cmd_load_passports, Command("load_passports"))
-
-
-
-    # ------------------------
-    # Русские команды
-    # ------------------------
+    # ==========================
+    # СПРАВКА
+    # ==========================
 
     @dp.message()
-    async def text_handler(message: Message):
+    async def default_message(message: Message):
 
-        text = message.text.strip()
+        text = (
+            "⚽ FAJ Platform v5.1\n\n"
 
-        lower = text.lower()
+            "Команды:\n\n"
 
+            "📊 Статус\n"
+            "📁 Паспорт команда\n"
+            "📈 Прогноз команда команда\n"
+            "🏆 Таблица\n"
+            "⚽ Команды\n"
+            "🌍 Лиги\n"
+            "📋 Журнал\n"
+            "❤️ Проверка\n\n"
 
-        # статус
+            "Пример:\n"
+            "Прогноз Зенит Спартак\n\n"
 
-        if lower in [
-            "статус",
-            "📊 статус"
-        ]:
+            "или просто:\n"
+            "Зенит Спартак\n\n"
 
-            await cmd_status(message)
-            return
-
-
-
-        # журнал
-
-        if lower == "журнал":
-
-            await cmd_journal(message)
-            return
-
-
-
-        # проверка
-
-        if lower in [
-            "проверка",
-            "здоровье"
-        ]:
-
-            await cmd_health(message)
-            return
-
-
-
-        # загрузка паспортов
-
-        if lower in [
-            "загрузить паспорта",
-            "паспорта загрузить"
-        ]:
-
-            await cmd_load_passports(message)
-            return
-
-
-
-        # прогноз
-
-        if lower.startswith("прогноз"):
-
-            parts = text.split()
-
-            if len(parts) >= 3:
-
-                message.text = (
-                    parts[1]
-                    +
-                    " "
-                    +
-                    parts[2]
-                )
-
-                await handle_predict(
-                    message,
-                    core,
-                    journal
-                )
-
-                return
-
-
-
-        # просто две команды
-
-        words = text.split()
-
-        if len(words) == 2:
-
-            await handle_predict(
-                message,
-                core,
-                journal
-            )
-
-            return
-
-
-
-        # паспорт
-
-        if lower.startswith("паспорт"):
-
-            await message.answer(
-                "📁 Модуль паспортов подключаем следующим этапом."
-            )
-
-            return
-
-
-
-        # таблица
-
-        if lower == "таблица":
-
-            await message.answer(
-                "🏆 Турнирная таблица будет подключена после календаря РПЛ."
-            )
-
-            return
-
-
-
-        # команды
-
-        if lower == "команды":
-
-            await message.answer(
-                "⚽ Доступные команды:\n\n"
-                "Зенит\n"
-                "Спартак\n"
-                "ЦСКА\n"
-                "Краснодар\n"
-                "Локомотив\n"
-                "Динамо М\n"
-            )
-
-            return
-
-
-
-        # лиги
-
-        if lower == "лиги":
-
-            await message.answer(
-                "🌍 Активные лиги:\n\n"
-                "🇷🇺 РПЛ\n"
-                "🏆 Лига чемпионов\n\n"
-                "Другие лиги будут подключаться позже."
-            )
-
-            return
-
+            "FAJ анализирует:\n"
+            "• паспорта команд\n"
+            "• xG\n"
+            "• форму\n"
+            "• атаку\n"
+            "• защиту\n"
+            "• вероятности\n"
+            "• точные счета"
+        )
 
 
         await message.answer(
-            "Не понял команду.\n\n"
-            "Напиши:\n"
-            "Прогноз Зенит Спартак\n"
-            "или\n"
-            "Статус"
+            text,
+            reply_markup=get_main_keyboard()
         )
 
 
 
     logger.info(
-        "FAJ Platform v5.1 бот запущен. Русский интерфейс активен."
+        "FAJ Platform v5.1 бот запущен"
     )
 
 
