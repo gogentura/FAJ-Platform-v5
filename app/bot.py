@@ -30,13 +30,19 @@ from app.handlers.keyboard import get_main_keyboard
 logger = logging.getLogger(__name__)
 
 
-async def run_bot(core: FAJCore, journal: Journal):
+
+async def run_bot(
+    core: FAJCore,
+    journal: Journal
+):
 
 
     if not Config.TELEGRAM_TOKEN:
+
         logger.error(
             "TELEGRAM_TOKEN отсутствует"
         )
+
         return
 
 
@@ -93,7 +99,7 @@ async def run_bot(core: FAJCore, journal: Journal):
 
 
     # ==========================
-    # РУССКИЕ КОМАНДЫ БЕЗ /
+    # РУССКИЕ КОМАНДЫ
     # ==========================
 
 
@@ -106,6 +112,7 @@ async def run_bot(core: FAJCore, journal: Journal):
     )
 
 
+
     dp.message.register(
         cmd_journal,
         lambda message:
@@ -113,6 +120,7 @@ async def run_bot(core: FAJCore, journal: Journal):
         and message.text.lower()
         == "журнал"
     )
+
 
 
     dp.message.register(
@@ -124,12 +132,14 @@ async def run_bot(core: FAJCore, journal: Journal):
     )
 
 
+
     dp.message.register(
         cmd_load_passports,
         lambda message:
         message.text
         and "загрузить" in message.text.lower()
     )
+
 
 
     dp.message.register(
@@ -146,6 +156,7 @@ async def run_bot(core: FAJCore, journal: Journal):
     # ==========================
 
 
+
     @dp.message(
         lambda message:
         message.text == "📊 Статус"
@@ -155,6 +166,7 @@ async def run_bot(core: FAJCore, journal: Journal):
     ):
 
         await cmd_status(message)
+
 
 
 
@@ -170,6 +182,7 @@ async def run_bot(core: FAJCore, journal: Journal):
 
 
 
+
     @dp.message(
         lambda message:
         message.text == "❤️ Проверка"
@@ -180,17 +193,6 @@ async def run_bot(core: FAJCore, journal: Journal):
 
         await cmd_health(message)
 
-
-
-    @dp.message(
-        lambda message:
-        message.text == "📥 Загрузить паспорта"
-    )
-    async def button_load(
-        message: Message
-    ):
-
-        await cmd_load_passports(message)
 
 
 
@@ -206,8 +208,41 @@ async def run_bot(core: FAJCore, journal: Journal):
 
 
 
+
     # ==========================
-    # ПРОГНОЗ
+    # КНОПКА ПРОГНОЗ
+    # ==========================
+
+
+    @dp.message(
+        lambda message:
+        message.text == "📈 Прогноз"
+    )
+    async def button_predict(
+        message: Message
+    ):
+
+        await message.answer(
+            """
+⚽ FAJ прогноз
+
+Введите матч:
+
+Пример:
+
+Зенит Спартак
+
+или
+
+Спартак Динамо RPL
+            """,
+            reply_markup=get_main_keyboard()
+        )
+
+
+
+    # ==========================
+    # ТЕКСТОВЫЙ ПРОГНОЗ
     # ==========================
 
 
@@ -236,7 +271,7 @@ async def run_bot(core: FAJCore, journal: Journal):
 
 
     # ==========================
-    # ПО УМОЛЧАНИЮ
+    # DEFAULT
     # ==========================
 
 
@@ -251,20 +286,14 @@ async def run_bot(core: FAJCore, journal: Journal):
 ⚽ FAJ Platform v5.1
 
 
-Доступные команды:
+Команды:
 
 
 📊 Статус
 
-📁 Паспорт Зенит
+📁 Паспорт
 
-📈 Прогноз Зенит Спартак
-
-🏆 Таблица
-
-⚽ Команды
-
-🌍 Лиги
+📈 Прогноз
 
 📋 Журнал
 
@@ -285,7 +314,7 @@ FAJ анализирует:
 • паспорта команд
 • xG
 • форму
-• силу атаки
+• атаку
 • защиту
 • вероятности
 • точные счета
@@ -298,6 +327,7 @@ FAJ анализирует:
     logger.info(
         "FAJ Platform v5.1 бот запущен"
     )
+
 
 
     await dp.start_polling(bot)
