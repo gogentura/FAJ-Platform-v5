@@ -2,7 +2,7 @@ import os
 from datetime import datetime
 
 # =====================================================
-# DEBUG: Проверка переменной окружения
+# DEBUG
 # =====================================================
 print("=== DEBUG: DATABASE_URL from env ===")
 print(repr(os.getenv("DATABASE_URL")))
@@ -14,27 +14,18 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 # =====================================================
 
 def get_db():
-    # Дополнительная отладка прямо перед проверкой
     print("=== DEBUG: inside get_db, DATABASE_URL ==")
     print(repr(DATABASE_URL))
 
     if not DATABASE_URL:
-        raise Exception(
-            "DATABASE_URL не найден в Railway Variables"
-        )
+        raise Exception("DATABASE_URL не найден в Railway Variables")
 
     try:
         import psycopg2
         from psycopg2.extras import RealDictCursor
-
-        conn = psycopg2.connect(
-            DATABASE_URL,
-            cursor_factory=RealDictCursor
-        )
-
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
         print("✅ PostgreSQL connected")
         return PostgresWrapper(conn)
-
     except Exception as e:
         print("❌ POSTGRES ERROR:", e)
         raise e
@@ -70,7 +61,7 @@ def init_db():
     conn = get_db()
 
     # =================================================
-    # PASSPORTS
+    # PASSPORTS (без изменений)
     # =================================================
     conn.execute(
     """
@@ -103,11 +94,8 @@ def init_db():
     )
     """
     )
-    conn.commit()   # Фиксируем создание таблицы, чтобы отделить от ALTER
+    conn.commit()
 
-    # =================================================
-    # PASSPORT MIGRATION
-    # =================================================
     passport_columns = [
         "historical_xg_source TEXT",
         "avg_goals_source TEXT",
@@ -118,61 +106,72 @@ def init_db():
     for column in passport_columns:
         try:
             conn.execute(f"ALTER TABLE passports ADD COLUMN {column}")
-            conn.commit()   # Фиксируем каждое успешное добавление
+            conn.commit()
         except Exception:
-            conn.rollback()  # Сбрасываем состояние aborted
+            conn.rollback()
             pass
 
     # =================================================
-    # JOURNAL
+    # JOURNAL — ПОЛНОСТЬЮ СООТВЕТСТВУЕТ journal.py
     # =================================================
     conn.execute(
     """
     CREATE TABLE IF NOT EXISTS journal (
         id SERIAL PRIMARY KEY,
+        date TEXT,
         match TEXT,
-        prediction TEXT,
         home_team TEXT,
         away_team TEXT,
-        league TEXT,
+        prediction TEXT,
         winner TEXT,
         winner_prob REAL,
         home_prob REAL,
         draw_prob REAL,
         away_prob REAL,
+        xg_home REAL,
+        xg_away REAL,
         expected_score TEXT,
         top_scores TEXT,
         btts REAL,
         over25 REAL,
-        actual_winner TEXT,
         actual_score TEXT,
+        actual_winner TEXT,
+        confidence REAL,
+        model_version TEXT,
         data_version TEXT,
-        date TEXT,
+        accuracy TEXT,
+        league TEXT,
         created TEXT
     )
     """
     )
-    conn.commit()   # Фиксируем создание таблицы
+    conn.commit()
 
-    journal_columns = [
-        "match TEXT",
-        "prediction TEXT",
-        "winner_prob REAL",
-        "actual_winner TEXT",
-        "actual_score TEXT",
-        "data_version TEXT",
-        "date TEXT",
-        "top_scores TEXT",
-        "btts REAL",
-        "over25 REAL"
+    # Миграция для добавления недостающих колонок (если таблица уже была)
+    journal_columns_to_add = [
+        "xg_home REAL",
+        "xg_away REAL",
+        "confidence REAL",
+        "model_version TEXT",
+        "accuracy TEXT",
+        "league TEXT",
+        "created TEXT"
     ]
-    for column in journal_columns:
+    for column in journal_columns_to_add:
         try:
             conn.execute(f"ALTER TABLE journal ADD COLUMN {column}")
             conn.commit()
         except Exception:
             conn.rollback()
             pass
+
+    # Удаляем лишнюю колонку total_xg (если есть)
+    try:
+        conn.execute("ALTER TABLE journal DROP COLUMN IF EXISTS total_xg")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        pass
 
     # =================================================
     # ALIASES
