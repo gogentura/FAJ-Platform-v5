@@ -56,6 +56,9 @@ class PostgresWrapper:
     def commit(self):
         self.conn.commit()
 
+    def rollback(self):
+        self.conn.rollback()
+
     def close(self):
         self.conn.close()
 
@@ -100,6 +103,7 @@ def init_db():
     )
     """
     )
+    conn.commit()   # Фиксируем создание таблицы, чтобы отделить от ALTER
 
     # =================================================
     # PASSPORT MIGRATION
@@ -114,7 +118,9 @@ def init_db():
     for column in passport_columns:
         try:
             conn.execute(f"ALTER TABLE passports ADD COLUMN {column}")
+            conn.commit()   # Фиксируем каждое успешное добавление
         except Exception:
+            conn.rollback()  # Сбрасываем состояние aborted
             pass
 
     # =================================================
@@ -146,6 +152,7 @@ def init_db():
     )
     """
     )
+    conn.commit()   # Фиксируем создание таблицы
 
     journal_columns = [
         "match TEXT",
@@ -162,7 +169,9 @@ def init_db():
     for column in journal_columns:
         try:
             conn.execute(f"ALTER TABLE journal ADD COLUMN {column}")
+            conn.commit()
         except Exception:
+            conn.rollback()
             pass
 
     # =================================================
@@ -176,6 +185,7 @@ def init_db():
     )
     """
     )
+    conn.commit()
 
     # =================================================
     # API USAGE
@@ -191,6 +201,7 @@ def init_db():
     )
     """
     )
+    conn.commit()
 
     # =================================================
     # MODEL CONFIG
@@ -203,8 +214,8 @@ def init_db():
     )
     """
     )
-
     conn.commit()
+
     conn.close()
 
 # =====================================================
