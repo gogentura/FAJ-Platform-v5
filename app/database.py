@@ -5,13 +5,9 @@ from pathlib import Path
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-
 DATA_DIR = BASE_DIR / "data"
 
-DATA_DIR.mkdir(
-    exist_ok=True
-)
-
+DATA_DIR.mkdir(exist_ok=True)
 
 DB_PATH = DATA_DIR / "faj.db"
 
@@ -37,9 +33,10 @@ def init_db():
     conn = get_db()
 
 
-    # =====================================
-    # PASSPORTS
-    # =====================================
+
+    # ===============================
+    # ПАСПОРТА КОМАНД
+    # ===============================
 
     conn.execute("""
     CREATE TABLE IF NOT EXISTS passports (
@@ -102,10 +99,9 @@ def init_db():
 
 
 
-
-    # =====================================
-    # JOURNAL
-    # =====================================
+    # ===============================
+    # ЖУРНАЛ ПРОГНОЗОВ FAJ v5.2
+    # ===============================
 
     conn.execute("""
     CREATE TABLE IF NOT EXISTS journal (
@@ -141,7 +137,19 @@ def init_db():
         actual_score TEXT,
 
 
-        accuracy TEXT
+        actual_winner TEXT,
+
+
+        accuracy TEXT,
+
+
+        confidence INTEGER,
+
+
+        model_version TEXT,
+
+
+        factors TEXT
 
     )
     """)
@@ -150,9 +158,9 @@ def init_db():
 
 
 
-    # =====================================
-    # API USAGE
-    # =====================================
+    # ===============================
+    # API
+    # ===============================
 
     conn.execute("""
     CREATE TABLE IF NOT EXISTS api_usage (
@@ -170,9 +178,9 @@ def init_db():
 
 
 
-    # =====================================
-    # ALIASES
-    # =====================================
+    # ===============================
+    # АЛИАСЫ КОМАНД
+    # ===============================
 
     conn.execute("""
     CREATE TABLE IF NOT EXISTS team_aliases (
@@ -188,27 +196,34 @@ def init_db():
 
 
 
-    # =====================================
-    # МИГРАЦИИ СТАРОЙ БАЗЫ
-    # =====================================
+    # ===============================
+    # МИГРАЦИЯ СТАРЫХ БАЗ
+    # ===============================
 
+    columns = [
 
-    migrations = [
+        ("winner_prob", "REAL"),
 
-        """
-        ALTER TABLE journal
-        ADD COLUMN winner_prob REAL
-        """,
+        ("actual_winner", "TEXT"),
+
+        ("confidence", "INTEGER"),
+
+        ("model_version", "TEXT"),
+
+        ("factors", "TEXT")
 
     ]
 
 
-    for migration in migrations:
+    for column, dtype in columns:
 
         try:
 
             conn.execute(
-                migration
+                f"""
+                ALTER TABLE journal
+                ADD COLUMN {column} {dtype}
+                """
             )
 
         except sqlite3.OperationalError:
