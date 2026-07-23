@@ -13,16 +13,15 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("FAJ")
 
-# --- Данные паспортов команд РПЛ (актуальны на 24.07.2026) ---
+# Данные паспортов команд РПЛ (актуальны на 24.07.2026)
 INITIAL_PASSPORTS = [
     {"team": "Зенит", "league": "RPL", "attack": 88, "defense": 79, "control": 84, "form_index": 84,
      "efficiency": 78, "mentality": 85, "home_rating": 93, "away_rating": 87,
-     "coach_factor": 86, "injury_index": 0, "fatigue_index": 0,   # пока нет данных
+     "coach_factor": 86, "injury_index": 0, "fatigue_index": 0,
      "xg": {"historical": {"value": 1.8, "source": "expert"}},
      "avg_goals": {"value": 2.0, "source": "expert"},
      "avg_goals_conceded": {"value": 0.8, "source": "expert"},
      "avg_possession": {"value": 60, "source": "expert"},
-     # дополнительные поля (сохраним в JSON)
      "extra": {"tempo": 76, "press": 80, "transition": 75, "tactical": 82, "depth": 85, "transfer": 91, "uncertainty": 16, "faj_rating": 91.8}
     },
     {"team": "Краснодар", "league": "RPL", "attack": 80, "defense": 77, "control": 81, "form_index": 79,
@@ -163,7 +162,6 @@ INITIAL_PASSPORTS = [
 ]
 
 def load_initial_passports():
-    """Загружает начальные паспорта в базу, если она пуста."""
     conn = get_db()
     count = conn.execute("SELECT COUNT(*) FROM passports").fetchone()[0]
     conn.close()
@@ -173,9 +171,7 @@ def load_initial_passports():
 
     logger.info("Загрузка начальных паспортов РПЛ...")
     for data in INITIAL_PASSPORTS:
-        # Извлекаем основные поля
         team = data["team"]
-        # Формируем паспорт в ожидаемом формате
         passport = {
             "team": team,
             "league": data["league"],
@@ -194,18 +190,16 @@ def load_initial_passports():
             "avg_goals": data["avg_goals"],
             "avg_goals_conceded": data["avg_goals_conceded"],
             "avg_possession": data["avg_possession"],
-            # Сохраняем все дополнительные поля в JSON (в data поле)
             "extra": data.get("extra", {})
         }
         save_passport(team, passport)
         logger.info(f"✅ Загружен паспорт {team}")
-
     logger.info("Загрузка завершена.")
 
 async def main():
     init_db()
-    init_default_aliases()   # загружаем синонимы
-    load_initial_passports() # загружаем паспорта, если их нет
+    init_default_aliases()
+    load_initial_passports()
     logger.info("База данных инициализирована")
     core = FAJCore()
     journal = Journal()
