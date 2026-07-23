@@ -5,7 +5,6 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from app.config import Config
-
 from app.core.faj_core import FAJCore
 from app.journal import Journal
 
@@ -16,9 +15,11 @@ from app.handlers.status import cmd_status
 from app.handlers.health import cmd_health
 from app.handlers.load_passports import cmd_load_passports
 
+from app.handlers.passport import handle_passport
+
 from app.handlers.keyboard import get_main_keyboard
 
-
+p
 logger = logging.getLogger(__name__)
 
 
@@ -33,12 +34,14 @@ async def run_bot(core: FAJCore, journal: Journal):
         token=Config.TELEGRAM_TOKEN
     )
 
+
     dp = Dispatcher()
 
 
-    # =========================
-    # КОМАНДЫ
-    # =========================
+
+    # ==========================
+    # КОМАНДЫ С /
+    # ==========================
 
 
     dp.message.register(
@@ -72,9 +75,9 @@ async def run_bot(core: FAJCore, journal: Journal):
 
 
 
-    # =========================
-    # КНОПКИ
-    # =========================
+    # ==========================
+    # КНОПКИ МЕНЮ
+    # ==========================
 
 
     @dp.message(
@@ -96,7 +99,7 @@ async def run_bot(core: FAJCore, journal: Journal):
     @dp.message(
         lambda m: m.text == "❤️ Проверка"
     )
-    async def button_health(message: Message):
+    async function button_health(message: Message):
         await cmd_health(message)
 
 
@@ -104,57 +107,71 @@ async def run_bot(core: FAJCore, journal: Journal):
     @dp.message(
         lambda m: m.text == "📥 Загрузить паспорта"
     )
-    async def button_passports(message: Message):
+    async def button_load(message: Message):
         await cmd_load_passports(message)
 
 
 
-    # =========================
-    # ПАСПОРТ
-    # =========================
-
-
     @dp.message(
-        lambda m:
-        m.text
-        and (
-            m.text.lower().startswith("паспорт")
-            or m.text.startswith("📁")
-        )
+        lambda m: m.text == "📁 Паспорт"
     )
-    async def passport_command(message: Message):
+    async def button_passport_help(message: Message):
 
         await message.answer(
             "📁 Раздел паспортов\n\n"
             "Пример:\n"
-            "Паспорт Зенит\n\n"
-            "Сейчас доступна загрузка и анализ паспортов РПЛ.",
+            "Паспорт Зенит",
             reply_markup=get_main_keyboard()
         )
 
 
 
-    # =========================
+    # ==========================
+    # ПАСПОРТЫ
+    # ==========================
+
+
+    @dp.message(
+        lambda m:
+        m.text
+        and m.text.lower().startswith("паспорт")
+    )
+    async def passport_request(message: Message):
+
+        await handle_passport(message)
+
+
+
+    # ==========================
     # ПРОГНОЗ
-    # =========================
+    # ==========================
 
 
     @dp.message(
         lambda m:
         m.text
         and not m.text.startswith("/")
-        and (
-            m.text.lower().startswith("прогноз")
-            or len(m.text.split()) == 2
-        )
+        and not m.text.lower().startswith("паспорт")
+        and len(m.text.split()) >= 2
     )
-    async def predict_handler(message: Message):
+    async def predict_request(message: Message):
 
         text = message.text.strip()
+
+
+        # убираем слово прогноз
+        if text.lower().startswith("прогноз"):
+
+            text = text[8:].strip()
+
+            message.text = text
+
+
 
         logger.info(
             f"Запрос прогноза: {text}"
         )
+
 
         await handle_predict(
             message,
@@ -164,36 +181,9 @@ async def run_bot(core: FAJCore, journal: Journal):
 
 
 
-    # =========================
-    # ТАБЛИЦА / ЛИГИ / КОМАНДЫ
-    # =========================
-
-
-    @dp.message(
-        lambda m:
-        m.text in [
-            "🏆 Таблица",
-            "⚽ Команды",
-            "🌍 Лиги"
-        ]
-    )
-    async def info_handler(message: Message):
-
-        await message.answer(
-            "🚧 Раздел находится в разработке.\n\n"
-            "Следующий этап FAJ:\n"
-            "• календарь туров\n"
-            "• список матчей\n"
-            "• автоматический прогноз тура\n"
-            "• паспорта команд",
-            reply_markup=get_main_keyboard()
-        )
-
-
-
-    # =========================
-    # ОСТАЛЬНОЕ
-    # =========================
+    # ==========================
+    # ВСЁ ОСТАЛЬНОЕ
+    # ==========================
 
 
     @dp.message()
@@ -205,8 +195,8 @@ async def run_bot(core: FAJCore, journal: Journal):
             "Команды:\n\n"
 
             "📊 Статус\n"
-            "📁 Паспорт команда\n"
-            "📈 Прогноз команда команда\n"
+            "📁 Паспорт Зенит\n"
+            "📈 Прогноз Зенит Спартак\n"
             "🏆 Таблица\n"
             "⚽ Команды\n"
             "🌍 Лиги\n"
@@ -214,10 +204,8 @@ async def run_bot(core: FAJCore, journal: Journal):
             "❤️ Проверка\n\n"
 
             "Пример:\n"
-            "Прогноз Зенит Спартак\n\n"
-            "или:\n"
             "Зенит Спартак",
-            
+
             reply_markup=get_main_keyboard()
         )
 
