@@ -1,6 +1,6 @@
 import time
 import numpy as np
-from math import exp
+from math import exp, factorial
 
 from app.database import get_db
 from app.passport_manager import get_team_by_alias
@@ -547,7 +547,7 @@ class FAJCore:
                             *
                             home_xg**h
                             /
-                            np.math.factorial(h)
+                            factorial(h)
                         )
 
                         *
@@ -557,7 +557,7 @@ class FAJCore:
                             *
                             away_xg**a
                             /
-                            np.math.factorial(a)
+                            factorial(a)
                         )
 
                     )
