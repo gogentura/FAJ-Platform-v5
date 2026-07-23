@@ -1,19 +1,16 @@
-import os
 import json
 from datetime import datetime
 
-
-PASSPORT_DIR = "data/passports"
-ALIASES_FILE = "data/aliases/teams.json"
+from app.config import Config
 
 
 def _load_aliases():
 
-    if not os.path.exists(ALIASES_FILE):
+    if not Config.ALIASES_FILE.exists():
         return {}
 
     with open(
-        ALIASES_FILE,
+        Config.ALIASES_FILE,
         "r",
         encoding="utf-8"
     ) as f:
@@ -21,7 +18,7 @@ def _load_aliases():
         return json.load(f)
 
 
-def _normalize_team_name(team_name: str):
+def normalize_team_name(team_name: str):
 
     aliases = _load_aliases()
 
@@ -33,20 +30,17 @@ def _normalize_team_name(team_name: str):
     )
 
 
-def _path(team_name: str):
+def passport_path(team_name: str):
 
-    filename = _normalize_team_name(team_name)
+    filename = normalize_team_name(team_name)
 
-    return os.path.join(
-        PASSPORT_DIR,
-        filename + ".json"
-    )
+    return Config.PASSPORT_DIR / f"{filename}.json"
 
 
 def save_passport(team_name: str, passport: dict):
 
-    os.makedirs(
-        PASSPORT_DIR,
+    Config.PASSPORT_DIR.mkdir(
+        parents=True,
         exist_ok=True
     )
 
@@ -69,8 +63,10 @@ def save_passport(team_name: str, passport: dict):
         datetime.now().strftime("%Y-%m-%d")
     )
 
+    path = passport_path(team_name)
+
     with open(
-        _path(team_name),
+        path,
         "w",
         encoding="utf-8"
     ) as f:
@@ -82,14 +78,25 @@ def save_passport(team_name: str, passport: dict):
             indent=4
         )
 
+    print(f"FAJ SAVE PASSPORT -> {path}")
+
     return passport
 
 
 def load_passport(team_name: str):
 
-    path = _path(team_name)
+    path = passport_path(team_name)
 
-    if not os.path.exists(path):
+    print("=" * 60)
+    print("FAJ PASSPORT")
+    print("TEAM:", team_name)
+    print("PATH:", path)
+
+    if not path.exists():
+
+        print("FILE NOT FOUND")
+        print("=" * 60)
+
         return None
 
     with open(
@@ -100,29 +107,51 @@ def load_passport(team_name: str):
 
         passport = json.load(f)
 
+    print(
+        "ATTACK:",
+        passport.get("attack")
+    )
+
+    print(
+        "DEFENSE:",
+        passport.get("defense")
+    )
+
+    print(
+        "CONTROL:",
+        passport.get("control")
+    )
+
+    print(
+        "XG:",
+        passport.get("historical_xg_value")
+    )
+
+    print("=" * 60)
+
     return passport
+
+
+def delete_passport(team_name: str):
+
+    path = passport_path(team_name)
+
+    if path.exists():
+
+        path.unlink()
+
+        return True
+
+    return False
 
 
 def is_updated_today(team_name: str):
 
     passport = load_passport(team_name)
 
-    if not passport:
+    if passport is None:
         return False
 
     return passport.get(
         "last_updated"
     ) == datetime.now().strftime("%Y-%m-%d")
-
-
-def delete_passport(team_name: str):
-
-    path = _path(team_name)
-
-    if os.path.exists(path):
-
-        os.remove(path)
-
-        return True
-
-    return False
