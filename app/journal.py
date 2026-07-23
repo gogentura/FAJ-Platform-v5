@@ -1,143 +1,83 @@
 from datetime import datetime
 from app.database import get_db
 
+def clean_value(value):
+    """Преобразует numpy-типы (np.float64, np.int64) в стандартные Python-типы"""
+    if hasattr(value, "item"):  # для numpy-скаляров
+        return value.item()
+    return value
 
 class Journal:
-
     def save(
         self,
         match: str,
         prediction: dict,
         actual: dict = None
     ):
-
         conn = get_db()
-
         conn.execute(
         """
         INSERT INTO journal (
-
             date,
-
             match,
-
             home_team,
-
             away_team,
-
             prediction,
-
             winner,
-
             winner_prob,
-
             home_prob,
-
             draw_prob,
-
             away_prob,
-
             xg_home,
-
             xg_away,
-
             expected_score,
-
             top_scores,
-
             btts,
-
             over25,
-
             actual_score,
-
             actual_winner,
-
             confidence,
-
             model_version,
-
             data_version,
-
             accuracy
-
         )
-
         VALUES (
-
             ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
-
         )
         """,
-
         (
-
             datetime.now().isoformat(),
-
             match,
-
             match.split("—")[0].strip(),
-
             match.split("—")[1].strip(),
-
             prediction.get("winner_name", ""),
-
             prediction.get("winner", ""),
-
-            prediction.get("winner_probability", 0),
-
-            prediction.get("home_prob", 0),
-
-            prediction.get("draw_prob", 0),
-
-            prediction.get("away_prob", 0),
-
-            prediction.get("xg_home", 0),
-
-            prediction.get("xg_away", 0),
-
+            clean_value(prediction.get("winner_probability", 0)),
+            clean_value(prediction.get("home_prob", 0)),
+            clean_value(prediction.get("draw_prob", 0)),
+            clean_value(prediction.get("away_prob", 0)),
+            clean_value(prediction.get("xg_home", 0)),
+            clean_value(prediction.get("xg_away", 0)),
             prediction.get("expected_score", ""),
-
-            str(
-                prediction.get(
-                    "top_scores",
-                    []
-                )
-            ),
-
-            prediction.get("btts", 0),
-
-            prediction.get("over25", 0),
-
+            str(prediction.get("top_scores", [])),
+            clean_value(prediction.get("btts", 0)),
+            clean_value(prediction.get("over25", 0)),
             actual.get("score", "") if actual else "",
-
             actual.get("winner", "") if actual else "",
-
-            prediction.get("confidence", 0),
-
+            clean_value(prediction.get("confidence", 0)),
             "5.2",
-
             datetime.now().strftime("%Y-%m-%d"),
-
             "pending"
-
         )
-
         )
-
         conn.commit()
-
         conn.close()
-
-
 
     def get_all(
         self,
         limit=20
     ):
-
         conn = get_db()
-
         rows = conn.execute(
             """
             SELECT *
@@ -145,13 +85,8 @@ class Journal:
             ORDER BY id DESC
             """
         ).fetchall()
-
         conn.close()
-
         return [
-
             dict(r)
-
             for r in rows[:limit]
-
         ]
