@@ -1,4 +1,13 @@
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+# =====================================================
+# FAJ Platform v5.2
+# Main Telegram Keyboard
+# =====================================================
+
+
+from aiogram.types import (
+    ReplyKeyboardMarkup,
+    KeyboardButton
+)
 
 
 
@@ -24,23 +33,16 @@ def get_main_keyboard():
             ),
 
             KeyboardButton(
-                text="📋 Журнал"
+                text="📅 Матчи"
             )
         ],
 
 
         [
             KeyboardButton(
-                text="⚽ Результат"
+                text="📋 Журнал"
             ),
 
-            KeyboardButton(
-                text="📈 Точность"
-            )
-        ],
-
-
-        [
             KeyboardButton(
                 text="❤️ Проверка"
             )
