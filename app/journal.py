@@ -10,7 +10,6 @@ from app.database import get_db
 def clean_value(value):
 
     if hasattr(value, "item"):
-
         return value.item()
 
     return value
@@ -31,19 +30,42 @@ class Journal:
         actual: dict = None
     ):
 
-
         conn = get_db()
-
 
         now = datetime.now().isoformat()
 
 
 
-        # Красивое описание прогноза
+        # =============================================
+        # SAFE MATCH PARSE
+        # =============================================
+
+        parts = (
+            match
+            .replace("-", "—")
+            .split("—")
+        )
+
+
+        home_team = parts[0].strip()
+
+
+        away_team = (
+            parts[1].strip()
+            if len(parts) > 1
+            else ""
+        )
+
+
+
+        # =============================================
+        # HUMAN READABLE PREDICTION
+        # =============================================
 
         prediction_text = (
             f"{prediction.get('winner', '')} | "
-            f"xG {prediction.get('xg_home', 0)}-"
+            f"xG "
+            f"{prediction.get('xg_home', 0)}-"
             f"{prediction.get('xg_away', 0)} | "
             f"{prediction.get('expected_score', '')}"
         )
@@ -128,9 +150,10 @@ class Journal:
             match,
 
 
-            match.split("—")[0].strip(),
+            home_team,
 
-            match.split("—")[1].strip(),
+
+            away_team,
 
 
 
@@ -161,12 +184,14 @@ class Journal:
             ),
 
 
+
             clean_value(
                 prediction.get(
                     "draw_prob",
                     0
                 )
             ),
+
 
 
             clean_value(
@@ -184,6 +209,7 @@ class Journal:
                     0
                 )
             ),
+
 
 
             clean_value(
@@ -257,6 +283,7 @@ class Journal:
             "5.2",
 
 
+
             datetime.now().strftime(
                 "%Y-%m-%d"
             ),
@@ -264,6 +291,7 @@ class Journal:
 
 
             "pending",
+
 
 
             now
@@ -279,7 +307,6 @@ class Journal:
 
 
 
-
     # =================================================
     # GET LAST PREDICTIONS
     # =================================================
@@ -288,7 +315,6 @@ class Journal:
         self,
         limit=20
     ):
-
 
         conn = get_db()
 
