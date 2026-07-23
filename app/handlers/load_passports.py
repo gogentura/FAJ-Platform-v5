@@ -1,4 +1,5 @@
 import logging
+import traceback
 from aiogram import types
 from app.database import get_db
 from app.passport_manager import save_passport, init_default_aliases
@@ -123,7 +124,6 @@ EXPERT_PASSPORTS = [
 ]
 
 async def cmd_load_passports(message: types.Message):
-    # Проверка, что это админ
     from app.config import Config
     if str(message.from_user.id) != Config.ADMIN_CHAT_ID:
         await message.answer("⛔ Только для администратора.", reply_markup=get_main_keyboard())
@@ -131,32 +131,46 @@ async def cmd_load_passports(message: types.Message):
 
     await message.answer("⏳ Загружаю паспорта РПЛ...", reply_markup=get_main_keyboard())
     count = 0
+    errors = []
     for data in EXPERT_PASSPORTS:
         team = data["team"]
-        passport = {
-            "team": team,
-            "league": data["league"],
-            "attack": data["attack"],
-            "defense": data["defense"],
-            "control": data["control"],
-            "form_index": data["form_index"],
-            "efficiency": data["efficiency"],
-            "mentality": data["mentality"],
-            "home_rating": data["home_rating"],
-            "away_rating": data["away_rating"],
-            "coach_factor": data["coach_factor"],
-            "injury_index": data["injury_index"],
-            "fatigue_index": data["fatigue_index"],
-            "xg": data["xg"],
-            "avg_goals": data["avg_goals"],
-            "avg_goals_conceded": data["avg_goals_conceded"],
-            "avg_possession": data["avg_possession"],
-        }
-        save_passport(team, passport)
-        count += 1
-        logger.info(f"Загружен паспорт {team}")
+        try:
+            passport = {
+                "team": team,
+                "league": data["league"],
+                "attack": data["attack"],
+                "defense": data["defense"],
+                "control": data["control"],
+                "form_index": data["form_index"],
+                "efficiency": data["efficiency"],
+                "mentality": data["mentality"],
+                "home_rating": data["home_rating"],
+                "away_rating": data["away_rating"],
+                "coach_factor": data["coach_factor"],
+                "injury_index": data["injury_index"],
+                "fatigue_index": data["fatigue_index"],
+                "xg": data["xg"],
+                "avg_goals": data["avg_goals"],
+                "avg_goals_conceded": data["avg_goals_conceded"],
+                "avg_possession": data["avg_possession"],
+            }
+            save_passport(team, passport)
+            count += 1
+            logger.info(f"Загружен паспорт {team}")
+        except Exception as e:
+            error_text = f"Ошибка при загрузке {team}: {e}\n{traceback.format_exc()}"
+            logger.error(error_text)
+            errors.append(error_text)
 
     # Загружаем алиасы
-    init_default_aliases()
+    try:
+        init_default_aliases()
+        logger.info("Алиасы загружены")
+    except Exception as e:
+        logger.error(f"Ошибка при загрузке алиасов: {e}")
+        errors.append(f"Ошибка алиасов: {e}")
 
-    await message.answer(f"✅ Загружено {count} паспортов команд РПЛ.\nАлиасы (синонимы) добавлены.", reply_markup=get_main_keyboard())
+    if errors:
+        await message.answer(f"✅ Загружено {count} паспортов, но были ошибки:\n" + "\n".join(errors[:3]), reply_markup=get_main_keyboard())
+    else:
+        await message.answer(f"✅ Загружено {count} паспортов команд РПЛ.\nАлиасы (синонимы) добавлены.", reply_markup=get_main_keyboard())
