@@ -1,15 +1,30 @@
 from aiogram import types
-from app.passport_manager import load_passport
+from app.database import get_db
 from app.handlers.keyboard import get_main_keyboard
 
 
-async def cmd_passport(message: types.Message):
+def load_passport(team):
+    conn = get_db()
+
+    row = conn.execute(
+        "SELECT * FROM passports WHERE team = ?",
+        (team,)
+    ).fetchone()
+
+    conn.close()
+
+    return dict(row) if row else None
+
+
+
+async def handle_passport(message: types.Message):
 
     parts = message.text.split()
 
     if len(parts) < 2:
         await message.answer(
-            "Пример:\n\nПаспорт Зенит",
+            "❌ Напиши:\n\n"
+            "Паспорт Зенит",
             reply_markup=get_main_keyboard()
         )
         return
@@ -23,36 +38,38 @@ async def cmd_passport(message: types.Message):
 
     if not passport:
         await message.answer(
-            f"❌ Паспорт команды {team} не найден",
+            f"❌ Паспорт команды {team} не найден.\n\n"
+            "Проверь название команды.",
             reply_markup=get_main_keyboard()
         )
         return
 
 
     text = (
-        f"📁 *Паспорт: {passport['team']}*\n\n"
+        f"📁 *Паспорт команды*\n\n"
+        f"⚽ {passport['team']}\n"
+        f"🏆 Лига: {passport.get('league','RPL')}\n\n"
 
-        f"🏆 Лига: {passport.get('league','')}\n\n"
+        f"📊 Сила команды:\n"
+        f"⚔️ Атака: {passport.get('attack',0)}\n"
+        f"🛡 Защита: {passport.get('defense',0)}\n"
+        f"🎯 Контроль: {passport.get('control',0)}\n"
+        f"📈 Форма: {passport.get('form_index',0)}\n\n"
 
-        f"⚔ Атака: {passport.get('attack')}\n"
-        f"🛡 Защита: {passport.get('defense')}\n"
-        f"🎯 Контроль: {passport.get('control')}\n"
-        f"📈 Форма: {passport.get('form_index')}\n\n"
+        f"📉 xG:\n"
+        f"{passport.get('historical_xg_value',0)}\n\n"
 
-        f"⚽ xG:\n"
-        f"{passport.get('historical_xg_value')}\n\n"
+        f"⚽ Средние голы:\n"
+        f"Забито: {passport.get('avg_goals_value',0)}\n"
+        f"Пропущено: {passport.get('avg_goals_conceded_value',0)}\n\n"
 
-        f"🥅 Средние голы:\n"
-        f"{passport.get('avg_goals_value')}\n\n"
+        f"🏟 Дом:\n"
+        f"{passport.get('home_rating',0)}\n"
 
-        f"🧤 Пропущено:\n"
-        f"{passport.get('avg_goals_conceded_value')}\n\n"
+        f"✈️ Выезд:\n"
+        f"{passport.get('away_rating',0)}\n\n"
 
-        f"👔 Тренерский фактор:\n"
-        f"{passport.get('coach_factor')}\n\n"
-
-        f"🔄 Версия: {passport.get('version')}\n"
-        f"🕒 Обновлено:\n{passport.get('updated')}"
+        f"🤖 Версия FAJ: 5.1"
     )
 
 
