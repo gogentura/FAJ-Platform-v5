@@ -11,6 +11,7 @@ def get_db():
 
 def init_db():
     conn = get_db()
+    # Таблица паспортов
     conn.execute("""
         CREATE TABLE IF NOT EXISTS passports (
             team TEXT PRIMARY KEY,
@@ -32,13 +33,15 @@ def init_db():
             data TEXT
         )
     """)
+    # Таблица использования API — ИСПРАВЛЕНО: limit переименован в daily_limit
     conn.execute("""
         CREATE TABLE IF NOT EXISTS api_usage (
             date TEXT PRIMARY KEY,
             used INTEGER DEFAULT 0,
-            limit INTEGER DEFAULT 100
+            daily_limit INTEGER DEFAULT 100
         )
     """)
+    # Журнал
     conn.execute("""
         CREATE TABLE IF NOT EXISTS journal (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
