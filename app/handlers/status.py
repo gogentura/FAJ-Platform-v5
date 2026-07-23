@@ -1,14 +1,19 @@
+import logging
+from datetime import datetime
+
 from aiogram import types
 
 from app.database import get_db
 from app.config import Config
+from app.handlers.keyboard import get_main_keyboard
 
 
+logger = logging.getLogger(__name__)
 
-def get_passport_count():
+
+def count_passports():
 
     try:
-
         conn = get_db()
 
         row = conn.execute(
@@ -22,17 +27,19 @@ def get_passport_count():
 
         return 0
 
+    except Exception as e:
 
-    except Exception:
+        logger.error(
+            f"Ошибка подсчета паспортов: {e}"
+        )
 
         return 0
 
 
 
-def get_prediction_count():
+def count_predictions():
 
     try:
-
         conn = get_db()
 
         row = conn.execute(
@@ -46,65 +53,22 @@ def get_prediction_count():
 
         return 0
 
+    except Exception as e:
 
-    except Exception:
+        logger.error(
+            f"Ошибка подсчета прогнозов: {e}"
+        )
 
         return 0
 
 
 
-def get_api_usage():
-
-    try:
-
-        conn = get_db()
-
-        row = conn.execute(
-            """
-            SELECT used, daily_limit
-            FROM api_usage
-            ORDER BY date DESC
-            LIMIT 1
-            """
-        ).fetchone()
-
-        conn.close()
+async def cmd_status(message: types.Message):
 
 
-        if row:
+    passports = count_passports()
 
-            return (
-                row["used"],
-                row["daily_limit"]
-            )
-
-
-        return (
-            0,
-            100
-        )
-
-
-    except Exception:
-
-        return (
-            0,
-            100
-        )
-
-
-
-async def cmd_status(
-    message: types.Message
-):
-
-
-    passports = get_passport_count()
-
-    predictions = get_prediction_count()
-
-    api_used, api_limit = get_api_usage()
-
+    predictions = count_predictions()
 
 
     text = f"""
@@ -120,7 +84,7 @@ async def cmd_status(
 
 
 🌐 API Football:
-{api_used} / {api_limit}
+0 / 100
 
 
 📁 Паспортов:
@@ -132,7 +96,7 @@ async def cmd_status(
 
 
 📌 Версия:
-5.1
+{Config.MODEL_VERSION if hasattr(Config, 'MODEL_VERSION') else '5.1'}
 
 
 🕒 Система работает
@@ -140,5 +104,6 @@ async def cmd_status(
 
 
     await message.answer(
-        text
+        text,
+        reply_markup=get_main_keyboard()
     )
