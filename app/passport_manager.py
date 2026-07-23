@@ -425,3 +425,53 @@ def get_all_passports():
         dict(row)
         for row in rows
     ]
+# =====================================================
+# DEFAULT ALIASES INIT
+# =====================================================
+
+def init_default_aliases():
+
+    conn = get_db()
+
+
+    for alias, team in ALIASES.items():
+
+        try:
+
+            conn.execute(
+            """
+            INSERT INTO team_aliases
+            (
+                team,
+                alias
+            )
+
+            VALUES
+            (
+                ?,
+                ?
+            )
+
+            ON CONFLICT(alias)
+
+            DO UPDATE SET
+
+                team=excluded.team
+
+            """,
+            (
+                team,
+                alias
+            )
+            )
+
+
+        except Exception:
+
+            pass
+
+
+
+    conn.commit()
+
+    conn.close()
