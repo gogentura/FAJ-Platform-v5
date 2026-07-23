@@ -1,166 +1,427 @@
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
+
 from app.database import get_db
 
-# --- Основные функции паспортов ---
 
-def save_passport(team: str, passport: dict):
+# =====================================================
+# ALIASES
+# =====================================================
+
+ALIASES = {
+
+    "зенит": "Зенит",
+    "зенит спб": "Зенит",
+
+    "спартак": "Спартак",
+    "спартак москва": "Спартак",
+
+    "цска": "ЦСКА",
+
+    "динамо": "Динамо М",
+
+    "локомотив": "Локомотив",
+
+    "краснодар": "Краснодар",
+
+    "ростов": "Ростов",
+
+    "ахмат": "Ахмат",
+
+    "рубин": "Рубин",
+
+    "крылья": "Крылья Советов",
+
+    "крылья советов": "Крылья Советов",
+
+    "факел": "Факел",
+
+    "оренбург": "Оренбург",
+
+    "балтика": "Балтика",
+
+    "акрон": "Акрон",
+
+    "динамо махачкала": "Динамо Мх",
+
+    "родина": "Родина"
+
+}
+
+
+
+# =====================================================
+# SAVE PASSPORT
+# =====================================================
+
+def save_passport(team, passport):
+
     conn = get_db()
-    existing = conn.execute("SELECT version, created FROM passports WHERE team = ?", (team,)).fetchone()
-    version = (existing["version"] + 1) if existing else 1
-    created = existing["created"] if existing else datetime.now().isoformat()
-    updated = datetime.now().isoformat()
 
-    hist_xg = passport.get("xg", {}).get("historical", {}).get("value")
-    avg_goals = passport.get("avg_goals", {}).get("value", 0.0)
-    avg_goals_conceded = passport.get("avg_goals_conceded", {}).get("value", 0.0)
-    avg_possession = passport.get("avg_possession", {}).get("value", 50)
 
-    attack = passport.get("attack")
-    if attack is None:
-        attack = 70 + avg_goals * 7 + (hist_xg * 6 if hist_xg else 0)
-    defense = passport.get("defense")
-    if defense is None:
-        defense = 70 - avg_goals_conceded * 8
-    control = passport.get("control")
-    if control is None:
-        control = 70 + (avg_possession - 50) * 0.4
-    form_index = passport.get("form_index")
-    if form_index is None:
-        form_index = 70 + (avg_goals - 1.2) * 20
+    now = datetime.now().isoformat()
 
-    attack = min(100, max(0, int(attack)))
-    defense = min(100, max(0, int(defense)))
-    control = min(100, max(0, int(control)))
-    form_index = min(100, max(0, int(form_index)))
 
-    efficiency = passport.get("efficiency", 50)
-    mentality = passport.get("mentality", 50)
-    home_rating = passport.get("home_rating", 50)
-    away_rating = passport.get("away_rating", 50)
-    coach_factor = passport.get("coach_factor", 0)
-    injury_index = passport.get("injury_index", 0)
-    fatigue_index = passport.get("fatigue_index", 0)
-    league = passport.get("league", "RPL")
+    conn.execute(
+    """
+    INSERT INTO passports (
 
-    conn.execute("""
-        INSERT OR REPLACE INTO passports (
-            team, league, attack, defense, control, form_index,
-            efficiency, mentality, home_rating, away_rating,
-            coach_factor, injury_index, fatigue_index,
-            historical_xg_value, historical_xg_source,
-            avg_goals_value, avg_goals_source,
-            avg_goals_conceded_value, avg_goals_conceded_source,
-            avg_possession_value, avg_possession_source,
-            version, created, updated, data
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
         team,
+
         league,
+
+
         attack,
+
         defense,
+
         control,
+
         form_index,
+
+
         efficiency,
+
         mentality,
+
+
         home_rating,
+
         away_rating,
+
+
         coach_factor,
+
+
         injury_index,
+
         fatigue_index,
-        passport.get("xg", {}).get("historical", {}).get("value"),
-        passport.get("xg", {}).get("historical", {}).get("source"),
-        passport.get("avg_goals", {}).get("value"),
-        passport.get("avg_goals", {}).get("source"),
-        passport.get("avg_goals_conceded", {}).get("value"),
-        passport.get("avg_goals_conceded", {}).get("source"),
-        passport.get("avg_possession", {}).get("value"),
-        passport.get("avg_possession", {}).get("source"),
+
+
+        historical_xg_value,
+
+        historical_xg_source,
+
+
+        avg_goals_value,
+
+        avg_goals_source,
+
+
+        avg_goals_conceded_value,
+
+        avg_goals_conceded_source,
+
+
+        avg_possession_value,
+
+        avg_possession_source,
+
+
         version,
+
+
         created,
+
         updated,
-        json.dumps(passport)
-    ))
+
+
+        data
+
+    )
+
+    VALUES (
+
+        ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+
+    )
+
+
+    ON CONFLICT(team)
+
+    DO UPDATE SET
+
+
+        league=excluded.league,
+
+        attack=excluded.attack,
+
+        defense=excluded.defense,
+
+        control=excluded.control,
+
+        form_index=excluded.form_index,
+
+
+        efficiency=excluded.efficiency,
+
+        mentality=excluded.mentality,
+
+
+        home_rating=excluded.home_rating,
+
+        away_rating=excluded.away_rating,
+
+
+        coach_factor=excluded.coach_factor,
+
+
+        injury_index=excluded.injury_index,
+
+        fatigue_index=excluded.fatigue_index,
+
+
+        historical_xg_value=excluded.historical_xg_value,
+
+        historical_xg_source=excluded.historical_xg_source,
+
+
+        avg_goals_value=excluded.avg_goals_value,
+
+        avg_goals_source=excluded.avg_goals_source,
+
+
+        avg_goals_conceded_value=excluded.avg_goals_conceded_value,
+
+        avg_goals_conceded_source=excluded.avg_goals_conceded_source,
+
+
+        avg_possession_value=excluded.avg_possession_value,
+
+        avg_possession_source=excluded.avg_possession_source,
+
+
+        version=excluded.version,
+
+        updated=excluded.updated,
+
+
+        data=excluded.data
+
+    """,
+
+    (
+
+        team,
+
+
+        passport.get(
+            "league",
+            "RPL"
+        ),
+
+
+        passport.get(
+            "attack",
+            70
+        ),
+
+        passport.get(
+            "defense",
+            70
+        ),
+
+        passport.get(
+            "control",
+            70
+        ),
+
+        passport.get(
+            "form_index",
+            70
+        ),
+
+
+        passport.get(
+            "efficiency",
+            70
+        ),
+
+        passport.get(
+            "mentality",
+            70
+        ),
+
+
+        passport.get(
+            "home_rating",
+            70
+        ),
+
+        passport.get(
+            "away_rating",
+            70
+        ),
+
+
+        passport.get(
+            "coach_factor",
+            70
+        ),
+
+
+        passport.get(
+            "injury_index",
+            0
+        ),
+
+        passport.get(
+            "fatigue_index",
+            0
+        ),
+
+
+        passport.get(
+            "historical_xg_value",
+            1.3
+        ),
+
+        passport.get(
+            "historical_xg_source",
+            "manual"
+        ),
+
+
+        passport.get(
+            "avg_goals_value",
+            0
+        ),
+
+        passport.get(
+            "avg_goals_source",
+            "manual"
+        ),
+
+
+        passport.get(
+            "avg_goals_conceded_value",
+            0
+        ),
+
+        passport.get(
+            "avg_goals_conceded_source",
+            "manual"
+        ),
+
+
+        passport.get(
+            "avg_possession_value",
+            50
+        ),
+
+        passport.get(
+            "avg_possession_source",
+            "manual"
+        ),
+
+
+        passport.get(
+            "version",
+            1
+        ),
+
+
+        now,
+
+        now,
+
+
+        json.dumps(
+            passport,
+            ensure_ascii=False
+        )
+
+    )
+
+    )
+
+
     conn.commit()
-    conn.close()
-    return version
 
-def load_passport(team: str):
+    conn.close()
+
+
+
+# =====================================================
+# LOAD PASSPORT
+# =====================================================
+
+def get_passport(team):
+
+    team = get_team_by_alias(team)
+
+
     conn = get_db()
-    row = conn.execute("SELECT * FROM passports WHERE team = ?", (team,)).fetchone()
-    conn.close()
-    if not row:
-        return None
-    return dict(row)
 
-def is_passport_fresh(team: str, days: int = 7) -> bool:
-    passport = load_passport(team)
-    if not passport:
-        return False
-    updated = datetime.fromisoformat(passport["updated"])
-    return (datetime.now() - updated) < timedelta(days=days)
 
-def is_updated_today(team: str) -> bool:
-    passport = load_passport(team)
-    if not passport:
-        return False
-    updated = datetime.fromisoformat(passport["updated"])
-    return updated.strftime("%Y-%m-%d") == datetime.now().strftime("%Y-%m-%d")
+    row = conn.execute(
+    """
+    SELECT *
+    FROM passports
+    WHERE team = ?
+    """,
+    (
+        team,
+    )
+    ).fetchone()
 
-# --- Алиасы ---
 
-def save_alias(team: str, alias: str):
-    conn = get_db()
-    conn.execute("INSERT OR REPLACE INTO team_aliases (team, alias) VALUES (?, ?)", (team, alias))
-    conn.commit()
     conn.close()
 
-def get_team_by_alias(alias: str):
-    conn = get_db()
-    row = conn.execute("SELECT team FROM team_aliases WHERE alias = ?", (alias,)).fetchone()
-    conn.close()
+
     if row:
-        return row["team"]
-    if load_passport(alias):
-        return alias
+
+        return dict(row)
+
+
     return None
 
-def get_all_aliases(team: str) -> list:
-    conn = get_db()
-    rows = conn.execute("SELECT alias FROM team_aliases WHERE team = ?", (team,)).fetchall()
-    conn.close()
-    return [row["alias"] for row in rows]
 
-def init_default_aliases():
+
+
+# =====================================================
+# ALIAS SEARCH
+# =====================================================
+
+def get_team_by_alias(name):
+
+    if not name:
+        return None
+
+
+    clean = name.lower().strip()
+
+
+    if clean in ALIASES:
+
+        return ALIASES[clean]
+
+
+    return name
+
+
+
+# =====================================================
+# LOAD ALL
+# =====================================================
+
+def get_all_passports():
+
     conn = get_db()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS team_aliases (
-            team TEXT NOT NULL,
-            alias TEXT PRIMARY KEY,
-            FOREIGN KEY(team) REFERENCES passports(team) ON DELETE CASCADE
-        )
-    """)
-    conn.commit()
+
+
+    rows = conn.execute(
+    """
+    SELECT *
+    FROM passports
+    """
+    ).fetchall()
+
+
     conn.close()
 
-    default_aliases = {
-        "Зенит": ["Зенит", "Zenit", "Зенит СПб"],
-        "Краснодар": ["Краснодар", "Krasnodar"],
-        "Локомотив": ["Локомотив", "Lokomotiv", "Локомотив М"],
-        "Динамо М": ["Динамо М", "Dinamo", "Динамо Москва"],
-        "Спартак": ["Спартак", "Spartak", "Спартак М"],
-        "ЦСКА": ["ЦСКА", "CSKA", "ПФК ЦСКА"],
-        "Ахмат": ["Ахмат", "Akhmat", "Терек"],
-        "Рубин": ["Рубин", "Rubin"],
-        "Ростов": ["Ростов", "Rostov"],
-        "Балтика": ["Балтика", "Baltika"],
-        "Акрон": ["Акрон", "Akron"],
-        "Оренбург": ["Оренбург", "Orenburg"],
-        "Факел": ["Факел", "Fakel"],
-        "Крылья Советов": ["Крылья Советов", "Крылья", "KS Samara"],
-        "Динамо Мх": ["Динамо Мх", "Динамо Махачкала"],
-        "Родина": ["Родина", "Rodina"]
-    }
-    for team, aliases in default_aliases.items():
-        for alias in aliases:
-            save_alias(team, alias)
+
+    return [
+        dict(row)
+        for row in rows
+    ]
