@@ -184,7 +184,7 @@ def init_db():
         pass
 
     # =================================================
-    # MATCH RESULTS (НОВАЯ ТАБЛИЦА)
+    # MATCH RESULTS
     # =================================================
     conn.execute(
     """
@@ -195,6 +195,27 @@ def init_db():
         home_goals INTEGER,
         away_goals INTEGER,
         score TEXT,
+        winner TEXT,
+        created TEXT
+    )
+    """
+    )
+    conn.commit()
+
+    # =================================================
+    # FIXTURES (НОВАЯ ТАБЛИЦА)
+    # =================================================
+    conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS fixtures (
+        id SERIAL PRIMARY KEY,
+        league TEXT,
+        round INTEGER,
+        date TEXT,
+        home_team TEXT,
+        away_team TEXT,
+        status TEXT,
+        result TEXT,
         winner TEXT,
         created TEXT
     )
