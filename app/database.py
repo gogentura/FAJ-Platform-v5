@@ -11,22 +11,14 @@ def get_db():
 
 def init_db():
     conn = get_db()
-    # Таблица паспортов (с новыми полями)
+    # Паспорта (минимальная структура)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS passports (
             team TEXT PRIMARY KEY,
-            league TEXT,
             attack INTEGER,
             defense INTEGER,
             control INTEGER,
             form_index INTEGER,
-            efficiency INTEGER,
-            mentality INTEGER,
-            home_rating INTEGER,
-            away_rating INTEGER,
-            coach_factor INTEGER,
-            injury_index INTEGER,
-            fatigue_index INTEGER,
             historical_xg_value REAL,
             historical_xg_source TEXT,
             avg_goals_value REAL,
@@ -41,23 +33,7 @@ def init_db():
             data TEXT
         )
     """)
-    # Добавим недостающие столбцы, если таблица уже существует (безопасно)
-    existing_columns = [row[1] for row in conn.execute("PRAGMA table_info(passports)").fetchall()]
-    new_columns = {
-        "league": "TEXT",
-        "efficiency": "INTEGER",
-        "mentality": "INTEGER",
-        "home_rating": "INTEGER",
-        "away_rating": "INTEGER",
-        "coach_factor": "INTEGER",
-        "injury_index": "INTEGER",
-        "fatigue_index": "INTEGER"
-    }
-    for col, col_type in new_columns.items():
-        if col not in existing_columns:
-            conn.execute(f"ALTER TABLE passports ADD COLUMN {col} {col_type}")
-
-    # Таблица статистики API
+    # API usage
     conn.execute("""
         CREATE TABLE IF NOT EXISTS api_usage (
             date TEXT PRIMARY KEY,
@@ -65,7 +41,7 @@ def init_db():
             limit INTEGER DEFAULT 100
         )
     """)
-    # Журнал прогнозов
+    # Журнал
     conn.execute("""
         CREATE TABLE IF NOT EXISTS journal (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,13 +62,6 @@ def init_db():
             accuracy TEXT
         )
     """)
-    # Таблица алиасов (синонимов)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS team_aliases (
-            team TEXT NOT NULL,
-            alias TEXT PRIMARY KEY,
-            FOREIGN KEY(team) REFERENCES passports(team) ON DELETE CASCADE
-        )
-    """)
+    # Алиасы (пока нет)
     conn.commit()
     conn.close()
