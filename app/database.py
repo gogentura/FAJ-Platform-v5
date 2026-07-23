@@ -203,25 +203,74 @@ def init_db():
     conn.commit()
 
     # =================================================
-    # FIXTURES (НОВАЯ ТАБЛИЦА)
+    # FIXTURES (НОВАЯ СТРУКТУРА)
     # =================================================
+    # Создаём таблицу с новой структурой
     conn.execute(
     """
     CREATE TABLE IF NOT EXISTS fixtures (
         id SERIAL PRIMARY KEY,
         league TEXT,
+        season TEXT,
         round INTEGER,
-        date TEXT,
+        match_date TEXT,
         home_team TEXT,
         away_team TEXT,
         status TEXT,
         result TEXT,
         winner TEXT,
+        prediction_created BOOLEAN DEFAULT FALSE,
         created TEXT
     )
     """
     )
     conn.commit()
+
+    # Миграция для существующей таблицы (если она уже была)
+    # Добавляем новые колонки, если их нет
+    new_columns = [
+        "season TEXT",
+        "match_date TEXT",
+        "prediction_created BOOLEAN DEFAULT FALSE"
+    ]
+    for col in new_columns:
+        try:
+            conn.execute(f"ALTER TABLE fixtures ADD COLUMN {col}")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            pass
+
+    # Переименовываем старую колонку "date" в "match_date", если она существует
+    try:
+        # Проверяем, существует ли колонка "date"
+        conn.execute("SELECT date FROM fixtures LIMIT 0")
+        # Если ошибки нет, переименовываем
+        conn.execute("ALTER TABLE fixtures RENAME COLUMN date TO match_date")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        pass
+
+    # Удаляем старую колонку "date", если она осталась (на случай, если переименование не сработало)
+    try:
+        conn.execute("ALTER TABLE fixtures DROP COLUMN IF EXISTS date")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        pass
+
+    # Добавляем колонку "round" как INTEGER, если её нет, или переименовываем из "round_number"
+    try:
+        conn.execute("SELECT round FROM fixtures LIMIT 0")
+    except Exception:
+        # Если колонки нет, создаём
+        try:
+            conn.execute("ALTER TABLE fixtures ADD COLUMN round INTEGER")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            pass
 
     # =================================================
     # ALIASES
