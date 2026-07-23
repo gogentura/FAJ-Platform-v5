@@ -1,78 +1,38 @@
-import logging
-from datetime import datetime
-
 from aiogram import types
 
 from app.database import get_db
-from app.config import Config
+from app.api_tracker import get_api_status
 from app.handlers.keyboard import get_main_keyboard
-
-
-logger = logging.getLogger(__name__)
-
-
-def count_passports():
-
-    try:
-        conn = get_db()
-
-        row = conn.execute(
-            "SELECT COUNT(*) as count FROM passports"
-        ).fetchone()
-
-        conn.close()
-
-        if row:
-            return row["count"]
-
-        return 0
-
-    except Exception as e:
-
-        logger.error(
-            f"Ошибка подсчета паспортов: {e}"
-        )
-
-        return 0
-
-
-
-def count_predictions():
-
-    try:
-        conn = get_db()
-
-        row = conn.execute(
-            "SELECT COUNT(*) as count FROM journal"
-        ).fetchone()
-
-        conn.close()
-
-        if row:
-            return row["count"]
-
-        return 0
-
-    except Exception as e:
-
-        logger.error(
-            f"Ошибка подсчета прогнозов: {e}"
-        )
-
-        return 0
-
 
 
 async def cmd_status(message: types.Message):
 
+    conn = get_db()
 
-    passports = count_passports()
 
-    predictions = count_predictions()
+    passports = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM passports"
+    ).fetchone()
+
+
+    journal = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM journal"
+    ).fetchone()
+
+
+    fixtures = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM fixtures"
+    ).fetchone()
+
+
+    conn.close()
+
+
+    api = get_api_status()
 
 
     text = f"""
-⚽ FAJ Platform v5.1
+⚽ *FAJ Platform v5.2*
 
 
 🤖 Бот:
@@ -84,19 +44,36 @@ async def cmd_status(message: types.Message):
 
 
 🌐 API Football:
-0 / 100
+{api['used']} / {api['limit']}
 
 
 📁 Паспортов:
-{passports}
+{passports['cnt']}
 
 
 📝 Прогнозов:
-{predictions}
+{journal['cnt']}
+
+
+📅 Матчей:
+{fixtures['cnt']}
 
 
 📌 Версия:
-{Config.MODEL_VERSION if hasattr(Config, 'MODEL_VERSION') else '5.1'}
+5.2
+
+
+🧠 Модули:
+
+✅ Team Passport
+
+✅ xG Engine
+
+✅ Prediction
+
+✅ Journal
+
+✅ Fixtures
 
 
 🕒 Система работает
@@ -105,5 +82,6 @@ async def cmd_status(message: types.Message):
 
     await message.answer(
         text,
+        parse_mode="Markdown",
         reply_markup=get_main_keyboard()
     )
