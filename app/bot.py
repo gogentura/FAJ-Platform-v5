@@ -5,6 +5,7 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from app.config import Config
+
 from app.core.faj_core import FAJCore
 from app.journal import Journal
 
@@ -14,7 +15,6 @@ from app.handlers.journal import cmd_journal
 from app.handlers.status import cmd_status
 from app.handlers.health import cmd_health
 from app.handlers.load_passports import cmd_load_passports
-from app.handlers.database_check import cmd_dbcheck
 
 from app.handlers.keyboard import get_main_keyboard
 
@@ -36,117 +36,124 @@ async def run_bot(core: FAJCore, journal: Journal):
     dp = Dispatcher()
 
 
-    # ==========================
-    # КОМАНДЫ БОТА
-    # ==========================
+    # =========================
+    # КОМАНДЫ
+    # =========================
+
 
     dp.message.register(
         cmd_start,
-        Command(
-            "start"
-        )
+        Command("start")
     )
 
 
     dp.message.register(
         cmd_status,
-        Command(
-            "статус"
-        )
+        Command("статус")
     )
 
 
     dp.message.register(
         cmd_journal,
-        Command(
-            "журнал"
-        )
+        Command("журнал")
     )
 
 
     dp.message.register(
         cmd_health,
-        Command(
-            "проверка"
-        )
+        Command("проверка")
     )
 
 
     dp.message.register(
         cmd_load_passports,
-        Command(
-            "загрузить_паспорта"
-        )
+        Command("загрузить_паспорта")
     )
 
 
-    dp.message.register(
-        cmd_dbcheck,
-        Command(
-            "база"
-        )
-    )
 
-
-    # ==========================
-    # КНОПКИ МЕНЮ
-    # ==========================
+    # =========================
+    # КНОПКИ
+    # =========================
 
 
     @dp.message(
-        lambda message:
-        message.text == "📊 Статус"
+        lambda m: m.text == "📊 Статус"
     )
     async def button_status(message: Message):
-
         await cmd_status(message)
 
 
 
     @dp.message(
-        lambda message:
-        message.text == "📋 Журнал"
+        lambda m: m.text == "📋 Журнал"
     )
     async def button_journal(message: Message):
-
         await cmd_journal(message)
 
 
 
     @dp.message(
-        lambda message:
-        message.text == "❤️ Проверка"
+        lambda m: m.text == "❤️ Проверка"
     )
     async def button_health(message: Message):
-
         await cmd_health(message)
 
 
 
     @dp.message(
-        lambda message:
-        message.text == "📥 Загрузить паспорта"
+        lambda m: m.text == "📥 Загрузить паспорта"
     )
-    async def button_load(message: Message):
-
+    async def button_passports(message: Message):
         await cmd_load_passports(message)
 
 
 
-    # ==========================
-    # ПРОГНОЗ
-    # ==========================
+    # =========================
+    # ПАСПОРТ
+    # =========================
+
 
     @dp.message(
-        lambda msg:
-        msg.text
-        and not msg.text.startswith("/")
-        and len(msg.text.split()) >= 2
+        lambda m:
+        m.text
+        and (
+            m.text.lower().startswith("паспорт")
+            or m.text.startswith("📁")
+        )
     )
-    async def predict_text(message: Message):
+    async def passport_command(message: Message):
+
+        await message.answer(
+            "📁 Раздел паспортов\n\n"
+            "Пример:\n"
+            "Паспорт Зенит\n\n"
+            "Сейчас доступна загрузка и анализ паспортов РПЛ.",
+            reply_markup=get_main_keyboard()
+        )
+
+
+
+    # =========================
+    # ПРОГНОЗ
+    # =========================
+
+
+    @dp.message(
+        lambda m:
+        m.text
+        and not m.text.startswith("/")
+        and (
+            m.text.lower().startswith("прогноз")
+            or len(m.text.split()) == 2
+        )
+    )
+    async def predict_handler(message: Message):
+
+        text = message.text.strip()
 
         logger.info(
-            f"Запрос прогноза: {message.text}"
+            f"Запрос прогноза: {text}"
         )
 
         await handle_predict(
@@ -157,14 +164,42 @@ async def run_bot(core: FAJCore, journal: Journal):
 
 
 
-    # ==========================
-    # СПРАВКА
-    # ==========================
+    # =========================
+    # ТАБЛИЦА / ЛИГИ / КОМАНДЫ
+    # =========================
+
+
+    @dp.message(
+        lambda m:
+        m.text in [
+            "🏆 Таблица",
+            "⚽ Команды",
+            "🌍 Лиги"
+        ]
+    )
+    async def info_handler(message: Message):
+
+        await message.answer(
+            "🚧 Раздел находится в разработке.\n\n"
+            "Следующий этап FAJ:\n"
+            "• календарь туров\n"
+            "• список матчей\n"
+            "• автоматический прогноз тура\n"
+            "• паспорта команд",
+            reply_markup=get_main_keyboard()
+        )
+
+
+
+    # =========================
+    # ОСТАЛЬНОЕ
+    # =========================
+
 
     @dp.message()
     async def default_message(message: Message):
 
-        text = (
+        await message.answer(
             "⚽ FAJ Platform v5.1\n\n"
 
             "Команды:\n\n"
@@ -180,23 +215,9 @@ async def run_bot(core: FAJCore, journal: Journal):
 
             "Пример:\n"
             "Прогноз Зенит Спартак\n\n"
-
-            "или просто:\n"
-            "Зенит Спартак\n\n"
-
-            "FAJ анализирует:\n"
-            "• паспорта команд\n"
-            "• xG\n"
-            "• форму\n"
-            "• атаку\n"
-            "• защиту\n"
-            "• вероятности\n"
-            "• точные счета"
-        )
-
-
-        await message.answer(
-            text,
+            "или:\n"
+            "Зенит Спартак",
+            
             reply_markup=get_main_keyboard()
         )
 
