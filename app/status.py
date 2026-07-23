@@ -11,20 +11,17 @@ def get_full_status():
     api = get_api_status()
 
     lines = [
-        "📊 *FAJ Platform v5.0.1 RC*",
+        "📊 *FAJ Platform v5.1*",
         "",
         "🤖 *Бот*: ✅ Онлайн",
         "☁️ *Railway*: ✅ Online",
         "🔗 *GitHub*: ✅ Connected",
         "",
         f"🌐 *API Football*: {api['used']} / {api['limit']}",
-        "📅 *Data Football*: последнее обновление не выполнено",
-        "",
         f"📁 *Паспортов*: {passports_count}",
         f"📝 *Прогнозов*: {journal_count}",
-        "📊 *Точность*: 68.7% (в разработке)",
-        f"📌 *Версия*: 5.0.1 RC",
+        f"📌 *Версия*: 5.1",
         "",
-        f"🕒 *Статус на*: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        f"🕒 {datetime.now().strftime('%d.%m.%Y %H:%M')}"
     ]
     return "\n".join(lines)
