@@ -20,7 +20,9 @@ from app.journal import Journal
 
 
 
+# ==========================
 # HANDLERS
+# ==========================
 
 from app.handlers.start import cmd_start
 
@@ -43,8 +45,11 @@ from app.handlers.passport import (
 )
 
 
-from app.handlers.fixtures import (
-    cmd_fixtures
+from app.handlers.fixtures import cmd_fixtures
+
+
+from app.handlers.load_fixtures import (
+    cmd_load_fixtures
 )
 
 
@@ -128,136 +133,23 @@ async def run_bot(
     )
 
 
+    # НОВАЯ КОМАНДА
 
-    # =================================================
-    # TEXT BUTTONS
-    # =================================================
-
-
-    @dp.message(
-        lambda m:
-        m.text
-        and m.text.lower()
-        == "статус"
+    dp.message.register(
+        cmd_load_fixtures,
+        Command("загрузить_календарь")
     )
-    async def text_status(
-        message: Message
-    ):
-
-        await cmd_status(message)
-
-
-
-    @dp.message(
-        lambda m:
-        m.text
-        and m.text.lower()
-        == "журнал"
-    )
-    async def text_journal(
-        message: Message
-    ):
-
-        await cmd_journal(message)
-
-
-
-    @dp.message(
-        lambda m:
-        m.text
-        and m.text.lower()
-        == "проверка"
-    )
-    async def text_health(
-        message: Message
-    ):
-
-        await cmd_health(message)
 
 
 
     # =================================================
-    # PASSPORT
+    # BUTTONS
     # =================================================
 
 
     @dp.message(
         lambda m:
-        m.text
-        and m.text.lower()
-        .startswith("паспорт")
-    )
-    async def text_passport(
-        message: Message
-    ):
-
-        await cmd_passport(message)
-
-
-
-    @dp.message(
-        lambda m:
-        m.text
-        and m.text
-        ==
-        "📁 Паспорт"
-    )
-    async def button_pass(
-        message: Message
-    ):
-
-        await button_passport(message)
-
-
-
-    # =================================================
-    # FIXTURES
-    # =================================================
-
-
-    @dp.message(
-        lambda m:
-        m.text
-        ==
-        "📅 Матчи"
-    )
-    async def button_fixtures(
-        message: Message
-    ):
-
-        await cmd_fixtures(message)
-
-
-
-    # =================================================
-    # JOURNAL BUTTON
-    # =================================================
-
-
-    @dp.message(
-        lambda m:
-        m.text
-        ==
-        "📋 Журнал"
-    )
-    async def button_journal(
-        message: Message
-    ):
-
-        await cmd_journal(message)
-
-
-
-    # =================================================
-    # STATUS BUTTON
-    # =================================================
-
-
-    @dp.message(
-        lambda m:
-        m.text
-        ==
-        "📊 Статус"
+        m.text == "📊 Статус"
     )
     async def button_status(
         message: Message
@@ -267,16 +159,21 @@ async def run_bot(
 
 
 
-    # =================================================
-    # HEALTH BUTTON
-    # =================================================
+    @dp.message(
+        lambda m:
+        m.text == "📋 Журнал"
+    )
+    async def button_journal(
+        message: Message
+    ):
+
+        await cmd_journal(message)
+
 
 
     @dp.message(
         lambda m:
-        m.text
-        ==
-        "❤️ Проверка"
+        m.text == "❤️ Проверка"
     )
     async def button_health(
         message: Message
@@ -286,8 +183,60 @@ async def run_bot(
 
 
 
+    @dp.message(
+        lambda m:
+        m.text == "📁 Паспорт"
+    )
+    async def button_pass(
+        message: Message
+    ):
+
+        await button_passport(message)
+
+
+
+    # КАЛЕНДАРЬ
+
+    @dp.message(
+        lambda m:
+        m.text == "📅 Матчи"
+    )
+    async def button_fixtures(
+        message: Message
+    ):
+
+        await cmd_fixtures(message)
+
+
+
+    # ЗАГРУЗКА КАЛЕНДАРЯ
+
+    @dp.message(
+        lambda m:
+        m.text == "📥 Загрузить календарь"
+    )
+    async def button_load_fixtures(
+        message: Message
+    ):
+
+        await cmd_load_fixtures(message)
+
+
+
+    @dp.message(
+        lambda m:
+        m.text == "📥 Загрузить паспорта"
+    )
+    async def button_load_passports(
+        message: Message
+    ):
+
+        await cmd_load_passports(message)
+
+
+
     # =================================================
-    # LOAD PASSPORTS
+    # PASSPORT TEXT
     # =================================================
 
 
@@ -295,13 +244,13 @@ async def run_bot(
         lambda m:
         m.text
         and
-        "загрузить" in m.text.lower()
+        m.text.lower().startswith("паспорт")
     )
-    async def button_load(
+    async def text_passport(
         message: Message
     ):
 
-        await cmd_load_passports(message)
+        await cmd_passport(message)
 
 
 
@@ -324,7 +273,7 @@ async def run_bot(
 
 
         logger.info(
-            f"FAJ prediction request: {message.text}"
+            f"FAJ прогноз: {message.text}"
         )
 
 
@@ -360,6 +309,8 @@ async def run_bot(
 📁 Паспорт Зенит
 
 📅 Матчи
+
+📥 Загрузить календарь
 
 📈 Прогноз Зенит Спартак
 
