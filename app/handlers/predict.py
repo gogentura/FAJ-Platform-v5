@@ -1,14 +1,10 @@
-import logging
-import traceback
-
 from aiogram import types
+import traceback
 
 from app.utils.formatter import format_prediction
 from app.utils.explainer import explain_prediction
 from app.database import get_db
 from app.handlers.keyboard import get_main_keyboard
-
-logger = logging.getLogger(__name__)
 
 
 def load_passport(team):
@@ -24,48 +20,38 @@ def load_passport(team):
 
 async def handle_predict(message: types.Message, core, journal):
 
-    try:
+    text = (message.text or "").strip()
 
-        text = (message.text or "").strip()
+    if text.lower().startswith("прогноз "):
+        text = text[9:].strip()
 
-        # поддержка команды:
-        # Прогноз Зенит Спартак
-        if text.lower().startswith("прогноз "):
-            text = text[9:].strip()
+    parts = text.split()
 
-        parts = text.split()
-
-        if len(parts) < 2:
-            await message.answer(
-                "❌ Напиши две команды.\n\n"
-                "Например:\n"
-                "Зенит Спартак\n\n"
-                "или\n"
-                "Прогноз Зенит Спартак",
-                reply_markup=get_main_keyboard()
-            )
-            return
-
-        home = parts[0]
-        away = parts[1]
-
-        league = "RPL"
-
-        if len(parts) >= 3:
-            if parts[2].upper() in ["RPL", "UCL", "EPL"]:
-                league = parts[2].upper()
-
+    if len(parts) < 2:
         await message.answer(
-            f"⏳ Анализирую матч\n\n"
-            f"{home} — {away}",
+            "❌ Напиши:\n\nЗенит Спартак\n\nили\n\nПрогноз Зенит Спартак",
             reply_markup=get_main_keyboard()
         )
+        return
 
-        result = core.predict_match(
-            home,
-            away,
-            league
-        )
+    home = parts[0]
+    away = parts[1]
+
+    league = "RPL"
+
+    if len(parts) >= 3:
+        lg = parts[2].upper()
+        if lg in ["RPL", "EPL", "UCL", "LALIGA", "SERIEA", "BUNDESLIGA", "LIGUE1"]:
+            league = lg
+
+    await message.answer(
+        f"⏳ Анализирую матч\n\n{home} — {away}",
+        reply_markup=get_main_keyboard()
+    )
+
+    try:
+
+        result = core.predict_match(home, away, league)
 
         home_pass = load_passport(home) or {}
         away_pass = load_passport(away) or {}
@@ -84,9 +70,9 @@ async def handle_predict(message: types.Message, core, journal):
             league,
             result["xg"]["predicted"],
             result["decision"],
-            result["top_scores"],
-            result["btts"],
-            result["over25"],
+            result.get("top_scores", []),
+            result.get("btts", 0),
+            result.get("over25", 0),
             factors
         )
 
@@ -98,8 +84,8 @@ async def handle_predict(message: types.Message, core, journal):
                 "xg_home": result["xg"]["predicted"]["home"],
                 "xg_away": result["xg"]["predicted"]["away"],
                 "expected_score": result["decision"]["expected_score"],
-                "confidence": result["decision"]["confidence"]
-            }
+                "confidence": result["decision"]["confidence"],
+            },
         )
 
         await message.answer(
@@ -108,14 +94,13 @@ async def handle_predict(message: types.Message, core, journal):
             reply_markup=get_main_keyboard()
         )
 
-    except Exception:
+    except Exception as e:
 
-        error = traceback.format_exc()
-
-        logger.error(error)
+        print(traceback.format_exc())
 
         await message.answer(
-            "❌ Ошибка модели FAJ\n\n"
-            f"<pre>{error[:3500]}</pre>",
-            parse_mode="HTML"
+            "❌ Ошибка модели\n\n"
+            f"{type(e).__name__}\n\n"
+            f"{str(e)}",
+            reply_markup=get_main_keyboard()
         )
