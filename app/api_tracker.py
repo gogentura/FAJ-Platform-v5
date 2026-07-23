@@ -21,4 +21,9 @@ def increment_usage():
 def get_api_status():
     today = datetime.now().strftime("%Y-%m-%d")
     used = get_today_usage()
-    return {"used": used, "limit": 100, "remaining": max(0, 100 - used)}
+    # Используем новое имя столбца daily_limit
+    conn = get_db()
+    row = conn.execute("SELECT daily_limit FROM api_usage WHERE date = ?", (today,)).fetchone()
+    daily_limit = row["daily_limit"] if row else 100
+    conn.close()
+    return {"used": used, "limit": daily_limit, "remaining": max(0, daily_limit - used)}
