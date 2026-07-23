@@ -407,45 +407,41 @@ class FAJCore:
 
         scores = {}
 
+for h, a in zip(
+    home_goals,
+    away_goals
+):
 
-        for h, a in zip(
-            home_goals,
-            away_goals
-        ):
+    key = (
+        int(h),
+        int(a)
+    )
 
-            key = (
-                int(h),
-                int(a)
+    scores[key] = (
+        scores.get(key, 0) + 1
+    )
+
+
+top_scores = sorted(
+    scores.items(),
+    key=lambda x: x[1],
+    reverse=True
+)[:3]
+
+
+formatted_scores = []
+
+for score, count in top_scores:
+
+    formatted_scores.append(
+        {
+            "score": f"{score[0]}-{score[1]}",
+            "probability": round(
+                count / n * 100,
+                1
             )
-
-            scores[key] = (
-                scores.get(key,0)+1
-            )
-
-
-
-        top_scores = sorted(
-            scores.items(),
-            key=lambda x:x[1],
-            reverse=True
-        )[:5]
-
-
-
-        formatted_scores = []
-
-
-        for score,count in top_scores:
-
-            formatted_scores.append(
-                (
-                    f"{score[0]}-{score[1]}",
-                    round(
-                        count/n,
-                        3
-                    )
-                )
-            )
+        }
+    )
 
 
 
