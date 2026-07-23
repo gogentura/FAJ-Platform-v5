@@ -1,16 +1,27 @@
 import sqlite3
 from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
 DATA_DIR = BASE_DIR / "data"
 
-DATA_DIR.mkdir(exist_ok=True)
+DATA_DIR.mkdir(
+    exist_ok=True
+)
+
 
 DB_PATH = DATA_DIR / "faj.db"
 
 
 def get_db():
+
+    logger.info(
+        f"FAJ DATABASE: {DB_PATH}"
+    )
 
     conn = sqlite3.connect(
         str(DB_PATH),
@@ -27,10 +38,6 @@ def init_db():
 
     conn = get_db()
 
-
-    # =====================
-    # PASSPORTS
-    # =====================
 
     conn.execute("""
     CREATE TABLE IF NOT EXISTS passports (
@@ -54,22 +61,17 @@ def init_db():
         injury_index INTEGER,
         fatigue_index INTEGER,
 
-
         historical_xg_value REAL,
         historical_xg_source TEXT,
-
 
         avg_goals_value REAL,
         avg_goals_source TEXT,
 
-
         avg_goals_conceded_value REAL,
         avg_goals_conceded_source TEXT,
 
-
         avg_possession_value REAL,
         avg_possession_source TEXT,
-
 
         version INTEGER DEFAULT 1,
 
@@ -82,29 +84,20 @@ def init_db():
 
 
 
-    # =====================
-    # JOURNAL
-    # =====================
-
     conn.execute("""
     CREATE TABLE IF NOT EXISTS journal (
 
         id INTEGER PRIMARY KEY AUTOINCREMENT,
 
         date TEXT,
-
         match TEXT,
 
         home_team TEXT,
-
         away_team TEXT,
 
         prediction TEXT,
 
-        winner_prob REAL,
-
         xg_home REAL,
-
         xg_away REAL,
 
         expected_score TEXT,
@@ -115,11 +108,6 @@ def init_db():
     )
     """)
 
-
-
-    # =====================
-    # API
-    # =====================
 
     conn.execute("""
     CREATE TABLE IF NOT EXISTS api_usage (
@@ -134,47 +122,37 @@ def init_db():
 
 
 
-    # =====================
-    # ALIASES
-    # =====================
-
     conn.execute("""
     CREATE TABLE IF NOT EXISTS team_aliases (
 
         team TEXT,
-
         alias TEXT PRIMARY KEY
     )
     """)
 
 
+
     conn.commit()
-    conn.close()
 
 
+    # Проверка количества данных
 
-def count_passports():
+    try:
 
-    conn = get_db()
-
-    row = conn.execute(
-        "SELECT COUNT(*) as cnt FROM passports"
-    ).fetchone()
-
-    conn.close()
-
-    return row["cnt"]
+        row = conn.execute(
+            "SELECT COUNT(*) as c FROM passports"
+        ).fetchone()
 
 
+        logger.info(
+            f"PASSPORTS IN DATABASE: {row['c']}"
+        )
 
-def count_predictions():
 
-    conn = get_db()
+    except Exception as e:
 
-    row = conn.execute(
-        "SELECT COUNT(*) as cnt FROM journal"
-    ).fetchone()
+        logger.error(e)
+
+
 
     conn.close()
-
-    return row["cnt"]
