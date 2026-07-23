@@ -11,13 +11,11 @@ def save_passport(team: str, passport: dict):
     created = existing["created"] if existing else datetime.now().isoformat()
     updated = datetime.now().isoformat()
 
-    # Извлекаем данные с защитой от отсутствия ключей
     hist_xg = passport.get("xg", {}).get("historical", {}).get("value")
     avg_goals = passport.get("avg_goals", {}).get("value", 0.0)
     avg_goals_conceded = passport.get("avg_goals_conceded", {}).get("value", 0.0)
     avg_possession = passport.get("avg_possession", {}).get("value", 50)
 
-    # Вычисляем основные рейтинги, если не заданы
     attack = passport.get("attack")
     if attack is None:
         attack = 70 + avg_goals * 7 + (hist_xg * 6 if hist_xg else 0)
@@ -36,7 +34,6 @@ def save_passport(team: str, passport: dict):
     control = min(100, max(0, int(control)))
     form_index = min(100, max(0, int(form_index)))
 
-    # Новые поля
     efficiency = passport.get("efficiency", 50)
     mentality = passport.get("mentality", 50)
     home_rating = passport.get("home_rating", 50)
@@ -110,7 +107,7 @@ def is_updated_today(team: str) -> bool:
     updated = datetime.fromisoformat(passport["updated"])
     return updated.strftime("%Y-%m-%d") == datetime.now().strftime("%Y-%m-%d")
 
-# --- Функции для алиасов ---
+# --- Алиасы ---
 
 def save_alias(team: str, alias: str):
     conn = get_db()
@@ -118,7 +115,7 @@ def save_alias(team: str, alias: str):
     conn.commit()
     conn.close()
 
-def get_team_by_alias(alias: str) -> str | None:
+def get_team_by_alias(alias: str):
     conn = get_db()
     row = conn.execute("SELECT team FROM team_aliases WHERE alias = ?", (alias,)).fetchone()
     conn.close()
@@ -135,7 +132,6 @@ def get_all_aliases(team: str) -> list:
     return [row["alias"] for row in rows]
 
 def init_default_aliases():
-    # Проверяем, есть ли таблица алиасов
     conn = get_db()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS team_aliases (
