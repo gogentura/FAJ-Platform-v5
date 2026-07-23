@@ -1,7 +1,12 @@
+import os
 from pathlib import Path
 
 
 class Config:
+
+    # ==========================
+    # PROJECT
+    # ==========================
 
     PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -13,7 +18,19 @@ class Config:
 
     ALIASES_FILE = ALIASES_DIR / "teams.json"
 
+    # ==========================
+    # TOKENS (Railway Variables)
+    # ==========================
 
+    TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+
+    API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY", "")
+
+    FOOTBALL_DATA_KEY = os.getenv("FOOTBALL_DATA_KEY", "")
+
+    # ==========================
+    # LEAGUES
+    # ==========================
 
     SUPPORTED_LEAGUES = {
 
@@ -31,7 +48,9 @@ class Config:
 
     }
 
-
+    # ==========================
+    # TEAMS
+    # ==========================
 
     LEAGUE_TEAMS = {
 
