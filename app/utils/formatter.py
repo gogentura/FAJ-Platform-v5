@@ -1,42 +1,82 @@
 def format_prediction(home, away, league, xg, decision, top_scores, btts, over25, factors):
+
     lines = []
+
     lines.append(f"⚽ *{home} — {away}*")
     lines.append(f"🏆 *Лига:* {league}")
     lines.append("──────────────")
-    lines.append(f"📊 *xG*")
+
+    lines.append("📊 *xG*")
     lines.append(f"FAJ: {xg['home']:.2f} — {xg['away']:.2f}")
+
     lines.append("")
     lines.append("📈 *Вероятности*")
-    lines.append(f"П1 {decision['home_prob']}%  Х {decision['draw_prob']}%  П2 {decision['away_prob']}%")
+    lines.append(
+        f"П1 {decision['home_prob']}%  Х {decision['draw_prob']}%  П2 {decision['away_prob']}%"
+    )
+
     lines.append("──────────────")
-    lines.append(f"🎯 *Наиболее вероятный счёт*")
+
+    lines.append("🎯 *Три наиболее вероятных счёта*")
+
     if top_scores:
-        lines.append(f"{decision['expected_score']}  (вероятность {top_scores[0][1]*100:.1f}%)")
+
+        medals = ["1️⃣", "2️⃣", "3️⃣"]
+
+        for i, score in enumerate(top_scores):
+
+            lines.append(
+                f"{medals[i]} {score['score']} ({score['probability']:.1f}%)"
+            )
+
     else:
-        lines.append(f"{decision['expected_score']}")
+
+        lines.append(decision["expected_score"])
+
     lines.append("")
     lines.append("🤝 *Обе забьют*")
-    lines.append(f"{'Да ✅' if btts > 0.5 else 'Нет ❌'} ({btts*100:.1f}%)")
+    lines.append(
+        f"{'Да ✅' if btts > 0.5 else 'Нет ❌'} ({btts*100:.1f}%)"
+    )
+
     lines.append("")
     lines.append("⚽ *Тотал >2.5*")
-    lines.append(f"{'Да ✅' if over25 > 0.5 else 'Нет ❌'} ({over25*100:.1f}%)")
+    lines.append(
+        f"{'Да ✅' if over25 > 0.5 else 'Нет ❌'} ({over25*100:.1f}%)"
+    )
+
     lines.append("──────────────")
+
     lines.append("📌 *Аналитический вывод*")
-    if decision["winner_probability"] > 55 and decision["confidence"] > 65:
-        lines.append(f"Преимущество {decision['winner_name']}")
-        if decision["confidence"] > 75:
+
+    if decision["winner_probability"] >= 55:
+
+        lines.append(f"Преимущество: *{decision['winner_name']}*")
+
+        if decision["confidence"] >= 80:
             lines.append("Надёжность: *AA* (очень высокая)")
-        else:
+        elif decision["confidence"] >= 70:
             lines.append("Надёжность: *A* (высокая)")
-    elif 45 <= decision["winner_probability"] <= 55:
+        else:
+            lines.append("Надёжность: *B* (средняя)")
+
+    elif 45 <= decision["winner_probability"] < 55:
+
         lines.append("Матч сбалансирован, явного фаворита нет")
         lines.append("Надёжность: *B* (средняя)")
+
     else:
+
         lines.append("Высокий риск, прогноз нестабилен")
         lines.append("Надёжность: *C* (низкая)")
+
     lines.append("")
+
     if factors:
+
         lines.append("🧠 *Ключевые факторы*")
-        for f in factors[:4]:
-            lines.append(f"• {f}")
+
+        for factor in factors[:4]:
+            lines.append(f"• {factor}")
+
     return "\n".join(lines)
