@@ -1,4 +1,5 @@
 import logging
+from functools import partial
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
 from app.config import Config
@@ -28,8 +29,9 @@ async def run_bot(core, journal):
     dp.message.register(cmd_health, Command("health"))
     dp.message.register(cmd_load_passports, Command("load_passports"))
 
+    # Исправление: передаём core и journal через partial
     dp.message.register(
-        handle_predict,
+        partial(handle_predict, core=core, journal=journal),
         lambda msg: not msg.text.startswith("/") and len(msg.text.split()) >= 2
     )
 
