@@ -33,7 +33,8 @@ class Journal:
 
     def get_all(self, limit: int = 10):
         conn = get_db()
-        # Используем параметризованный запрос
-        rows = conn.execute("SELECT * FROM journal ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        # Получаем все записи, сортируем по убыванию id
+        rows = conn.execute("SELECT * FROM journal ORDER BY id DESC").fetchall()
         conn.close()
-        return [dict(r) for r in rows]
+        # Ограничиваем на уровне Python
+        return [dict(r) for r in rows[:limit]]
