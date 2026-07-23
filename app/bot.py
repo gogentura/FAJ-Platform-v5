@@ -14,12 +14,11 @@ from app.handlers.journal import cmd_journal
 from app.handlers.status import cmd_status
 from app.handlers.health import cmd_health
 from app.handlers.load_passports import cmd_load_passports
-
 from app.handlers.passport import handle_passport
 
 from app.handlers.keyboard import get_main_keyboard
 
-p
+
 logger = logging.getLogger(__name__)
 
 
@@ -34,15 +33,12 @@ async def run_bot(core: FAJCore, journal: Journal):
         token=Config.TELEGRAM_TOKEN
     )
 
-
     dp = Dispatcher()
-
 
 
     # ==========================
     # КОМАНДЫ С /
     # ==========================
-
 
     dp.message.register(
         cmd_start,
@@ -84,6 +80,7 @@ async def run_bot(core: FAJCore, journal: Journal):
         lambda m: m.text == "📊 Статус"
     )
     async def button_status(message: Message):
+
         await cmd_status(message)
 
 
@@ -92,6 +89,7 @@ async def run_bot(core: FAJCore, journal: Journal):
         lambda m: m.text == "📋 Журнал"
     )
     async def button_journal(message: Message):
+
         await cmd_journal(message)
 
 
@@ -99,7 +97,8 @@ async def run_bot(core: FAJCore, journal: Journal):
     @dp.message(
         lambda m: m.text == "❤️ Проверка"
     )
-    async function button_health(message: Message):
+    async def button_health(message: Message):
+
         await cmd_health(message)
 
 
@@ -108,6 +107,7 @@ async def run_bot(core: FAJCore, journal: Journal):
         lambda m: m.text == "📥 Загрузить паспорта"
     )
     async def button_load(message: Message):
+
         await cmd_load_passports(message)
 
 
@@ -115,11 +115,11 @@ async def run_bot(core: FAJCore, journal: Journal):
     @dp.message(
         lambda m: m.text == "📁 Паспорт"
     )
-    async def button_passport_help(message: Message):
+    async def button_passport(message: Message):
 
         await message.answer(
             "📁 Раздел паспортов\n\n"
-            "Пример:\n"
+            "Пример:\n\n"
             "Паспорт Зенит",
             reply_markup=get_main_keyboard()
         )
@@ -127,7 +127,7 @@ async def run_bot(core: FAJCore, journal: Journal):
 
 
     # ==========================
-    # ПАСПОРТЫ
+    # ПОЛУЧЕНИЕ ПАСПОРТА
     # ==========================
 
 
@@ -159,17 +159,19 @@ async def run_bot(core: FAJCore, journal: Journal):
         text = message.text.strip()
 
 
-        # убираем слово прогноз
         if text.lower().startswith("прогноз"):
 
-            text = text[8:].strip()
+            text = text.replace(
+                "Прогноз",
+                "",
+                1
+            ).strip()
 
             message.text = text
 
 
-
         logger.info(
-            f"Запрос прогноза: {text}"
+            f"Запрос прогноза: {message.text}"
         )
 
 
@@ -182,7 +184,7 @@ async def run_bot(core: FAJCore, journal: Journal):
 
 
     # ==========================
-    # ВСЁ ОСТАЛЬНОЕ
+    # НЕИЗВЕСТНЫЕ СООБЩЕНИЯ
     # ==========================
 
 
@@ -192,7 +194,7 @@ async def run_bot(core: FAJCore, journal: Journal):
         await message.answer(
             "⚽ FAJ Platform v5.1\n\n"
 
-            "Команды:\n\n"
+            "Доступные команды:\n\n"
 
             "📊 Статус\n"
             "📁 Паспорт Зенит\n"
@@ -203,7 +205,8 @@ async def run_bot(core: FAJCore, journal: Journal):
             "📋 Журнал\n"
             "❤️ Проверка\n\n"
 
-            "Пример:\n"
+            "Примеры:\n\n"
+            "Паспорт Зенит\n"
             "Зенит Спартак",
 
             reply_markup=get_main_keyboard()
