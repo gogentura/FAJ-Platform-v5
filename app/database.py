@@ -31,7 +31,7 @@ def get_db():
         raise e
 
 # =====================================================
-# POSTGRES WRAPPER
+# POSTGRES WRAPPER (С УСИЛЕННОЙ execute)
 # =====================================================
 
 class PostgresWrapper:
@@ -40,8 +40,22 @@ class PostgresWrapper:
 
     def execute(self, query, params=()):
         query = query.replace("?", "%s")
+        # Защита параметров
+        if params is None:
+            params = ()
+        if not isinstance(params, tuple):
+            params = tuple(params)
         cursor = self.conn.cursor()
-        cursor.execute(query, params)
+        try:
+            cursor.execute(query, params)
+        except Exception as e:
+            print("========== SQL ERROR ==========")
+            print("QUERY:", query)
+            print("PARAMS:")
+            print(params)
+            print("COUNT:", len(params))
+            print("===============================")
+            raise e
         return cursor
 
     def commit(self):
@@ -61,7 +75,7 @@ def init_db():
     conn = get_db()
 
     # =================================================
-    # PASSPORTS (без изменений)
+    # PASSPORTS
     # =================================================
     conn.execute(
     """
@@ -147,7 +161,6 @@ def init_db():
     )
     conn.commit()
 
-    # Миграция для добавления недостающих колонок (если таблица уже была)
     journal_columns_to_add = [
         "xg_home REAL",
         "xg_away REAL",
@@ -165,7 +178,6 @@ def init_db():
             conn.rollback()
             pass
 
-    # Удаляем лишнюю колонку total_xg (если есть)
     try:
         conn.execute("ALTER TABLE journal DROP COLUMN IF EXISTS total_xg")
         conn.commit()
