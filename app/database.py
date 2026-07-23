@@ -26,25 +26,20 @@ def get_db():
 
 
 
-
-
 def init_db():
 
     conn = get_db()
 
 
-
     # ===============================
-    # ПАСПОРТА КОМАНД
+    # PASSPORTS
     # ===============================
 
     conn.execute("""
     CREATE TABLE IF NOT EXISTS passports (
 
         team TEXT PRIMARY KEY,
-
         league TEXT,
-
 
         attack INTEGER,
         defense INTEGER,
@@ -52,55 +47,42 @@ def init_db():
 
         form_index INTEGER,
 
-
         efficiency INTEGER,
         mentality INTEGER,
-
 
         home_rating INTEGER,
         away_rating INTEGER,
 
-
         coach_factor INTEGER,
-
 
         injury_index INTEGER,
         fatigue_index INTEGER,
 
-
         historical_xg_value REAL,
         historical_xg_source TEXT,
-
 
         avg_goals_value REAL,
         avg_goals_source TEXT,
 
-
         avg_goals_conceded_value REAL,
         avg_goals_conceded_source TEXT,
-
 
         avg_possession_value REAL,
         avg_possession_source TEXT,
 
-
         version INTEGER DEFAULT 1,
-
 
         created TEXT,
         updated TEXT,
 
-
         data TEXT
-
     )
     """)
 
 
 
-
     # ===============================
-    # ЖУРНАЛ ПРОГНОЗОВ FAJ v5.2
+    # JOURNAL FAJ v5.2
     # ===============================
 
     conn.execute("""
@@ -108,46 +90,33 @@ def init_db():
 
         id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-
         date TEXT,
-
 
         match TEXT,
 
-
         home_team TEXT,
-
         away_team TEXT,
-
 
         prediction TEXT,
 
-
         xg_home REAL,
-
         xg_away REAL,
-
 
         winner_prob REAL,
 
-
         expected_score TEXT,
-
 
         actual_score TEXT,
 
-
         actual_winner TEXT,
-
 
         accuracy TEXT,
 
-
         confidence INTEGER,
-
 
         model_version TEXT,
 
+        data_version TEXT,
 
         factors TEXT
 
@@ -156,10 +125,8 @@ def init_db():
 
 
 
-
-
     # ===============================
-    # API
+    # API USAGE
     # ===============================
 
     conn.execute("""
@@ -176,10 +143,8 @@ def init_db():
 
 
 
-
-
     # ===============================
-    # АЛИАСЫ КОМАНД
+    # TEAM ALIASES
     # ===============================
 
     conn.execute("""
@@ -194,28 +159,28 @@ def init_db():
 
 
 
-
-
     # ===============================
-    # МИГРАЦИЯ СТАРЫХ БАЗ
+    # MIGRATION
     # ===============================
 
-    columns = [
+    migrations = {
 
-        ("winner_prob", "REAL"),
+        "winner_prob": "REAL",
 
-        ("actual_winner", "TEXT"),
+        "actual_winner": "TEXT",
 
-        ("confidence", "INTEGER"),
+        "confidence": "INTEGER",
 
-        ("model_version", "TEXT"),
+        "model_version": "TEXT",
 
-        ("factors", "TEXT")
+        "data_version": "TEXT",
 
-    ]
+        "factors": "TEXT"
+
+    }
 
 
-    for column, dtype in columns:
+    for column, dtype in migrations.items():
 
         try:
 
@@ -229,8 +194,6 @@ def init_db():
         except sqlite3.OperationalError:
 
             pass
-
-
 
 
 
