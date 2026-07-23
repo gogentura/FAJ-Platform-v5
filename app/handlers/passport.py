@@ -7,59 +7,84 @@ async def cmd_passport(message: Message):
 
     args = message.text.split(maxsplit=1)
 
-
     if len(args) < 2:
+
         await message.answer(
             "Использование:\n/passport Название команды"
         )
+
         return
 
 
-    team_name = args[1]
+    team = args[1]
 
+    passport = load_passport(team)
 
-    passport = load_passport(team_name)
-
-
-    if not passport:
+    if passport is None:
 
         await message.answer(
-            f"❌ Паспорт {team_name} не найден\n"
-            f"Обновите: /update_team {team_name}"
+            f"❌ Паспорт команды '{team}' не найден."
         )
 
         return
 
 
-
     text = f"""
-📘 PASSPORT FAJ v5.1
+📘 PASSPORT FAJ v5.2
 
-🏟 Команда: {passport.get('team', team_name)}
+🏟 Команда:
+{passport.get("team")}
 
-🏆 Лига: {passport.get('league', 'Не указана')}
+🏆 Лига:
+{passport.get("league")}
+
+━━━━━━━━━━━━━━━━━━
 
 ⚔️ Attack:
-{passport.get('attack', 70)}
+{passport.get("attack")}
 
 🛡 Defense:
-{passport.get('defense', 70)}
+{passport.get("defense")}
 
 🎯 Control:
-{passport.get('control', 70)}
+{passport.get("control")}
 
 📈 Form:
-{passport.get('form_index', 70)}
+{passport.get("form_index")}
+
+━━━━━━━━━━━━━━━━━━
+
+⚡ Efficiency:
+{passport.get("efficiency", "-")}
+
+🧠 Mentality:
+{passport.get("mentality", "-")}
+
+🏠 Home:
+{passport.get("home_rating", "-")}
+
+✈ Away:
+{passport.get("away_rating", "-")}
 
 ⚽ Historical xG:
-{passport.get('historical_xg_value', 1.35)}
+{passport.get("historical_xg_value")}
 
-🧠 FAJ Version:
-{passport.get('version', '5.1')}
+👨‍🏫 Coach:
+{passport.get("coach_factor", "-")}
+
+🏥 Injury:
+{passport.get("injury_index", "-")}
+
+🔋 Fatigue:
+{passport.get("fatigue_index", "-")}
+
+━━━━━━━━━━━━━━━━━━
+
+🧠 Version:
+{passport.get("version")}
 
 📅 Updated:
-{passport.get('last_updated', 'unknown')}
+{passport.get("last_updated")}
 """
-
 
     await message.answer(text)
