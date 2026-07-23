@@ -31,7 +31,7 @@ def get_db():
         raise e
 
 # =====================================================
-# POSTGRES WRAPPER (С УСИЛЕННОЙ execute)
+# POSTGRES WRAPPER
 # =====================================================
 
 class PostgresWrapper:
@@ -40,7 +40,6 @@ class PostgresWrapper:
 
     def execute(self, query, params=()):
         query = query.replace("?", "%s")
-        # Защита параметров
         if params is None:
             params = ()
         if not isinstance(params, tuple):
@@ -51,8 +50,7 @@ class PostgresWrapper:
         except Exception as e:
             print("========== SQL ERROR ==========")
             print("QUERY:", query)
-            print("PARAMS:")
-            print(params)
+            print("PARAMS:", params)
             print("COUNT:", len(params))
             print("===============================")
             raise e
@@ -126,7 +124,7 @@ def init_db():
             pass
 
     # =================================================
-    # JOURNAL — ПОЛНОСТЬЮ СООТВЕТСТВУЕТ journal.py
+    # JOURNAL
     # =================================================
     conn.execute(
     """
@@ -184,6 +182,25 @@ def init_db():
     except Exception:
         conn.rollback()
         pass
+
+    # =================================================
+    # MATCH RESULTS (НОВАЯ ТАБЛИЦА)
+    # =================================================
+    conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS match_results (
+        id SERIAL PRIMARY KEY,
+        match TEXT NOT NULL,
+        date TEXT NOT NULL,
+        home_goals INTEGER,
+        away_goals INTEGER,
+        score TEXT,
+        winner TEXT,
+        created TEXT
+    )
+    """
+    )
+    conn.commit()
 
     # =================================================
     # ALIASES
