@@ -52,17 +52,12 @@ class PostgresWrapper:
 
 
 
-    def execute(
-        self,
-        query,
-        params=()
-    ):
+    def execute(self, query, params=()):
 
         query = query.replace(
             "?",
             "%s"
         )
-
 
         cursor = self.conn.cursor()
 
@@ -88,7 +83,7 @@ class PostgresWrapper:
 
 
 # =====================================================
-# DATABASE INIT
+# INIT DATABASE
 # =====================================================
 
 def init_db():
@@ -108,7 +103,6 @@ def init_db():
         team TEXT PRIMARY KEY,
 
         league TEXT,
-
 
         attack INTEGER,
 
@@ -139,22 +133,13 @@ def init_db():
 
         historical_xg_value REAL,
 
-        historical_xg_source TEXT,
-
 
         avg_goals_value REAL,
 
-        avg_goals_source TEXT,
-
-
         avg_goals_conceded_value REAL,
-
-        avg_goals_conceded_source TEXT,
 
 
         avg_possession_value REAL,
-
-        avg_possession_source TEXT,
 
 
         version INTEGER,
@@ -162,10 +147,7 @@ def init_db():
 
         created TEXT,
 
-        updated TEXT,
-
-
-        data TEXT
+        updated TEXT
 
     )
     """
@@ -173,11 +155,9 @@ def init_db():
 
 
 
-
     # =================================================
     # JOURNAL
     # =================================================
-
 
     conn.execute(
     """
@@ -187,6 +167,9 @@ def init_db():
 
 
         match TEXT,
+
+
+        prediction TEXT,
 
 
         home_team TEXT,
@@ -243,13 +226,14 @@ def init_db():
 
 
     # =================================================
-    # JOURNAL MIGRATION
+    # MIGRATION JOURNAL
     # =================================================
-
 
     journal_columns = [
 
         "match TEXT",
+
+        "prediction TEXT",
 
         "winner_prob REAL",
 
@@ -270,7 +254,6 @@ def init_db():
     ]
 
 
-
     for column in journal_columns:
 
         try:
@@ -288,11 +271,9 @@ def init_db():
 
 
 
-
     # =================================================
-    # TEAM ALIASES
+    # ALIASES
     # =================================================
-
 
     conn.execute(
     """
@@ -309,9 +290,8 @@ def init_db():
 
 
     # =================================================
-    # API USAGE
+    # API
     # =================================================
-
 
     conn.execute(
     """
@@ -334,9 +314,8 @@ def init_db():
 
 
     # =================================================
-    # MODEL CONFIG
+    # CONFIG
     # =================================================
-
 
     conn.execute(
     """
@@ -387,23 +366,15 @@ def count_passports():
 
 
 
-def database_type():
-
-    if DATABASE_URL:
-
-        return "PostgreSQL Railway"
-
-
-    return "SQLite"
-
-
-
-def database_status():
+def database_info():
 
     return {
 
         "database":
-        database_type(),
+        "PostgreSQL"
+        if DATABASE_URL
+        else "SQLite",
+
 
         "time":
         datetime.now().isoformat()
