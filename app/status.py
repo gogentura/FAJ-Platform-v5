@@ -15,7 +15,6 @@ def get_full_status():
         "",
         "🤖 *Бот*: ✅ Онлайн",
         "☁️ *Railway*: ✅ Online",
-        "🔗 *GitHub*: ✅ Connected",
         "",
         f"🌐 *API Football*: {api['used']} / {api['limit']}",
         f"📁 *Паспортов*: {passports_count}",
