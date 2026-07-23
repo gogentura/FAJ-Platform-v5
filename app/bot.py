@@ -1,27 +1,47 @@
+# =====================================================
+# FAJ Platform v5.2
 # app/bot.py
+# =====================================================
+
 
 import logging
 
+
 from aiogram import Bot, Dispatcher
+
 from aiogram.filters import Command
+
 from aiogram.types import Message
+
+
 
 from app.config import Config
 
+
 from app.core.faj_core import FAJCore
+
 from app.journal import Journal
 
 
-# handlers
+
+# ==============================
+# HANDLERS
+# ==============================
+
 
 from app.handlers.start import cmd_start
+
 from app.handlers.predict import handle_predict
+
 from app.handlers.journal import cmd_journal
+
 from app.handlers.status import cmd_status
+
 from app.handlers.health import cmd_health
+
 from app.handlers.load_passports import cmd_load_passports
+
 from app.handlers.database_check import cmd_dbcheck
-from app.handlers.result import cmd_result
 
 
 from app.handlers.passport import (
@@ -30,13 +50,26 @@ from app.handlers.passport import (
 )
 
 
-from app.handlers.keyboard import get_main_keyboard
+from app.handlers.fixtures import (
+    cmd_fixtures
+)
+
+
+
+from app.handlers.keyboard import (
+    get_main_keyboard
+)
 
 
 
 logger = logging.getLogger(__name__)
 
 
+
+
+# =====================================================
+# RUN BOT
+# =====================================================
 
 
 async def run_bot(
@@ -65,9 +98,9 @@ async def run_bot(
 
 
 
-    # =====================================================
-    # COMMANDS /
-    # =====================================================
+    # =================================================
+    # COMMANDS
+    # =================================================
 
 
     dp.message.register(
@@ -106,17 +139,17 @@ async def run_bot(
     )
 
 
+    # НОВОЕ
     dp.message.register(
-        cmd_result,
-        Command("результат")
+        cmd_fixtures,
+        Command("матчи")
     )
 
 
 
-
-    # =====================================================
+    # =================================================
     # TEXT COMMANDS
-    # =====================================================
+    # =================================================
 
 
     dp.message.register(
@@ -150,21 +183,21 @@ async def run_bot(
 
 
     dp.message.register(
-        cmd_load_passports,
+        cmd_fixtures,
         lambda message:
         message.text
-        and "загрузить" in message.text.lower()
+        and message.text.lower()
+        == "матчи"
     )
 
 
 
     dp.message.register(
-        cmd_result,
+        cmd_load_passports,
         lambda message:
         message.text
-        and message.text.lower().startswith(
-            "результат"
-        )
+        and "загрузить"
+        in message.text.lower()
     )
 
 
@@ -173,116 +206,90 @@ async def run_bot(
         cmd_passport,
         lambda message:
         message.text
-        and message.text.lower().startswith(
-            "паспорт"
-        )
+        and message.text.lower()
+        .startswith("паспорт")
     )
 
 
 
-    # =====================================================
+    # =================================================
     # BUTTONS
-    # =====================================================
+    # =================================================
 
 
     @dp.message(
-        lambda message:
-        message.text == "📊 Статус"
+        lambda m:
+        m.text == "📊 Статус"
     )
     async def button_status(
         message: Message
     ):
 
-        await cmd_status(
-            message
-        )
+        await cmd_status(message)
 
 
 
     @dp.message(
-        lambda message:
-        message.text == "📋 Журнал"
+        lambda m:
+        m.text == "📋 Журнал"
     )
     async def button_journal(
         message: Message
     ):
 
-        await cmd_journal(
-            message
-        )
+        await cmd_journal(message)
 
 
 
     @dp.message(
-        lambda message:
-        message.text == "❤️ Проверка"
+        lambda m:
+        m.text == "❤️ Проверка"
     )
     async def button_health(
         message: Message
     ):
 
-        await cmd_health(
-            message
-        )
+        await cmd_health(message)
 
 
 
     @dp.message(
-        lambda message:
-        message.text == "⚽ Результат"
-    )
-    async def button_result(
-        message: Message
-    ):
-
-        await message.answer(
-
-            """
-⚽ Введите результат:
-
-Пример:
-
-Зенит Спартак 2:1
-
-или
-
-Результат Зенит Спартак 2:1
-            """,
-
-            reply_markup=get_main_keyboard()
-
-        )
-
-
-
-    @dp.message(
-        lambda message:
-        message.text == "📁 Паспорт"
+        lambda m:
+        m.text == "📁 Паспорт"
     )
     async def button_pass(
         message: Message
     ):
 
-        await button_passport(
-            message
-        )
+        await button_passport(message)
 
 
 
+    @dp.message(
+        lambda m:
+        m.text == "📅 Матчи"
+    )
+    async def button_fixtures(
+        message: Message
+    ):
 
-    # =====================================================
-    # PREDICTION
-    # =====================================================
+        await cmd_fixtures(message)
+
+
+
+    # =================================================
+    # PREDICT ENGINE
+    # =================================================
 
 
     @dp.message(
         lambda msg:
+
         msg.text
+
         and not msg.text.startswith("/")
+
         and len(msg.text.split()) >= 2
-        and not msg.text.lower().startswith(
-            "результат"
-        )
     )
     async def predict_text(
         message: Message
@@ -302,10 +309,9 @@ async def run_bot(
 
 
 
-
-    # =====================================================
+    # =================================================
     # DEFAULT
-    # =====================================================
+    # =================================================
 
 
     @dp.message()
@@ -316,51 +322,56 @@ async def run_bot(
 
         await message.answer(
 
-            """
-⚽ FAJ Platform v5.1
+"""
+⚽ FAJ Platform v5.2
 
 
-Доступно:
+Команды:
 
 
 📊 Статус
 
 📁 Паспорт Зенит
 
-📈 Прогноз Зенит Спартак
+📅 Матчи
 
-⚽ Результат Зенит Спартак 2:1
+📈 Прогноз Зенит Спартак
 
 📋 Журнал
 
 ❤️ Проверка
 
 
-
 FAJ анализирует:
 
-• паспорта команд
-• xG
-• форму
-• атаку
-• защиту
-• вероятности
-• точные счета
-• точность прогнозов
-            """,
 
-            reply_markup=get_main_keyboard()
+• паспорта команд
+
+• xG модель
+
+• форму
+
+• атаку
+
+• защиту
+
+• вероятности
+
+• точные счета
+
+• календарь турниров
+
+""",
+
+        reply_markup=get_main_keyboard()
 
         )
 
 
 
-
     logger.info(
-        "FAJ Platform v5.1 бот запущен"
+        "FAJ Platform v5.2 бот запущен"
     )
 
 
-    await dp.start_polling(
-        bot
-    )
+    await dp.start_polling(bot)
