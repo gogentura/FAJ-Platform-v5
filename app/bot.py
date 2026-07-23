@@ -3,7 +3,6 @@
 # app/bot.py
 # =====================================================
 
-
 import logging
 
 
@@ -13,7 +12,6 @@ from aiogram.types import Message
 
 
 from app.config import Config
-
 
 from app.core.faj_core import FAJCore
 from app.journal import Journal
@@ -25,33 +23,22 @@ from app.journal import Journal
 # ==========================
 
 from app.handlers.start import cmd_start
-
 from app.handlers.predict import handle_predict
-
 from app.handlers.journal import cmd_journal
-
 from app.handlers.status import cmd_status
-
 from app.handlers.health import cmd_health
 
 from app.handlers.load_passports import cmd_load_passports
-
 from app.handlers.database_check import cmd_dbcheck
-
 
 from app.handlers.passport import (
     cmd_passport,
     button_passport
 )
 
-
 from app.handlers.fixtures import cmd_fixtures
 
-
-from app.handlers.load_fixtures import (
-    cmd_load_fixtures
-)
-
+from app.handlers.load_fixtures import cmd_load_fixtures
 
 from app.handlers.keyboard import get_main_keyboard
 
@@ -61,11 +48,27 @@ logger = logging.getLogger(__name__)
 
 
 
+# =====================================================
+# BUTTONS BLACKLIST
+# =====================================================
+
+SERVICE_BUTTONS = [
+
+    "📊 Статус",
+    "📁 Паспорт",
+    "📅 Матчи",
+    "📥 Загрузить календарь",
+    "📥 Загрузить паспорта",
+    "📋 Журнал",
+    "❤️ Проверка"
+
+]
+
+
 
 # =====================================================
 # RUN BOT
 # =====================================================
-
 
 async def run_bot(
     core: FAJCore,
@@ -133,8 +136,6 @@ async def run_bot(
     )
 
 
-    # НОВАЯ КОМАНДА
-
     dp.message.register(
         cmd_load_fixtures,
         Command("загрузить_календарь")
@@ -143,7 +144,7 @@ async def run_bot(
 
 
     # =================================================
-    # BUTTONS
+    # BUTTON HANDLERS
     # =================================================
 
 
@@ -187,7 +188,7 @@ async def run_bot(
         lambda m:
         m.text == "📁 Паспорт"
     )
-    async def button_pass(
+    async def button_passport_handler(
         message: Message
     ):
 
@@ -195,13 +196,11 @@ async def run_bot(
 
 
 
-    # КАЛЕНДАРЬ
-
     @dp.message(
         lambda m:
         m.text == "📅 Матчи"
     )
-    async def button_fixtures(
+    async def button_fixtures_handler(
         message: Message
     ):
 
@@ -209,13 +208,11 @@ async def run_bot(
 
 
 
-    # ЗАГРУЗКА КАЛЕНДАРЯ
-
     @dp.message(
         lambda m:
         m.text == "📥 Загрузить календарь"
     )
-    async def button_load_fixtures(
+    async def button_load_fixtures_handler(
         message: Message
     ):
 
@@ -227,7 +224,7 @@ async def run_bot(
         lambda m:
         m.text == "📥 Загрузить паспорта"
     )
-    async def button_load_passports(
+    async def button_load_passports_handler(
         message: Message
     ):
 
@@ -246,7 +243,7 @@ async def run_bot(
         and
         m.text.lower().startswith("паспорт")
     )
-    async def text_passport(
+    async def passport_text_handler(
         message: Message
     ):
 
@@ -264,6 +261,8 @@ async def run_bot(
         m.text
         and
         not m.text.startswith("/")
+        and
+        m.text not in SERVICE_BUTTONS
         and
         len(m.text.split()) >= 2
     )
@@ -337,7 +336,7 @@ FAJ анализирует:
 
 
     logger.info(
-        "FAJ Platform v5.2 запущен"
+        "FAJ Platform v5.2 бот запущен"
     )
 
 
