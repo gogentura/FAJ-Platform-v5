@@ -11,14 +11,22 @@ def get_db():
 
 def init_db():
     conn = get_db()
-    # Таблица паспортов
+    # Таблица passports с расширенным набором полей
     conn.execute("""
         CREATE TABLE IF NOT EXISTS passports (
             team TEXT PRIMARY KEY,
+            league TEXT,
             attack INTEGER,
             defense INTEGER,
             control INTEGER,
             form_index INTEGER,
+            efficiency INTEGER,
+            mentality INTEGER,
+            home_rating INTEGER,
+            away_rating INTEGER,
+            coach_factor INTEGER,
+            injury_index INTEGER,
+            fatigue_index INTEGER,
             historical_xg_value REAL,
             historical_xg_source TEXT,
             avg_goals_value REAL,
@@ -33,7 +41,23 @@ def init_db():
             data TEXT
         )
     """)
-    # Таблица использования API — ИСПРАВЛЕНО: limit переименован в daily_limit
+    # Добавляем столбцы, если их ещё нет
+    existing_columns = [row[1] for row in conn.execute("PRAGMA table_info(passports)").fetchall()]
+    new_columns = {
+        "league": "TEXT",
+        "efficiency": "INTEGER",
+        "mentality": "INTEGER",
+        "home_rating": "INTEGER",
+        "away_rating": "INTEGER",
+        "coach_factor": "INTEGER",
+        "injury_index": "INTEGER",
+        "fatigue_index": "INTEGER"
+    }
+    for col, col_type in new_columns.items():
+        if col not in existing_columns:
+            conn.execute(f"ALTER TABLE passports ADD COLUMN {col} {col_type}")
+
+    # Таблица api_usage с daily_limit
     conn.execute("""
         CREATE TABLE IF NOT EXISTS api_usage (
             date TEXT PRIMARY KEY,
@@ -60,6 +84,14 @@ def init_db():
             model_version TEXT,
             data_version TEXT,
             accuracy TEXT
+        )
+    """)
+    # Таблица алиасов
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS team_aliases (
+            team TEXT NOT NULL,
+            alias TEXT PRIMARY KEY,
+            FOREIGN KEY(team) REFERENCES passports(team) ON DELETE CASCADE
         )
     """)
     conn.commit()
