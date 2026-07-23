@@ -8,26 +8,19 @@ import logging
 
 
 from aiogram import Bot, Dispatcher
-
 from aiogram.filters import Command
-
 from aiogram.types import Message
-
 
 
 from app.config import Config
 
 
 from app.core.faj_core import FAJCore
-
 from app.journal import Journal
 
 
 
-# ==============================
 # HANDLERS
-# ==============================
-
 
 from app.handlers.start import cmd_start
 
@@ -55,10 +48,7 @@ from app.handlers.fixtures import (
 )
 
 
-
-from app.handlers.keyboard import (
-    get_main_keyboard
-)
+from app.handlers.keyboard import get_main_keyboard
 
 
 
@@ -91,7 +81,6 @@ async def run_bot(
     bot = Bot(
         token=Config.TELEGRAM_TOKEN
     )
-
 
 
     dp = Dispatcher()
@@ -128,100 +117,30 @@ async def run_bot(
 
 
     dp.message.register(
-        cmd_load_passports,
-        Command("загрузить_паспорта")
-    )
-
-
-    dp.message.register(
         cmd_dbcheck,
         Command("база")
     )
 
 
-    # НОВОЕ
-    dp.message.register(
-        cmd_fixtures,
-        Command("матчи")
-    )
-
-
-
-    # =================================================
-    # TEXT COMMANDS
-    # =================================================
-
-
-    dp.message.register(
-        cmd_status,
-        lambda message:
-        message.text
-        and message.text.lower()
-        == "статус"
-    )
-
-
-
-    dp.message.register(
-        cmd_journal,
-        lambda message:
-        message.text
-        and message.text.lower()
-        == "журнал"
-    )
-
-
-
-    dp.message.register(
-        cmd_health,
-        lambda message:
-        message.text
-        and message.text.lower()
-        == "проверка"
-    )
-
-
-
-    dp.message.register(
-        cmd_fixtures,
-        lambda message:
-        message.text
-        and message.text.lower()
-        == "матчи"
-    )
-
-
-
     dp.message.register(
         cmd_load_passports,
-        lambda message:
-        message.text
-        and "загрузить"
-        in message.text.lower()
-    )
-
-
-
-    dp.message.register(
-        cmd_passport,
-        lambda message:
-        message.text
-        and message.text.lower()
-        .startswith("паспорт")
+        Command("загрузить_паспорта")
     )
 
 
 
     # =================================================
-    # BUTTONS
+    # TEXT BUTTONS
     # =================================================
 
 
     @dp.message(
         lambda m:
-        m.text == "📊 Статус"
+        m.text
+        and m.text.lower()
+        == "статус"
     )
-    async def button_status(
+    async def text_status(
         message: Message
     ):
 
@@ -231,9 +150,11 @@ async def run_bot(
 
     @dp.message(
         lambda m:
-        m.text == "📋 Журнал"
+        m.text
+        and m.text.lower()
+        == "журнал"
     )
-    async def button_journal(
+    async def text_journal(
         message: Message
     ):
 
@@ -243,9 +164,11 @@ async def run_bot(
 
     @dp.message(
         lambda m:
-        m.text == "❤️ Проверка"
+        m.text
+        and m.text.lower()
+        == "проверка"
     )
-    async def button_health(
+    async def text_health(
         message: Message
     ):
 
@@ -253,9 +176,31 @@ async def run_bot(
 
 
 
+    # =================================================
+    # PASSPORT
+    # =================================================
+
+
     @dp.message(
         lambda m:
-        m.text == "📁 Паспорт"
+        m.text
+        and m.text.lower()
+        .startswith("паспорт")
+    )
+    async def text_passport(
+        message: Message
+    ):
+
+        await cmd_passport(message)
+
+
+
+    @dp.message(
+        lambda m:
+        m.text
+        and m.text
+        ==
+        "📁 Паспорт"
     )
     async def button_pass(
         message: Message
@@ -265,9 +210,16 @@ async def run_bot(
 
 
 
+    # =================================================
+    # FIXTURES
+    # =================================================
+
+
     @dp.message(
         lambda m:
-        m.text == "📅 Матчи"
+        m.text
+        ==
+        "📅 Матчи"
     )
     async def button_fixtures(
         message: Message
@@ -278,26 +230,101 @@ async def run_bot(
 
 
     # =================================================
-    # PREDICT ENGINE
+    # JOURNAL BUTTON
     # =================================================
 
 
     @dp.message(
-        lambda msg:
-
-        msg.text
-
-        and not msg.text.startswith("/")
-
-        and len(msg.text.split()) >= 2
+        lambda m:
+        m.text
+        ==
+        "📋 Журнал"
     )
-    async def predict_text(
+    async def button_journal(
+        message: Message
+    ):
+
+        await cmd_journal(message)
+
+
+
+    # =================================================
+    # STATUS BUTTON
+    # =================================================
+
+
+    @dp.message(
+        lambda m:
+        m.text
+        ==
+        "📊 Статус"
+    )
+    async def button_status(
+        message: Message
+    ):
+
+        await cmd_status(message)
+
+
+
+    # =================================================
+    # HEALTH BUTTON
+    # =================================================
+
+
+    @dp.message(
+        lambda m:
+        m.text
+        ==
+        "❤️ Проверка"
+    )
+    async def button_health(
+        message: Message
+    ):
+
+        await cmd_health(message)
+
+
+
+    # =================================================
+    # LOAD PASSPORTS
+    # =================================================
+
+
+    @dp.message(
+        lambda m:
+        m.text
+        and
+        "загрузить" in m.text.lower()
+    )
+    async def button_load(
+        message: Message
+    ):
+
+        await cmd_load_passports(message)
+
+
+
+    # =================================================
+    # PREDICT
+    # =================================================
+
+
+    @dp.message(
+        lambda m:
+        m.text
+        and
+        not m.text.startswith("/")
+        and
+        len(m.text.split()) >= 2
+    )
+    async def predict_handler(
         message: Message
     ):
 
 
         logger.info(
-            f"Запрос прогноза: {message.text}"
+            f"FAJ prediction request: {message.text}"
         )
 
 
@@ -315,15 +342,14 @@ async def run_bot(
 
 
     @dp.message()
-    async def default_message(
+    async def default_handler(
         message: Message
     ):
 
 
         await message.answer(
-
-"""
-⚽ FAJ Platform v5.2
+            """
+⚽ *FAJ Platform v5.2*
 
 
 Команды:
@@ -344,33 +370,23 @@ async def run_bot(
 
 FAJ анализирует:
 
-
 • паспорта команд
-
 • xG модель
-
 • форму
-
 • атаку
-
 • защиту
-
 • вероятности
-
 • точные счета
-
 • календарь турниров
-
 """,
-
-        reply_markup=get_main_keyboard()
-
+            parse_mode="Markdown",
+            reply_markup=get_main_keyboard()
         )
 
 
 
     logger.info(
-        "FAJ Platform v5.2 бот запущен"
+        "FAJ Platform v5.2 запущен"
     )
 
 
