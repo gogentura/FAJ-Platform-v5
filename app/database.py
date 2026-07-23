@@ -1,5 +1,4 @@
 import os
-import sqlite3
 from datetime import datetime
 
 
@@ -12,30 +11,45 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 def get_db():
 
-    if DATABASE_URL:
+    if not DATABASE_URL:
 
-        try:
-            import psycopg2
-            from psycopg2.extras import RealDictCursor
-
-            conn = psycopg2.connect(
-                DATABASE_URL,
-                cursor_factory=RealDictCursor
-            )
-
-            return PostgresWrapper(conn)
-
-        except Exception as e:
-            print("POSTGRES ERROR:", e)
+        raise Exception(
+            "DATABASE_URL не найден в Railway Variables"
+        )
 
 
-    conn = sqlite3.connect(
-        "faj.db"
-    )
+    try:
 
-    conn.row_factory = sqlite3.Row
+        import psycopg2
 
-    return conn
+        from psycopg2.extras import RealDictCursor
+
+
+        conn = psycopg2.connect(
+            DATABASE_URL,
+            cursor_factory=RealDictCursor
+        )
+
+
+        print(
+            "✅ PostgreSQL connected"
+        )
+
+
+        return PostgresWrapper(conn)
+
+
+
+    except Exception as e:
+
+
+        print(
+            "❌ POSTGRES ERROR:",
+            e
+        )
+
+
+        raise e
 
 
 
@@ -52,19 +66,27 @@ class PostgresWrapper:
 
 
 
-    def execute(self, query, params=()):
+    def execute(
+        self,
+        query,
+        params=()
+    ):
+
 
         query = query.replace(
             "?",
             "%s"
         )
 
+
         cursor = self.conn.cursor()
+
 
         cursor.execute(
             query,
             params
         )
+
 
         return cursor
 
@@ -88,6 +110,7 @@ class PostgresWrapper:
 
 def init_db():
 
+
     conn = get_db()
 
 
@@ -96,19 +119,23 @@ def init_db():
     # PASSPORTS
     # =================================================
 
+
     conn.execute(
     """
     CREATE TABLE IF NOT EXISTS passports (
 
         team TEXT PRIMARY KEY,
 
+
         league TEXT,
+
 
         attack INTEGER,
 
         defense INTEGER,
 
         control INTEGER,
+
 
         form_index INTEGER,
 
@@ -133,13 +160,22 @@ def init_db():
 
         historical_xg_value REAL,
 
+        historical_xg_source TEXT,
+
 
         avg_goals_value REAL,
 
+        avg_goals_source TEXT,
+
+
         avg_goals_conceded_value REAL,
+
+        avg_goals_conceded_source TEXT,
 
 
         avg_possession_value REAL,
+
+        avg_possession_source TEXT,
 
 
         version INTEGER,
@@ -147,7 +183,10 @@ def init_db():
 
         created TEXT,
 
-        updated TEXT
+        updated TEXT,
+
+
+        data TEXT
 
     )
     """
@@ -156,8 +195,48 @@ def init_db():
 
 
     # =================================================
+    # PASSPORT MIGRATION
+    # =================================================
+
+
+    passport_columns = [
+
+        "historical_xg_source TEXT",
+
+        "avg_goals_source TEXT",
+
+        "avg_goals_conceded_source TEXT",
+
+        "avg_possession_source TEXT",
+
+        "data TEXT"
+
+    ]
+
+
+    for column in passport_columns:
+
+
+        try:
+
+            conn.execute(
+                f"""
+                ALTER TABLE passports
+                ADD COLUMN {column}
+                """
+            )
+
+
+        except Exception:
+
+            pass
+
+
+
+    # =================================================
     # JOURNAL
     # =================================================
+
 
     conn.execute(
     """
@@ -225,11 +304,8 @@ def init_db():
 
 
 
-    # =================================================
-    # MIGRATION JOURNAL
-    # =================================================
-
     journal_columns = [
+
 
         "match TEXT",
 
@@ -251,10 +327,13 @@ def init_db():
 
         "over25 REAL"
 
+
     ]
 
 
+
     for column in journal_columns:
+
 
         try:
 
@@ -265,6 +344,7 @@ def init_db():
                 """
             )
 
+
         except Exception:
 
             pass
@@ -274,6 +354,7 @@ def init_db():
     # =================================================
     # ALIASES
     # =================================================
+
 
     conn.execute(
     """
@@ -290,8 +371,9 @@ def init_db():
 
 
     # =================================================
-    # API
+    # API USAGE
     # =================================================
+
 
     conn.execute(
     """
@@ -314,8 +396,9 @@ def init_db():
 
 
     # =================================================
-    # CONFIG
+    # MODEL CONFIG
     # =================================================
+
 
     conn.execute(
     """
@@ -341,7 +424,9 @@ def init_db():
 # HELPERS
 # =====================================================
 
+
 def count_passports():
+
 
     conn = get_db()
 
@@ -357,26 +442,23 @@ def count_passports():
     conn.close()
 
 
-    if row:
+    return row["cnt"] if row else 0
 
-        return row["cnt"]
-
-
-    return 0
 
 
 
 def database_info():
 
+
     return {
 
+
         "database":
-        "PostgreSQL"
-        if DATABASE_URL
-        else "SQLite",
+        "PostgreSQL Railway",
 
 
         "time":
         datetime.now().isoformat()
+
 
     }
