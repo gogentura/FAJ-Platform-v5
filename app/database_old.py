@@ -1,23 +1,38 @@
-# app/database.py
-
+import os
 import sqlite3
-from pathlib import Path
+from datetime import datetime
 
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = BASE_DIR / "data"
-
-DATA_DIR.mkdir(exist_ok=True)
-
-DB_PATH = DATA_DIR / "faj.db"
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 
+# ==========================================
+# CONNECTION
+# ==========================================
 
 def get_db():
 
+    if DATABASE_URL:
+
+        try:
+            import psycopg2
+            from psycopg2.extras import RealDictCursor
+
+            conn = psycopg2.connect(
+                DATABASE_URL,
+                cursor_factory=RealDictCursor
+            )
+
+            return PostgresWrapper(conn)
+
+        except Exception as e:
+            print("POSTGRES ERROR:", e)
+
+
+    # fallback SQLite
+
     conn = sqlite3.connect(
-        str(DB_PATH),
-        check_same_thread=False
+        "faj.db"
     )
 
     conn.row_factory = sqlite3.Row
@@ -26,177 +41,309 @@ def get_db():
 
 
 
+# ==========================================
+# POSTGRES WRAPPER
+# ==========================================
+
+class PostgresWrapper:
+
+
+    def __init__(self, conn):
+        self.conn = conn
+
+
+
+    def execute(self, query, params=()):
+
+        query = query.replace(
+            "?",
+            "%s"
+        )
+
+        cursor = self.conn.cursor()
+
+        cursor.execute(
+            query,
+            params
+        )
+
+        return cursor
+
+
+
+    def commit(self):
+
+        self.conn.commit()
+
+
+
+    def close(self):
+
+        self.conn.close()
+
+
+
+# ==========================================
+# INIT DATABASE
+# ==========================================
+
 def init_db():
 
     conn = get_db()
 
 
-    # ===============================
-    # PASSPORTS
-    # ===============================
 
-    conn.execute("""
+    # ======================================
+    # PASSPORTS
+    # ======================================
+
+    conn.execute(
+    """
     CREATE TABLE IF NOT EXISTS passports (
 
         team TEXT PRIMARY KEY,
+
         league TEXT,
+
 
         attack INTEGER,
         defense INTEGER,
         control INTEGER,
-
         form_index INTEGER,
+
 
         efficiency INTEGER,
         mentality INTEGER,
 
+
         home_rating INTEGER,
         away_rating INTEGER,
 
+
         coach_factor INTEGER,
+
 
         injury_index INTEGER,
         fatigue_index INTEGER,
 
+
         historical_xg_value REAL,
         historical_xg_source TEXT,
+
 
         avg_goals_value REAL,
         avg_goals_source TEXT,
 
+
         avg_goals_conceded_value REAL,
         avg_goals_conceded_source TEXT,
+
 
         avg_possession_value REAL,
         avg_possession_source TEXT,
 
-        version INTEGER DEFAULT 1,
+
+        version INTEGER,
+
 
         created TEXT,
         updated TEXT,
 
+
         data TEXT
+
     )
-    """)
+    """
+    )
 
 
 
-    # ===============================
-    # JOURNAL FAJ v5.2
-    # ===============================
+    # ======================================
+    # JOURNAL
+    # ======================================
 
-    conn.execute("""
+    conn.execute(
+    """
     CREATE TABLE IF NOT EXISTS journal (
 
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
 
-        date TEXT,
-
-        match TEXT,
 
         home_team TEXT,
         away_team TEXT,
 
-        prediction TEXT,
+        league TEXT,
 
-        xg_home REAL,
-        xg_away REAL,
+
+        winner TEXT,
 
         winner_prob REAL,
 
+
+        home_prob REAL,
+        draw_prob REAL,
+        away_prob REAL,
+
+
         expected_score TEXT,
 
-        actual_score TEXT,
 
         actual_winner TEXT,
 
-        accuracy TEXT,
-
-        confidence INTEGER,
-
-        model_version TEXT,
 
         data_version TEXT,
 
-        factors TEXT
+
+        date TEXT,
+
+
+        created TEXT
 
     )
-    """)
-
-
-
-    # ===============================
-    # API USAGE
-    # ===============================
-
-    conn.execute("""
-    CREATE TABLE IF NOT EXISTS api_usage (
-
-        date TEXT PRIMARY KEY,
-
-        used INTEGER DEFAULT 0,
-
-        daily_limit INTEGER DEFAULT 100
-
+    """
     )
-    """)
 
 
 
-    # ===============================
-    # TEAM ALIASES
-    # ===============================
+    # ======================================
+    # JOURNAL MIGRATION
+    # ======================================
 
-    conn.execute("""
-    CREATE TABLE IF NOT EXISTS team_aliases (
+    journal_columns = [
 
-        team TEXT,
+        "winner_prob REAL",
 
-        alias TEXT PRIMARY KEY
+        "actual_winner TEXT",
 
-    )
-    """)
+        "data_version TEXT",
 
+        "date TEXT"
 
-
-    # ===============================
-    # MIGRATION
-    # ===============================
-
-    migrations = {
-
-        "winner_prob": "REAL",
-
-        "actual_winner": "TEXT",
-
-        "confidence": "INTEGER",
-
-        "model_version": "TEXT",
-
-        "data_version": "TEXT",
-
-        "factors": "TEXT"
-
-    }
+    ]
 
 
-    for column, dtype in migrations.items():
+    for column in journal_columns:
 
         try:
 
             conn.execute(
                 f"""
                 ALTER TABLE journal
-                ADD COLUMN {column} {dtype}
+                ADD COLUMN {column}
                 """
             )
 
-        except sqlite3.OperationalError:
+        except Exception:
 
             pass
+
+
+
+    # ======================================
+    # TEAM ALIASES
+    # ======================================
+
+    conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS team_aliases (
+
+        team TEXT NOT NULL,
+
+        alias TEXT PRIMARY KEY
+
+    )
+    """
+    )
+
+
+
+    # ======================================
+    # API USAGE
+    # ======================================
+
+    conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS api_usage (
+
+        id SERIAL PRIMARY KEY,
+
+        service TEXT,
+
+        used INTEGER DEFAULT 0,
+
+        limit_value INTEGER,
+
+        updated TEXT
+
+    )
+    """
+    )
+
+
+
+    # ======================================
+    # MODEL CONFIG
+    # ======================================
+
+    conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS model_config (
+
+        key TEXT PRIMARY KEY,
+
+        value TEXT
+
+    )
+    """
+    )
 
 
 
     conn.commit()
 
     conn.close()
+
+
+
+# ==========================================
+# HELPERS
+# ==========================================
+
+def count_passports():
+
+    conn = get_db()
+
+
+    row = conn.execute(
+        """
+        SELECT COUNT(*) as cnt
+        FROM passports
+        """
+    ).fetchone()
+
+
+    conn.close()
+
+
+    if row:
+
+        return row["cnt"]
+
+
+    return 0
+
+
+
+def database_info():
+
+    return {
+
+        "type":
+        "PostgreSQL"
+        if DATABASE_URL
+        else "SQLite",
+
+        "time":
+        datetime.now().isoformat()
+
+    }
