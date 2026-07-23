@@ -1,9 +1,15 @@
 from aiogram import types
 from app.utils.formatter import format_prediction
 from app.utils.explainer import explain_prediction
-from app.passport_manager import load_passport, get_team_by_alias
+from app.database import get_db
 from app.journal import Journal
 from app.handlers.keyboard import get_main_keyboard
+
+def load_passport(team):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM passports WHERE team = ?", (team,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 async def handle_predict(message: types.Message, core, journal):
     parts = message.text.split()
@@ -11,10 +17,7 @@ async def handle_predict(message: types.Message, core, journal):
         await message.answer("❌ Напиши две команды: Зенит Спартак", reply_markup=get_main_keyboard())
         return
     
-    raw_home, raw_away = parts[0], parts[1]
-    home = get_team_by_alias(raw_home) or raw_home
-    away = get_team_by_alias(raw_away) or raw_away
-    
+    home, away = parts[0], parts[1]
     league = parts[2].upper() if len(parts) >= 3 and parts[2].upper() in ["EPL", "RPL", "UCL"] else "RPL"
     
     await message.answer(f"⏳ Анализирую {home} — {away} ({league})...", reply_markup=get_main_keyboard())
