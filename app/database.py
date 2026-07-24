@@ -91,6 +91,19 @@ def init_database():
         """
         ALTER TABLE fixtures
         ADD COLUMN IF NOT EXISTS updated TIMESTAMP DEFAULT NOW();
+        """,
+        # ===== НОВЫЕ МИГРАЦИИ ДЛЯ РЕЗУЛЬТАТОВ =====
+        """
+        ALTER TABLE fixtures
+        ADD COLUMN IF NOT EXISTS home_score INTEGER;
+        """,
+        """
+        ALTER TABLE fixtures
+        ADD COLUMN IF NOT EXISTS away_score INTEGER;
+        """,
+        """
+        ALTER TABLE fixtures
+        ADD COLUMN IF NOT EXISTS result TEXT;
         """
     ]
     for migration in migrations:
