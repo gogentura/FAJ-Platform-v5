@@ -27,17 +27,11 @@ def get_connection():
 
 
 # =====================================================
-# COMPATIBILITY LAYER
-# FAJ v6.2
+# COMPATIBILITY LAYER (for old modules)
 # =====================================================
 
 def get_db():
-    """
-    Совместимость со старыми monitoring modules:
-    - results_monitor.py
-    - stats_monitor.py
-    - passport_monitor.py
-    """
+    """Совместимость со старыми monitoring modules"""
     return get_connection()
 
 
@@ -264,6 +258,15 @@ class Database:
         )
         conn.commit()
         conn.close()
+
+
+# =====================================================
+# COMPATIBILITY ALIAS (for main.py, bot.py, handlers)
+# =====================================================
+
+def init_db():
+    """Совместимость со старыми вызовами (main.py, bot.py, handlers)"""
+    return init_database()
 
 
 # =====================================================
