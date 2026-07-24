@@ -1,6 +1,7 @@
 # =====================================================
 # FAJ Platform v6.0
 # FAJ Prediction Generator
+# Tournament Prediction Builder
 # =====================================================
 
 
@@ -10,54 +11,9 @@ from datetime import datetime
 from app.database import get_db
 
 
-from app.core.faj_core import FAJCore
-
-
 from app.managers.prediction_manager import (
-    save_prediction
+    create_prediction
 )
-
-
-
-# =====================================================
-# FIND TEAM PASSPORT
-# =====================================================
-
-
-def get_team_passport(team_name):
-
-
-    conn = get_db()
-
-
-    row = conn.execute(
-        """
-        SELECT *
-
-        FROM passports
-
-        WHERE team_name = ?
-
-        """,
-
-        (
-            team_name,
-        )
-
-    ).fetchone()
-
-
-    conn.close()
-
-
-
-    if row:
-
-        return dict(row)
-
-
-    return None
-
 
 
 
@@ -75,7 +31,10 @@ def get_upcoming_fixtures(
     conn = get_db()
 
 
-    rows = conn.execute(
+    try:
+
+
+        rows = conn.execute(
         """
 
         SELECT *
@@ -101,90 +60,43 @@ def get_upcoming_fixtures(
 
         )
 
-    ).fetchall()
+        ).fetchall()
 
 
 
-    conn.close()
+        return [
+
+            dict(row)
+
+            for row in rows
+
+        ]
 
 
 
-    return [
+    finally:
 
-        dict(row)
 
-        for row in rows
-
-    ]
+        conn.close()
 
 
 
 
 # =====================================================
-# GENERATE SINGLE PREDICTION
+# GENERATE SINGLE MATCH
 # =====================================================
 
 
-def generate_prediction(
+def generate_match_prediction(
     fixture
 ):
 
 
-    home = fixture["home_team"]
+    result = create_prediction(
 
-    away = fixture["away_team"]
-
-
-
-    home_passport = get_team_passport(
-        home
-    )
-
-
-    away_passport = get_team_passport(
-        away
-    )
-
-
-
-    if not home_passport:
-
-        raise Exception(
-            f"Паспорт не найден: {home}"
-        )
-
-
-
-    if not away_passport:
-
-        raise Exception(
-            f"Паспорт не найден: {away}"
-        )
-
-
-
-    core = FAJCore()
-
-
-
-    result = core.predict(
-
-        home_passport,
-
-        away_passport
+        fixture
 
     )
-
-
-
-    save_prediction(
-
-        fixture,
-
-        result
-
-    )
-
 
 
     return result
@@ -193,21 +105,31 @@ def generate_prediction(
 
 
 # =====================================================
-# GENERATE TOUR
+# GENERATE ALL TOUR PREDICTIONS
 # =====================================================
 
 
 def generate_rpl_predictions():
 
 
+    fixtures = get_upcoming_fixtures(
 
-    fixtures = get_upcoming_fixtures()
+        league="RPL",
+
+        season="2026/27"
+
+    )
 
 
 
     generated = 0
 
+
     errors = []
+
+
+
+    predictions = []
 
 
 
@@ -217,12 +139,36 @@ def generate_rpl_predictions():
         try:
 
 
-            generate_prediction(
+
+            result = generate_match_prediction(
+
                 fixture
+
             )
 
 
+
+            predictions.append(
+
+                {
+
+                    "match":
+
+                    f"{fixture.get('home_team')} - {fixture.get('away_team')}",
+
+
+                    "prediction":
+
+                    result
+
+                }
+
+            )
+
+
+
             generated += 1
+
 
 
 
@@ -234,10 +180,12 @@ def generate_rpl_predictions():
                 {
 
                     "match":
+
                     f"{fixture.get('home_team')} - {fixture.get('away_team')}",
 
 
                     "error":
+
                     str(e)
 
                 }
@@ -246,26 +194,190 @@ def generate_rpl_predictions():
 
 
 
+
     return {
 
 
         "league":
+
         "RPL",
 
 
         "season":
+
         "2026/27",
 
 
         "generated":
+
         generated,
 
 
         "errors":
+
         errors,
 
 
+        "predictions":
+
+        predictions,
+
+
         "created":
+
         datetime.now().isoformat()
 
     }
+
+
+
+
+# =====================================================
+# GENERATE SELECTED ROUND
+# =====================================================
+
+
+def generate_round_predictions(
+    round_number
+):
+
+
+    conn = get_db()
+
+
+
+    try:
+
+
+        rows = conn.execute(
+        """
+
+        SELECT *
+
+        FROM fixtures
+
+        WHERE league = ?
+
+        AND season = ?
+
+        AND round = ?
+
+        AND status = 'scheduled'
+
+
+        """,
+
+        (
+
+            "RPL",
+
+            "2026/27",
+
+            round_number
+
+        )
+
+        ).fetchall()
+
+
+
+        fixtures = [
+
+            dict(row)
+
+            for row in rows
+
+        ]
+
+
+
+    finally:
+
+
+        conn.close()
+
+
+
+    results = []
+
+
+
+    for fixture in fixtures:
+
+
+        try:
+
+
+            prediction = create_prediction(
+
+                fixture
+
+            )
+
+
+            results.append(
+
+                {
+
+                    "fixture":
+
+                    fixture,
+
+
+                    "prediction":
+
+                    prediction
+
+                }
+
+            )
+
+
+
+        except Exception as e:
+
+
+            results.append(
+
+                {
+
+                    "fixture":
+
+                    fixture,
+
+
+                    "error":
+
+                    str(e)
+
+                }
+
+            )
+
+
+
+    return results
+
+
+
+
+# =====================================================
+# TEST
+# =====================================================
+
+
+if __name__ == "__main__":
+
+
+    result = generate_rpl_predictions()
+
+
+
+    print(
+        "========== FAJ GENERATOR =========="
+    )
+
+
+    print(
+        result
+    )
