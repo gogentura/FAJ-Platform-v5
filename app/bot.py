@@ -49,7 +49,6 @@ from app.handlers.clear_fixtures import (
     cmd_clear_fixtures
 )
 
-
 from app.handlers.faj_predictions import (
     cmd_faj_predictions
 )
@@ -60,6 +59,11 @@ from app.handlers.expert_predictions import (
 
 from app.handlers.generate_predictions import (
     cmd_generate_predictions
+)
+
+# ===== НОВЫЙ ИМПОРТ ДЛЯ ДИАГНОСТИКИ =====
+from app.handlers.debug_calendar import (
+    cmd_debug_calendar
 )
 
 
@@ -207,6 +211,12 @@ async def run_bot(
     dp.message.register(
         cmd_clear_fixtures,
         Command("clear_fixtures")
+    )
+
+    # ===== НОВАЯ КОМАНДА ДЛЯ ДИАГНОСТИКИ =====
+    dp.message.register(
+        cmd_debug_calendar,
+        Command("debug_calendar")
     )
 
 
