@@ -1,8 +1,7 @@
 # =====================================================
-# FAJ Platform v6.0
+# FAJ Platform v6.1
 # Admin Keyboard
 # =====================================================
-
 
 from aiogram.types import (
     ReplyKeyboardMarkup,
@@ -10,56 +9,47 @@ from aiogram.types import (
 )
 
 
-
-
 def admin_keyboard():
-
-
 
     buttons = [
 
-
         [
-
             KeyboardButton(
                 text="📥 Загрузить паспорта"
             ),
-
-            KeyboardButton(
-                text="📥 Загрузить календарь"
-            )
-
         ],
 
+        [
+            KeyboardButton(
+                text="🔄 Синхронизировать календарь"
+            ),
+        ],
 
         [
+            KeyboardButton(
+                text="🔍 Проверить календарь"
+            ),
+        ],
 
+        [
             KeyboardButton(
                 text="🚀 Создать прогнозы тура"
-            )
-
+            ),
         ],
 
-
         [
-
             KeyboardButton(
                 text="🗄 Проверка базы"
-            )
-
+            ),
         ],
 
-
         [
-
             KeyboardButton(
                 text="⬅️ Главное меню"
-            )
-
+            ),
         ]
 
     ]
-
 
 
     return ReplyKeyboardMarkup(
