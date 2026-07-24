@@ -1,8 +1,10 @@
 # =====================================================
-# FAJ Platform v6.1
+# FAJ Platform v6.2
 # app/handlers/update_calendar.py
 #
 # RPL Calendar Update Handler
+# Source:
+#   Soccer365
 # =====================================================
 
 
@@ -15,9 +17,8 @@ from app.monitoring.calendar_monitor import (
 
 
 
-
 # =====================================================
-# UPDATE CALENDAR COMMAND
+# UPDATE CALENDAR
 # =====================================================
 
 
@@ -31,9 +32,11 @@ async def cmd_update_calendar(
         """
 🔄 FAJ запускает синхронизацию календаря РПЛ...
 
+
 Источник:
 
-🌐 Sport-Express
+🌐 Soccer365
+
 
 Проверяем:
 
@@ -51,7 +54,7 @@ async def cmd_update_calendar(
     try:
 
 
-        result = sync_rpl_calendar()
+        result = await sync_rpl_calendar()
 
 
 
@@ -68,7 +71,7 @@ async def cmd_update_calendar(
 
 
         unchanged = result.get(
-            "unchanged",
+            "same",
             0
         )
 
@@ -80,18 +83,17 @@ async def cmd_update_calendar(
 
 
 
-
         text = f"""
 
 ✅ Календарь обновлён
 
 
 🏆 Лига:
-{result.get("league","RPL")}
+RPL
 
 
 📅 Сезон:
-{result.get("season","2026/27")}
+2026/27
 
 
 ━━━━━━━━━━━━━━
@@ -107,7 +109,6 @@ async def cmd_update_calendar(
 
 ✔️ Без изменений:
 {unchanged}
-
 
 """
 
@@ -128,34 +129,11 @@ async def cmd_update_calendar(
             for error in errors[:10]:
 
 
-                if isinstance(
-                    error,
-                    dict
-                ):
+                text += f"""
 
-
-                    text += (
-
-                        f"""
-⚽ {error.get("match","")}
-❌ {error.get("error","")}
-
-"""
-
-                    )
-
-
-                else:
-
-
-                    text += (
-
-                        f"""
 ❌ {error}
 
 """
-
-                    )
 
 
 
@@ -167,6 +145,7 @@ async def cmd_update_calendar(
 ━━━━━━━━━━━━━━
 
 ✅ Ошибок нет
+
 
 Теперь можно:
 
@@ -180,18 +159,13 @@ async def cmd_update_calendar(
 
 
 
-
         await message.answer(
-
             text
-
         )
 
 
 
-
     except Exception as e:
-
 
 
         await message.answer(
