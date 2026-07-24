@@ -37,7 +37,6 @@ class FAJConnection:
         return self.connection.close()
 
     def execute(self, query, params=None):
-        """Выполнить запрос напрямую, создавая курсор автоматически."""
         cursor = self.cursor()
         cursor.execute(query, params or ())
         return cursor
@@ -70,8 +69,37 @@ def get_db():
 
 def init_database():
     conn = get_connection()
-    # Работаем через .cursor() (новый стиль)
     cur = conn.cursor()
+
+    # ================================================
+    # AUTO MIGRATIONS
+    # FAJ Platform v6.2
+    # ================================================
+    migrations = [
+        """
+        ALTER TABLE fixtures
+        ADD COLUMN IF NOT EXISTS match_time TEXT;
+        """,
+        """
+        ALTER TABLE fixtures
+        ADD COLUMN IF NOT EXISTS round INTEGER;
+        """,
+        """
+        ALTER TABLE fixtures
+        ADD COLUMN IF NOT EXISTS source TEXT;
+        """,
+        """
+        ALTER TABLE fixtures
+        ADD COLUMN IF NOT EXISTS updated TIMESTAMP DEFAULT NOW();
+        """
+    ]
+    for migration in migrations:
+        try:
+            cur.execute(migration)
+            conn.commit()
+        except Exception as e:
+            logger.warning(f"Migration skipped: {e}")
+            conn.rollback()
 
     # ================================================
     # FIXTURES
