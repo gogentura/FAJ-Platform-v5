@@ -203,9 +203,8 @@ def init_db():
     conn.commit()
 
     # =================================================
-    # FIXTURES (НОВАЯ СТРУКТУРА)
+    # FIXTURES
     # =================================================
-    # Создаём таблицу с новой структурой
     conn.execute(
     """
     CREATE TABLE IF NOT EXISTS fixtures (
@@ -226,8 +225,7 @@ def init_db():
     )
     conn.commit()
 
-    # Миграция для существующей таблицы (если она уже была)
-    # Добавляем новые колонки, если их нет
+    # Миграция для существующей таблицы (если была)
     new_columns = [
         "season TEXT",
         "match_date TEXT",
@@ -241,18 +239,14 @@ def init_db():
             conn.rollback()
             pass
 
-    # Переименовываем старую колонку "date" в "match_date", если она существует
     try:
-        # Проверяем, существует ли колонка "date"
         conn.execute("SELECT date FROM fixtures LIMIT 0")
-        # Если ошибки нет, переименовываем
         conn.execute("ALTER TABLE fixtures RENAME COLUMN date TO match_date")
         conn.commit()
     except Exception:
         conn.rollback()
         pass
 
-    # Удаляем старую колонку "date", если она осталась (на случай, если переименование не сработало)
     try:
         conn.execute("ALTER TABLE fixtures DROP COLUMN IF EXISTS date")
         conn.commit()
@@ -260,17 +254,76 @@ def init_db():
         conn.rollback()
         pass
 
-    # Добавляем колонку "round" как INTEGER, если её нет, или переименовываем из "round_number"
     try:
         conn.execute("SELECT round FROM fixtures LIMIT 0")
     except Exception:
-        # Если колонки нет, создаём
         try:
             conn.execute("ALTER TABLE fixtures ADD COLUMN round INTEGER")
             conn.commit()
         except Exception:
             conn.rollback()
             pass
+
+    # =================================================
+    # FAJ PREDICTIONS (НОВАЯ ТАБЛИЦА)
+    # =================================================
+    conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS predictions (
+        id SERIAL PRIMARY KEY,
+        fixture_id INTEGER,
+        league TEXT,
+        season TEXT,
+        round INTEGER,
+        home_team TEXT,
+        away_team TEXT,
+        winner_prediction TEXT,
+        home_probability REAL,
+        draw_probability REAL,
+        away_probability REAL,
+        xg_home REAL,
+        xg_away REAL,
+        expected_score TEXT,
+        top_scores TEXT,
+        btts_probability REAL,
+        over25_probability REAL,
+        confidence REAL,
+        model_version TEXT,
+        actual_score TEXT,
+        actual_winner TEXT,
+        accuracy TEXT,
+        created TEXT
+    )
+    """
+    )
+    conn.commit()
+
+    # =================================================
+    # EXPERT PREDICTIONS (НОВАЯ ТАБЛИЦА)
+    # =================================================
+    conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS expert_predictions (
+        id SERIAL PRIMARY KEY,
+        fixture_id INTEGER,
+        league TEXT,
+        season TEXT,
+        round INTEGER,
+        home_team TEXT,
+        away_team TEXT,
+        winner_prediction TEXT,
+        score_prediction TEXT,
+        confidence REAL,
+        expert_name TEXT DEFAULT 'Главный аналитик',
+        comment TEXT,
+        actual_score TEXT,
+        actual_winner TEXT,
+        accuracy TEXT,
+        created TEXT
+    )
+    """
+    )
+    conn.commit()
 
     # =================================================
     # ALIASES
