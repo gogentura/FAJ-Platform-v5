@@ -34,7 +34,9 @@ from app.handlers.passport import (
     button_passport
 )
 
-from app.handlers.fixtures import cmd_fixtures
+# ===== ЗАМЕНА: используем show_fixtures вместо fixtures =====
+from app.handlers.show_fixtures import cmd_show_fixtures
+
 from app.handlers.load_fixtures import cmd_load_fixtures
 
 from app.handlers.fixtures_check import (
@@ -69,7 +71,6 @@ from app.handlers.debug_rpl_source import (
     cmd_debug_rpl_source
 )
 
-# ===== НОВЫЙ ИМПОРТ =====
 from app.handlers.debug_soccer365 import (
     cmd_debug_soccer365
 )
@@ -232,7 +233,6 @@ async def run_bot(
         Command("debug_rpl")
     )
 
-    # ===== НОВАЯ КОМАНДА =====
     dp.message.register(
         cmd_debug_soccer365,
         Command("debug_soccer365")
@@ -284,13 +284,14 @@ async def run_bot(
 
 
 
+    # ===== ЗАМЕНА: теперь используем cmd_show_fixtures =====
     @dp.message(
         lambda m:
         m.text == "📅 Матчи"
     )
     async def fixtures_button(message: Message):
 
-        await cmd_fixtures(message)
+        await cmd_show_fixtures(message)
 
 
 
