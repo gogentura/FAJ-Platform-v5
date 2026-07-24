@@ -17,49 +17,14 @@ from app.core.faj_core import FAJCore
 
 
 # =====================================================
-# CREATE SINGLE FAJ PREDICTION
+# SAVE PREDICTION
 # =====================================================
 
 
-def create_prediction(
+def save_prediction(
     fixture,
-    core=None
+    prediction
 ):
-
-
-    if core is None:
-
-        core = FAJCore()
-
-
-
-    home_team = fixture.get(
-        "home_team"
-    )
-
-    away_team = fixture.get(
-        "away_team"
-    )
-
-
-
-    # =============================================
-    # RUN MODEL
-    # =============================================
-
-    prediction = core.predict(
-
-        home_team,
-
-        away_team
-
-    )
-
-
-
-    # =============================================
-    # SAVE
-    # =============================================
 
 
     conn = get_db()
@@ -114,6 +79,7 @@ def create_prediction(
 
         )
 
+
         VALUES
 
         (
@@ -140,6 +106,7 @@ def create_prediction(
 
         )
 
+
         """,
 
         (
@@ -152,57 +119,79 @@ def create_prediction(
 
             fixture.get("round"),
 
-            home_team,
 
-            away_team,
+            fixture.get("home_team"),
 
-            prediction.get(
-                "winner"
-            ),
+            fixture.get("away_team"),
 
-            prediction.get(
-                "home_probability"
-            ),
+
+            prediction.get("winner"),
+
 
             prediction.get(
-                "draw_probability"
+                "home_probability",
+                0
             ),
 
-            prediction.get(
-                "away_probability"
-            ),
 
             prediction.get(
-                "xg_home"
+                "draw_probability",
+                0
             ),
 
-            prediction.get(
-                "xg_away"
-            ),
 
             prediction.get(
-                "expected_score"
+                "away_probability",
+                0
             ),
+
+
+            prediction.get(
+                "xg_home",
+                0
+            ),
+
+
+            prediction.get(
+                "xg_away",
+                0
+            ),
+
+
+            prediction.get(
+                "expected_score",
+                "-"
+            ),
+
 
             str(
                 prediction.get(
-                    "top_scores"
+                    "top_scores",
+                    []
                 )
             ),
 
-            prediction.get(
-                "btts"
-            ),
 
             prediction.get(
-                "over25"
+                "btts",
+                0
             ),
 
+
             prediction.get(
-                "confidence"
+                "over25",
+                0
             ),
+
+
+            prediction.get(
+                "confidence",
+                0
+            ),
+
 
             "FAJ v6.0",
+
 
             datetime.now().isoformat()
 
@@ -221,10 +210,12 @@ def create_prediction(
 
         conn.rollback()
 
+
         print(
             "PREDICTION SAVE ERROR:",
             e
         )
+
 
         raise e
 
@@ -232,7 +223,68 @@ def create_prediction(
 
     finally:
 
+
         conn.close()
+
+
+
+
+# =====================================================
+# CREATE SINGLE PREDICTION
+# =====================================================
+
+
+def create_prediction(
+    fixture,
+    core=None
+):
+
+
+    if core is None:
+
+
+        core = FAJCore()
+
+
+
+    home_team = fixture.get(
+        "home_team"
+    )
+
+
+    away_team = fixture.get(
+        "away_team"
+    )
+
+
+
+    # =============================================
+    # RUN FAJ MODEL
+    # =============================================
+
+
+    prediction = core.predict(
+
+        home_team,
+
+        away_team
+
+    )
+
+
+
+    # =============================================
+    # SAVE
+    # =============================================
+
+
+    save_prediction(
+
+        fixture,
+
+        prediction
+
+    )
 
 
 
@@ -255,13 +307,14 @@ def create_tour_predictions(
     results = []
 
 
+
     for fixture in fixtures:
 
 
         try:
 
 
-            result = create_prediction(
+            prediction = create_prediction(
 
                 fixture,
 
@@ -270,16 +323,24 @@ def create_tour_predictions(
             )
 
 
+
             results.append(
 
                 {
-                    "fixture": fixture,
 
-                    "prediction": result
+                    "fixture":
+
+                    fixture,
+
+
+                    "prediction":
+
+                    prediction
 
                 }
 
             )
+
 
 
         except Exception as e:
@@ -288,9 +349,15 @@ def create_tour_predictions(
             results.append(
 
                 {
-                    "fixture": fixture,
 
-                    "error": str(e)
+                    "fixture":
+
+                    fixture,
+
+
+                    "error":
+
+                    str(e)
 
                 }
 
@@ -319,101 +386,108 @@ def get_predictions(
 
 
 
-    query = """
-
-    SELECT *
-
-    FROM predictions
-
-    WHERE 1=1
-
-    """
+    try:
 
 
+        query = """
 
-    params = []
+        SELECT *
+
+        FROM predictions
+
+        WHERE 1=1
+
+        """
 
 
 
-    if league:
+        params = []
+
+
+
+        if league:
+
+
+            query += """
+
+            AND league = ?
+
+            """
+
+            params.append(
+                league
+            )
+
+
+
+        if season:
+
+
+            query += """
+
+            AND season = ?
+
+            """
+
+            params.append(
+                season
+            )
+
+
+
+        if round_number:
+
+
+            query += """
+
+            AND round = ?
+
+            """
+
+            params.append(
+                round_number
+            )
+
 
 
         query += """
 
-        AND league = ?
+        ORDER BY created DESC
 
         """
 
-        params.append(
-            league
-        )
+
+
+        rows = conn.execute(
+
+            query,
+
+            tuple(params)
+
+        ).fetchall()
 
 
 
-    if season:
+        return [
 
+            dict(row)
 
-        query += """
+            for row in rows
 
-        AND season = ?
-
-        """
-
-        params.append(
-            season
-        )
+        ]
 
 
 
-    if round_number:
+    finally:
 
 
-        query += """
+        conn.close()
 
-        AND round = ?
-
-        """
-
-        params.append(
-            round_number
-        )
-
-
-
-    query += """
-
-    ORDER BY created DESC
-
-    """
-
-
-
-    rows = conn.execute(
-
-        query,
-
-        tuple(params)
-
-    ).fetchall()
-
-
-
-    conn.close()
-
-
-
-    return [
-
-        dict(row)
-
-        for row in rows
-
-    ]
 
 
 
 # =====================================================
-# COUNT FAJ PREDICTIONS
+# COUNT PREDICTIONS
 # =====================================================
 
 
@@ -424,22 +498,28 @@ def count_predictions():
 
 
 
-    row = conn.execute(
-
-        """
-
-        SELECT COUNT(*) AS cnt
-
-        FROM predictions
-
-        """
-
-    ).fetchone()
+    try:
 
 
+        row = conn.execute(
 
-    conn.close()
+            """
+
+            SELECT COUNT(*) AS cnt
+
+            FROM predictions
+
+            """
+
+        ).fetchone()
 
 
 
-    return row["cnt"] if row else 0
+        return row["cnt"] if row else 0
+
+
+
+    finally:
+
+
+        conn.close()
