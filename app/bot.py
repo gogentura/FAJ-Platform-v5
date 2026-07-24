@@ -25,7 +25,13 @@ from app.handlers.passport import (
     cmd_passport,
     button_passport
 )
-from app.handlers.fixtures import cmd_fixtures
+from app.handlers.fixtures import (
+    cmd_fixtures,
+    fixtures_rpl_button,
+    fixtures_all_button,
+    fixtures_next_button,
+    fixture_predict_button
+)
 
 # =====================================================
 # NEW MENUS
@@ -57,7 +63,11 @@ SERVICE_BUTTONS = {
     "📥 Обновить паспорта",
     "🌐 API Football",
     "🗄 База данных",
-    "⬅️ Главное меню"
+    "⬅️ Главное меню",
+    "🇷🇺 РПЛ",
+    "🌍 Все турниры",
+    "🔥 Ближайшие матчи",
+    "📈 Прогноз матча"
 }
 
 # =====================================================
@@ -158,6 +168,43 @@ async def run_bot(
         message: Message
     ):
         await cmd_fixtures(message)
+
+    # --- НОВЫЕ КНОПКИ ДЛЯ КАЛЕНДАРЯ ---
+    @dp.message(
+        lambda m:
+        m.text == "🇷🇺 РПЛ"
+    )
+    async def fixtures_rpl_button_handler(
+        message: Message
+    ):
+        await fixtures_rpl_button(message)
+
+    @dp.message(
+        lambda m:
+        m.text == "🌍 Все турниры"
+    )
+    async def fixtures_all_button_handler(
+        message: Message
+    ):
+        await fixtures_all_button(message)
+
+    @dp.message(
+        lambda m:
+        m.text == "🔥 Ближайшие матчи"
+    )
+    async def fixtures_next_button_handler(
+        message: Message
+    ):
+        await fixtures_next_button(message)
+
+    @dp.message(
+        lambda m:
+        m.text == "📈 Прогноз матча"
+    )
+    async def fixture_predict_button_handler(
+        message: Message
+    ):
+        await fixture_predict_button(message)
 
     # ==============================================
     # ADMIN MENU
