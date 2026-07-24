@@ -1,605 +1,6 @@
 # =====================================================
-# FAJ Platform v6.0
-# Prediction Manager
-# FAJ Model Predictions Storage
-# =====================================================
-
-
-from datetime import datetime
-
-import numpy as np
-
-
-from app.database import get_db
-
-from app.core.faj_core import FAJCore
-
-
-
-
-# =====================================================
-# CLEAN NUMPY VALUES
-# =====================================================
-
-
-def clean_value(value):
-
-    if isinstance(value, np.generic):
-
-        return value.item()
-
-    return value
-
-
-
-
-def clean_prediction(prediction):
-
-    for key, value in prediction.items():
-
-        prediction[key] = clean_value(value)
-
-    return prediction
-
-
-
-
-# =====================================================
-# NORMALIZE FAJ CORE RESPONSE
-# =====================================================
-
-
-def normalize_prediction(raw_prediction):
-
-
-    if not raw_prediction:
-
-        return {}
-
-
-
-    decision = raw_prediction.get(
-        "decision",
-        {}
-    )
-
-
-
-    predicted_xg = (
-
-        raw_prediction
-
-        .get(
-            "xg",
-            {}
-        )
-
-        .get(
-            "predicted",
-            {}
-        )
-
-    )
-
-
-
-    result = {
-
-
-        "winner":
-
-        decision.get(
-            "winner"
-        ),
-
-
-
-        "home_probability":
-
-        decision.get(
-            "home_prob",
-            0
-        ),
-
-
-
-        "draw_probability":
-
-        decision.get(
-            "draw_prob",
-            0
-        ),
-
-
-
-        "away_probability":
-
-        decision.get(
-            "away_prob",
-            0
-        ),
-
-
-
-        "xg_home":
-
-        predicted_xg.get(
-            "home",
-            0
-        ),
-
-
-
-        "xg_away":
-
-        predicted_xg.get(
-            "away",
-            0
-        ),
-
-
-
-        "expected_score":
-
-        decision.get(
-            "expected_score"
-        ),
-
-
-
-        "top_scores":
-
-        raw_prediction.get(
-            "top_scores",
-            []
-        ),
-
-
-
-        "btts":
-
-        raw_prediction.get(
-            "btts",
-            0
-        ),
-
-
-
-        "over25":
-
-        raw_prediction.get(
-            "over25",
-            0
-        ),
-
-
-
-        "confidence":
-
-        decision.get(
-            "confidence",
-            0
-        )
-
-    }
-
-
-
-    return clean_prediction(
-        result
-    )
-
-
-
-
-# =====================================================
-# SAVE PREDICTION
-# =====================================================
-
-
-def save_prediction(
-    fixture,
-    prediction
-):
-
-
-    prediction = clean_prediction(
-        prediction
-    )
-
-
-
-    conn = get_db()
-
-
-
-    try:
-
-
-        conn.execute(
-
-        """
-
-        INSERT INTO predictions
-
-        (
-
-            fixture_id,
-
-            league,
-
-            season,
-
-            round,
-
-            home_team,
-
-            away_team,
-
-            winner_prediction,
-
-            home_probability,
-
-            draw_probability,
-
-            away_probability,
-
-            xg_home,
-
-            xg_away,
-
-            expected_score,
-
-            top_scores,
-
-            btts_probability,
-
-            over25_probability,
-
-            confidence,
-
-            model_version,
-
-            created
-
-        )
-
-
-        VALUES
-
-        (
-
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?
-
-        )
-
-        """,
-
-        (
-
-            fixture.get(
-                "id"
-            ),
-
-
-            fixture.get(
-                "league",
-                "RPL"
-            ),
-
-
-            fixture.get(
-                "season",
-                "2026/27"
-            ),
-
-
-            fixture.get(
-                "round"
-            ),
-
-
-            fixture.get(
-                "home_team"
-            ),
-
-
-            fixture.get(
-                "away_team"
-            ),
-
-
-            prediction.get(
-                "winner"
-            ),
-
-
-            prediction.get(
-                "home_probability"
-            ),
-
-
-            prediction.get(
-                "draw_probability"
-            ),
-
-
-            prediction.get(
-                "away_probability"
-            ),
-
-
-            prediction.get(
-                "xg_home"
-            ),
-
-
-            prediction.get(
-                "xg_away"
-            ),
-
-
-            prediction.get(
-                "expected_score"
-            ),
-
-
-            str(
-                prediction.get(
-                    "top_scores"
-                )
-            ),
-
-
-            prediction.get(
-                "btts"
-            ),
-
-
-            prediction.get(
-                "over25"
-            ),
-
-
-            prediction.get(
-                "confidence"
-            ),
-
-
-            "FAJ v6.0",
-
-
-            datetime.now().isoformat()
-
-        )
-
-        )
-
-
-        conn.commit()
-
-
-
-    except Exception as e:
-
-
-        conn.rollback()
-
-        raise e
-
-
-
-    finally:
-
-
-        conn.close()
-
-
-
-
-# =====================================================
-# CREATE SINGLE PREDICTION
-# =====================================================
-
-
-def create_prediction(
-    fixture,
-    core=None
-):
-
-
-    if core is None:
-
-        core = FAJCore()
-
-
-
-    home_team = fixture.get(
-        "home_team"
-    )
-
-
-    away_team = fixture.get(
-        "away_team"
-    )
-
-
-
-    if hasattr(
-        core,
-        "predict"
-    ):
-
-
-        raw = core.predict(
-
-            home_team,
-
-            away_team,
-
-            fixture.get(
-                "league",
-                "RPL"
-            )
-
-        )
-
-
-    else:
-
-
-        raw = core.predict_match(
-
-            home_team,
-
-            away_team,
-
-            fixture.get(
-                "league",
-                "RPL"
-            )
-
-        )
-
-
-
-    if "error" in raw:
-
-
-        raise Exception(
-            raw["error"]
-        )
-
-
-
-    prediction = normalize_prediction(
-        raw
-    )
-
-
-
-    save_prediction(
-
-        fixture,
-
-        prediction
-
-    )
-
-
-
-    return prediction
-
-
-
-
-# =====================================================
-# CREATE TOUR PREDICTIONS
-# =====================================================
-
-
-def create_tour_predictions(
-    fixtures,
-    core=None
-):
-
-
-    generated = 0
-
-    errors = []
-
-
-
-    for fixture in fixtures:
-
-
-        try:
-
-
-            create_prediction(
-
-                fixture,
-
-                core
-
-            )
-
-
-            generated += 1
-
-
-
-        except Exception as e:
-
-
-            errors.append(
-
-                {
-
-                    "match":
-
-                    f"{fixture.get('home_team')} - {fixture.get('away_team')}",
-
-
-                    "error":
-
-                    str(e)
-
-                }
-
-            )
-
-
-
-    return {
-
-
-        "generated":
-
-        generated,
-
-
-        "errors":
-
-        errors,
-
-
-        "league":
-
-        "RPL",
-
-
-        "season":
-
-        "2026/27"
-
-    }
-
-
-
-
-# =====================================================
 # GET PREDICTIONS
 # =====================================================
-
 
 def get_predictions(
     league=None,
@@ -607,63 +8,83 @@ def get_predictions(
     round_number=None
 ):
 
-
     conn = get_db()
-
 
     try:
 
-
         query = """
+        SELECT
 
-        SELECT *
+            p.*,
 
-        FROM predictions
+            f.match_date,
+
+            f.home_team,
+
+            f.away_team
+
+        FROM predictions p
+
+        LEFT JOIN fixtures f
+
+            ON p.fixture_id = f.id
 
         WHERE 1=1
-
         """
 
         params = []
 
 
-
         if league:
 
-            query += " AND league=? "
+            query += """
+
+            AND p.league = ?
+
+            """
 
             params.append(
                 league
             )
 
 
-
         if season:
 
-            query += " AND season=? "
+            query += """
+
+            AND p.season = ?
+
+            """
 
             params.append(
                 season
             )
 
 
-
         if round_number:
 
-            query += " AND round=? "
+            query += """
+
+            AND p.round = ?
+
+            """
 
             params.append(
                 round_number
             )
 
 
-
         query += """
 
-        ORDER BY created DESC
+        ORDER BY
+
+            p.round ASC,
+
+            f.match_date ASC,
+
+            f.home_team ASC
 
         """
-
 
 
         rows = conn.execute(
@@ -675,7 +96,6 @@ def get_predictions(
         ).fetchall()
 
 
-
         return [
 
             dict(row)
@@ -685,48 +105,6 @@ def get_predictions(
         ]
 
 
-
     finally:
-
-
-        conn.close()
-
-
-
-
-# =====================================================
-# COUNT
-# =====================================================
-
-
-def count_predictions():
-
-
-    conn = get_db()
-
-
-    try:
-
-
-        row = conn.execute(
-
-            """
-
-            SELECT COUNT(*) AS cnt
-
-            FROM predictions
-
-            """
-
-        ).fetchone()
-
-
-
-        return row["cnt"] if row else 0
-
-
-
-    finally:
-
 
         conn.close()
