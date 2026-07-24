@@ -1,11 +1,13 @@
 # =====================================================
-# FAJ Platform v5.2
+# FAJ Platform v6.0
 # RPL Fixtures Loader
 # =====================================================
 
 
-from app.loaders.fixtures_loader import load_fixtures
-
+from app.loaders.fixtures_loader import (
+    load_fixtures,
+    count_fixtures
+)
 
 
 # =====================================================
@@ -15,18 +17,12 @@ from app.loaders.fixtures_loader import load_fixtures
 
 RPL_FIXTURES_2026_27 = [
 
-    # =====================
-    # 1 ТУР
-    # =====================
-
-
     {
         "round": 1,
         "date": "2026-07-18",
         "home": "Зенит",
         "away": "Ростов"
     },
-
 
     {
         "round": 1,
@@ -35,14 +31,12 @@ RPL_FIXTURES_2026_27 = [
         "away": "Динамо М"
     },
 
-
     {
         "round": 1,
         "date": "2026-07-19",
         "home": "ЦСКА",
         "away": "Краснодар"
     },
-
 
     {
         "round": 1,
@@ -51,14 +45,12 @@ RPL_FIXTURES_2026_27 = [
         "away": "Ахмат"
     },
 
-
     {
         "round": 1,
         "date": "2026-07-20",
         "home": "Рубин",
         "away": "Крылья Советов"
     },
-
 
     {
         "round": 1,
@@ -67,14 +59,12 @@ RPL_FIXTURES_2026_27 = [
         "away": "Акрон"
     },
 
-
     {
         "round": 1,
         "date": "2026-07-20",
         "home": "Оренбург",
         "away": "Факел"
     },
-
 
     {
         "round": 1,
@@ -86,13 +76,13 @@ RPL_FIXTURES_2026_27 = [
 ]
 
 
-
 # =====================================================
-# LOAD RPL
+# LOAD RPL CALENDAR
 # =====================================================
 
 
 def load_rpl_calendar():
+
 
     result = load_fixtures(
 
@@ -105,12 +95,23 @@ def load_rpl_calendar():
     )
 
 
+    try:
+
+        result["database_total"] = count_fixtures(
+            league="RPL"
+        )
+
+    except Exception as e:
+
+        result["database_check_error"] = str(e)
+
+
     return result
 
 
 
 # =====================================================
-# TEST RUN
+# TEST
 # =====================================================
 
 
