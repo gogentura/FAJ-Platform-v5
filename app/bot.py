@@ -40,8 +40,8 @@ from app.handlers.generate_predictions import (
     cmd_generate_predictions
 )
 
-# ===== НОВЫЙ ИМПОРТ =====
-from app.handlers.debug import (
+# ===== ИСПРАВЛЕННЫЙ ИМПОРТ =====
+from app.handlers.fixtures_check import (
     cmd_fixtures_check
 )
 
@@ -130,7 +130,7 @@ async def run_bot(
         Command("загрузить_календарь")
     )
 
-    # ===== НОВАЯ КОМАНДА =====
+    # ===== КОМАНДА ДЛЯ ПРОВЕРКИ КАЛЕНДАРЯ =====
     dp.message.register(
         cmd_fixtures_check,
         Command("fixtures_check")
