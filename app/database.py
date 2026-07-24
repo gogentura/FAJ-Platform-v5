@@ -16,6 +16,34 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================
+# PostgreSQL Compatibility Wrapper
+# =====================================================
+
+class FAJConnection:
+    """
+    Обёртка для psycopg2 connection, добавляющая метод .execute()
+    для совместимости со старыми SQLite-стилями (conn.execute(...)).
+    """
+    def __init__(self, connection):
+        self.connection = connection
+
+    def cursor(self):
+        return self.connection.cursor(cursor_factory=RealDictCursor)
+
+    def commit(self):
+        return self.connection.commit()
+
+    def close(self):
+        return self.connection.close()
+
+    def execute(self, query, params=None):
+        """Выполнить запрос напрямую, создавая курсор автоматически."""
+        cursor = self.cursor()
+        cursor.execute(query, params or ())
+        return cursor
+
+
+# =====================================================
 # CONNECTION
 # =====================================================
 
@@ -23,7 +51,8 @@ def get_connection():
     url = os.getenv("DATABASE_URL")
     if not url:
         raise RuntimeError("DATABASE_URL is missing")
-    return psycopg2.connect(url, cursor_factory=RealDictCursor)
+    raw_conn = psycopg2.connect(url)
+    return FAJConnection(raw_conn)
 
 
 # =====================================================
@@ -41,6 +70,7 @@ def get_db():
 
 def init_database():
     conn = get_connection()
+    # Работаем через .cursor() (новый стиль)
     cur = conn.cursor()
 
     # ================================================
