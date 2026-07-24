@@ -1,6 +1,7 @@
 # =====================================================
 # FAJ Platform v6.0
 # FAJ Predictions Handler
+# With Team Passport Analysis
 # =====================================================
 
 
@@ -9,6 +10,11 @@ from aiogram import types
 
 from app.managers.prediction_manager import (
     get_predictions
+)
+
+
+from app.managers.passport_analysis import (
+    format_passport_block
 )
 
 
@@ -39,7 +45,7 @@ def format_probability(value):
         return round(value, 1)
 
 
-    except Exception:
+    except:
 
         return 0
 
@@ -73,7 +79,7 @@ def confidence_label(value):
             return "🔴 Низкая"
 
 
-    except Exception:
+    except:
 
         return "⚪ Нет данных"
 
@@ -124,6 +130,7 @@ async def cmd_faj_predictions(
 
 После этого появятся:
 
+• анализ команд
 • вероятности
 • xG
 • точные счета
@@ -145,17 +152,28 @@ async def cmd_faj_predictions(
 
             "🤖 *FAJ прогнозы РПЛ 2026/27*\n\n"
 
-            "🧠 Модель: FAJ Engine v6.0\n"
+            "🧠 FAJ Engine v6.0\n"
 
-            "🎲 Симуляция: Monte Carlo 10000\n"
+            "🎲 Monte Carlo: 10000\n"
 
-            "📊 Метод: xG + Team Passport\n\n"
+            "📊 xG + Team Passport\n\n"
 
         )
 
 
 
         for item in predictions[:8]:
+
+
+            home_team = item.get(
+                "home_team"
+            )
+
+
+            away_team = item.get(
+                "away_team"
+            )
+
 
 
             confidence = item.get(
@@ -169,13 +187,36 @@ async def cmd_faj_predictions(
 
                 "\n━━━━━━━━━━━━━━\n"
 
-                f"⚽ *{item.get('home_team')} — "
-                f"{item.get('away_team')}*\n\n"
+                f"⚽ *{home_team} — {away_team}*\n\n"
 
                 f"📅 Тур: {item.get('round','-')}\n\n"
 
             )
 
+
+
+            # ===============================
+            # PASSPORT ANALYSIS
+            # ===============================
+
+
+            text += format_passport_block(
+
+                home_team,
+
+                away_team
+
+            )
+
+
+            text += "\n"
+
+
+
+
+            # ===============================
+            # MODEL OUTPUT
+            # ===============================
 
 
             text += (
@@ -238,7 +279,6 @@ async def cmd_faj_predictions(
             )
 
 
-
             text += (
 
                 f"⚽ Тотал больше 2.5: "
@@ -265,7 +305,6 @@ async def cmd_faj_predictions(
 
 
     except Exception as e:
-
 
 
         await message.answer(
