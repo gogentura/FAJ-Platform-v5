@@ -10,6 +10,7 @@ from app.monitoring.calendar_monitor import sync_calendar
 from app.monitoring.results_monitor import update_results
 from app.monitoring.stats_monitor import update_statistics
 from app.monitoring.passport_monitor import update_all_passports
+from app.monitoring.prediction_scheduler import run_prediction_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +21,9 @@ logger = logging.getLogger(__name__)
 
 def run_scheduler():
 
-    logger.info("=======================================")
+    logger.info("====================================")
     logger.info("FAJ Monitoring Scheduler started")
-    logger.info("=======================================")
+    logger.info("====================================")
 
     started = datetime.now()
 
@@ -30,9 +31,10 @@ def run_scheduler():
 
     try:
 
-        # -----------------------------------------
-        # 1. Calendar
-        # -----------------------------------------
+        # ============================================
+        # STEP 1
+        # CALENDAR
+        # ============================================
 
         logger.info("STEP 1 :: Calendar")
 
@@ -41,36 +43,41 @@ def run_scheduler():
             season="2026/27"
         )
 
-        # -----------------------------------------
-        # 2. Results
-        # -----------------------------------------
+        # ============================================
+        # STEP 2
+        # RESULTS
+        # ============================================
 
         logger.info("STEP 2 :: Results")
 
         report["results"] = update_results()
 
-        # -----------------------------------------
-        # 3. Statistics
-        # -----------------------------------------
+        # ============================================
+        # STEP 3
+        # STATISTICS
+        # ============================================
 
         logger.info("STEP 3 :: Statistics")
 
         report["statistics"] = update_statistics()
 
-        # -----------------------------------------
-        # 4. Passports
-        # -----------------------------------------
+        # ============================================
+        # STEP 4
+        # PASSPORTS
+        # ============================================
 
         logger.info("STEP 4 :: Passports")
 
         report["passports"] = update_all_passports()
 
-        # -----------------------------------------
-        # Prediction Manager
-        # подключим позже
-        # -----------------------------------------
+        # ============================================
+        # STEP 5
+        # PREDICTIONS
+        # ============================================
 
-        report["predictions"] = "waiting"
+        logger.info("STEP 5 :: Predictions")
+
+        report["predictions"] = run_prediction_scheduler()
 
     except Exception as e:
 
@@ -94,7 +101,7 @@ def run_scheduler():
 
 
 # =====================================================
-# MANUAL RUN
+# MANUAL START
 # =====================================================
 
 if __name__ == "__main__":
