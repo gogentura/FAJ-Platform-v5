@@ -1,421 +1,547 @@
+# =====================================================
+# FAJ Platform v6.2
+# app/database.py
+#
+# PostgreSQL Database Layer
+# =====================================================
+
 import os
+import logging
+
 from datetime import datetime
 
-# =====================================================
-# DEBUG
-# =====================================================
-print("=== DEBUG: DATABASE_URL from env ===")
-print(repr(os.getenv("DATABASE_URL")))
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+
+logger = logging.getLogger(__name__)
+
 
 # =====================================================
 # CONNECTION
 # =====================================================
 
-def get_db():
-    print("=== DEBUG: inside get_db, DATABASE_URL ==")
-    print(repr(DATABASE_URL))
 
-    if not DATABASE_URL:
-        raise Exception("DATABASE_URL не найден в Railway Variables")
+def get_connection():
 
-    try:
-        import psycopg2
-        from psycopg2.extras import RealDictCursor
-        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-        print("✅ PostgreSQL connected")
-        return PostgresWrapper(conn)
-    except Exception as e:
-        print("❌ POSTGRES ERROR:", e)
-        raise e
+    url = os.getenv(
+        "DATABASE_URL"
+    )
 
-# =====================================================
-# POSTGRES WRAPPER
-# =====================================================
 
-class PostgresWrapper:
-    def __init__(self, conn):
-        self.conn = conn
+    if not url:
 
-    def execute(self, query, params=()):
-        query = query.replace("?", "%s")
-        if params is None:
-            params = ()
-        if not isinstance(params, tuple):
-            params = tuple(params)
-        cursor = self.conn.cursor()
-        try:
-            cursor.execute(query, params)
-        except Exception as e:
-            print("========== SQL ERROR ==========")
-            print("QUERY:", query)
-            print("PARAMS:", params)
-            print("COUNT:", len(params))
-            print("===============================")
-            raise e
-        return cursor
+        raise RuntimeError(
+            "DATABASE_URL is missing"
+        )
 
-    def commit(self):
-        self.conn.commit()
 
-    def rollback(self):
-        self.conn.rollback()
+    return psycopg2.connect(
+        url,
+        cursor_factory=RealDictCursor
+    )
 
-    def close(self):
-        self.conn.close()
+
 
 # =====================================================
 # INIT DATABASE
 # =====================================================
 
-def init_db():
-    conn = get_db()
 
-    # =================================================
-    # PASSPORTS
-    # =================================================
-    conn.execute(
-    """
-    CREATE TABLE IF NOT EXISTS passports (
-        team TEXT PRIMARY KEY,
-        league TEXT,
-        attack INTEGER,
-        defense INTEGER,
-        control INTEGER,
-        form_index INTEGER,
-        efficiency INTEGER,
-        mentality INTEGER,
-        home_rating INTEGER,
-        away_rating INTEGER,
-        coach_factor INTEGER,
-        injury_index INTEGER,
-        fatigue_index INTEGER,
-        historical_xg_value REAL,
-        historical_xg_source TEXT,
-        avg_goals_value REAL,
-        avg_goals_source TEXT,
-        avg_goals_conceded_value REAL,
-        avg_goals_conceded_source TEXT,
-        avg_possession_value REAL,
-        avg_possession_source TEXT,
-        version INTEGER,
-        created TEXT,
-        updated TEXT,
-        data TEXT
-    )
-    """
-    )
-    conn.commit()
+def init_database():
 
-    passport_columns = [
-        "historical_xg_source TEXT",
-        "avg_goals_source TEXT",
-        "avg_goals_conceded_source TEXT",
-        "avg_possession_source TEXT",
-        "data TEXT"
-    ]
-    for column in passport_columns:
-        try:
-            conn.execute(f"ALTER TABLE passports ADD COLUMN {column}")
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            pass
+    conn = get_connection()
 
-    # =================================================
-    # JOURNAL
-    # =================================================
-    conn.execute(
-    """
-    CREATE TABLE IF NOT EXISTS journal (
-        id SERIAL PRIMARY KEY,
-        date TEXT,
-        match TEXT,
-        home_team TEXT,
-        away_team TEXT,
-        prediction TEXT,
-        winner TEXT,
-        winner_prob REAL,
-        home_prob REAL,
-        draw_prob REAL,
-        away_prob REAL,
-        xg_home REAL,
-        xg_away REAL,
-        expected_score TEXT,
-        top_scores TEXT,
-        btts REAL,
-        over25 REAL,
-        actual_score TEXT,
-        actual_winner TEXT,
-        confidence REAL,
-        model_version TEXT,
-        data_version TEXT,
-        accuracy TEXT,
-        league TEXT,
-        created TEXT
-    )
-    """
-    )
-    conn.commit()
+    cur = conn.cursor()
 
-    journal_columns_to_add = [
-        "xg_home REAL",
-        "xg_away REAL",
-        "confidence REAL",
-        "model_version TEXT",
-        "accuracy TEXT",
-        "league TEXT",
-        "created TEXT"
-    ]
-    for column in journal_columns_to_add:
-        try:
-            conn.execute(f"ALTER TABLE journal ADD COLUMN {column}")
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            pass
 
-    try:
-        conn.execute("ALTER TABLE journal DROP COLUMN IF EXISTS total_xg")
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        pass
-
-    # =================================================
-    # MATCH RESULTS
-    # =================================================
-    conn.execute(
-    """
-    CREATE TABLE IF NOT EXISTS match_results (
-        id SERIAL PRIMARY KEY,
-        match TEXT NOT NULL,
-        date TEXT NOT NULL,
-        home_goals INTEGER,
-        away_goals INTEGER,
-        score TEXT,
-        winner TEXT,
-        created TEXT
-    )
-    """
-    )
-    conn.commit()
-
-    # =================================================
+    # ================================================
     # FIXTURES
-    # =================================================
-    conn.execute(
-    """
-    CREATE TABLE IF NOT EXISTS fixtures (
-        id SERIAL PRIMARY KEY,
-        league TEXT,
-        season TEXT,
-        round INTEGER,
-        match_date TEXT,
-        home_team TEXT,
-        away_team TEXT,
-        status TEXT,
-        result TEXT,
-        winner TEXT,
-        prediction_created BOOLEAN DEFAULT FALSE,
-        created TEXT
+    # ================================================
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fixtures (
+
+            id SERIAL PRIMARY KEY,
+
+            league TEXT NOT NULL,
+
+            season TEXT NOT NULL,
+
+            round INTEGER,
+
+            match_date DATE,
+
+            match_time TEXT,
+
+
+            home_team TEXT NOT NULL,
+
+            away_team TEXT NOT NULL,
+
+
+            status TEXT DEFAULT 'scheduled',
+
+
+            home_score INTEGER,
+
+            away_score INTEGER,
+
+
+            result TEXT,
+
+            winner TEXT,
+
+
+            source TEXT,
+
+
+            created TIMESTAMP DEFAULT NOW(),
+
+            updated TIMESTAMP DEFAULT NOW()
+
+
+        );
+        """
     )
-    """
+
+
+
+    # ================================================
+    # TEAM PASSPORTS
+    # ================================================
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS team_passports (
+
+            id SERIAL PRIMARY KEY,
+
+
+            league TEXT,
+
+            season TEXT,
+
+
+            team TEXT,
+
+
+            attack REAL,
+
+            defense REAL,
+
+            control REAL,
+
+            efficiency REAL,
+
+            mentality REAL,
+
+            discipline REAL,
+
+            fitness REAL,
+
+            predictability REAL,
+
+
+            xg_for REAL,
+
+            xg_against REAL,
+
+
+            form REAL,
+
+
+            injury_index REAL DEFAULT 0,
+
+            fatigue_index REAL DEFAULT 0,
+
+            transfer_index REAL DEFAULT 0,
+
+
+            updated TIMESTAMP DEFAULT NOW(),
+
+
+            UNIQUE(
+                league,
+                season,
+                team
+            )
+
+        );
+        """
     )
+
+
+
+    # ================================================
+    # MATCH STATISTICS
+    # ================================================
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS match_statistics (
+
+            id SERIAL PRIMARY KEY,
+
+
+            fixture_id INTEGER REFERENCES fixtures(id),
+
+
+            xg_home REAL,
+
+            xg_away REAL,
+
+
+            shots_home INTEGER,
+
+            shots_away INTEGER,
+
+
+            shots_target_home INTEGER,
+
+            shots_target_away INTEGER,
+
+
+            possession_home REAL,
+
+            possession_away REAL,
+
+
+            corners_home INTEGER,
+
+            corners_away INTEGER,
+
+
+            cards_home INTEGER,
+
+            cards_away INTEGER,
+
+
+            source TEXT,
+
+
+            updated TIMESTAMP DEFAULT NOW()
+
+        );
+        """
+    )
+
+
+
+    # ================================================
+    # PREDICTIONS
+    # ================================================
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS predictions (
+
+            id SERIAL PRIMARY KEY,
+
+
+            fixture_id INTEGER REFERENCES fixtures(id),
+
+
+            home_win REAL,
+
+            draw REAL,
+
+            away_win REAL,
+
+
+            xg_home REAL,
+
+            xg_away REAL,
+
+
+            score_prediction TEXT,
+
+
+            confidence REAL,
+
+
+            model_version TEXT,
+
+
+            created TIMESTAMP DEFAULT NOW()
+
+        );
+        """
+    )
+
+
+
+    # ================================================
+    # JOURNAL
+    # ================================================
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS journal (
+
+            id SERIAL PRIMARY KEY,
+
+
+            fixture_id INTEGER,
+
+
+            prediction TEXT,
+
+
+            actual_result TEXT,
+
+
+            accuracy REAL,
+
+
+            error_type TEXT,
+
+
+            notes TEXT,
+
+
+            created TIMESTAMP DEFAULT NOW()
+
+        );
+        """
+    )
+
+
+
+    # ================================================
+    # SOURCES MONITOR
+    # ================================================
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sources_monitor (
+
+            id SERIAL PRIMARY KEY,
+
+
+            source TEXT UNIQUE,
+
+
+            url TEXT,
+
+
+            status TEXT,
+
+
+            last_check TIMESTAMP,
+
+
+            last_update TIMESTAMP,
+
+
+            errors TEXT
+
+        );
+        """
+    )
+
+
+
     conn.commit()
 
-    # Миграция для существующей таблицы (если была)
-    new_columns = [
-        "season TEXT",
-        "match_date TEXT",
-        "prediction_created BOOLEAN DEFAULT FALSE"
-    ]
-    for col in new_columns:
-        try:
-            conn.execute(f"ALTER TABLE fixtures ADD COLUMN {col}")
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            pass
-
-    try:
-        conn.execute("SELECT date FROM fixtures LIMIT 0")
-        conn.execute("ALTER TABLE fixtures RENAME COLUMN date TO match_date")
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        pass
-
-    try:
-        conn.execute("ALTER TABLE fixtures DROP COLUMN IF EXISTS date")
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        pass
-
-    try:
-        conn.execute("SELECT round FROM fixtures LIMIT 0")
-    except Exception:
-        try:
-            conn.execute("ALTER TABLE fixtures ADD COLUMN round INTEGER")
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            pass
-
-    # =================================================
-    # FAJ PREDICTIONS
-    # =================================================
-    conn.execute(
-    """
-    CREATE TABLE IF NOT EXISTS predictions (
-        id SERIAL PRIMARY KEY,
-        fixture_id INTEGER,
-        league TEXT,
-        season TEXT,
-        round INTEGER,
-        home_team TEXT,
-        away_team TEXT,
-        winner_prediction TEXT,
-        home_probability REAL,
-        draw_probability REAL,
-        away_probability REAL,
-        xg_home REAL,
-        xg_away REAL,
-        expected_score TEXT,
-        top_scores TEXT,
-        btts_probability REAL,
-        over25_probability REAL,
-        confidence REAL,
-        model_version TEXT,
-        actual_score TEXT,
-        actual_winner TEXT,
-        accuracy TEXT,
-        created TEXT
-    )
-    """
-    )
-    conn.commit()
-
-    # =================================================
-    # EXPERT PREDICTIONS
-    # =================================================
-    conn.execute(
-    """
-    CREATE TABLE IF NOT EXISTS expert_predictions (
-        id SERIAL PRIMARY KEY,
-        fixture_id INTEGER,
-        league TEXT,
-        season TEXT,
-        round INTEGER,
-        home_team TEXT,
-        away_team TEXT,
-        winner_prediction TEXT,
-        score_prediction TEXT,
-        confidence REAL,
-        expert_name TEXT DEFAULT 'Главный аналитик',
-        comment TEXT,
-        actual_score TEXT,
-        actual_winner TEXT,
-        accuracy TEXT,
-        created TEXT
-    )
-    """
-    )
-    conn.commit()
-
-    # =================================================
-    # TEAM MATCH STATISTICS (НОВАЯ ТАБЛИЦА)
-    # =================================================
-    conn.execute(
-    """
-    CREATE TABLE IF NOT EXISTS team_match_stats (
-        id SERIAL PRIMARY KEY,
-        fixture_id INTEGER,
-        league TEXT,
-        season TEXT,
-        round INTEGER,
-        home_team TEXT,
-        away_team TEXT,
-        home_score INTEGER,
-        away_score INTEGER,
-        xg_home REAL,
-        xg_away REAL,
-        shots_home INTEGER,
-        shots_away INTEGER,
-        shots_on_target_home INTEGER,
-        shots_on_target_away INTEGER,
-        possession_home REAL,
-        possession_away REAL,
-        corners_home INTEGER,
-        corners_away INTEGER,
-        yellow_home INTEGER,
-        yellow_away INTEGER,
-        red_home INTEGER,
-        red_away INTEGER,
-        created TEXT
-    )
-    """
-    )
-    conn.commit()
-
-    # =================================================
-    # ALIASES
-    # =================================================
-    conn.execute(
-    """
-    CREATE TABLE IF NOT EXISTS team_aliases (
-        team TEXT NOT NULL,
-        alias TEXT PRIMARY KEY
-    )
-    """
-    )
-    conn.commit()
-
-    # =================================================
-    # API USAGE
-    # =================================================
-    conn.execute(
-    """
-    CREATE TABLE IF NOT EXISTS api_usage (
-        id SERIAL PRIMARY KEY,
-        service TEXT,
-        used INTEGER DEFAULT 0,
-        limit_value INTEGER,
-        updated TEXT
-    )
-    """
-    )
-    conn.commit()
-
-    # =================================================
-    # MODEL CONFIG
-    # =================================================
-    conn.execute(
-    """
-    CREATE TABLE IF NOT EXISTS model_config (
-        key TEXT PRIMARY KEY,
-        value TEXT
-    )
-    """
-    )
-    conn.commit()
+    cur.close()
 
     conn.close()
 
+
+    logger.info(
+        "FAJ database initialized"
+    )
+
+
+
 # =====================================================
-# HELPERS
+# FIXTURES METHODS
 # =====================================================
 
-def count_passports():
-    conn = get_db()
-    row = conn.execute("SELECT COUNT(*) AS cnt FROM passports").fetchone()
-    conn.close()
-    return row["cnt"] if row else 0
 
-def database_info():
-    return {
-        "database": "PostgreSQL Railway",
-        "time": datetime.now().isoformat()
-    }
+class Database:
+
+
+
+    # -----------------------------------------------
+
+    def get_fixture(
+        self,
+        league,
+        season,
+        home_team,
+        away_team
+    ):
+
+
+        conn = get_connection()
+
+        cur = conn.cursor()
+
+
+        cur.execute(
+            """
+            SELECT *
+
+            FROM fixtures
+
+            WHERE
+
+            league=%s
+
+            AND season=%s
+
+            AND home_team=%s
+
+            AND away_team=%s
+
+            LIMIT 1
+            """,
+
+            (
+                league,
+                season,
+                home_team,
+                away_team
+            )
+        )
+
+
+        row = cur.fetchone()
+
+
+        conn.close()
+
+
+        return row
+
+
+
+    # -----------------------------------------------
+
+    def insert_fixture(
+        self,
+        data
+    ):
+
+
+        conn = get_connection()
+
+        cur = conn.cursor()
+
+
+        cur.execute(
+            """
+            INSERT INTO fixtures
+
+            (
+            league,
+            season,
+            match_date,
+            match_time,
+            home_team,
+            away_team,
+            status,
+            source
+            )
+
+
+            VALUES
+
+            (%s,%s,%s,%s,%s,%s,%s,%s)
+
+            """,
+
+            (
+
+                data["league"],
+
+                data["season"],
+
+                data["date"],
+
+                data["time"],
+
+                data["home_team"],
+
+                data["away_team"],
+
+                data["status"],
+
+                "soccer365"
+
+            )
+        )
+
+
+        conn.commit()
+
+        conn.close()
+
+
+
+    # -----------------------------------------------
+
+    def update_fixture(
+        self,
+        fixture_id,
+        data
+    ):
+
+
+        conn = get_connection()
+
+        cur = conn.cursor()
+
+
+        cur.execute(
+            """
+            UPDATE fixtures
+
+            SET
+
+            match_date=%s,
+
+            match_time=%s,
+
+            status=%s,
+
+            updated=%s
+
+
+            WHERE id=%s
+
+            """,
+
+            (
+
+                data["date"],
+
+                data["time"],
+
+                data["status"],
+
+                datetime.now(),
+
+                fixture_id
+
+            )
+        )
+
+
+        conn.commit()
+
+        conn.close()
+
+
+
+# =====================================================
+# AUTO INIT
+# =====================================================
+
+
+if __name__ == "__main__":
+
+    init_database()
