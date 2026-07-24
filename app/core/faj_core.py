@@ -61,6 +61,27 @@ class FAJCore:
         }
 
     # ==========================================
+    # UNIVERSAL PREDICT API
+    # FAJ v6.0
+    # ==========================================
+
+    def predict(
+        self,
+        home_team,
+        away_team,
+        league="RPL"
+    ):
+        """
+        Универсальный метод для получения прогноза.
+        Все модули FAJ обращаются к этому методу.
+        """
+        return self.predict_match(
+            home_team,
+            away_team,
+            league
+        )
+
+    # ==========================================
     # ЗАГРУЗКА ПАСПОРТА
     # ==========================================
 
@@ -142,7 +163,6 @@ class FAJCore:
         draw = np.sum(home_goals == away_goals)
         away_win = np.sum(home_goals < away_goals)
 
-        # ===== ИСПРАВЛЕНАЯ ЧАСТЬ (отступы и формирование списка) =====
         scores = {}
         for h, a in zip(home_goals, away_goals):
             key = (int(h), int(a))
@@ -160,7 +180,6 @@ class FAJCore:
                 "score": f"{score[0]}-{score[1]}",
                 "probability": round(count / n * 100, 1)
             })
-        # ===== КОНЕЦ ИСПРАВЛЕНИЯ =====
 
         return {
             "home_win_prob": round(home_win / n, 3),
@@ -215,12 +234,10 @@ class FAJCore:
 
         probability = max(home, draw, away)
 
-        # ===== ИСПРАВЛЕНИЕ: правильный доступ к счёту =====
         if simulation["top_scores"]:
             expected_score = simulation["top_scores"][0]["score"]
         else:
             expected_score = f"{round(home_xg)}-{round(away_xg)}"
-        # ===== КОНЕЦ ИСПРАВЛЕНИЯ =====
 
         confidence = int(50 + probability * 40)
 
