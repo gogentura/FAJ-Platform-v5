@@ -39,10 +39,43 @@ def format_probability(value):
         return round(value, 1)
 
 
-    except:
-
+    except Exception:
 
         return 0
+
+
+
+
+# =====================================================
+# CONFIDENCE LABEL
+# =====================================================
+
+
+def confidence_label(value):
+
+    try:
+
+        value = float(value)
+
+
+        if value >= 75:
+
+            return "🟢 Высокая"
+
+
+        elif value >= 60:
+
+            return "🟡 Средняя"
+
+
+        else:
+
+            return "🔴 Низкая"
+
+
+    except Exception:
+
+        return "⚪ Нет данных"
 
 
 
@@ -89,12 +122,12 @@ async def cmd_faj_predictions(
 🚀 Создать прогнозы тура
 
 
-После этого здесь появятся:
+После этого появятся:
 
 • вероятности
 • xG
 • точные счета
-• Confidence
+• надёжность прогноза
 • версия модели
 """,
 
@@ -112,13 +145,24 @@ async def cmd_faj_predictions(
 
             "🤖 *FAJ прогнозы РПЛ 2026/27*\n\n"
 
-            "🧠 Модель: FAJ v6.0\n"
+            "🧠 Модель: FAJ Engine v6.0\n"
+
+            "🎲 Симуляция: Monte Carlo 10000\n"
+
+            "📊 Метод: xG + Team Passport\n\n"
 
         )
 
 
 
         for item in predictions[:8]:
+
+
+            confidence = item.get(
+                "confidence",
+                0
+            )
+
 
 
             text += (
@@ -128,13 +172,7 @@ async def cmd_faj_predictions(
                 f"⚽ *{item.get('home_team')} — "
                 f"{item.get('away_team')}*\n\n"
 
-            )
-
-
-
-            text += (
-
-                f"📅 Тур: {item.get('round','-')}\n"
+                f"📅 Тур: {item.get('round','-')}\n\n"
 
             )
 
@@ -181,9 +219,11 @@ async def cmd_faj_predictions(
 
             text += (
 
-                f"🔥 Confidence: "
+                f"🔥 Надёжность прогноза: "
 
-                f"{item.get('confidence','-')}%\n\n"
+                f"{confidence}%\n"
+
+                f"{confidence_label(confidence)}\n\n"
 
             )
 
@@ -191,7 +231,7 @@ async def cmd_faj_predictions(
 
             text += (
 
-                f"⚽ ОЗ: "
+                f"⚽ Обе забьют: "
 
                 f"{format_probability(item.get('btts_probability'))}%\n"
 
@@ -201,7 +241,7 @@ async def cmd_faj_predictions(
 
             text += (
 
-                f"⚽ Тотал 2.5: "
+                f"⚽ Тотал больше 2.5: "
 
                 f"{format_probability(item.get('over25_probability'))}%\n"
 
