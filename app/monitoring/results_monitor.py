@@ -1,193 +1,327 @@
 # =====================================================
 # FAJ Platform v6.2
-# Results Monitor
+# app/monitoring/results_monitor.py
+#
+# Match Results Monitor
+#
+# Source:
+#   Soccer365
+#
+# DB:
+#   PostgreSQL fixtures
 # =====================================================
 
-import logging
-from datetime import datetime
 
-from app.database import get_db
+import logging
+import re
+
+
+from app.monitoring.sources.soccer365 import (
+    Soccer365Source
+)
+
+
+from app.database import (
+    get_connection
+)
+
+
 
 logger = logging.getLogger(__name__)
 
 
-# =====================================================
-# LOAD SCHEDULED MATCHES
-# =====================================================
-
-def get_scheduled_matches():
-
-    conn = get_db()
-
-    try:
-
-        rows = conn.execute(
-            """
-            SELECT *
-
-            FROM fixtures
-
-            WHERE status='scheduled'
-
-            ORDER BY match_date
-            """
-        ).fetchall()
-
-        return [dict(r) for r in rows]
-
-    finally:
-
-        conn.close()
-
 
 # =====================================================
-# SAVE RESULT
+# RESULTS MONITOR
 # =====================================================
 
-def update_fixture_result(
-    fixture_id,
-    home_score,
-    away_score
-):
 
-    conn = get_db()
+class ResultsMonitor:
 
-    try:
 
-        if home_score > away_score:
 
-            winner = "home"
+    def __init__(self):
 
-        elif away_score > home_score:
+        self.source = Soccer365Source()
 
-            winner = "away"
 
-        else:
 
-            winner = "draw"
+    # =================================================
+    # LOAD RESULTS
+    # =================================================
 
-        conn.execute(
-            """
-            UPDATE fixtures
+    def get_results(self):
 
-            SET
 
-                status=?,
+        html = self.source.get_html()
 
-                result=?,
 
-                winner=?,
+        if not html:
 
-                updated=?
+            return []
 
-            WHERE id=?
-            """,
 
-            (
-                "finished",
 
-                f"{home_score}:{away_score}",
+        results = []
 
-                winner,
 
-                datetime.now().isoformat(),
 
-                fixture_id
-            )
+        # ------------------------------------------------
+        # Ищем завершённые матчи
+        #
+        # пример Soccer365:
+        #
+        # Акрон - Ротор (0-1)
+        #
+        # ------------------------------------------------
+
+
+        pattern = re.compile(
+
+            r"(.+?)\s-\s(.+?)\s"
+            r"\((\d+)-(\d+)\)"
+
         )
+
+
+
+        matches = pattern.findall(
+            html
+        )
+
+
+
+        for match in matches:
+
+
+            home = (
+                match[0]
+                .strip()
+            )
+
+
+            away = (
+                match[1]
+                .strip()
+            )
+
+
+            home_score = int(
+                match[2]
+            )
+
+
+            away_score = int(
+                match[3]
+            )
+
+
+
+            results.append(
+
+                {
+
+                    "home_team":
+                    self.source.normalize_team(
+                        home
+                    ),
+
+
+                    "away_team":
+                    self.source.normalize_team(
+                        away
+                    ),
+
+
+                    "home_score":
+                    home_score,
+
+
+                    "away_score":
+                    away_score,
+
+
+                    "status":
+                    "finished"
+
+                }
+
+            )
+
+
+
+        logger.info(
+
+            f"Results found: {len(results)}"
+
+        )
+
+
+
+        return results
+
+
+
+    # =================================================
+    # UPDATE DATABASE
+    # =================================================
+
+    def update_results(self):
+
+
+        results = self.get_results()
+
+
+        if not results:
+
+            return {
+
+                "updated": 0,
+
+                "errors": [
+                    "No results found"
+                ]
+
+            }
+
+
+
+        conn = get_connection()
+
+
+        cur = conn.cursor()
+
+
+
+        updated = 0
+
+        errors = []
+
+
+
+        for item in results:
+
+
+            try:
+
+
+                if item["home_score"] > item["away_score"]:
+
+                    result = "home_win"
+
+
+                elif item["home_score"] < item["away_score"]:
+
+                    result = "away_win"
+
+
+                else:
+
+                    result = "draw"
+
+
+
+                cur.execute(
+
+                    """
+                    UPDATE fixtures
+
+                    SET
+
+                    status=%s,
+
+                    home_score=%s,
+
+                    away_score=%s,
+
+                    result=%s,
+
+                    updated=NOW()
+
+
+                    WHERE
+
+                    league=%s
+
+                    AND home_team=%s
+
+                    AND away_team=%s
+
+                    """,
+
+                    (
+
+                        "finished",
+
+                        item["home_score"],
+
+                        item["away_score"],
+
+                        result,
+
+                        "RPL",
+
+                        item["home_team"],
+
+                        item["away_team"]
+
+                    )
+
+                )
+
+
+
+                if cur.rowcount > 0:
+
+                    updated += 1
+
+
+
+            except Exception as e:
+
+
+                logger.exception(e)
+
+
+                errors.append(
+
+                    str(e)
+
+                )
+
+
 
         conn.commit()
 
-        return True
-
-    except Exception as e:
-
-        conn.rollback()
-
-        logger.exception(e)
-
-        return False
-
-    finally:
-
         conn.close()
 
 
-# =====================================================
-# FETCH RESULT
-# =====================================================
 
-def fetch_result_from_sources(
-    fixture
-):
+        return {
 
-    """
-    Пока заглушка.
 
-    Позже сюда подключаются:
+            "updated":
 
-    Soccer365
+            updated,
 
-    Flashscore
 
-    API Football
-    """
+            "errors":
 
-    return None
+            errors
+
+        }
+
 
 
 # =====================================================
-# UPDATE RESULTS
+# PUBLIC FUNCTION
 # =====================================================
 
-def update_results():
 
-    fixtures = get_scheduled_matches()
+def sync_results():
 
-    report = {
 
-        "checked": 0,
+    monitor = ResultsMonitor()
 
-        "updated": 0,
 
-        "errors": []
-
-    }
-
-    for fixture in fixtures:
-
-        report["checked"] += 1
-
-        result = fetch_result_from_sources(
-            fixture
-        )
-
-        if result is None:
-
-            continue
-
-        ok = update_fixture_result(
-
-            fixture["id"],
-
-            result["home_score"],
-
-            result["away_score"]
-
-        )
-
-        if ok:
-
-            report["updated"] += 1
-
-        else:
-
-            report["errors"].append(
-
-                fixture["id"]
-
-            )
-
-    logger.info(report)
-
-    return report
+    return monitor.update_results()
