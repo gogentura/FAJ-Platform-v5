@@ -12,11 +12,14 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 
+
 from app.config import Config
 
 
 from app.core.faj_core import FAJCore
+
 from app.journal import Journal
+
 
 
 
@@ -27,17 +30,24 @@ from app.journal import Journal
 
 from app.handlers.start import cmd_start
 
+
 from app.handlers.predict import handle_predict
+
 
 from app.handlers.journal import cmd_journal
 
+
 from app.handlers.status import cmd_status
+
 
 from app.handlers.health import cmd_health
 
+
 from app.handlers.load_passports import cmd_load_passports
 
+
 from app.handlers.database_check import cmd_dbcheck
+
 
 
 from app.handlers.passport import (
@@ -46,16 +56,18 @@ from app.handlers.passport import (
 )
 
 
+
 from app.handlers.fixtures import cmd_fixtures
+
 
 from app.handlers.load_fixtures import cmd_load_fixtures
 
 
-# NEW
 
 from app.handlers.faj_predictions import (
     cmd_faj_predictions
 )
+
 
 
 from app.handlers.expert_predictions import (
@@ -64,14 +76,28 @@ from app.handlers.expert_predictions import (
 
 
 
+from app.handlers.generate_predictions import (
+    cmd_generate_predictions
+)
+
+
+
+
 # =====================================================
-# KEYBOARD
+# KEYBOARDS
 # =====================================================
 
 
 from app.keyboards.main import (
     main_keyboard
 )
+
+
+
+from app.keyboards.admin import (
+    admin_keyboard
+)
+
 
 
 
@@ -106,7 +132,18 @@ SERVICE_BUTTONS = {
 
     "⚙️ Админ",
 
-    "❤️ Проверка"
+    "❤️ Проверка",
+
+
+    "📥 Загрузить паспорта",
+
+    "📥 Загрузить календарь",
+
+    "🚀 Создать прогнозы тура",
+
+    "🗄 Проверка базы",
+
+    "⬅️ Главное меню"
 
 }
 
@@ -145,6 +182,7 @@ async def run_bot(
 
 
     dp = Dispatcher()
+
 
 
 
@@ -196,8 +234,9 @@ async def run_bot(
 
 
 
+
     # =================================================
-    # MAIN MENU BUTTONS
+    # MAIN MENU
     # =================================================
 
 
@@ -206,11 +245,10 @@ async def run_bot(
         lambda m:
         m.text == "📊 Статус"
     )
-    async def status_button(
-        message: Message
-    ):
+    async def status_button(message: Message):
 
         await cmd_status(message)
+
 
 
 
@@ -218,11 +256,10 @@ async def run_bot(
         lambda m:
         m.text == "📋 Журнал"
     )
-    async def journal_button(
-        message: Message
-    ):
+    async def journal_button(message: Message):
 
         await cmd_journal(message)
+
 
 
 
@@ -230,11 +267,10 @@ async def run_bot(
         lambda m:
         m.text == "❤️ Проверка"
     )
-    async def health_button(
-        message: Message
-    ):
+    async def health_button(message: Message):
 
         await cmd_health(message)
+
 
 
 
@@ -242,11 +278,10 @@ async def run_bot(
         lambda m:
         m.text == "📁 Паспорта"
     )
-    async def passport_button(
-        message: Message
-    ):
+    async def passport_button(message: Message):
 
         await button_passport(message)
+
 
 
 
@@ -254,11 +289,10 @@ async def run_bot(
         lambda m:
         m.text == "📅 Матчи"
     )
-    async def fixtures_button(
-        message: Message
-    ):
+    async def fixtures_button(message: Message):
 
         await cmd_fixtures(message)
+
 
 
 
@@ -272,13 +306,10 @@ async def run_bot(
         lambda m:
         m.text == "🤖 FAJ прогнозы"
     )
-    async def faj_prediction_button(
-        message: Message
-    ):
+    async def faj_prediction_button(message: Message):
 
-        await cmd_faj_predictions(
-            message
-        )
+        await cmd_faj_predictions(message)
+
 
 
 
@@ -286,13 +317,94 @@ async def run_bot(
         lambda m:
         m.text == "🧠 Мои прогнозы"
     )
-    async def expert_prediction_button(
+    async def expert_prediction_button(message: Message):
+
+        await cmd_expert_predictions(message)
+
+
+
+
+    # =================================================
+    # ADMIN MENU
+    # =================================================
+
+
+
+    @dp.message(
+        lambda m:
+        m.text == "⚙️ Админ"
+    )
+    async def admin_button(message: Message):
+
+        await message.answer(
+
+            """
+⚙️ Админ панель FAJ
+
+
+Выберите действие:
+
+📥 Загрузить паспорта
+
+📥 Загрузить календарь
+
+🚀 Создать прогнозы тура
+
+🗄 Проверка базы
+""",
+
+            reply_markup=admin_keyboard()
+
+        )
+
+
+
+
+    @dp.message(
+        lambda m:
+        m.text == "🚀 Создать прогнозы тура"
+    )
+    async def generate_predictions_button(
         message: Message
     ):
 
-        await cmd_expert_predictions(
+
+        await cmd_generate_predictions(
             message
         )
+
+
+
+
+    @dp.message(
+        lambda m:
+        m.text == "📥 Загрузить календарь"
+    )
+    async def load_calendar_button(
+        message: Message
+    ):
+
+
+        await cmd_load_fixtures(
+            message
+        )
+
+
+
+
+    @dp.message(
+        lambda m:
+        m.text == "📥 Загрузить паспорта"
+    )
+    async def load_passports_button(
+        message: Message
+    ):
+
+
+        await cmd_load_passports(
+            message
+        )
+
 
 
 
@@ -311,13 +423,14 @@ async def run_bot(
         message: Message
     ):
 
+
         await cmd_passport(message)
 
 
 
 
     # =================================================
-    # MATCH PREDICTION
+    # MATCH PREDICT
     # =================================================
 
 
@@ -337,29 +450,18 @@ async def run_bot(
         and
 
         (
-            m.text.lower().startswith(
-                "прогноз"
-            )
+            m.text.lower().startswith("прогноз")
 
             or
 
-            len(
-                m.text.split()
-            ) == 2
+            len(m.text.split()) == 2
 
         )
+
     )
     async def predict_handler(
         message: Message
     ):
-
-
-        logger.info(
-
-            f"FAJ prediction request: {message.text}"
-
-        )
-
 
 
         await handle_predict(
@@ -371,6 +473,7 @@ async def run_bot(
             journal
 
         )
+
 
 
 
@@ -392,7 +495,6 @@ async def run_bot(
 
 
 Основное меню:
-
 
 📊 Статус        📈 Прогноз
 
@@ -423,10 +525,9 @@ FAJ анализирует:
 
 
 
+
     logger.info(
-
         "FAJ Platform v6.0 started"
-
     )
 
 
