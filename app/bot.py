@@ -61,9 +61,13 @@ from app.handlers.generate_predictions import (
     cmd_generate_predictions
 )
 
-# ===== НОВЫЙ ИМПОРТ ДЛЯ ДИАГНОСТИКИ =====
 from app.handlers.debug_calendar import (
     cmd_debug_calendar
+)
+
+# ===== НОВЫЙ ИМПОРТ =====
+from app.handlers.debug_rpl_source import (
+    cmd_debug_rpl_source
 )
 
 
@@ -213,10 +217,16 @@ async def run_bot(
         Command("clear_fixtures")
     )
 
-    # ===== НОВАЯ КОМАНДА ДЛЯ ДИАГНОСТИКИ =====
+
     dp.message.register(
         cmd_debug_calendar,
         Command("debug_calendar")
+    )
+
+    # ===== НОВАЯ КОМАНДА =====
+    dp.message.register(
+        cmd_debug_rpl_source,
+        Command("debug_rpl")
     )
 
 
