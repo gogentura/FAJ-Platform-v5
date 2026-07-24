@@ -1,5 +1,5 @@
 # =====================================================
-# FAJ Platform v6.2
+# FAJ Platform v6.3
 # app/handlers/update_calendar.py
 #
 # RPL Calendar Update Handler
@@ -50,35 +50,50 @@ async def cmd_update_calendar(
     )
 
 
-
     try:
 
 
-        result = await sync_rpl_calendar()
+        # ВАЖНО:
+        # sync_rpl_calendar() сейчас обычная функция,
+        # поэтому await НЕ используем
+
+        result = sync_rpl_calendar()
 
 
 
         added = result.get(
+
             "added",
+
             0
+
         )
 
 
         updated = result.get(
+
             "updated",
+
             0
+
         )
 
 
         unchanged = result.get(
-            "same",
+
+            "unchanged",
+
             0
+
         )
 
 
         errors = result.get(
+
             "errors",
+
             []
+
         )
 
 
@@ -89,11 +104,11 @@ async def cmd_update_calendar(
 
 
 🏆 Лига:
-RPL
+{result.get("league", "RPL")}
 
 
 📅 Сезон:
-2026/27
+{result.get("season", "2026/27")}
 
 
 ━━━━━━━━━━━━━━
@@ -128,7 +143,6 @@ RPL
 
             for error in errors[:10]:
 
-
                 text += f"""
 
 ❌ {error}
@@ -160,7 +174,9 @@ RPL
 
 
         await message.answer(
+
             text
+
         )
 
 
