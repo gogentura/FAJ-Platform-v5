@@ -65,9 +65,13 @@ from app.handlers.debug_calendar import (
     cmd_debug_calendar
 )
 
-# ===== НОВЫЙ ИМПОРТ =====
 from app.handlers.debug_rpl_source import (
     cmd_debug_rpl_source
+)
+
+# ===== НОВЫЙ ИМПОРТ =====
+from app.handlers.debug_soccer365 import (
+    cmd_debug_soccer365
 )
 
 
@@ -223,10 +227,15 @@ async def run_bot(
         Command("debug_calendar")
     )
 
-    # ===== НОВАЯ КОМАНДА =====
     dp.message.register(
         cmd_debug_rpl_source,
         Command("debug_rpl")
+    )
+
+    # ===== НОВАЯ КОМАНДА =====
+    dp.message.register(
+        cmd_debug_soccer365,
+        Command("debug_soccer365")
     )
 
 
