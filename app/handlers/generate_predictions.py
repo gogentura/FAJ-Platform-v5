@@ -21,7 +21,7 @@ from app.keyboards.main import (
 
 
 # =====================================================
-# GENERATE RPL PREDICTIONS
+# CREATE FAJ TOUR PREDICTIONS
 # =====================================================
 
 
@@ -41,8 +41,8 @@ async def cmd_generate_predictions(
 • календарь
 • паспорта команд
 • FAJ модель
-• расчёт вероятностей
-• xG
+• xG расчёт
+• вероятности
 • точные счета
 
 
@@ -74,6 +74,28 @@ async def cmd_generate_predictions(
         )
 
 
+        error_text = ""
+
+
+
+        if errors:
+
+
+            error_text = "\n\nПодробности:\n"
+
+
+            for error in errors:
+
+
+                error_text += (
+
+                    f"\n⚠️ {error.get('match')}\n"
+
+                    f"{error.get('error')}\n"
+
+                )
+
+
 
         await message.answer(
 
@@ -96,6 +118,8 @@ async def cmd_generate_predictions(
 ❌ Ошибок:
 {len(errors)}
 
+{error_text}
+
 
 Теперь доступно:
 
@@ -117,7 +141,7 @@ async def cmd_generate_predictions(
         await message.answer(
 
             f"""
-❌ Ошибка создания прогнозов FAJ
+❌ Критическая ошибка FAJ
 
 
 Тип:
