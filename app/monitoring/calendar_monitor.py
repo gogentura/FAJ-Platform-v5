@@ -2,27 +2,34 @@
 # FAJ Platform v6.2
 # app/monitoring/calendar_monitor.py
 #
-# Calendar synchronization layer
+# Calendar Synchronization Layer
+#
 # Source:
 #   Soccer365
 #
-# Logic:
-#   INSERT new fixtures
-#   UPDATE changed fixtures
-#   KEEP history
+# DB:
+#   PostgreSQL fixtures
 # =====================================================
 
 import logging
-from datetime import datetime
+
 
 from app.monitoring.sources.soccer365 import (
     Soccer365Source
 )
 
-from app.database import Database
+
+from app.database import (
+    Database
+)
 
 
 logger = logging.getLogger(__name__)
+
+
+# =====================================================
+# MONITOR
+# =====================================================
 
 
 class CalendarMonitor:
@@ -37,18 +44,22 @@ class CalendarMonitor:
 
 
     # =================================================
-    # SYNC CALENDAR
+    # MAIN SYNC
     # =================================================
 
     async def sync_calendar(
+
         self,
+
         league="RPL",
+
         season="2026/27"
+
     ):
 
 
         logger.info(
-            "Starting calendar sync..."
+            "FAJ Calendar sync started"
         )
 
 
@@ -58,19 +69,21 @@ class CalendarMonitor:
         )
 
 
+
         if not fixtures:
 
-            logger.warning(
-                "Parser returned empty calendar"
-            )
 
             return {
 
+
                 "added": 0,
+
 
                 "updated": 0,
 
+
                 "same": 0,
+
 
                 "errors": [
 
@@ -92,15 +105,18 @@ class CalendarMonitor:
 
 
 
-        for match in fixtures:
+        for fixture in fixtures:
 
 
             try:
 
 
-                result = await self.save_fixture(
-                    match
+                result = (
+                    await self.save_fixture(
+                        fixture
+                    )
                 )
+
 
 
                 if result == "added":
@@ -133,32 +149,17 @@ class CalendarMonitor:
 
 
 
-        logger.info(
-
-            f"""
-Calendar sync finished
-
-Added:
-{added}
-
-Updated:
-{updated}
-
-Same:
-{same}
-"""
-
-        )
-
-
-
         return {
+
 
             "added": added,
 
+
             "updated": updated,
 
+
             "same": same,
+
 
             "errors": errors
 
@@ -171,57 +172,53 @@ Same:
     # =================================================
 
     async def save_fixture(
+
         self,
+
         fixture
+
     ):
 
 
+
         existing = (
+
             self.db.get_fixture(
-                league="RPL",
+
+                league=fixture["league"],
+
                 season=fixture["season"],
+
                 home_team=fixture["home_team"],
+
                 away_team=fixture["away_team"]
+
             )
+
         )
 
 
 
+        # ---------------------------------------------
+        # NEW MATCH
+        # ---------------------------------------------
+
         if not existing:
+
 
 
             self.db.insert_fixture(
 
-                {
+                fixture
 
-                    "league":
-                    fixture["league"],
-
-
-                    "season":
-                    fixture["season"],
+            )
 
 
-                    "date":
-                    fixture["date"],
+            logger.info(
 
-
-                    "time":
-                    fixture["time"],
-
-
-                    "home_team":
-                    fixture["home_team"],
-
-
-                    "away_team":
-                    fixture["away_team"],
-
-
-                    "status":
-                    fixture["status"]
-
-                }
+                f"Added fixture: "
+                f"{fixture['home_team']} - "
+                f"{fixture['away_team']}"
 
             )
 
@@ -230,11 +227,16 @@ Same:
 
 
 
+        # ---------------------------------------------
+        # UPDATE
+        # ---------------------------------------------
+
         changed = False
 
 
 
-        fields = [
+        compare_fields = [
+
 
             "date",
 
@@ -246,18 +248,10 @@ Same:
 
 
 
-        for field in fields:
+        for field in compare_fields:
 
 
-            if (
-
-                existing.get(field)
-
-                !=
-
-                fixture.get(field)
-
-            ):
+            if existing.get(field) != fixture.get(field):
 
                 changed = True
 
@@ -266,24 +260,21 @@ Same:
         if changed:
 
 
+
             self.db.update_fixture(
 
                 existing["id"],
 
-                {
+                fixture
 
-                    "date":
-                    fixture["date"],
-
-
-                    "time":
-                    fixture["time"],
+            )
 
 
-                    "status":
-                    fixture["status"]
+            logger.info(
 
-                }
+                f"Updated fixture: "
+                f"{fixture['home_team']} - "
+                f"{fixture['away_team']}"
 
             )
 
@@ -297,14 +288,27 @@ Same:
 
 
 # =====================================================
-# SERVICE FUNCTION
+# PUBLIC FUNCTIONS
 # =====================================================
 
 
-async def update_rpl_calendar():
+async def sync_rpl_calendar():
 
 
     monitor = CalendarMonitor()
 
 
-    return await monitor.sync_calendar()
+    return await monitor.sync_calendar(
+
+        league="RPL",
+
+        season="2026/27"
+
+    )
+
+
+
+async def update_rpl_calendar():
+
+
+    return await sync_rpl_calendar()
