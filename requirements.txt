@@ -1,8 +1,38 @@
+# =====================================================
+# FAJ Platform v6.1
+# requirements.txt
+# =====================================================
+
+
+# Telegram Bot
 aiogram==3.13.1
+
+
+# HTTP / API
 aiohttp
-python-dotenv
 requests
+
+
+# Environment
+python-dotenv
+
+
+# Time
 pytz
+
+
+# Team name matching
 rapidfuzz
+
+
+# Math engine
 numpy
+
+
+# PostgreSQL
 psycopg2-binary>=2.9.0
+
+
+# Web parsing
+beautifulsoup4==4.12.3
+lxml
