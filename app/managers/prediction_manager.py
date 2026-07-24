@@ -7,9 +7,10 @@
 
 from datetime import datetime
 
+import numpy as np
+
 
 from app.database import get_db
-
 
 from app.core.faj_core import FAJCore
 
@@ -17,13 +18,38 @@ from app.core.faj_core import FAJCore
 
 
 # =====================================================
-# ADAPTER FAJ CORE RESPONSE
+# CLEAN NUMPY VALUES
 # =====================================================
 
 
-def normalize_prediction(
-    raw_prediction
-):
+def clean_value(value):
+
+    if isinstance(value, np.generic):
+
+        return value.item()
+
+    return value
+
+
+
+
+def clean_prediction(prediction):
+
+    for key, value in prediction.items():
+
+        prediction[key] = clean_value(value)
+
+    return prediction
+
+
+
+
+# =====================================================
+# NORMALIZE FAJ CORE RESPONSE
+# =====================================================
+
+
+def normalize_prediction(raw_prediction):
 
 
     if not raw_prediction:
@@ -40,17 +66,28 @@ def normalize_prediction(
 
 
     predicted_xg = (
+
         raw_prediction
-        .get("xg", {})
-        .get("predicted", {})
+
+        .get(
+            "xg",
+            {}
+        )
+
+        .get(
+            "predicted",
+            {}
+        )
+
     )
 
 
 
-    return {
+    result = {
 
 
         "winner":
+
         decision.get(
             "winner"
         ),
@@ -58,6 +95,7 @@ def normalize_prediction(
 
 
         "home_probability":
+
         decision.get(
             "home_prob",
             0
@@ -66,6 +104,7 @@ def normalize_prediction(
 
 
         "draw_probability":
+
         decision.get(
             "draw_prob",
             0
@@ -74,6 +113,7 @@ def normalize_prediction(
 
 
         "away_probability":
+
         decision.get(
             "away_prob",
             0
@@ -82,6 +122,7 @@ def normalize_prediction(
 
 
         "xg_home":
+
         predicted_xg.get(
             "home",
             0
@@ -90,6 +131,7 @@ def normalize_prediction(
 
 
         "xg_away":
+
         predicted_xg.get(
             "away",
             0
@@ -98,6 +140,7 @@ def normalize_prediction(
 
 
         "expected_score":
+
         decision.get(
             "expected_score"
         ),
@@ -105,6 +148,7 @@ def normalize_prediction(
 
 
         "top_scores":
+
         raw_prediction.get(
             "top_scores",
             []
@@ -113,6 +157,7 @@ def normalize_prediction(
 
 
         "btts":
+
         raw_prediction.get(
             "btts",
             0
@@ -121,6 +166,7 @@ def normalize_prediction(
 
 
         "over25":
+
         raw_prediction.get(
             "over25",
             0
@@ -129,13 +175,19 @@ def normalize_prediction(
 
 
         "confidence":
+
         decision.get(
             "confidence",
             0
         )
 
-
     }
+
+
+
+    return clean_prediction(
+        result
+    )
 
 
 
@@ -149,6 +201,12 @@ def save_prediction(
     fixture,
     prediction
 ):
+
+
+    prediction = clean_prediction(
+        prediction
+    )
+
 
 
     conn = get_db()
@@ -237,7 +295,6 @@ def save_prediction(
 
         (
 
-
             fixture.get(
                 "id"
             ),
@@ -260,7 +317,6 @@ def save_prediction(
             ),
 
 
-
             fixture.get(
                 "home_team"
             ),
@@ -271,11 +327,9 @@ def save_prediction(
             ),
 
 
-
             prediction.get(
                 "winner"
             ),
-
 
 
             prediction.get(
@@ -283,11 +337,9 @@ def save_prediction(
             ),
 
 
-
             prediction.get(
                 "draw_probability"
             ),
-
 
 
             prediction.get(
@@ -295,11 +347,9 @@ def save_prediction(
             ),
 
 
-
             prediction.get(
                 "xg_home"
             ),
-
 
 
             prediction.get(
@@ -307,11 +357,9 @@ def save_prediction(
             ),
 
 
-
             prediction.get(
                 "expected_score"
             ),
-
 
 
             str(
@@ -321,11 +369,9 @@ def save_prediction(
             ),
 
 
-
             prediction.get(
                 "btts"
             ),
-
 
 
             prediction.get(
@@ -333,24 +379,19 @@ def save_prediction(
             ),
 
 
-
             prediction.get(
                 "confidence"
             ),
 
 
-
             "FAJ v6.0",
-
 
 
             datetime.now().isoformat()
 
-
         )
 
         )
-
 
 
         conn.commit()
@@ -375,7 +416,7 @@ def save_prediction(
 
 
 # =====================================================
-# CREATE SINGLE FAJ PREDICTION
+# CREATE SINGLE PREDICTION
 # =====================================================
 
 
@@ -400,11 +441,6 @@ def create_prediction(
         "away_team"
     )
 
-
-
-    # =============================================
-    # CALL MODEL
-    # =============================================
 
 
     if hasattr(
@@ -443,11 +479,6 @@ def create_prediction(
 
         )
 
-
-
-    # =============================================
-    # ERROR CHECK
-    # =============================================
 
 
     if "error" in raw:
@@ -491,9 +522,7 @@ def create_tour_predictions(
 ):
 
 
-    results = []
-
-
+    generated = 0
 
     errors = []
 
@@ -505,7 +534,7 @@ def create_tour_predictions(
         try:
 
 
-            prediction = create_prediction(
+            create_prediction(
 
                 fixture,
 
@@ -514,12 +543,7 @@ def create_tour_predictions(
             )
 
 
-
-            results.append(
-
-                prediction
-
-            )
+            generated += 1
 
 
 
@@ -550,8 +574,7 @@ def create_tour_predictions(
 
         "generated":
 
-        len(results),
-
+        generated,
 
 
         "errors":
@@ -564,12 +587,9 @@ def create_tour_predictions(
         "RPL",
 
 
-
         "season":
 
         "2026/27"
-
-
 
     }
 
@@ -591,7 +611,6 @@ def get_predictions(
     conn = get_db()
 
 
-
     try:
 
 
@@ -605,21 +624,13 @@ def get_predictions(
 
         """
 
-
-
         params = []
 
 
 
         if league:
 
-
-            query += """
-
-            AND league=?
-
-            """
-
+            query += " AND league=? "
 
             params.append(
                 league
@@ -629,13 +640,7 @@ def get_predictions(
 
         if season:
 
-
-            query += """
-
-            AND season=?
-
-            """
-
+            query += " AND season=? "
 
             params.append(
                 season
@@ -645,13 +650,7 @@ def get_predictions(
 
         if round_number:
 
-
-            query += """
-
-            AND round=?
-
-            """
-
+            query += " AND round=? "
 
             params.append(
                 round_number
@@ -704,7 +703,6 @@ def count_predictions():
 
 
     conn = get_db()
-
 
 
     try:
