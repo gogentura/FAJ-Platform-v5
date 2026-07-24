@@ -47,6 +47,11 @@ from app.handlers.update_calendar import (
     cmd_update_calendar
 )
 
+# ===== НОВЫЙ ИМПОРТ =====
+from app.handlers.update_results import (
+    cmd_update_results
+)
+
 from app.handlers.clear_fixtures import (
     cmd_clear_fixtures
 )
@@ -116,6 +121,9 @@ SERVICE_BUTTONS = {
     "📥 Загрузить паспорта",
 
     "🔄 Синхронизировать календарь",
+
+    # ===== НОВАЯ КНОПКА =====
+    "🔄 Обновить результаты",
 
     "🔍 Проверить календарь",
 
@@ -214,6 +222,12 @@ async def run_bot(
     dp.message.register(
         cmd_update_calendar,
         Command("update_calendar")
+    )
+
+    # ===== НОВАЯ КОМАНДА =====
+    dp.message.register(
+        cmd_update_results,
+        Command("update_results")
     )
 
 
@@ -341,6 +355,8 @@ async def run_bot(
 
 🔄 Синхронизировать календарь
 
+🔄 Обновить результаты
+
 🔍 Проверить календарь
 
 🗑 Очистить календарь
@@ -373,6 +389,17 @@ async def run_bot(
     async def update_calendar_button(message: Message):
 
         await cmd_update_calendar(message)
+
+
+
+    # ===== НОВЫЙ ОБРАБОТЧИК КНОПКИ =====
+    @dp.message(
+        lambda m:
+        m.text == "🔄 Обновить результаты"
+    )
+    async def update_results_button(message: Message):
+
+        await cmd_update_results(message)
 
 
 
