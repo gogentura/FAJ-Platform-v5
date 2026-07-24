@@ -1,7 +1,9 @@
 # =====================================================
 # FAJ Platform v6.1
-# RPL Calendar Parser
-# Championat.com
+# app/monitoring/rpl_calendar_parser.py
+#
+# RPL Official Calendar Parser
+# Source: premierliga.ru
 # =====================================================
 
 
@@ -12,66 +14,95 @@ from bs4 import BeautifulSoup
 
 
 
-URL = (
-    "https://www.championat.com/football/"
-    "_russiapl/tournament/7096/calendar/"
+# =====================================================
+# SOURCE
+# =====================================================
+
+
+RPL_CALENDAR_URL = (
+
+    "https://premierliga.ru/matches/"
+    "?tournament=724"
+    "&stage=2962"
+    "&month=0"
+    "&club=0"
+    "&match=all"
+
 )
 
 
 
+# =====================================================
+# RPL TEAMS
+# =====================================================
+
+
 RPL_TEAMS = {
 
-    "Акрон",
     "Зенит",
+
+    "Акрон",
+
     "Спартак",
+
+    "Динамо",
+
     "Динамо М",
-    "ЦСКА",
-    "Краснодар",
-    "Локомотив",
-    "Ахмат",
-    "Рубин",
-    "Крылья Советов",
-    "Балтика",
-    "Оренбург",
-    "Факел",
+
     "Динамо Мх",
+
+    "ЦСКА",
+
+    "Краснодар",
+
+    "Локомотив",
+
+    "Ахмат",
+
     "Ростов",
+
+    "Рубин",
+
+    "Крылья Советов",
+
+    "Балтика",
+
+    "Оренбург",
+
+    "Факел",
+
     "Родина"
 
 }
 
 
 
-def normalize(text):
-
-    if not text:
-        return ""
-
-    text = (
-        text
-        .replace("\n", " ")
-        .replace("\xa0", " ")
-        .strip()
-    )
-
-    return text
-
-
+# =====================================================
+# HTTP
+# =====================================================
 
 
 def get_html():
 
+
     headers = {
 
         "User-Agent":
-        "Mozilla/5.0"
+        (
+            "Mozilla/5.0 "
+            "(Windows NT 10.0; Win64; x64)"
+        ),
+
+        "Accept-Language":
+        "ru-RU"
 
     }
 
 
-    r = requests.get(
 
-        URL,
+    response = requests.get(
+
+        RPL_CALENDAR_URL,
 
         headers=headers,
 
@@ -80,35 +111,168 @@ def get_html():
     )
 
 
-    r.raise_for_status()
 
-    return r.text
+    response.raise_for_status()
 
 
+    return response.text
+
+
+
+
+# =====================================================
+# NORMALIZE
+# =====================================================
+
+
+def normalize_team(name):
+
+
+    if not name:
+
+        return ""
+
+
+
+    name = (
+
+        name
+
+        .replace("\n", " ")
+
+        .replace("\xa0", " ")
+
+        .strip()
+
+    )
+
+
+
+    aliases = {
+
+
+        "Динамо Москва":
+
+        "Динамо М",
+
+
+
+        "Динамо Махачкала":
+
+        "Динамо Мх"
+
+
+    }
+
+
+
+    return aliases.get(
+
+        name,
+
+        name
+
+    )
+
+
+
+
+# =====================================================
+# TEAM CHECK
+# =====================================================
+
+
+def is_rpl_team(team):
+
+    return team in RPL_TEAMS
+
+
+
+
+# =====================================================
+# DATE PARSER
+# =====================================================
+
+
+def extract_date(text):
+
+
+    if not text:
+
+        return ""
+
+
+
+    match = re.search(
+
+        r"\d{2}\.\d{2}\.\d{4}",
+
+        text
+
+    )
+
+
+
+    if match:
+
+        return match.group(0)
+
+
+
+    return text.strip()
+
+
+
+
+# =====================================================
+# ROUND PARSER
+# =====================================================
 
 
 def extract_round(text):
 
+
+    if not text:
+
+        return 1
+
+
+
     match = re.search(
+
         r"(\d+)\s*тур",
+
         text.lower()
+
     )
+
+
 
     if match:
 
         return int(
+
             match.group(1)
+
         )
+
+
 
     return 1
 
 
 
 
+# =====================================================
+# PARSER
+# =====================================================
+
+
 def parse_rpl_calendar():
 
 
     html = get_html()
+
 
 
     soup = BeautifulSoup(
@@ -120,70 +284,121 @@ def parse_rpl_calendar():
     )
 
 
-    text = soup.get_text(
-
-        "\n",
-
-        strip=True
-
-    )
-
 
     fixtures = []
+
 
 
     current_round = 1
 
 
 
-    lines = [
+    rows = soup.find_all(
 
-        normalize(x)
+        ["tr", "div"]
 
-        for x in text.split("\n")
-
-        if normalize(x)
-
-    ]
+    )
 
 
 
-    for i,line in enumerate(lines):
+    for row in rows:
 
 
-        if "тур" in line.lower():
+
+        text = row.get_text(
+
+            " ",
+
+            strip=True
+
+        )
+
+
+
+        if not text:
+
+            continue
+
+
+
+
+        # тур
+
+
+        if "тур" in text.lower():
+
 
             current_round = extract_round(
-                line
+
+                text
+
             )
 
 
 
-        if line not in RPL_TEAMS:
+
+        teams = []
+
+
+
+        for team in RPL_TEAMS:
+
+
+            if team in text:
+
+                teams.append(team)
+
+
+
+
+        if len(teams) < 2:
 
             continue
 
 
 
-        if i + 1 >= len(lines):
+
+        home = teams[0]
+
+        away = teams[1]
+
+
+
+        home = normalize_team(
+
+            home
+
+        )
+
+
+        away = normalize_team(
+
+            away
+
+        )
+
+
+
+
+        if not is_rpl_team(home):
 
             continue
 
 
 
-        next_line = lines[i+1]
-
-
-
-        if next_line not in RPL_TEAMS:
+        if not is_rpl_team(away):
 
             continue
 
 
 
-        home = line
 
-        away = next_line
+        match_date = extract_date(
+
+            text
+
+        )
+
 
 
 
@@ -191,32 +406,69 @@ def parse_rpl_calendar():
 
             {
 
+
                 "league":
+
                 "RPL",
 
 
+
                 "season":
+
                 "2026/27",
 
 
+
                 "round":
+
                 current_round,
 
 
+
                 "date":
-                "",
+
+                match_date,
+
+
+
+                "match_date":
+
+                match_date,
+
 
 
                 "home":
+
                 home,
 
 
+
                 "away":
-                away
+
+                away,
+
+
+
+                "home_team":
+
+                home,
+
+
+
+                "away_team":
+
+                away,
+
+
+                "status":
+
+                "scheduled"
+
 
             }
 
         )
+
 
 
 
@@ -225,35 +477,57 @@ def parse_rpl_calendar():
 
 
 
+# =====================================================
+# PUBLIC
+# =====================================================
+
+
 def get_rpl_fixtures():
+
+
 
     fixtures = parse_rpl_calendar()
 
 
-    unique = []
+
+    result = []
 
     used = set()
 
 
 
-    for f in fixtures:
+    for fixture in fixtures:
+
 
 
         key = (
 
-            f["home"],
+            fixture["round"],
 
-            f["away"]
+            fixture["home_team"],
+
+            fixture["away_team"]
 
         )
 
 
-        if key not in used:
 
-            used.add(key)
+        if key in used:
 
-            unique.append(f)
-
+            continue
 
 
-    return unique
+
+        used.add(key)
+
+
+
+        result.append(
+
+            fixture
+
+        )
+
+
+
+    return result
