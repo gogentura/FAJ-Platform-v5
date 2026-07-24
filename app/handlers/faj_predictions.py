@@ -18,6 +18,35 @@ from app.keyboards.main import (
 
 
 
+
+# =====================================================
+# FORMAT PROBABILITY
+# =====================================================
+
+
+def format_probability(value):
+
+    try:
+
+        value = float(value)
+
+
+        if value <= 1:
+
+            value *= 100
+
+
+        return round(value, 1)
+
+
+    except:
+
+
+        return 0
+
+
+
+
 # =====================================================
 # SHOW FAJ PREDICTIONS
 # =====================================================
@@ -45,6 +74,7 @@ async def cmd_faj_predictions(
 
 
             await message.answer(
+
                 """
 🤖 FAJ прогнозы
 
@@ -72,51 +102,112 @@ async def cmd_faj_predictions(
 
             )
 
+
             return
 
 
 
 
-        text = """
+        text = (
 
-🤖 FAJ прогнозы
+            "🤖 *FAJ прогнозы РПЛ 2026/27*\n\n"
 
-🏆 РПЛ 2026/27
+            "🧠 Модель: FAJ v6.0\n"
 
-
-"""
-
+        )
 
 
-        for item in predictions[:10]:
+
+        for item in predictions[:8]:
 
 
             text += (
 
-                "──────────────\n"
+                "\n━━━━━━━━━━━━━━\n"
 
-                f"⚽ {item.get('home_team')} — "
-                f"{item.get('away_team')}\n\n"
+                f"⚽ *{item.get('home_team')} — "
+                f"{item.get('away_team')}*\n\n"
 
-                f"🎯 Счёт: "
-                f"{item.get('expected_score','-')}\n\n"
+            )
+
+
+
+            text += (
+
+                f"📅 Тур: {item.get('round','-')}\n"
+
+            )
+
+
+
+            text += (
 
                 "📊 Вероятности:\n"
 
-                f"П1: {item.get('home_probability',0)}%\n"
+                f"🏠 П1: "
+                f"{format_probability(item.get('home_probability'))}%\n"
 
-                f"X: {item.get('draw_probability',0)}%\n"
+                f"🤝 X: "
+                f"{format_probability(item.get('draw_probability'))}%\n"
 
-                f"П2: {item.get('away_probability',0)}%\n\n"
+                f"🚩 П2: "
+                f"{format_probability(item.get('away_probability'))}%\n\n"
+
+            )
+
+
+
+            text += (
 
                 f"📈 xG: "
+
                 f"{item.get('xg_home','-')} - "
+
                 f"{item.get('xg_away','-')}\n\n"
 
+            )
+
+
+
+            text += (
+
+                f"🎯 Ожидаемый счёт: "
+
+                f"*{item.get('expected_score','-')}*\n\n"
+
+            )
+
+
+
+            text += (
+
                 f"🔥 Confidence: "
+
                 f"{item.get('confidence','-')}%\n\n"
 
             )
+
+
+
+            text += (
+
+                f"⚽ ОЗ: "
+
+                f"{format_probability(item.get('btts_probability'))}%\n"
+
+            )
+
+
+
+            text += (
+
+                f"⚽ Тотал 2.5: "
+
+                f"{format_probability(item.get('over25_probability'))}%\n"
+
+            )
+
+
 
 
 
@@ -124,9 +215,12 @@ async def cmd_faj_predictions(
 
             text,
 
+            parse_mode="Markdown",
+
             reply_markup=main_keyboard()
 
         )
+
 
 
 
