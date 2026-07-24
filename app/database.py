@@ -92,7 +92,6 @@ def init_database():
         ALTER TABLE fixtures
         ADD COLUMN IF NOT EXISTS updated TIMESTAMP DEFAULT NOW();
         """,
-        # ===== НОВЫЕ МИГРАЦИИ ДЛЯ РЕЗУЛЬТАТОВ =====
         """
         ALTER TABLE fixtures
         ADD COLUMN IF NOT EXISTS home_score INTEGER;
@@ -104,6 +103,11 @@ def init_database():
         """
         ALTER TABLE fixtures
         ADD COLUMN IF NOT EXISTS result TEXT;
+        """,
+        # ===== НОВАЯ МИГРАЦИЯ =====
+        """
+        ALTER TABLE fixtures
+        ADD COLUMN IF NOT EXISTS match_url TEXT;
         """
     ]
     for migration in migrations:
@@ -134,6 +138,7 @@ def init_database():
             result TEXT,
             winner TEXT,
             source TEXT,
+            match_url TEXT,
             created TIMESTAMP DEFAULT NOW(),
             updated TIMESTAMP DEFAULT NOW()
         );
@@ -290,8 +295,19 @@ class Database:
         cur.execute(
             """
             INSERT INTO fixtures
-            (league, season, match_date, match_time, home_team, away_team, status, source)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+            (
+                league,
+                season,
+                match_date,
+                match_time,
+                home_team,
+                away_team,
+                status,
+                source,
+                match_url
+            )
+            VALUES
+            (%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             (
                 data["league"],
@@ -301,7 +317,8 @@ class Database:
                 data["home_team"],
                 data["away_team"],
                 data["status"],
-                "soccer365"
+                "soccer365",
+                data.get("match_url")
             )
         )
         conn.commit()
