@@ -1,125 +1,159 @@
 # =====================================================
 # FAJ Platform v6.1
-# Update Calendar Handler
+# app/handlers/update_calendar.py
+#
+# RPL Calendar Update Handler
 # =====================================================
 
 
-from aiogram import types
+from aiogram.types import Message
 
 
 from app.monitoring.calendar_monitor import (
-    update_rpl_calendar
+    sync_rpl_calendar
 )
 
-
-from app.keyboards.admin import (
-    admin_keyboard
-)
 
 
 
 # =====================================================
-# UPDATE RPL CALENDAR
+# UPDATE CALENDAR COMMAND
 # =====================================================
 
 
 async def cmd_update_calendar(
-    message: types.Message
+    message: Message
 ):
+
+
+    await message.answer(
+
+        """
+🔄 FAJ запускает синхронизацию календаря РПЛ...
+
+Источник:
+
+🌐 Sport-Express
+
+Проверяем:
+
+• туры
+• даты матчей
+• команды
+• дубли
+• изменения
+        """
+
+    )
+
 
 
     try:
 
 
-        await message.answer(
-            """
-🔄 FAJ обновляет календарь...
+        result = sync_rpl_calendar()
 
 
-Источник:
-🏆 РПЛ
 
-
-Проверка:
-📅 календарь
-⚽ матчи
-🔍 изменения
-"""
+        added = result.get(
+            "added",
+            0
         )
 
 
-
-        report = update_rpl_calendar()
-
-
-
-        text = f"""
-✅ Календарь обновлён
+        updated = result.get(
+            "updated",
+            0
+        )
 
 
-🏆 Лига:
-{report.get('league')}
+        unchanged = result.get(
+            "unchanged",
+            0
+        )
 
 
-📅 Сезон:
-{report.get('season')}
-
-
-➕ Добавлено:
-{report.get('added')}
-
-
-🔄 Обновлено:
-{report.get('updated')}
-
-
-✔️ Без изменений:
-{report.get('unchanged')}
-"""
-
-
-
-        changes = report.get(
-            "changes",
+        errors = result.get(
+            "errors",
             []
         )
 
 
 
-        if changes:
+
+        text = f"""
+
+✅ Календарь обновлён
+
+
+🏆 Лига:
+{result.get("league","RPL")}
+
+
+📅 Сезон:
+{result.get("season","2026/27")}
+
+
+━━━━━━━━━━━━━━
+
+
+➕ Добавлено:
+{added}
+
+
+🔄 Обновлено:
+{updated}
+
+
+✔️ Без изменений:
+{unchanged}
+
+
+"""
+
+
+
+        if errors:
 
 
             text += """
 
 ━━━━━━━━━━━━━━
 
-⚠️ Изменения:
+⚠️ Ошибки:
 
 """
 
-            for item in changes:
+
+            for error in errors[:10]:
 
 
-                text += (
-
-                    f"\n⚽ {item.get('match')}\n"
-
-                )
-
-
-                for change in item.get(
-                    "changes",
-                    []
+                if isinstance(
+                    error,
+                    dict
                 ):
 
 
                     text += (
 
-                        f"• {change.get('field')}: "
+                        f"""
+⚽ {error.get("match","")}
+❌ {error.get("error","")}
 
-                        f"{change.get('old')} → "
+"""
 
-                        f"{change.get('new')}\n"
+                    )
+
+
+                else:
+
+
+                    text += (
+
+                        f"""
+❌ {error}
+
+"""
 
                     )
 
@@ -132,24 +166,32 @@ async def cmd_update_calendar(
 
 ━━━━━━━━━━━━━━
 
-✅ Изменений не найдено
+✅ Ошибок нет
 
-Календарь FAJ актуален.
+Теперь можно:
+
+🔍 Проверить календарь
+
+или
+
+🚀 Создать прогнозы тура
+
 """
+
 
 
 
         await message.answer(
 
-            text,
-
-            reply_markup=admin_keyboard()
+            text
 
         )
 
 
 
+
     except Exception as e:
+
 
 
         await message.answer(
@@ -159,13 +201,14 @@ async def cmd_update_calendar(
 
 
 Тип:
+
 {type(e).__name__}
 
 
 Ошибка:
-{str(e)}
-""",
 
-            reply_markup=admin_keyboard()
+{str(e)}
+
+"""
 
         )
