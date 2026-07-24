@@ -3,6 +3,7 @@
 # app/bot.py
 # =====================================================
 
+
 import logging
 
 
@@ -22,6 +23,7 @@ from app.journal import Journal
 # =====================================================
 # HANDLERS
 # =====================================================
+
 
 from app.handlers.start import cmd_start
 
@@ -49,12 +51,27 @@ from app.handlers.fixtures import cmd_fixtures
 from app.handlers.load_fixtures import cmd_load_fixtures
 
 
+# NEW
+
+from app.handlers.faj_predictions import (
+    cmd_faj_predictions
+)
+
+
+from app.handlers.expert_predictions import (
+    cmd_expert_predictions
+)
+
+
 
 # =====================================================
-# KEYBOARDS
+# KEYBOARD
 # =====================================================
 
-from app.keyboards.main import main_keyboard
+
+from app.keyboards.main import (
+    main_keyboard
+)
 
 
 
@@ -69,6 +86,7 @@ logger = logging.getLogger(__name__)
 
 
 SERVICE_BUTTONS = {
+
 
     "📊 Статус",
 
@@ -108,17 +126,22 @@ async def run_bot(
 
     if not Config.TELEGRAM_TOKEN:
 
+
         logger.error(
             "TELEGRAM_TOKEN отсутствует"
         )
+
 
         return
 
 
 
     bot = Bot(
+
         token=Config.TELEGRAM_TOKEN
+
     )
+
 
 
     dp = Dispatcher()
@@ -174,107 +197,101 @@ async def run_bot(
 
 
     # =================================================
-    # BUTTONS
+    # MAIN MENU BUTTONS
     # =================================================
 
 
+
     @dp.message(
-        lambda m: m.text == "📊 Статус"
+        lambda m:
+        m.text == "📊 Статус"
     )
-    async def status_button(message: Message):
+    async def status_button(
+        message: Message
+    ):
 
         await cmd_status(message)
 
 
 
     @dp.message(
-        lambda m: m.text == "📋 Журнал"
+        lambda m:
+        m.text == "📋 Журнал"
     )
-    async def journal_button(message: Message):
+    async def journal_button(
+        message: Message
+    ):
 
         await cmd_journal(message)
 
 
 
     @dp.message(
-        lambda m: m.text == "❤️ Проверка"
+        lambda m:
+        m.text == "❤️ Проверка"
     )
-    async def health_button(message: Message):
+    async def health_button(
+        message: Message
+    ):
 
         await cmd_health(message)
 
 
 
     @dp.message(
-        lambda m: m.text == "📁 Паспорта"
+        lambda m:
+        m.text == "📁 Паспорта"
     )
-    async def passport_button(message: Message):
+    async def passport_button(
+        message: Message
+    ):
 
         await button_passport(message)
 
 
 
     @dp.message(
-        lambda m: m.text == "📅 Матчи"
+        lambda m:
+        m.text == "📅 Матчи"
     )
-    async def fixtures_button(message: Message):
+    async def fixtures_button(
+        message: Message
+    ):
 
         await cmd_fixtures(message)
 
 
 
     # =================================================
-    # NEW PREDICTIONS BUTTONS
+    # PREDICTIONS
     # =================================================
 
 
+
     @dp.message(
-        lambda m: m.text == "🤖 FAJ прогнозы"
+        lambda m:
+        m.text == "🤖 FAJ прогнозы"
     )
-    async def faj_predictions_button(
+    async def faj_prediction_button(
         message: Message
     ):
 
-        await message.answer(
-            """
-🤖 FAJ прогнозы
-
-
-Раздел готовится.
-
-После запуска тура здесь будут:
-
-• прогнозы FAJ модели
-• xG
-• вероятности
-• точные счета
-• Confidence
-""",
-            reply_markup=main_keyboard()
+        await cmd_faj_predictions(
+            message
         )
 
 
 
     @dp.message(
-        lambda m: m.text == "🧠 Мои прогнозы"
+        lambda m:
+        m.text == "🧠 Мои прогнозы"
     )
-    async def expert_predictions_button(
+    async def expert_prediction_button(
         message: Message
     ):
 
-        await message.answer(
-            """
-🧠 Мои прогнозы
-
-
-Здесь будут:
-
-• мои экспертные прогнозы
-• комментарии
-• уверенность
-• сравнение с FAJ
-""",
-            reply_markup=main_keyboard()
+        await cmd_expert_predictions(
+            message
         )
 
 
@@ -298,38 +315,61 @@ async def run_bot(
 
 
 
+
     # =================================================
-    # PREDICT
+    # MATCH PREDICTION
     # =================================================
 
 
     @dp.message(
         lambda m:
+
         m.text
+
         and
+
         not m.text.startswith("/")
+
         and
+
         m.text not in SERVICE_BUTTONS
+
         and
+
         (
-            m.text.lower().startswith("прогноз")
+            m.text.lower().startswith(
+                "прогноз"
+            )
+
             or
-            len(m.text.split()) == 2
+
+            len(
+                m.text.split()
+            ) == 2
+
         )
     )
     async def predict_handler(
         message: Message
     ):
 
+
         logger.info(
+
             f"FAJ prediction request: {message.text}"
+
         )
 
 
+
         await handle_predict(
+
             message,
+
             core,
+
             journal
+
         )
 
 
@@ -353,20 +393,16 @@ async def run_bot(
 
 Основное меню:
 
-📊 Статус
-📈 Прогноз
 
-📁 Паспорта
-📅 Матчи
+📊 Статус        📈 Прогноз
 
-🤖 FAJ прогнозы
-🧠 Мои прогнозы
+📁 Паспорта      📅 Матчи
 
-🏆 Турниры
-📋 Журнал
+🤖 FAJ прогнозы  🧠 Мои прогнозы
 
-⚙️ Админ
-❤️ Проверка
+🏆 Турниры       📋 Журнал
+
+⚙️ Админ         ❤️ Проверка
 
 
 FAJ анализирует:
@@ -388,8 +424,11 @@ FAJ анализирует:
 
 
     logger.info(
+
         "FAJ Platform v6.0 started"
+
     )
+
 
 
     await dp.start_polling(bot)
