@@ -1,7 +1,8 @@
 # =====================================================
-# FAJ Platform v6.2
-# Soccer365 Source v2
-# RPL Calendar Parser
+# FAJ Platform v6.3
+# Soccer365 Source v3
+#
+# RPL Calendar + Match URL
 # =====================================================
 
 import logging
@@ -23,6 +24,11 @@ class Soccer365Source:
     )
 
 
+    BASE_URL = (
+        "https://soccer365.ru"
+    )
+
+
     HEADERS = {
 
         "User-Agent":
@@ -31,8 +37,9 @@ class Soccer365Source:
     }
 
 
+
     # =================================================
-    # LOAD HTML
+    # HTML
     # =================================================
 
     def get_html(self):
@@ -53,9 +60,7 @@ class Soccer365Source:
             if response.status_code != 200:
 
                 logger.error(
-
                     f"Soccer365 HTTP {response.status_code}"
-
                 )
 
                 return None
@@ -73,7 +78,7 @@ class Soccer365Source:
 
 
     # =================================================
-    # PARSE CALENDAR
+    # CALENDAR PARSER
     # =================================================
 
     def parse_calendar(self):
@@ -85,6 +90,7 @@ class Soccer365Source:
         if not html:
 
             return []
+
 
 
         soup = BeautifulSoup(
@@ -99,7 +105,15 @@ class Soccer365Source:
         fixtures = []
 
 
-        links = soup.find_all("a")
+
+        links = soup.find_all(
+
+            "a",
+
+            href=True
+
+        )
+
 
 
         for link in links:
@@ -114,20 +128,17 @@ class Soccer365Source:
             )
 
 
+
             if not text:
 
                 continue
 
 
 
-            # -----------------------------------------
-            # ищем строки матчей
-            #
             # пример:
             #
             # 25.07, 06:15 Акрон - Зенит -
             #
-            # -----------------------------------------
 
 
             match = re.search(
@@ -158,29 +169,23 @@ class Soccer365Source:
 
 
 
-            # фильтр мусора
-
             banned = [
 
                 "Видео",
 
                 "Обзор",
 
-                "Турнир",
-
                 "Лига",
 
-                "Премьер-Лига"
+                "Премьер"
 
             ]
 
 
-            if any(
 
+            if any(
                 x in home
-
                 for x in banned
-
             ):
 
                 continue
@@ -188,14 +193,19 @@ class Soccer365Source:
 
 
             if any(
-
                 x in away
-
                 for x in banned
-
             ):
 
                 continue
+
+
+
+            fixture_url = self.extract_match_url(
+
+                link
+
+            )
 
 
 
@@ -228,7 +238,11 @@ class Soccer365Source:
 
 
                     "status":
-                    "scheduled"
+                    "scheduled",
+
+
+                    "match_url":
+                    fixture_url
 
                 }
 
@@ -247,14 +261,80 @@ class Soccer365Source:
 
 
 
+
+    # =================================================
+    # MATCH URL
+    # =================================================
+
+    def extract_match_url(
+
+        self,
+
+        link
+
+    ):
+
+
+        href = link.get(
+
+            "href"
+
+        )
+
+
+        if not href:
+
+            return None
+
+
+
+        # матчи Soccer365 обычно:
+
+        if (
+
+            "/live/" in href
+
+            or
+
+            "/matches/" in href
+
+        ):
+
+
+            if href.startswith("http"):
+
+                return href
+
+
+            return (
+
+                self.BASE_URL
+
+                +
+
+                href
+
+            )
+
+
+
+        return None
+
+
+
+
     # =================================================
     # DATE
     # =================================================
 
     def convert_date(
+
         self,
+
         value
+
     ):
+
 
         day, month = value.split(".")
 
@@ -263,10 +343,15 @@ class Soccer365Source:
 
 
         return (
+
             f"{year}-"
+
             f"{month}-"
+
             f"{day}"
+
         )
+
 
 
 
@@ -275,20 +360,23 @@ class Soccer365Source:
     # =================================================
 
     def normalize_team(
+
         self,
+
         name
+
     ):
 
 
         mapping = {
 
 
-            "Динамо Махачкала":
-            "Динамо Мх",
-
-
             "Динамо Москва":
             "Динамо М",
+
+
+            "Динамо Махачкала":
+            "Динамо Мх",
 
 
             "Локомотив Москва":
@@ -296,21 +384,10 @@ class Soccer365Source:
 
 
             "Спартак Москва":
-            "Спартак",
-
-
-            "Ростов":
-            "Ростов",
-
-
-            "Акрон":
-            "Акрон",
-
-
-            "Зенит":
-            "Зенит"
+            "Спартак"
 
         }
+
 
 
         return mapping.get(
