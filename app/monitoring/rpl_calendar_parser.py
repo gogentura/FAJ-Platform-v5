@@ -1,173 +1,114 @@
 # =====================================================
 # FAJ Platform v6.1
-# app/monitoring/rpl_calendar_parser.py
 # RPL Calendar Parser
-# Source: Championat
+# Championat.com
 # =====================================================
 
 
+import re
 import requests
 
 from bs4 import BeautifulSoup
 
 
-# =====================================================
-# CONFIG
-# =====================================================
 
-
-CHAMPIONAT_RPL_URL = (
+URL = (
     "https://www.championat.com/football/"
     "_russiapl/tournament/7096/calendar/"
 )
 
 
+
 RPL_TEAMS = {
 
+    "Акрон",
     "Зенит",
     "Спартак",
-    "ЦСКА",
     "Динамо М",
-    "Локомотив",
+    "ЦСКА",
     "Краснодар",
-    "Ростов",
+    "Локомотив",
     "Ахмат",
     "Рубин",
     "Крылья Советов",
-    "Факел",
-    "Оренбург",
     "Балтика",
-    "Акрон",
+    "Оренбург",
+    "Факел",
     "Динамо Мх",
+    "Ростов",
     "Родина"
 
 }
 
 
 
-# =====================================================
-# LOAD PAGE
-# =====================================================
+def normalize(text):
+
+    if not text:
+        return ""
+
+    text = (
+        text
+        .replace("\n", " ")
+        .replace("\xa0", " ")
+        .strip()
+    )
+
+    return text
 
 
-def load_page():
+
+
+def get_html():
 
     headers = {
 
         "User-Agent":
-        (
-            "Mozilla/5.0 "
-            "(Windows NT 10.0; Win64; x64)"
-        )
+        "Mozilla/5.0"
 
     }
 
 
-    response = requests.get(
+    r = requests.get(
 
-        CHAMPIONAT_RPL_URL,
+        URL,
 
         headers=headers,
 
-        timeout=20
+        timeout=30
 
     )
 
 
-    response.raise_for_status()
+    r.raise_for_status()
+
+    return r.text
 
 
-    return response.text
 
 
+def extract_round(text):
 
-
-# =====================================================
-# NORMALIZE TEAM
-# =====================================================
-
-
-def normalize_team(name):
-
-    if not name:
-
-        return ""
-
-
-    name = (
-
-        name
-        .replace("\n", " ")
-        .replace("\xa0", " ")
-        .strip()
-
+    match = re.search(
+        r"(\d+)\s*тур",
+        text.lower()
     )
 
+    if match:
 
-    aliases = {
+        return int(
+            match.group(1)
+        )
 
-
-        "Динамо М": "Динамо М",
-
-        "Динамо Москва": "Динамо М",
-
-
-        "Динамо Махачкала":
-        "Динамо Мх",
+    return 1
 
 
-        "Пари НН":
-        "Родина"
-
-    }
-
-
-    return aliases.get(
-        name,
-        name
-    )
-
-
-
-
-# =====================================================
-# CHECK RPL TEAM
-# =====================================================
-
-
-def is_rpl_team(team):
-
-    return team in RPL_TEAMS
-
-
-
-
-# =====================================================
-# PARSE DATE
-# =====================================================
-
-
-def extract_date(text):
-
-    if not text:
-
-        return ""
-
-
-    return text.strip()
-
-
-
-
-# =====================================================
-# PARSE CALENDAR
-# =====================================================
 
 
 def parse_rpl_calendar():
 
 
-    html = load_page()
+    html = get_html()
 
 
     soup = BeautifulSoup(
@@ -179,169 +120,70 @@ def parse_rpl_calendar():
     )
 
 
+    text = soup.get_text(
 
-    fixtures = []
+        "\n",
 
-
-
-    # ищем строки календаря
-
-    rows = soup.find_all(
-
-        "tr"
+        strip=True
 
     )
 
 
-
-    current_round = 0
-
+    fixtures = []
 
 
-    for row in rows:
-
-
-        text = row.get_text(
-
-            " ",
-
-            strip=True
-
-        )
+    current_round = 1
 
 
 
-        if not text:
+    lines = [
 
-            continue
+        normalize(x)
 
+        for x in text.split("\n")
 
+        if normalize(x)
 
-        # ---------------------------------------------
-        # тур
-        # ---------------------------------------------
-
-
-        if "тур" in text.lower():
-
-
-            try:
-
-                number = (
-                    text.lower()
-                    .split("тур")[0]
-                    .strip()
-                )
-
-
-                current_round = int(number)
-
-
-            except:
-
-
-                continue
+    ]
 
 
 
-
-        # ---------------------------------------------
-        # команды
-        # ---------------------------------------------
+    for i,line in enumerate(lines):
 
 
-        cells = row.find_all(
+        if "тур" in line.lower():
 
-            "td"
-
-        )
-
-
-        if len(cells) < 2:
-
-            continue
-
-
-
-        teams = []
-
-
-        for cell in cells:
-
-
-            value = normalize_team(
-
-                cell.get_text(
-
-                    " ",
-
-                    strip=True
-
-                )
-
+            current_round = extract_round(
+                line
             )
 
 
-            if value:
 
-                teams.append(value)
-
-
-
-        if len(teams) < 2:
+        if line not in RPL_TEAMS:
 
             continue
 
 
 
-        home = teams[0]
-
-        away = teams[1]
-
-
-
-        # ---------------------------------------------
-        # фильтр мусора
-        # ---------------------------------------------
-
-
-        if not is_rpl_team(home):
-
-            continue
-
-
-        if not is_rpl_team(away):
+        if i + 1 >= len(lines):
 
             continue
 
 
 
-        # дата
-
-        match_date = ""
-
-        for cell in cells:
+        next_line = lines[i+1]
 
 
-            value = cell.get_text(
 
-                " ",
+        if next_line not in RPL_TEAMS:
 
-                strip=True
-
-            )
+            continue
 
 
-            if "2026" in value:
 
-                match_date = extract_date(
+        home = line
 
-                    value
-
-                )
-
-                break
-
+        away = next_line
 
 
 
@@ -362,7 +204,7 @@ def parse_rpl_calendar():
 
 
                 "date":
-                match_date,
+                "",
 
 
                 "home":
@@ -383,46 +225,34 @@ def parse_rpl_calendar():
 
 
 
-# =====================================================
-# PUBLIC FUNCTION
-# =====================================================
-
-
 def get_rpl_fixtures():
-
 
     fixtures = parse_rpl_calendar()
 
 
-
-    # защита от дублей
-
     unique = []
 
-    exists = set()
+    used = set()
 
 
 
-    for item in fixtures:
+    for f in fixtures:
 
 
         key = (
 
-            item["round"],
+            f["home"],
 
-            item["home"],
-
-            item["away"]
+            f["away"]
 
         )
 
 
-        if key not in exists:
+        if key not in used:
 
+            used.add(key)
 
-            exists.add(key)
-
-            unique.append(item)
+            unique.append(f)
 
 
 
