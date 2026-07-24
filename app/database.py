@@ -265,7 +265,7 @@ def init_db():
             pass
 
     # =================================================
-    # FAJ PREDICTIONS (НОВАЯ ТАБЛИЦА)
+    # FAJ PREDICTIONS
     # =================================================
     conn.execute(
     """
@@ -299,7 +299,7 @@ def init_db():
     conn.commit()
 
     # =================================================
-    # EXPERT PREDICTIONS (НОВАЯ ТАБЛИЦА)
+    # EXPERT PREDICTIONS
     # =================================================
     conn.execute(
     """
@@ -319,6 +319,41 @@ def init_db():
         actual_score TEXT,
         actual_winner TEXT,
         accuracy TEXT,
+        created TEXT
+    )
+    """
+    )
+    conn.commit()
+
+    # =================================================
+    # TEAM MATCH STATISTICS (НОВАЯ ТАБЛИЦА)
+    # =================================================
+    conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS team_match_stats (
+        id SERIAL PRIMARY KEY,
+        fixture_id INTEGER,
+        league TEXT,
+        season TEXT,
+        round INTEGER,
+        home_team TEXT,
+        away_team TEXT,
+        home_score INTEGER,
+        away_score INTEGER,
+        xg_home REAL,
+        xg_away REAL,
+        shots_home INTEGER,
+        shots_away INTEGER,
+        shots_on_target_home INTEGER,
+        shots_on_target_away INTEGER,
+        possession_home REAL,
+        possession_away REAL,
+        corners_home INTEGER,
+        corners_away INTEGER,
+        yellow_home INTEGER,
+        yellow_away INTEGER,
+        red_home INTEGER,
+        red_away INTEGER,
         created TEXT
     )
     """
