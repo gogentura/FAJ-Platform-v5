@@ -17,6 +17,130 @@ from app.core.faj_core import FAJCore
 
 
 # =====================================================
+# ADAPTER FAJ CORE RESPONSE
+# =====================================================
+
+
+def normalize_prediction(
+    raw_prediction
+):
+
+
+    if not raw_prediction:
+
+        return {}
+
+
+
+    decision = raw_prediction.get(
+        "decision",
+        {}
+    )
+
+
+
+    predicted_xg = (
+        raw_prediction
+        .get("xg", {})
+        .get("predicted", {})
+    )
+
+
+
+    return {
+
+
+        "winner":
+        decision.get(
+            "winner"
+        ),
+
+
+
+        "home_probability":
+        decision.get(
+            "home_prob",
+            0
+        ),
+
+
+
+        "draw_probability":
+        decision.get(
+            "draw_prob",
+            0
+        ),
+
+
+
+        "away_probability":
+        decision.get(
+            "away_prob",
+            0
+        ),
+
+
+
+        "xg_home":
+        predicted_xg.get(
+            "home",
+            0
+        ),
+
+
+
+        "xg_away":
+        predicted_xg.get(
+            "away",
+            0
+        ),
+
+
+
+        "expected_score":
+        decision.get(
+            "expected_score"
+        ),
+
+
+
+        "top_scores":
+        raw_prediction.get(
+            "top_scores",
+            []
+        ),
+
+
+
+        "btts":
+        raw_prediction.get(
+            "btts",
+            0
+        ),
+
+
+
+        "over25":
+        raw_prediction.get(
+            "over25",
+            0
+        ),
+
+
+
+        "confidence":
+        decision.get(
+            "confidence",
+            0
+        )
+
+
+    }
+
+
+
+
+# =====================================================
 # SAVE PREDICTION
 # =====================================================
 
@@ -35,8 +159,11 @@ def save_prediction(
 
 
         conn.execute(
+
         """
+
         INSERT INTO predictions
+
         (
 
             fixture_id,
@@ -106,94 +233,119 @@ def save_prediction(
 
         )
 
-
         """,
 
         (
 
-            fixture.get("id"),
 
-            fixture.get("league"),
-
-            fixture.get("season"),
-
-            fixture.get("round"),
-
-
-            fixture.get("home_team"),
-
-            fixture.get("away_team"),
-
-
-            prediction.get("winner"),
-
-
-            prediction.get(
-                "home_probability",
-                0
+            fixture.get(
+                "id"
             ),
 
 
-            prediction.get(
-                "draw_probability",
-                0
+            fixture.get(
+                "league",
+                "RPL"
             ),
 
 
-            prediction.get(
-                "away_probability",
-                0
+            fixture.get(
+                "season",
+                "2026/27"
             ),
 
 
-            prediction.get(
-                "xg_home",
-                0
+            fixture.get(
+                "round"
             ),
 
 
-            prediction.get(
-                "xg_away",
-                0
+
+            fixture.get(
+                "home_team"
             ),
 
 
-            prediction.get(
-                "expected_score",
-                "-"
+            fixture.get(
+                "away_team"
             ),
+
+
+
+            prediction.get(
+                "winner"
+            ),
+
+
+
+            prediction.get(
+                "home_probability"
+            ),
+
+
+
+            prediction.get(
+                "draw_probability"
+            ),
+
+
+
+            prediction.get(
+                "away_probability"
+            ),
+
+
+
+            prediction.get(
+                "xg_home"
+            ),
+
+
+
+            prediction.get(
+                "xg_away"
+            ),
+
+
+
+            prediction.get(
+                "expected_score"
+            ),
+
 
 
             str(
                 prediction.get(
-                    "top_scores",
-                    []
+                    "top_scores"
                 )
             ),
 
 
+
             prediction.get(
-                "btts",
-                0
+                "btts"
             ),
 
 
+
             prediction.get(
-                "over25",
-                0
+                "over25"
             ),
 
 
+
             prediction.get(
-                "confidence",
-                0
+                "confidence"
             ),
+
 
 
             "FAJ v6.0",
 
 
+
             datetime.now().isoformat()
+
 
         )
 
@@ -210,13 +362,6 @@ def save_prediction(
 
         conn.rollback()
 
-
-        print(
-            "PREDICTION SAVE ERROR:",
-            e
-        )
-
-
         raise e
 
 
@@ -230,7 +375,7 @@ def save_prediction(
 
 
 # =====================================================
-# CREATE SINGLE PREDICTION
+# CREATE SINGLE FAJ PREDICTION
 # =====================================================
 
 
@@ -241,7 +386,6 @@ def create_prediction(
 
 
     if core is None:
-
 
         core = FAJCore()
 
@@ -259,23 +403,66 @@ def create_prediction(
 
 
     # =============================================
-    # RUN FAJ MODEL
+    # CALL MODEL
     # =============================================
 
 
-    prediction = core.predict(
+    if hasattr(
+        core,
+        "predict"
+    ):
 
-        home_team,
 
-        away_team
+        raw = core.predict(
 
+            home_team,
+
+            away_team,
+
+            fixture.get(
+                "league",
+                "RPL"
+            )
+
+        )
+
+
+    else:
+
+
+        raw = core.predict_match(
+
+            home_team,
+
+            away_team,
+
+            fixture.get(
+                "league",
+                "RPL"
+            )
+
+        )
+
+
+
+    # =============================================
+    # ERROR CHECK
+    # =============================================
+
+
+    if "error" in raw:
+
+
+        raise Exception(
+            raw["error"]
+        )
+
+
+
+    prediction = normalize_prediction(
+        raw
     )
 
-
-
-    # =============================================
-    # SAVE
-    # =============================================
 
 
     save_prediction(
@@ -308,6 +495,10 @@ def create_tour_predictions(
 
 
 
+    errors = []
+
+
+
     for fixture in fixtures:
 
 
@@ -326,18 +517,7 @@ def create_tour_predictions(
 
             results.append(
 
-                {
-
-                    "fixture":
-
-                    fixture,
-
-
-                    "prediction":
-
-                    prediction
-
-                }
+                prediction
 
             )
 
@@ -346,13 +526,13 @@ def create_tour_predictions(
         except Exception as e:
 
 
-            results.append(
+            errors.append(
 
                 {
 
-                    "fixture":
+                    "match":
 
-                    fixture,
+                    f"{fixture.get('home_team')} - {fixture.get('away_team')}",
 
 
                     "error":
@@ -365,13 +545,39 @@ def create_tour_predictions(
 
 
 
-    return results
+    return {
+
+
+        "generated":
+
+        len(results),
+
+
+
+        "errors":
+
+        errors,
+
+
+        "league":
+
+        "RPL",
+
+
+
+        "season":
+
+        "2026/27"
+
+
+
+    }
 
 
 
 
 # =====================================================
-# GET FAJ PREDICTIONS
+# GET PREDICTIONS
 # =====================================================
 
 
@@ -410,9 +616,10 @@ def get_predictions(
 
             query += """
 
-            AND league = ?
+            AND league=?
 
             """
+
 
             params.append(
                 league
@@ -425,9 +632,10 @@ def get_predictions(
 
             query += """
 
-            AND season = ?
+            AND season=?
 
             """
+
 
             params.append(
                 season
@@ -440,9 +648,10 @@ def get_predictions(
 
             query += """
 
-            AND round = ?
+            AND round=?
 
             """
+
 
             params.append(
                 round_number
@@ -487,7 +696,7 @@ def get_predictions(
 
 
 # =====================================================
-# COUNT PREDICTIONS
+# COUNT
 # =====================================================
 
 
