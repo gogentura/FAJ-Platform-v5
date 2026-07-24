@@ -1,280 +1,225 @@
 # =====================================================
 # FAJ Platform v6.2
+# app/monitoring/stats_monitor.py
+#
 # Match Statistics Monitor
 # =====================================================
 
 import logging
-from datetime import datetime
 
-from app.database import get_db
+from app.database import get_connection
 
 logger = logging.getLogger(__name__)
 
 
-# =====================================================
-# SAVE MATCH STATISTICS
-# =====================================================
+class StatisticsMonitor:
 
-def save_match_statistics(stats: dict):
+    def __init__(self):
+        self.conn = get_connection()
 
-    conn = get_db()
+    # =================================================
+    # Матчи без статистики
+    # =================================================
 
-    try:
+    def get_matches_without_stats(self):
 
-        conn.execute(
+        cur = self.conn.cursor()
+
+        cur.execute(
             """
-            INSERT INTO team_match_stats
-            (
-                fixture_id,
+            SELECT
+                f.id,
+                f.home_team,
+                f.away_team,
+                f.match_date,
+                f.home_score,
+                f.away_score
 
-                league,
+            FROM fixtures f
 
-                season,
-
-                round,
-
-                home_team,
-
-                away_team,
-
-                home_score,
-
-                away_score,
-
-                xg_home,
-
-                xg_away,
-
-                shots_home,
-
-                shots_away,
-
-                shots_on_target_home,
-
-                shots_on_target_away,
-
-                possession_home,
-
-                possession_away,
-
-                corners_home,
-
-                corners_away,
-
-                yellow_home,
-
-                yellow_away,
-
-                red_home,
-
-                red_away,
-
-                created
-            )
-
-            VALUES
-            (
-                ?,?,?,?,?,?,
-                ?,?,?,?,?,?,
-                ?,?,?,?,?,?,
-                ?,?,?,?,?,?,
-                ?
-            )
-            """,
-            (
-                stats.get("fixture_id"),
-
-                stats.get("league"),
-
-                stats.get("season"),
-
-                stats.get("round"),
-
-                stats.get("home_team"),
-
-                stats.get("away_team"),
-
-                stats.get("home_score"),
-
-                stats.get("away_score"),
-
-                stats.get("xg_home"),
-
-                stats.get("xg_away"),
-
-                stats.get("shots_home"),
-
-                stats.get("shots_away"),
-
-                stats.get("shots_on_target_home"),
-
-                stats.get("shots_on_target_away"),
-
-                stats.get("possession_home"),
-
-                stats.get("possession_away"),
-
-                stats.get("corners_home"),
-
-                stats.get("corners_away"),
-
-                stats.get("yellow_home"),
-
-                stats.get("yellow_away"),
-
-                stats.get("red_home"),
-
-                stats.get("red_away"),
-
-                datetime.now().isoformat()
-            )
-        )
-
-        conn.commit()
-
-        return True
-
-    except Exception as e:
-
-        conn.rollback()
-
-        logger.exception(e)
-
-        return False
-
-    finally:
-
-        conn.close()
-
-
-# =====================================================
-# LOAD NOT FINISHED FIXTURES
-# =====================================================
-
-def get_finished_matches():
-
-    conn = get_db()
-
-    try:
-
-        rows = conn.execute(
-            """
-            SELECT *
-
-            FROM fixtures
+            LEFT JOIN match_statistics s
+                ON s.fixture_id = f.id
 
             WHERE
-                status='finished'
+                f.status='finished'
+                AND s.fixture_id IS NULL
+
+            ORDER BY f.match_date;
             """
-        ).fetchall()
+        )
 
-        return [dict(r) for r in rows]
+        rows = cur.fetchall()
 
-    finally:
+        matches = []
 
-        conn.close()
+        for row in rows:
 
+            matches.append({
 
-# =====================================================
-# UPDATE MATCH STATISTICS
-# =====================================================
+                "fixture_id": row[0],
 
-def update_statistics():
+                "home_team": row[1],
 
-    fixtures = get_finished_matches()
+                "away_team": row[2],
 
-    report = {
+                "match_date": row[3],
 
-        "processed": 0,
+                "home_score": row[4],
 
-        "saved": 0,
+                "away_score": row[5]
 
-        "errors": []
-    }
+            })
 
-    for fixture in fixtures:
+        return matches
 
-        report["processed"] += 1
+    # =================================================
+    # Получение статистики
+    # Пока заглушка
+    # =================================================
 
-        # -------------------------------------------------
-        # Пока данные-заглушка.
-        #
-        # Следующим этапом сюда подключаются:
-        #
-        # Soccer365
-        # Flashscore
-        # NB-Bet
-        # API Football
-        # -------------------------------------------------
+    def load_statistics(self, fixture):
 
-        stats = {
+        return {
 
-            "fixture_id":
-                fixture.get("id"),
+            "fixture_id": fixture["fixture_id"],
 
-            "league":
-                fixture.get("league"),
+            "home_xg": None,
+            "away_xg": None,
 
-            "season":
-                fixture.get("season"),
+            "home_shots": None,
+            "away_shots": None,
 
-            "round":
-                fixture.get("round"),
+            "home_shots_on_target": None,
+            "away_shots_on_target": None,
 
-            "home_team":
-                fixture.get("home_team"),
+            "home_possession": None,
+            "away_possession": None,
 
-            "away_team":
-                fixture.get("away_team"),
+            "home_corners": None,
+            "away_corners": None,
 
-            "home_score": None,
+            "home_yellow": None,
+            "away_yellow": None,
 
-            "away_score": None,
-
-            "xg_home": None,
-
-            "xg_away": None,
-
-            "shots_home": None,
-
-            "shots_away": None,
-
-            "shots_on_target_home": None,
-
-            "shots_on_target_away": None,
-
-            "possession_home": None,
-
-            "possession_away": None,
-
-            "corners_home": None,
-
-            "corners_away": None,
-
-            "yellow_home": None,
-
-            "yellow_away": None,
-
-            "red_home": None,
-
-            "red_away": None
+            "home_red": None,
+            "away_red": None
 
         }
 
-        ok = save_match_statistics(stats)
+    # =================================================
+    # Сохранение
+    # =================================================
 
-        if ok:
+    def save_statistics(self, stats):
 
-            report["saved"] += 1
+        cur = self.conn.cursor()
 
-        else:
+        cur.execute(
+            """
+            INSERT INTO match_statistics (
 
-            report["errors"].append(
+                fixture_id,
 
-                fixture.get("id")
+                home_xg,
+                away_xg,
+
+                home_shots,
+                away_shots,
+
+                home_shots_on_target,
+                away_shots_on_target,
+
+                home_possession,
+                away_possession,
+
+                home_corners,
+                away_corners,
+
+                home_yellow,
+                away_yellow,
+
+                home_red,
+                away_red
 
             )
 
-    logger.info(report)
+            VALUES (
 
-    return report
+                %(fixture_id)s,
+
+                %(home_xg)s,
+                %(away_xg)s,
+
+                %(home_shots)s,
+                %(away_shots)s,
+
+                %(home_shots_on_target)s,
+                %(away_shots_on_target)s,
+
+                %(home_possession)s,
+                %(away_possession)s,
+
+                %(home_corners)s,
+                %(away_corners)s,
+
+                %(home_yellow)s,
+                %(away_yellow)s,
+
+                %(home_red)s,
+                %(away_red)s
+
+            )
+
+            ON CONFLICT (fixture_id)
+
+            DO NOTHING;
+            """,
+
+            stats
+
+        )
+
+        self.conn.commit()
+
+    # =================================================
+    # Главный цикл
+    # =================================================
+
+    def update(self):
+
+        matches = self.get_matches_without_stats()
+
+        updated = 0
+
+        errors = []
+
+        for fixture in matches:
+
+            try:
+
+                stats = self.load_statistics(fixture)
+
+                self.save_statistics(stats)
+
+                updated += 1
+
+            except Exception as e:
+
+                logger.exception(e)
+
+                errors.append(str(e))
+
+        return {
+
+            "updated": updated,
+
+            "errors": errors
+
+        }
+
+
+def sync_statistics():
+
+    monitor = StatisticsMonitor()
+
+    return monitor.update()
