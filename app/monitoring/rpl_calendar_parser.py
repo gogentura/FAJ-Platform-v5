@@ -1,15 +1,14 @@
 # =====================================================
 # FAJ Platform v6.1
+# app/monitoring/rpl_calendar_parser.py
 # RPL Calendar Parser
-# Источник: Championship / Sport sites
-# Назначение: обновление fixtures
+# Source: Championat
 # =====================================================
 
 
-import re
 import requests
-from bs4 import BeautifulSoup
 
+from bs4 import BeautifulSoup
 
 
 # =====================================================
@@ -17,130 +16,58 @@ from bs4 import BeautifulSoup
 # =====================================================
 
 
-RPL_URL = (
+CHAMPIONAT_RPL_URL = (
     "https://www.championat.com/football/"
     "_russiapl/tournament/7096/calendar/"
 )
 
 
-HEADERS = {
+RPL_TEAMS = {
 
-    "User-Agent":
-    (
-        "Mozilla/5.0 "
-        "(Windows NT 10.0; Win64; x64)"
-    )
-
-}
-
-
-
-# =====================================================
-# TEAM NORMALIZATION
-# =====================================================
-
-
-TEAM_ALIASES = {
-
-
-    "Динамо Махачкала":
-        "Динамо Мх",
-
-
-    "Динамо Москва":
-        "Динамо М",
-
-
-    "Крылья Советов":
-        "Крылья Советов",
-
-
-    "Зенит":
-        "Зенит",
-
-
-    "Спартак Москва":
-        "Спартак",
-
-
-    "ЦСКА":
-        "ЦСКА"
+    "Зенит",
+    "Спартак",
+    "ЦСКА",
+    "Динамо М",
+    "Локомотив",
+    "Краснодар",
+    "Ростов",
+    "Ахмат",
+    "Рубин",
+    "Крылья Советов",
+    "Факел",
+    "Оренбург",
+    "Балтика",
+    "Акрон",
+    "Динамо Мх",
+    "Родина"
 
 }
 
 
 
-def normalize_team(name):
-
-    if not name:
-        return ""
-
-
-    name = (
-        name
-        .strip()
-        .replace("\n", "")
-    )
-
-
-    return TEAM_ALIASES.get(
-        name,
-        name
-    )
-
-
-
 # =====================================================
-# PARSE DATE
+# LOAD PAGE
 # =====================================================
 
 
-def extract_date(text):
+def load_page():
 
-    if not text:
-        return ""
+    headers = {
 
-
-    pattern = (
-        r"\d{2}\.\d{2}\.\d{4}"
-    )
-
-
-    match = re.search(
-        pattern,
-        text
-    )
-
-
-    if match:
-
-        day, month, year = (
-            match.group(0)
-            .split(".")
+        "User-Agent":
+        (
+            "Mozilla/5.0 "
+            "(Windows NT 10.0; Win64; x64)"
         )
 
+    }
 
-        return (
-            f"{year}-{month}-{day}"
-        )
-
-
-    return ""
-
-
-
-# =====================================================
-# LOAD HTML
-# =====================================================
-
-
-def get_page():
 
     response = requests.get(
 
-        RPL_URL,
+        CHAMPIONAT_RPL_URL,
 
-        headers=HEADERS,
+        headers=headers,
 
         timeout=20
 
@@ -154,20 +81,101 @@ def get_page():
 
 
 
+
 # =====================================================
-# MAIN PARSER
+# NORMALIZE TEAM
+# =====================================================
+
+
+def normalize_team(name):
+
+    if not name:
+
+        return ""
+
+
+    name = (
+
+        name
+        .replace("\n", " ")
+        .replace("\xa0", " ")
+        .strip()
+
+    )
+
+
+    aliases = {
+
+
+        "Динамо М": "Динамо М",
+
+        "Динамо Москва": "Динамо М",
+
+
+        "Динамо Махачкала":
+        "Динамо Мх",
+
+
+        "Пари НН":
+        "Родина"
+
+    }
+
+
+    return aliases.get(
+        name,
+        name
+    )
+
+
+
+
+# =====================================================
+# CHECK RPL TEAM
+# =====================================================
+
+
+def is_rpl_team(team):
+
+    return team in RPL_TEAMS
+
+
+
+
+# =====================================================
+# PARSE DATE
+# =====================================================
+
+
+def extract_date(text):
+
+    if not text:
+
+        return ""
+
+
+    return text.strip()
+
+
+
+
+# =====================================================
+# PARSE CALENDAR
 # =====================================================
 
 
 def parse_rpl_calendar():
 
 
-    html = get_page()
+    html = load_page()
 
 
     soup = BeautifulSoup(
+
         html,
+
         "html.parser"
+
     )
 
 
@@ -179,10 +187,9 @@ def parse_rpl_calendar():
     # ищем строки календаря
 
     rows = soup.find_all(
-        [
-            "tr",
-            "div"
-        ]
+
+        "tr"
+
     )
 
 
@@ -195,8 +202,11 @@ def parse_rpl_calendar():
 
 
         text = row.get_text(
+
             " ",
+
             strip=True
+
         )
 
 
@@ -207,140 +217,189 @@ def parse_rpl_calendar():
 
 
 
-        # определяем тур
+        # ---------------------------------------------
+        # тур
+        # ---------------------------------------------
 
 
-        round_match = re.search(
+        if "тур" in text.lower():
 
-            r"(\d+)\s*тур",
 
-            text.lower()
+            try:
+
+                number = (
+                    text.lower()
+                    .split("тур")[0]
+                    .strip()
+                )
+
+
+                current_round = int(number)
+
+
+            except:
+
+
+                continue
+
+
+
+
+        # ---------------------------------------------
+        # команды
+        # ---------------------------------------------
+
+
+        cells = row.find_all(
+
+            "td"
 
         )
 
 
-        if round_match:
+        if len(cells) < 2:
+
+            continue
 
 
-            current_round = int(
 
-                round_match.group(1)
+        teams = []
+
+
+        for cell in cells:
+
+
+            value = normalize_team(
+
+                cell.get_text(
+
+                    " ",
+
+                    strip=True
+
+                )
 
             )
 
 
+            if value:
 
-        # ищем пары команд
-
-
-        if "—" not in text:
-
-            continue
+                teams.append(value)
 
 
 
-        parts = text.split(
-            "—"
-        )
-
-
-
-        if len(parts) != 2:
+        if len(teams) < 2:
 
             continue
 
 
 
-        home = normalize_team(
-            parts[0]
-        )
+        home = teams[0]
 
-
-        away = normalize_team(
-            parts[1]
-        )
+        away = teams[1]
 
 
 
-        if (
+        # ---------------------------------------------
+        # фильтр мусора
+        # ---------------------------------------------
 
-            len(home) < 2
 
-            or
+        if not is_rpl_team(home):
 
-            len(away) < 2
+            continue
 
-        ):
+
+        if not is_rpl_team(away):
 
             continue
 
 
 
-        fixture = {
+        # дата
+
+        match_date = ""
+
+        for cell in cells:
 
 
-            "league":
+            value = cell.get_text(
 
-            "RPL",
+                " ",
 
+                strip=True
 
-
-            "season":
-
-            "2026/27",
+            )
 
 
+            if "2026" in value:
 
-            "round":
+                match_date = extract_date(
 
-            current_round,
+                    value
 
+                )
 
+                break
 
-            "date":
-
-            extract_date(text),
-
-
-
-            "home":
-
-            home,
-
-
-
-            "away":
-
-            away
-
-        }
 
 
 
         fixtures.append(
-            fixture
+
+            {
+
+                "league":
+                "RPL",
+
+
+                "season":
+                "2026/27",
+
+
+                "round":
+                current_round,
+
+
+                "date":
+                match_date,
+
+
+                "home":
+                home,
+
+
+                "away":
+                away
+
+            }
+
         )
 
 
 
-    return clean_fixtures(
-        fixtures
-    )
+    return fixtures
+
 
 
 
 # =====================================================
-# CLEAN DUPLICATES
+# PUBLIC FUNCTION
 # =====================================================
 
 
-def clean_fixtures(fixtures):
+def get_rpl_fixtures():
 
 
-    result = []
+    fixtures = parse_rpl_calendar()
 
 
-    seen = set()
+
+    # защита от дублей
+
+    unique = []
+
+    exists = set()
 
 
 
@@ -358,68 +417,13 @@ def clean_fixtures(fixtures):
         )
 
 
-
-        if key in seen:
-
-            continue
+        if key not in exists:
 
 
+            exists.add(key)
 
-        seen.add(key)
-
-
-        result.append(
-            item
-        )
+            unique.append(item)
 
 
 
-    return result
-
-
-
-# =====================================================
-# GET TOUR
-# =====================================================
-
-
-def get_rpl_round(
-    round_number
-):
-
-
-    fixtures = parse_rpl_calendar()
-
-
-    return [
-
-        f
-
-        for f in fixtures
-
-        if f["round"] == round_number
-
-    ]
-
-
-
-# =====================================================
-# TEST
-# =====================================================
-
-
-if __name__ == "__main__":
-
-
-    matches = parse_rpl_calendar()
-
-
-
-    for match in matches:
-
-
-        print(
-
-            match
-
-        )
+    return unique
