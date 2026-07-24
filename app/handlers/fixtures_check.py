@@ -1,93 +1,74 @@
 # =====================================================
-# FAJ Platform v6.0
-# Fixtures Debug Handler
-# Проверка загруженного календаря
+# FAJ Platform v6.3
+# app/handlers/fixtures_check.py
+#
+# Calendar Check Handler
 # =====================================================
 
 
-from aiogram import types
+from aiogram.types import Message
 
-from app.database import get_db
+from app.database import get_connection
 
-
-
-# =====================================================
-# SHOW FIXTURES FROM DATABASE
-# =====================================================
 
 
 async def cmd_fixtures_check(
-    message: types.Message
+    message: Message
 ):
-
-    conn = get_db()
 
 
     try:
 
 
-        rows = conn.execute(
+        conn = get_connection()
+
+        cur = conn.cursor()
+
+
+
+        cur.execute(
             """
-
             SELECT
-
                 id,
-
-                league,
-
-                season,
-
-                round,
-
-                match_date,
-
                 home_team,
-
                 away_team,
-
+                match_date,
+                match_time,
                 status
-
 
             FROM fixtures
 
-
-            WHERE league = ?
-
+            WHERE league=%s
+            AND season=%s
 
             ORDER BY
-
-                round ASC,
-
-                id ASC
-
-
+                match_date,
+                match_time
             """,
-
             (
                 "RPL",
+                "2026/27"
             )
-
-        ).fetchall()
-
+        )
 
 
-        if not rows:
+
+        fixtures = cur.fetchall()
+
+
+        conn.close()
+
+
+
+        if not fixtures:
 
 
             await message.answer(
 
                 """
-❌ Таблица fixtures пуста
+❌ Календарь пуст
 
-
-Сначала:
-
-⚙️ Админ
-
-↓
-
-📥 Загрузить календарь
-
+Матчи РПЛ не найдены
 """
 
             )
@@ -99,56 +80,40 @@ async def cmd_fixtures_check(
 
         text = """
 
-📅 FAJ Fixtures Check
+🔍 Проверка календаря FAJ
 
-🏆 Лига: RPL
+
+🏆 РПЛ 2026/27
+
+
+━━━━━━━━━━━━━━
+
 
 """
 
 
-        current_round = None
+        for f in fixtures[:20]:
 
 
+            text += f"""
 
-        for row in rows:
+⚽ {f['home_team']} — {f['away_team']}
 
+📆 {f['match_date']} {f['match_time']}
 
-            item = dict(row)
-
-
-
-            if current_round != item["round"]:
+📌 {f['status']}
 
 
-                current_round = item["round"]
+"""
 
 
-                text += (
+        text += """
 
-                    "\n"
+━━━━━━━━━━━━━━
 
-                    "━━━━━━━━━━━━━━\n"
+✅ Проверка завершена
 
-                    f"📅 Тур {current_round}\n"
-
-                    "━━━━━━━━━━━━━━\n"
-
-                )
-
-
-
-            text += (
-
-                f"\n"
-
-                f"⚽ {item['home_team']} — "
-                f"{item['away_team']}\n"
-
-                f"📆 {item['match_date']}\n"
-
-                f"📌 Статус: {item['status']}\n"
-
-            )
+"""
 
 
 
@@ -157,7 +122,9 @@ async def cmd_fixtures_check(
         )
 
 
+
     except Exception as e:
+
 
 
         await message.answer(
@@ -167,18 +134,13 @@ async def cmd_fixtures_check(
 
 
 Тип:
+
 {type(e).__name__}
 
 
 Ошибка:
 
-{str(e)}
+{repr(e)}
 """
 
         )
-
-
-    finally:
-
-
-        conn.close()
