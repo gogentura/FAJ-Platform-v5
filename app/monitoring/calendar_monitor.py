@@ -1,465 +1,310 @@
 # =====================================================
-# FAJ Platform v6.1
+# FAJ Platform v6.2
 # app/monitoring/calendar_monitor.py
 #
-# Universal Calendar Monitor
+# Calendar synchronization layer
+# Source:
+#   Soccer365
+#
+# Logic:
+#   INSERT new fixtures
+#   UPDATE changed fixtures
+#   KEEP history
 # =====================================================
 
-
+import logging
 from datetime import datetime
 
-
-from app.database import get_db
-
-
-from app.monitoring.rpl_calendar_parser import (
-    parse_rpl_calendar
+from app.monitoring.sources.soccer365 import (
+    Soccer365Source
 )
 
+from app.database import Database
+
+
+logger = logging.getLogger(__name__)
+
+
+class CalendarMonitor:
+
+
+    def __init__(self):
+
+        self.source = Soccer365Source()
+
+        self.db = Database()
 
 
 
-# =====================================================
-# SAVE FIXTURE
-# =====================================================
+    # =================================================
+    # SYNC CALENDAR
+    # =================================================
+
+    async def sync_calendar(
+        self,
+        league="RPL",
+        season="2026/27"
+    ):
 
 
-def save_fixture(
-    fixture
-):
+        logger.info(
+            "Starting calendar sync..."
+        )
 
 
-    conn = get_db()
+        fixtures = (
+            self.source
+            .parse_calendar()
+        )
 
 
-    try:
+        if not fixtures:
 
-
-        existing = conn.execute(
-
-            """
-
-            SELECT id
-
-            FROM fixtures
-
-            WHERE league = ?
-
-            AND season = ?
-
-            AND round = ?
-
-            AND home_team = ?
-
-            AND away_team = ?
-
-            LIMIT 1
-
-            """,
-
-            (
-
-                fixture["league"],
-
-                fixture["season"],
-
-                fixture["round"],
-
-                fixture["home_team"],
-
-                fixture["away_team"]
-
+            logger.warning(
+                "Parser returned empty calendar"
             )
 
-        ).fetchone()
+            return {
 
+                "added": 0,
 
+                "updated": 0,
 
-        if existing:
+                "same": 0,
 
-
-            conn.execute(
-
-                """
-
-                UPDATE fixtures
-
-                SET
-
-                match_date = ?,
-
-                status = ?
-
-                WHERE id = ?
-
-                """,
-
-                (
-
-                    fixture.get(
-                        "match_date",
-                        ""
-                    ),
-
-                    fixture.get(
-                        "status",
-                        "scheduled"
-                    ),
-
-                    existing["id"]
-
-                )
-
-            )
-
-
-
-            action = "updated"
-
-
-
-        else:
-
-
-            conn.execute(
-
-                """
-
-                INSERT INTO fixtures
-
-                (
-
-                    league,
-
-                    season,
-
-                    round,
-
-                    match_date,
-
-                    home_team,
-
-                    away_team,
-
-                    status,
-
-                    result,
-
-                    winner,
-
-                    prediction_created,
-
-                    created
-
-                )
-
-
-                VALUES
-
-                (
-
-                    ?,?,?,?,?,?,?,?,?,?,?
-
-                )
-
-                """,
-
-                (
-
-                    fixture["league"],
-
-                    fixture["season"],
-
-                    fixture["round"],
-
-                    fixture.get(
-                        "match_date",
-                        ""
-                    ),
-
-                    fixture["home_team"],
-
-                    fixture["away_team"],
-
-                    fixture.get(
-                        "status",
-                        "scheduled"
-                    ),
-
-                    "",
-
-                    "",
-
-                    False,
-
-                    datetime.now().isoformat()
-
-                )
-
-            )
-
-
-
-            action = "added"
-
-
-
-
-        conn.commit()
-
-
-
-        return action
-
-
-
-    except Exception as e:
-
-
-        conn.rollback()
-
-        raise e
-
-
-
-    finally:
-
-
-        conn.close()
-
-
-
-
-# =====================================================
-# SYNC RPL CALENDAR
-# =====================================================
-
-
-def sync_rpl_calendar():
-
-
-
-    fixtures = parse_rpl_calendar()
-
-
-
-    if not fixtures:
-
-
-        return {
-
-
-            "league":
-                "RPL",
-
-
-            "season":
-                "2026/27",
-
-
-            "added":
-                0,
-
-
-            "updated":
-                0,
-
-
-            "unchanged":
-                0,
-
-
-            "errors":
-
-                [
+                "errors": [
 
                     "Parser returned empty calendar"
 
                 ]
 
+            }
+
+
+
+        added = 0
+
+        updated = 0
+
+        same = 0
+
+        errors = []
+
+
+
+        for match in fixtures:
+
+
+            try:
+
+
+                result = await self.save_fixture(
+                    match
+                )
+
+
+                if result == "added":
+
+                    added += 1
+
+
+                elif result == "updated":
+
+                    updated += 1
+
+
+                else:
+
+                    same += 1
+
+
+
+            except Exception as e:
+
+
+                logger.exception(e)
+
+
+                errors.append(
+
+                    str(e)
+
+                )
+
+
+
+        logger.info(
+
+            f"""
+Calendar sync finished
+
+Added:
+{added}
+
+Updated:
+{updated}
+
+Same:
+{same}
+"""
+
+        )
+
+
+
+        return {
+
+            "added": added,
+
+            "updated": updated,
+
+            "same": same,
+
+            "errors": errors
+
         }
 
 
 
+    # =================================================
+    # SAVE FIXTURE
+    # =================================================
 
-    added = 0
-
-    updated = 0
-
-    errors = []
-
-
-
-
-    for fixture in fixtures:
+    async def save_fixture(
+        self,
+        fixture
+    ):
 
 
-
-        try:
-
-
-
-            result = save_fixture(
-
-                fixture
-
+        existing = (
+            self.db.get_fixture(
+                league="RPL",
+                season=fixture["season"],
+                home_team=fixture["home_team"],
+                away_team=fixture["away_team"]
             )
+        )
 
 
 
-            if result == "added":
+        if not existing:
 
 
-                added += 1
-
-
-
-            elif result == "updated":
-
-
-                updated += 1
-
-
-
-
-        except Exception as e:
-
-
-
-            errors.append(
+            self.db.insert_fixture(
 
                 {
 
-                    "match":
-
-                    (
-                        fixture.get(
-                            "home_team"
-                        )
-                        +
-
-                        " - "
-
-                        +
-
-                        fixture.get(
-                            "away_team"
-                        )
-                    ),
+                    "league":
+                    fixture["league"],
 
 
-                    "error":
+                    "season":
+                    fixture["season"],
 
-                    str(e)
+
+                    "date":
+                    fixture["date"],
+
+
+                    "time":
+                    fixture["time"],
+
+
+                    "home_team":
+                    fixture["home_team"],
+
+
+                    "away_team":
+                    fixture["away_team"],
+
+
+                    "status":
+                    fixture["status"]
 
                 }
 
             )
 
 
+            return "added"
 
 
 
-    return {
-
-
-        "league":
-
-            "RPL",
-
-
-        "season":
-
-            "2026/27",
-
-
-        "added":
-
-            added,
-
-
-        "updated":
-
-            updated,
-
-
-        "unchanged":
-
-            0,
-
-
-        "errors":
-
-            errors
-
-
-    }
+        changed = False
 
 
 
+        fields = [
 
-# =====================================================
-# CLEAR RPL FIXTURES
-# =====================================================
+            "date",
 
+            "time",
 
-def clear_rpl_calendar():
+            "status"
 
-
-
-    conn = get_db()
+        ]
 
 
 
-    try:
+        for field in fields:
 
 
-        result = conn.execute(
+            if (
 
-            """
+                existing.get(field)
 
-            DELETE FROM fixtures
+                !=
 
-            WHERE league = ?
+                fixture.get(field)
 
-            AND season = ?
+            ):
 
-            """,
+                changed = True
 
-            (
 
-                "RPL",
 
-                "2026/27"
+        if changed:
+
+
+            self.db.update_fixture(
+
+                existing["id"],
+
+                {
+
+                    "date":
+                    fixture["date"],
+
+
+                    "time":
+                    fixture["time"],
+
+
+                    "status":
+                    fixture["status"]
+
+                }
 
             )
 
-        )
+
+            return "updated"
 
 
 
-        deleted = result.rowcount
+        return "same"
 
 
 
-        conn.commit()
+# =====================================================
+# SERVICE FUNCTION
+# =====================================================
 
 
-
-        return deleted
-
+async def update_rpl_calendar():
 
 
-    except Exception as e:
+    monitor = CalendarMonitor()
 
 
-        conn.rollback()
-
-        raise e
-
-
-
-    finally:
-
-
-        conn.close()
+    return await monitor.sync_calendar()
