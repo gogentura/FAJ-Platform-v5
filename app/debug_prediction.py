@@ -2,60 +2,161 @@
 # FAJ Platform v6.3
 # app/debug_prediction.py
 #
-# Prediction structure debugger
+# Prediction Debug Handler
 # =====================================================
 
-
-import json
+import traceback
 import logging
 
-
 from aiogram import types
+
+from app.passport_manager import (
+    load_passport,
+    get_team_by_alias
+)
 
 
 logger = logging.getLogger(__name__)
 
 
+# =====================================================
+# TEAM PASSPORT DEBUG
+# =====================================================
+
+def debug_passport(team):
+
+    real_team = get_team_by_alias(team)
+
+    if real_team:
+        team = real_team
+
+
+    passport = load_passport(team)
+
+
+    if not passport:
+        return {
+            "team": team,
+            "status": "NOT FOUND"
+        }
+
+
+    return {
+        "team": passport.get("team"),
+        "league": passport.get("league"),
+        "season": passport.get("season"),
+
+        "attack": passport.get("attack"),
+        "defense": passport.get("defense"),
+        "control": passport.get("control"),
+
+        "form": passport.get(
+            "form",
+            passport.get(
+                "form_index",
+                0
+            )
+        ),
+
+        "xg_for": passport.get(
+            "xg_for",
+            passport.get(
+                "historical_xg_value",
+                0
+            )
+        ),
+
+        "xg_against": passport.get(
+            "xg_against",
+            0
+        )
+    }
+
+
+
+# =====================================================
+# DEBUG COMMAND
+# =====================================================
 
 async def cmd_debug_prediction(
-
     message: types.Message,
-
     core
-
 ):
 
+    try:
 
-    text = message.text.replace(
-        "/debug_prediction",
-        ""
-    ).strip()
-
-
-    if not text:
-
-        await message.answer(
-
-            "Пример:\n\n"
-            "/debug_prediction Акрон Зенит"
-
+        text = (
+            message.text
+            .replace(
+                "/debug_prediction",
+                ""
+            )
+            .strip()
         )
 
-        return
+
+        parts = text.split()
+
+
+        if len(parts) < 2:
+
+            await message.answer(
+                """
+🧪 Debug Prediction
+
+Пример:
+
+/debug_prediction Акрон Зенит
+"""
+            )
+
+            return
 
 
 
-    parts = text.split()
+        home = parts[0]
+
+        away = " ".join(parts[1:])
 
 
-    home = parts[0]
 
-    away = " ".join(
-        parts[1:]
-    )
+        await message.answer(
+            f"""
+🧪 FAJ Debug
+
+Матч:
+
+⚽ {home} — {away}
+
+Проверяю:
+• паспорта
+• FAJ Core
+• xG
+• decision
+• simulation
+"""
+        )
 
 
-    try:
+
+        # ==============================
+        # PASSPORTS
+        # ==============================
+
+
+        home_pass = debug_passport(
+            home
+        )
+
+        away_pass = debug_passport(
+            away
+        )
+
+
+
+        # ==============================
+        # CORE
+        # ==============================
 
 
         result = core.predict_match(
@@ -70,63 +171,55 @@ async def cmd_debug_prediction(
 
 
 
-        debug = {
+        if not result:
+
+            await message.answer(
+                "❌ FAJ Core вернул пустой результат"
+            )
+
+            return
 
 
-            "TYPE":
 
-                str(type(result)),
-
-
-            "RESULT":
-
-                result,
+        # ==============================
+        # OUTPUT
+        # ==============================
 
 
-            "DECISION":
-
-                result.get(
-                    "decision"
-                )
-                if isinstance(result,dict)
-                else None,
+        answer = f"""
+✅ DEBUG OK
 
 
-            "XG":
+🏠 {home_pass}
 
-                result.get(
-                    "xg"
-                )
-                if isinstance(result,dict)
-                else None,
+🚩 {away_pass}
 
 
-            "SIMULATION":
+🧠 CORE:
 
-                result.get(
-                    "simulation"
-                )
-                if isinstance(result,dict)
-                else None
+Ключи результата:
 
-        }
+{list(result.keys())}
 
+
+📊 xG:
+
+{result.get('xg')}
+
+
+📈 Decision:
+
+{result.get('decision')}
+
+
+🎯 Simulation:
+
+{result.get('simulation')}
+"""
 
 
         await message.answer(
-
-            "🧪 FAJ DEBUG\n\n"
-            +
-            json.dumps(
-
-                debug,
-
-                ensure_ascii=False,
-
-                indent=2
-
-            )[:4000]
-
+            answer
         )
 
 
@@ -134,10 +227,17 @@ async def cmd_debug_prediction(
     except Exception as e:
 
 
+        logger.error(
+            traceback.format_exc()
+        )
+
+
         await message.answer(
 
-            f"❌ DEBUG ERROR\n\n"
-            f"{type(e).__name__}\n"
+            "❌ DEBUG ERROR\n\n"
+
+            f"{type(e).__name__}\n\n"
+
             f"{str(e)}"
 
         )
