@@ -149,6 +149,112 @@ def init_database():
         """
         ALTER TABLE passports
         ADD COLUMN IF NOT EXISTS data JSONB;
+        """,
+        # Journal
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS date TIMESTAMP;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS match TEXT;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS home_team TEXT;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS away_team TEXT;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS prediction TEXT;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS winner TEXT;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS winner_prob REAL;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS home_prob REAL;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS draw_prob REAL;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS away_prob REAL;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS xg_home REAL;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS xg_away REAL;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS expected_score TEXT;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS top_scores TEXT;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS btts REAL;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS over25 REAL;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS actual_score TEXT;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS actual_winner TEXT;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS confidence REAL;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS model_version TEXT;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS data_version TEXT;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS accuracy REAL;
+        """,
+        # Удаляем старые колонки, если они есть (fixture_id, actual_result, error_type, notes)
+        """
+        ALTER TABLE journal
+        DROP COLUMN IF EXISTS fixture_id;
+        """,
+        """
+        ALTER TABLE journal
+        DROP COLUMN IF EXISTS actual_result;
+        """,
+        """
+        ALTER TABLE journal
+        DROP COLUMN IF EXISTS error_type;
+        """,
+        """
+        ALTER TABLE journal
+        DROP COLUMN IF EXISTS notes;
         """
     ]
     for migration in migrations:
@@ -303,18 +409,34 @@ def init_database():
     )
 
     # ================================================
-    # JOURNAL
+    # JOURNAL (новая структура)
     # ================================================
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS journal (
             id SERIAL PRIMARY KEY,
-            fixture_id INTEGER,
+            date TIMESTAMP,
+            match TEXT,
+            home_team TEXT,
+            away_team TEXT,
             prediction TEXT,
-            actual_result TEXT,
+            winner TEXT,
+            winner_prob REAL,
+            home_prob REAL,
+            draw_prob REAL,
+            away_prob REAL,
+            xg_home REAL,
+            xg_away REAL,
+            expected_score TEXT,
+            top_scores TEXT,
+            btts REAL,
+            over25 REAL,
+            actual_score TEXT,
+            actual_winner TEXT,
+            confidence REAL,
+            model_version TEXT,
+            data_version TEXT,
             accuracy REAL,
-            error_type TEXT,
-            notes TEXT,
             created TIMESTAMP DEFAULT NOW()
         );
         """
