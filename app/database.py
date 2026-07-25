@@ -104,10 +104,14 @@ def init_database():
         ALTER TABLE fixtures
         ADD COLUMN IF NOT EXISTS result TEXT;
         """,
-        # ===== НОВАЯ МИГРАЦИЯ =====
         """
         ALTER TABLE fixtures
         ADD COLUMN IF NOT EXISTS match_url TEXT;
+        """,
+        # ===== МИГРАЦИЯ ДЛЯ СТАРОЙ ТАБЛИЦЫ passports =====
+        """
+        ALTER TABLE passports
+        ADD COLUMN IF NOT EXISTS season TEXT DEFAULT '2026/27';
         """
     ]
     for migration in migrations:
@@ -146,7 +150,7 @@ def init_database():
     )
 
     # ================================================
-    # TEAM PASSPORTS
+    # TEAM PASSPORTS (новая таблица для FAJ v6.3)
     # ================================================
     cur.execute(
         """
@@ -171,6 +175,45 @@ def init_database():
             transfer_index REAL DEFAULT 0,
             updated TIMESTAMP DEFAULT NOW(),
             UNIQUE(league, season, team)
+        );
+        """
+    )
+
+    # ================================================
+    # PASSPORTS (старая таблица для обратной совместимости)
+    # FAJ v6.3
+    # ================================================
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS passports (
+            id SERIAL PRIMARY KEY,
+            team TEXT UNIQUE NOT NULL,
+            league TEXT,
+            season TEXT DEFAULT '2026/27',
+            attack REAL,
+            defense REAL,
+            control REAL,
+            form_index REAL,
+            efficiency REAL,
+            mentality REAL,
+            discipline REAL,
+            fitness REAL,
+            predictability REAL,
+            historical_xg_value REAL,
+            historical_xg_source TEXT,
+            avg_goals_value REAL,
+            avg_goals_source TEXT,
+            avg_goals_conceded_value REAL,
+            avg_goals_conceded_source TEXT,
+            avg_possession_value REAL,
+            avg_possession_source TEXT,
+            transfer_index REAL DEFAULT 0,
+            injury_index REAL DEFAULT 0,
+            fatigue_index REAL DEFAULT 0,
+            version INTEGER DEFAULT 1,
+            created TIMESTAMP DEFAULT NOW(),
+            updated TIMESTAMP DEFAULT NOW(),
+            data JSONB
         );
         """
     )
