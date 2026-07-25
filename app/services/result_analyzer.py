@@ -598,3 +598,22 @@ def analyze_results(
         league
 
     )
+
+
+
+# =====================================================
+# COMPATIBILITY OLD HANDLERS
+# =====================================================
+
+
+def analyze_finished_matches(
+
+    league="RPL"
+
+):
+
+    return analyze_results(
+
+        league
+
+    )
