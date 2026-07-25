@@ -1,20 +1,20 @@
 # =====================================================
 # FAJ Platform v6.3
-# formatter.py
-# PostgreSQL / FAJ Core v6.3 compatible
+# Formatter
+# PostgreSQL compatible
 # =====================================================
 
 
 def format_prediction(
-    home,
-    away,
-    league,
-    xg,
-    decision,
-    top_scores,
-    btts,
-    over25,
-    factors
+        home,
+        away,
+        league,
+        xg,
+        decision,
+        top_scores,
+        btts,
+        over25,
+        factors
 ):
 
     lines = []
@@ -33,37 +33,48 @@ def format_prediction(
     )
 
 
-    # ==========================
+    # ===============================
     # xG
-    # ==========================
+    # ===============================
 
     lines.append(
         "📊 *xG*"
     )
 
     lines.append(
-        f"FAJ: {xg['home']:.2f} — {xg['away']:.2f}"
+        f"FAJ: {xg.get('home',0):.2f} — {xg.get('away',0):.2f}"
     )
 
 
     lines.append("")
 
 
-    # ==========================
+    # ===============================
     # PROBABILITIES
-    # ==========================
+    # ===============================
+
+    home_prob = decision.get(
+        "home_probability",
+        decision.get("home_prob",0)
+    )
+
+    draw_prob = decision.get(
+        "draw_probability",
+        decision.get("draw_prob",0)
+    )
+
+    away_prob = decision.get(
+        "away_probability",
+        decision.get("away_prob",0)
+    )
+
 
     lines.append(
         "📈 *Вероятности*"
     )
 
-
     lines.append(
-
-        f"П1 {decision.get('home_probability',0):.1f}%  "
-        f"Х {decision.get('draw_probability',0):.1f}%  "
-        f"П2 {decision.get('away_probability',0):.1f}%"
-
+        f"П1 {home_prob}%  Х {draw_prob}%  П2 {away_prob}%"
     )
 
 
@@ -72,12 +83,12 @@ def format_prediction(
     )
 
 
-    # ==========================
+    # ===============================
     # SCORES
-    # ==========================
+    # ===============================
 
     lines.append(
-        "🎯 *Три наиболее вероятных счёта*"
+        "🎯 *Наиболее вероятные счета*"
     )
 
 
@@ -89,67 +100,55 @@ def format_prediction(
             "3️⃣"
         ]
 
-
         for i, score in enumerate(top_scores[:3]):
 
             lines.append(
-
-                f"{medals[i]} "
-                f"{score.get('score','')} "
+                f"{medals[i]} {score.get('score','')} "
                 f"({score.get('probability',0):.1f}%)"
-
             )
 
 
     else:
 
         lines.append(
-
             decision.get(
                 "expected_score",
-                "—"
+                "-"
             )
-
         )
 
 
     lines.append("")
 
 
-    # ==========================
+    # ===============================
     # BTTS
-    # ==========================
+    # ===============================
 
     lines.append(
         "🤝 *Обе забьют*"
     )
 
-
     lines.append(
-
         f"{'Да ✅' if btts > 0.5 else 'Нет ❌'} "
         f"({btts*100:.1f}%)"
-
     )
 
 
     lines.append("")
 
 
-    # ==========================
+    # ===============================
     # TOTAL
-    # ==========================
+    # ===============================
 
     lines.append(
         "⚽ *Тотал >2.5*"
     )
 
-
     lines.append(
-
         f"{'Да ✅' if over25 > 0.5 else 'Нет ❌'} "
         f"({over25*100:.1f}%)"
-
     )
 
 
@@ -158,93 +157,79 @@ def format_prediction(
     )
 
 
-    # ==========================
-    # DECISION
-    # ==========================
+    # ===============================
+    # ANALYSIS
+    # ===============================
 
     lines.append(
         "📌 *Аналитический вывод*"
     )
 
 
-    probability = decision.get(
+    winner_probability = decision.get(
         "winner_probability",
         0
     )
 
 
-    if probability >= 55:
-
+    if winner_probability >= 55:
 
         lines.append(
-
-            f"Преимущество: "
-            f"*{decision.get('winner_name','')}*"
-
+            f"Преимущество: *{decision.get('winner_name','')}*"
         )
 
 
-        confidence = decision.get(
-            "confidence",
-            0
-        )
-
-
-        if confidence >= 80:
-
-            lines.append(
-                "Надёжность: *AA*"
-            )
-
-        elif confidence >= 70:
-
-            lines.append(
-                "Надёжность: *A*"
-            )
-
-        else:
-
-            lines.append(
-                "Надёжность: *B*"
-            )
-
-
-    elif probability >=45:
-
+    elif winner_probability >= 45:
 
         lines.append(
             "Матч сбалансирован"
         )
+
+
+    else:
+
+        lines.append(
+            "Высокий риск прогноза"
+        )
+
+
+    confidence = decision.get(
+        "confidence",
+        0
+    )
+
+
+    if confidence >= 80:
+
+        lines.append(
+            "Надёжность: *AA*"
+        )
+
+    elif confidence >=70:
+
+        lines.append(
+            "Надёжность: *A*"
+        )
+
+    else:
 
         lines.append(
             "Надёжность: *B*"
         )
 
 
-    else:
+    lines.append("")
 
 
-        lines.append(
-            "Высокий риск"
-        )
-
-        lines.append(
-            "Надёжность: *C*"
-        )
-
-
-    # ==========================
+    # ===============================
     # FACTORS
-    # ==========================
+    # ===============================
 
     if factors:
-
-        lines.append("")
 
         lines.append(
             "🧠 *Ключевые факторы*"
         )
-
 
         for factor in factors[:4]:
 
