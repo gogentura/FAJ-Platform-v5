@@ -5,38 +5,23 @@
 # PostgreSQL Journal Layer
 # =====================================================
 
-
 from datetime import datetime
 import json
 
 from app.database import get_db
 
 
-
-# =====================================================
-# CLEAN VALUES
-# =====================================================
-
 def clean_value(value):
 
     if hasattr(value, "item"):
-
         return value.item()
 
     return value
 
 
 
-# =====================================================
-# JOURNAL
-# =====================================================
-
 class Journal:
 
-
-    # =================================================
-    # SAVE
-    # =================================================
 
     def save(
         self,
@@ -47,14 +32,8 @@ class Journal:
 
         conn = get_db()
 
-
         now = datetime.now()
 
-
-
-        # -----------------------------
-        # PARSE TEAMS
-        # -----------------------------
 
         parts = (
             match
@@ -78,109 +57,59 @@ class Journal:
 
 
 
-        # -----------------------------
-        # TEXT
-        # -----------------------------
-
-        prediction_text = (
-
-            f"{prediction.get('winner_name','')} | "
-
-            f"xG "
-
-            f"{prediction.get('xg_home',0)}-"
-
-            f"{prediction.get('xg_away',0)} | "
-
-            f"{prediction.get('expected_score','')}"
-
-        )
-
-
-
-        # -----------------------------
-        # INSERT
-        # -----------------------------
-
         conn.execute(
         """
-
         INSERT INTO journal
         (
-
             date,
-
             match,
-
             home_team,
-
             away_team,
 
-
             prediction,
-
             winner,
-
             winner_prob,
 
-
             home_prob,
-
             draw_prob,
-
             away_prob,
 
-
             xg_home,
-
             xg_away,
 
-
             expected_score,
-
             top_scores,
 
-
             btts,
-
             over25,
 
-
             actual_score,
-
             actual_winner,
-
 
             confidence,
 
-
             model_version,
-
             data_version,
-
 
             accuracy,
 
-
             created
-
-
         )
 
         VALUES
 
         (
-
-            %s,%s,%s,%s,%s,
-
-            %s,%s,%s,%s,%s,
-
-            %s,%s,%s,%s,%s,
-
-            %s,%s,%s,%s,%s,
-
-            %s,%s,%s,%s
-
+            %s,%s,%s,%s,
+            %s,%s,%s,
+            %s,%s,%s,
+            %s,%s,
+            %s,%s,
+            %s,%s,
+            %s,%s,
+            %s,
+            %s,%s,
+            %s,
+            %s
         )
 
         """,
@@ -196,7 +125,10 @@ class Journal:
             away_team,
 
 
-            prediction_text,
+            json.dumps(
+                prediction,
+                ensure_ascii=False
+            ),
 
 
             prediction.get(
@@ -205,14 +137,12 @@ class Journal:
             ),
 
 
-
             clean_value(
                 prediction.get(
                     "winner_probability",
                     0
                 )
             ),
-
 
 
             clean_value(
@@ -226,7 +156,6 @@ class Journal:
             ),
 
 
-
             clean_value(
                 prediction.get(
                     "draw_probability",
@@ -236,7 +165,6 @@ class Journal:
                     )
                 )
             ),
-
 
 
             clean_value(
@@ -250,14 +178,12 @@ class Journal:
             ),
 
 
-
             clean_value(
                 prediction.get(
                     "xg_home",
                     0
                 )
             ),
-
 
 
             clean_value(
@@ -268,25 +194,19 @@ class Journal:
             ),
 
 
-
             prediction.get(
                 "expected_score",
                 ""
             ),
 
 
-
             json.dumps(
-
                 prediction.get(
                     "top_scores",
                     []
                 ),
-
                 ensure_ascii=False
-
             ),
-
 
 
             clean_value(
@@ -297,14 +217,12 @@ class Journal:
             ),
 
 
-
             clean_value(
                 prediction.get(
                     "over25",
                     0
                 )
             ),
-
 
 
             actual.get(
@@ -314,13 +232,11 @@ class Journal:
             if actual else "",
 
 
-
             actual.get(
                 "winner",
                 ""
             )
             if actual else "",
-
 
 
             clean_value(
@@ -331,25 +247,16 @@ class Journal:
             ),
 
 
-
             "6.3",
-
-
 
             "2026.07",
 
-
-
             None,
 
-
-
             now
-
         )
 
         )
-
 
 
         conn.commit()
@@ -358,10 +265,6 @@ class Journal:
 
 
 
-    # =================================================
-    # GET ALL
-    # =================================================
-
     def get_all(
         self,
         limit=20
@@ -369,24 +272,16 @@ class Journal:
 
         conn = get_db()
 
-
         rows = conn.execute(
         """
-
         SELECT *
-
         FROM journal
-
         ORDER BY id DESC
-
         LIMIT %s
-
         """,
-
         (
             limit,
         )
-
         ).fetchall()
 
 
@@ -394,9 +289,6 @@ class Journal:
 
 
         return [
-
             dict(row)
-
             for row in rows
-
         ]
