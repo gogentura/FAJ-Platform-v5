@@ -3,8 +3,8 @@
 # app/handlers/predict.py
 #
 # Main Match Prediction Handler
-# SAFE VERSION
 # =====================================================
+
 
 import traceback
 import logging
@@ -45,110 +45,33 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================
-# PASSPORT
+# PASSPORT LOADER
 # =====================================================
 
 def load_team_passport(team):
 
-    real_team = get_team_by_alias(team)
+    alias = get_team_by_alias(team)
 
-    if real_team:
-        team = real_team
+
+    if alias:
+
+        team = alias
 
 
     passport = load_passport(team)
 
 
-    if not isinstance(passport, dict):
-        return {}
+    if isinstance(passport, dict):
+
+        return passport
 
 
-    return passport
-
-
-
-# =====================================================
-# FAJ RATING
-# =====================================================
-
-def calculate_faj_rating(passport):
-
-    if not isinstance(passport, dict):
-        return 0
-
-
-    value = passport.get(
-        "faj_rating"
-    )
-
-
-    if isinstance(
-        value,
-        (int,float)
-    ):
-        return round(
-            float(value),
-            1
-        )
-
-
-    attack = float(
-        passport.get(
-            "attack",
-            70
-        )
-    )
-
-
-    defense = float(
-        passport.get(
-            "defense",
-            70
-        )
-    )
-
-
-    control = float(
-        passport.get(
-            "control",
-            70
-        )
-    )
-
-
-    form = float(
-        passport.get(
-            "form",
-            passport.get(
-                "form_index",
-                70
-            )
-        )
-    )
-
-
-    rating = (
-
-        attack * 0.30 +
-
-        defense * 0.30 +
-
-        control * 0.20 +
-
-        form * 0.20
-
-    )
-
-
-    return round(
-        rating,
-        1
-    )
+    return {}
 
 
 
 # =====================================================
-# PARSE
+# PARSE MATCH
 # =====================================================
 
 def parse_match(text):
@@ -156,116 +79,31 @@ def parse_match(text):
     text = text.strip()
 
 
-    if text.lower().startswith(
-        "прогноз"
-    ):
+    if text.lower().startswith("прогноз"):
+
         text = text[8:].strip()
+
 
 
     parts = text.split()
 
 
+
     if len(parts) < 2:
-        return None,None
+
+        return None, None
 
 
-    home = parts[0]
 
-
-    away = " ".join(
-        parts[1:]
+    return (
+        parts[0],
+        " ".join(parts[1:])
     )
-
-
-    return home,away
 
 
 
 # =====================================================
-# XG SAFE
-# =====================================================
-
-def extract_xg(result):
-
-    home = 0
-    away = 0
-
-
-    if not isinstance(
-        result,
-        dict
-    ):
-        return home,away
-
-
-
-    xg = result.get(
-        "xg",
-        {}
-    )
-
-
-    if isinstance(
-        xg,
-        dict
-    ):
-
-
-        if isinstance(
-            xg.get("predicted"),
-            dict
-        ):
-
-            home = xg["predicted"].get(
-                "home",
-                0
-            )
-
-            away = xg["predicted"].get(
-                "away",
-                0
-            )
-
-        else:
-
-            home = xg.get(
-                "home",
-                0
-            )
-
-            away = xg.get(
-                "away",
-                0
-            )
-
-
-    home = result.get(
-        "xg_home",
-        home
-    )
-
-
-    away = result.get(
-        "xg_away",
-        away
-    )
-
-
-    try:
-
-        return (
-            round(float(home),2),
-            round(float(away),2)
-        )
-
-    except:
-
-        return 0,0
-
-
-
-# =====================================================
-# HANDLER
+# HANDLE PREDICT
 # =====================================================
 
 async def handle_predict(
@@ -285,12 +123,12 @@ async def handle_predict(
 
 
 
-    home,away = parse_match(
-        text
-    )
+    home, away = parse_match(text)
+
 
 
     if not home or not away:
+
         return
 
 
@@ -301,7 +139,7 @@ async def handle_predict(
 
     await message.answer(
 
-        f"⏳ Анализирую матч\n\n"
+        f"⏳ Анализ FAJ\n\n"
         f"⚽ {home} — {away}",
 
         reply_markup=get_main_keyboard()
@@ -311,6 +149,11 @@ async def handle_predict(
 
 
     try:
+
+
+        # =============================================
+        # CORE
+        # =============================================
 
 
         result = core.predict_match(
@@ -324,20 +167,46 @@ async def handle_predict(
         )
 
 
-        if not isinstance(
-            result,
-            dict
-        ):
+        if not result:
+
             raise Exception(
-                "FAJ Core вернул не dict"
+                "FAJ Core вернул пустой результат"
             )
 
 
 
-        xg_home,xg_away = extract_xg(
+        # =============================================
+        # XG
+        # =============================================
+
+
+        xg_data = (
             result
+            .get("xg", {})
+            .get("predicted", {})
         )
 
+
+        xg_home = float(
+            xg_data.get(
+                "home",
+                0
+            )
+        )
+
+
+        xg_away = float(
+            xg_data.get(
+                "away",
+                0
+            )
+        )
+
+
+
+        # =============================================
+        # PASSPORTS
+        # =============================================
 
 
         home_pass = load_team_passport(
@@ -351,15 +220,26 @@ async def handle_predict(
 
 
 
-        home_rating = calculate_faj_rating(
-            home_pass
+        home_rating = float(
+            home_pass.get(
+                "faj_rating",
+                0
+            )
         )
 
 
-        away_rating = calculate_faj_rating(
-            away_pass
+        away_rating = float(
+            away_pass.get(
+                "faj_rating",
+                0
+            )
         )
 
+
+
+        # =============================================
+        # DECISION
+        # =============================================
 
 
         decision = result.get(
@@ -368,30 +248,37 @@ async def handle_predict(
         )
 
 
-        if not isinstance(
-            decision,
-            dict
-        ):
+        if not isinstance(decision, dict):
 
             decision = {}
 
 
 
+        confidence = float(
+
+            decision.get(
+                "confidence",
+                0
+            )
+
+        )
+
+
+
         winner_probability = float(
+
             decision.get(
                 "winner_probability",
                 0
             )
+
         )
 
 
-        confidence = float(
-            decision.get(
-                "confidence",
-                winner_probability
-            )
-        )
 
+        # =============================================
+        # RISK ENGINE
+        # =============================================
 
 
         risk = risk_engine.analyze(
@@ -411,46 +298,10 @@ async def handle_predict(
         )
 
 
-        if not isinstance(
-            risk,
-            dict
-        ):
 
-            risk = {
-
-                "risk":"Средний",
-
-                "grade":"B",
-
-                "grade_name":
-                    "Рабочий прогноз"
-
-            }
-
-
-
-        decision.update({
-
-            "risk":
-                risk.get(
-                    "risk",
-                    "Средний"
-                ),
-
-            "grade":
-                risk.get(
-                    "grade",
-                    "B"
-                ),
-
-            "grade_name":
-                risk.get(
-                    "grade_name",
-                    "Рабочий прогноз"
-                )
-
-        })
-
+        # =============================================
+        # FACTORS
+        # =============================================
 
 
         factors = explain_prediction(
@@ -469,17 +320,39 @@ async def handle_predict(
 
 
 
+        # =============================================
+        # RATINGS DICT
+        # =============================================
+
+
+        faj_rating = {
+
+            home:
+                home_rating,
+
+
+            away:
+                away_rating
+
+        }
+
+
+
+        # =============================================
+        # FORMAT
+        # =============================================
+
+
         simulation = result.get(
             "simulation",
             {}
         )
 
 
-        if not isinstance(
-            simulation,
-            dict
-        ):
-            simulation = {}
+        top_scores = simulation.get(
+            "top_scores",
+            []
+        )
 
 
 
@@ -493,18 +366,15 @@ async def handle_predict(
 
 
             {
-                "home":xg_home,
-                "away":xg_away
+                "home": xg_home,
+                "away": xg_away
             },
 
 
             decision,
 
 
-            simulation.get(
-                "top_scores",
-                []
-            ),
+            top_scores,
 
 
             decision.get(
@@ -522,41 +392,131 @@ async def handle_predict(
             factors,
 
 
-            home_rating,
+            faj_rating,
 
-            away_rating,
 
-            risk
+            risk.get(
+                "risk",
+                "Средний"
+            ),
+
+
+            risk.get(
+                "confidence",
+                confidence
+            )
 
         )
 
+
+
+        # =============================================
+        # JOURNAL SAVE
+        # =============================================
 
 
         journal.save(
 
             match=f"{home} — {away}",
 
+
             prediction={
 
-                **decision,
 
-                "xg_home":
-                    xg_home,
+                "winner":
+                    decision.get(
+                        "winner",
+                        ""
+                    ),
 
-                "xg_away":
-                    xg_away,
+
+                "winner_name":
+                    decision.get(
+                        "winner_name",
+                        ""
+                    ),
+
 
                 "winner_probability":
                     winner_probability,
 
+
+                "home_probability":
+                    decision.get(
+                        "home_probability",
+                        decision.get(
+                            "home_prob",
+                            0
+                        )
+                    ),
+
+
+                "draw_probability":
+                    decision.get(
+                        "draw_probability",
+                        decision.get(
+                            "draw_prob",
+                            0
+                        )
+                    ),
+
+
+                "away_probability":
+                    decision.get(
+                        "away_probability",
+                        decision.get(
+                            "away_prob",
+                            0
+                        )
+                    ),
+
+
+                "xg_home":
+                    xg_home,
+
+
+                "xg_away":
+                    xg_away,
+
+
+                "expected_score":
+                    decision.get(
+                        "expected_score",
+                        ""
+                    ),
+
+
+                "top_scores":
+                    top_scores,
+
+
+                "btts":
+                    decision.get(
+                        "btts",
+                        0
+                    ),
+
+
+                "over25":
+                    decision.get(
+                        "over25",
+                        0
+                    ),
+
+
                 "confidence":
                     confidence,
 
-                "top_scores":
-                    simulation.get(
-                        "top_scores",
-                        []
-                    )
+
+                "risk":
+                    risk.get(
+                        "risk",
+                        ""
+                    ),
+
+
+                "faj_rating":
+                    faj_rating
 
             }
 
@@ -588,9 +548,11 @@ async def handle_predict(
 
             "❌ Ошибка модели\n\n"
 
-            f"Тип:\n{type(e).__name__}\n\n"
+            f"Тип:\n"
+            f"{type(e).__name__}\n\n"
 
-            f"Ошибка:\n{str(e)}",
+            f"Ошибка:\n"
+            f"{str(e)}",
 
             reply_markup=get_main_keyboard()
 
