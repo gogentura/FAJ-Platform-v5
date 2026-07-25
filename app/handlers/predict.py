@@ -1,8 +1,9 @@
 # =====================================================
-# FAJ Platform v6.3
+# FAJ Platform v6.3.1
 # app/handlers/predict.py
 #
 # Main Match Prediction Handler
+# Stable Core -> Formatter -> Journal chain
 # =====================================================
 
 
@@ -45,25 +46,48 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================
-# PASSPORT LOADER
+# SAFE NUMBER
+# =====================================================
+
+def safe_float(value, default=0):
+
+    try:
+
+        if isinstance(value, dict):
+            return default
+
+        return float(value)
+
+    except Exception:
+
+        return default
+
+
+
+# =====================================================
+# PASSPORT
 # =====================================================
 
 def load_team_passport(team):
 
-    alias = get_team_by_alias(team)
+
+    real_team = get_team_by_alias(team)
 
 
-    if alias:
+    if real_team:
 
-        team = alias
+        team = real_team
+
 
 
     passport = load_passport(team)
 
 
+
     if isinstance(passport, dict):
 
         return passport
+
 
 
     return {}
@@ -76,7 +100,9 @@ def load_team_passport(team):
 
 def parse_match(text):
 
+
     text = text.strip()
+
 
 
     if text.lower().startswith("прогноз"):
@@ -103,7 +129,7 @@ def parse_match(text):
 
 
 # =====================================================
-# HANDLE PREDICT
+# MAIN HANDLER
 # =====================================================
 
 async def handle_predict(
@@ -139,7 +165,7 @@ async def handle_predict(
 
     await message.answer(
 
-        f"⏳ Анализ FAJ\n\n"
+        f"⏳ Анализирую матч\n\n"
         f"⚽ {home} — {away}",
 
         reply_markup=get_main_keyboard()
@@ -149,6 +175,7 @@ async def handle_predict(
 
 
     try:
+
 
 
         # =============================================
@@ -167,10 +194,10 @@ async def handle_predict(
         )
 
 
-        if not result:
+        if not isinstance(result, dict):
 
             raise Exception(
-                "FAJ Core вернул пустой результат"
+                "FAJ Core вернул неверный формат"
             )
 
 
@@ -180,26 +207,30 @@ async def handle_predict(
         # =============================================
 
 
-        xg_data = (
-            result
-            .get("xg", {})
-            .get("predicted", {})
+        xg_block = result.get(
+            "xg",
+            {}
         )
 
 
-        xg_home = float(
-            xg_data.get(
-                "home",
-                0
+        predicted = {}
+
+
+        if isinstance(xg_block, dict):
+
+            predicted = xg_block.get(
+                "predicted",
+                {}
             )
+
+
+        xg_home = safe_float(
+            predicted.get("home")
         )
 
 
-        xg_away = float(
-            xg_data.get(
-                "away",
-                0
-            )
+        xg_away = safe_float(
+            predicted.get("away")
         )
 
 
@@ -220,19 +251,29 @@ async def handle_predict(
 
 
 
-        home_rating = float(
+        home_rating = safe_float(
+
             home_pass.get(
                 "faj_rating",
-                0
+                home_pass.get(
+                    "rating",
+                    0
+                )
             )
+
         )
 
 
-        away_rating = float(
+        away_rating = safe_float(
+
             away_pass.get(
                 "faj_rating",
-                0
+                away_pass.get(
+                    "rating",
+                    0
+                )
             )
+
         )
 
 
@@ -254,7 +295,7 @@ async def handle_predict(
 
 
 
-        confidence = float(
+        confidence = safe_float(
 
             decision.get(
                 "confidence",
@@ -264,8 +305,7 @@ async def handle_predict(
         )
 
 
-
-        winner_probability = float(
+        winner_probability = safe_float(
 
             decision.get(
                 "winner_probability",
@@ -277,7 +317,7 @@ async def handle_predict(
 
 
         # =============================================
-        # RISK ENGINE
+        # RISK
         # =============================================
 
 
@@ -321,7 +361,7 @@ async def handle_predict(
 
 
         # =============================================
-        # RATINGS DICT
+        # RATING OBJECT
         # =============================================
 
 
@@ -339,7 +379,7 @@ async def handle_predict(
 
 
         # =============================================
-        # FORMAT
+        # SIMULATION
         # =============================================
 
 
@@ -349,11 +389,25 @@ async def handle_predict(
         )
 
 
+        if not isinstance(simulation, dict):
+
+            simulation = {}
+
+
+
         top_scores = simulation.get(
+
             "top_scores",
+
             []
+
         )
 
+
+
+        # =============================================
+        # FORMAT
+        # =============================================
 
 
         answer = format_prediction(
@@ -366,8 +420,13 @@ async def handle_predict(
 
 
             {
-                "home": xg_home,
-                "away": xg_away
+
+                "home":
+                    xg_home,
+
+                "away":
+                    xg_away
+
             },
 
 
@@ -401,17 +460,14 @@ async def handle_predict(
             ),
 
 
-            risk.get(
-                "confidence",
-                confidence
-            )
+            confidence
 
         )
 
 
 
         # =============================================
-        # JOURNAL SAVE
+        # JOURNAL SAFE SAVE
         # =============================================
 
 
@@ -421,7 +477,6 @@ async def handle_predict(
 
 
             prediction={
-
 
                 "winner":
                     decision.get(
@@ -444,30 +499,21 @@ async def handle_predict(
                 "home_probability":
                     decision.get(
                         "home_probability",
-                        decision.get(
-                            "home_prob",
-                            0
-                        )
+                        0
                     ),
 
 
                 "draw_probability":
                     decision.get(
                         "draw_probability",
-                        decision.get(
-                            "draw_prob",
-                            0
-                        )
+                        0
                     ),
 
 
                 "away_probability":
                     decision.get(
                         "away_probability",
-                        decision.get(
-                            "away_prob",
-                            0
-                        )
+                        0
                     ),
 
 
@@ -505,18 +551,7 @@ async def handle_predict(
 
 
                 "confidence":
-                    confidence,
-
-
-                "risk":
-                    risk.get(
-                        "risk",
-                        ""
-                    ),
-
-
-                "faj_rating":
-                    faj_rating
+                    confidence
 
             }
 
