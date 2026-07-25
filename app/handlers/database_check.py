@@ -6,53 +6,49 @@ from app.handlers.keyboard import get_main_keyboard
 
 async def cmd_dbcheck(message: types.Message):
 
-    conn = get_db()
-
     try:
 
-        passports = conn.execute(
-            "SELECT COUNT(*) FROM passports"
-        ).fetchone()[0]
+        conn = get_db()
 
-        fixtures = conn.execute(
-            "SELECT COUNT(*) FROM fixtures"
-        ).fetchone()[0]
+        text = "🗄 Проверка PostgreSQL\n\n"
 
-        teams = conn.execute(
-            """
-            SELECT team
-            FROM passports
-            LIMIT 5
-            """
-        ).fetchall()
+        try:
+            passports = conn.execute(
+                "SELECT COUNT(*) FROM passports"
+            ).fetchone()[0]
 
-        matches = conn.execute(
-            """
-            SELECT *
-            FROM fixtures
-            LIMIT 5
-            """
-        ).fetchall()
+            text += f"✅ passports: {passports}\n"
 
-        text = "🗄 Проверка базы FAJ\n\n"
+        except Exception as e:
+            text += f"❌ passports: {repr(e)}\n"
 
-        text += f"Паспортов: {passports}\n"
-        text += f"Матчей: {fixtures}\n\n"
+        try:
+            fixtures = conn.execute(
+                "SELECT COUNT(*) FROM fixtures"
+            ).fetchone()[0]
 
-        text += "Команды:\n"
+            text += f"✅ fixtures: {fixtures}\n"
 
-        for t in teams:
-            text += f"• {t['team']}\n"
+        except Exception as e:
+            text += f"❌ fixtures: {repr(e)}\n"
 
-        text += "\n──────────────\n"
+        try:
 
-        text += "Fixtures:\n\n"
+            rows = conn.execute(
 
-        for m in matches:
+                "SELECT * FROM fixtures LIMIT 3"
 
-            text += (
-                f"{dict(m)}\n\n"
-            )
+            ).fetchall()
+
+            text += "\nПервые записи fixtures:\n"
+
+            for row in rows:
+
+                text += f"{dict(row)}\n\n"
+
+        except Exception as e:
+
+            text += f"\n❌ SELECT * fixtures:\n{repr(e)}"
 
         conn.close()
 
@@ -64,6 +60,6 @@ async def cmd_dbcheck(message: types.Message):
     except Exception as e:
 
         await message.answer(
-            f"Ошибка БД:\n\n{e}",
+            f"Общая ошибка:\n\n{repr(e)}",
             reply_markup=get_main_keyboard()
         )
