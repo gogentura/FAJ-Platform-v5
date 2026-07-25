@@ -1,10 +1,18 @@
+# =====================================================
+# FAJ Platform v6.3
+# app/journal.py
+#
+# PostgreSQL Journal Layer
+# =====================================================
+
 from datetime import datetime
+import json
 
 from app.database import get_db
 
 
 # =====================================================
-# CLEAN NUMPY VALUES
+# CLEAN VALUES
 # =====================================================
 
 def clean_value(value):
@@ -23,6 +31,10 @@ def clean_value(value):
 class Journal:
 
 
+    # =================================================
+    # SAVE PREDICTION
+    # =================================================
+
     def save(
         self,
         match: str,
@@ -32,12 +44,12 @@ class Journal:
 
         conn = get_db()
 
-        now = datetime.now().isoformat()
+        now = datetime.now()
 
 
 
         # =============================================
-        # SAFE MATCH PARSE
+        # PARSE TEAMS
         # =============================================
 
         parts = (
@@ -47,7 +59,11 @@ class Journal:
         )
 
 
-        home_team = parts[0].strip()
+        home_team = (
+            parts[0].strip()
+            if len(parts) > 0
+            else ""
+        )
 
 
         away_team = (
@@ -59,22 +75,34 @@ class Journal:
 
 
         # =============================================
-        # HUMAN READABLE PREDICTION
+        # TEXT
         # =============================================
 
         prediction_text = (
-            f"{prediction.get('winner', '')} | "
+
+            f"{prediction.get('winner_name','')} | "
+
             f"xG "
-            f"{prediction.get('xg_home', 0)}-"
-            f"{prediction.get('xg_away', 0)} | "
-            f"{prediction.get('expected_score', '')}"
+
+            f"{prediction.get('xg_home',0)}-"
+
+            f"{prediction.get('xg_away',0)} | "
+
+            f"{prediction.get('expected_score','')}"
+
         )
 
 
 
+        # =============================================
+        # INSERT
+        # =============================================
+
         conn.execute(
         """
-        INSERT INTO journal (
+
+        INSERT INTO journal
+        (
 
             date,
 
@@ -126,17 +154,28 @@ class Journal:
 
             data_version,
 
+
             accuracy,
 
 
             created
 
+
         )
 
+        VALUES
 
-        VALUES (
+        (
 
-            ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+            %s,%s,%s,%s,%s,
+
+            %s,%s,%s,%s,%s,
+
+            %s,%s,%s,%s,%s,
+
+            %s,%s,%s,%s,%s,
+
+            %s,%s,%s,%s
 
         )
 
@@ -146,15 +185,11 @@ class Journal:
 
             now,
 
-
             match,
-
 
             home_team,
 
-
             away_team,
-
 
 
             prediction_text,
@@ -164,7 +199,6 @@ class Journal:
                 "winner",
                 ""
             ),
-
 
 
             clean_value(
@@ -178,8 +212,11 @@ class Journal:
 
             clean_value(
                 prediction.get(
-                    "home_prob",
-                    0
+                    "home_probability",
+                    prediction.get(
+                        "home_prob",
+                        0
+                    )
                 )
             ),
 
@@ -187,8 +224,11 @@ class Journal:
 
             clean_value(
                 prediction.get(
-                    "draw_prob",
-                    0
+                    "draw_probability",
+                    prediction.get(
+                        "draw_prob",
+                        0
+                    )
                 )
             ),
 
@@ -196,8 +236,11 @@ class Journal:
 
             clean_value(
                 prediction.get(
-                    "away_prob",
-                    0
+                    "away_probability",
+                    prediction.get(
+                        "away_prob",
+                        0
+                    )
                 )
             ),
 
@@ -228,11 +271,12 @@ class Journal:
 
 
 
-            str(
+            json.dumps(
                 prediction.get(
                     "top_scores",
                     []
-                )
+                ),
+                ensure_ascii=False
             ),
 
 
@@ -259,7 +303,8 @@ class Journal:
                 "score",
                 ""
             )
-            if actual else "",
+            if actual
+            else "",
 
 
 
@@ -267,7 +312,8 @@ class Journal:
                 "winner",
                 ""
             )
-            if actual else "",
+            if actual
+            else "",
 
 
 
@@ -280,17 +326,15 @@ class Journal:
 
 
 
-            "5.2",
+            "6.3",
 
 
 
-            datetime.now().strftime(
-                "%Y-%m-%d"
-            ),
+            "2026.07",
 
 
 
-            "pending",
+            None,
 
 
 
@@ -301,6 +345,7 @@ class Journal:
         )
 
 
+
         conn.commit()
 
         conn.close()
@@ -308,7 +353,7 @@ class Journal:
 
 
     # =================================================
-    # GET LAST PREDICTIONS
+    # LAST PREDICTIONS
     # =================================================
 
     def get_all(
@@ -321,13 +366,14 @@ class Journal:
 
         rows = conn.execute(
         """
+
         SELECT *
 
         FROM journal
 
         ORDER BY id DESC
 
-        LIMIT ?
+        LIMIT %s
 
         """,
 
