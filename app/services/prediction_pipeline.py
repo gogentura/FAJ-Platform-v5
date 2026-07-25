@@ -1,13 +1,8 @@
 # =====================================================
-# FAJ Platform v6.4.1
+# FAJ Platform v6.5
 # app/services/prediction_pipeline.py
 #
-# Unified Prediction Pipeline
-#
-# FAJCore
-# + Risk Engine
-# + Expert Layer
-# + Journal preparation
+# FAJ Prediction Pipeline
 # =====================================================
 
 
@@ -16,12 +11,22 @@ import logging
 
 from app.core.faj_core import FAJCore
 
-from app.core.risk_engine import risk_engine
 
 from app.passport_manager import (
     load_passport,
     get_team_by_alias
 )
+
+
+from app.core.risk_engine import (
+    risk_engine
+)
+
+
+from app.utils.explainer import (
+    explain_prediction
+)
+
 
 
 logger = logging.getLogger(__name__)
@@ -38,24 +43,14 @@ core = FAJCore()
 
 
 def safe_float(
-
     value,
-
     default=0
-
 ):
 
     try:
 
         if value is None:
-
             return default
-
-
-        if isinstance(value, dict):
-
-            return default
-
 
         return float(value)
 
@@ -63,6 +58,7 @@ def safe_float(
     except Exception:
 
         return default
+
 
 
 
@@ -75,23 +71,41 @@ def safe_float(
 def get_passport(team):
 
 
-    real_team = get_team_by_alias(team)
+    try:
 
 
-    if real_team:
-
-        team = real_team
-
-
-
-    passport = load_passport(
-
-        team
-
-    )
+        real_team = get_team_by_alias(
+            team
+        )
 
 
-    return passport or {}
+        if real_team:
+
+            team = real_team
+
+
+
+        passport = load_passport(
+            team
+        )
+
+
+        return passport or {}
+
+
+
+    except Exception as e:
+
+
+        logger.error(
+
+            f"Passport error {team}: {e}"
+
+        )
+
+
+        return {}
+
 
 
 
@@ -102,9 +116,7 @@ def get_passport(team):
 
 
 def calculate_rating(
-
     passport
-
 ):
 
 
@@ -115,17 +127,14 @@ def calculate_rating(
 
 
     if passport.get(
-
         "faj_rating"
-
     ):
+
 
         return round(
 
             safe_float(
-
                 passport["faj_rating"]
-
             ),
 
             1
@@ -137,67 +146,51 @@ def calculate_rating(
     rating = (
 
         safe_float(
-
-            passport.get("attack"),
-
+            passport.get("attack")
         )
-
         * 0.25
 
 
         +
 
         safe_float(
-
             passport.get("defense")
-
         )
-
         * 0.25
 
 
         +
 
         safe_float(
-
             passport.get("control")
-
         )
-
         * 0.20
 
 
         +
 
         safe_float(
-
             passport.get("form")
-
         )
-
         * 0.20
 
 
         +
 
         safe_float(
-
             passport.get("efficiency")
-
         )
-
         * 0.10
 
     )
 
 
+
     return round(
-
         rating,
-
         1
-
     )
+
 
 
 
@@ -223,9 +216,17 @@ def predict_match_pipeline(
     try:
 
 
-        # -----------------------------------------
+        logger.info(
+
+            f"FAJ pipeline start: {home_team} - {away_team}"
+
+        )
+
+
+
+        # -------------------------------------
         # CORE
-        # -----------------------------------------
+        # -------------------------------------
 
 
         result = core.predict_match(
@@ -242,13 +243,61 @@ def predict_match_pipeline(
 
         if not result:
 
-            raise Exception(
 
-                "FAJ Core returned empty"
+            return None
 
+
+
+
+
+        # -------------------------------------
+        # XG
+        # -------------------------------------
+
+
+        xg = result.get(
+
+            "xg",
+
+            {}
+
+        )
+
+
+        predicted = xg.get(
+
+            "predicted",
+
+            {}
+
+        )
+
+
+
+        xg_home = safe_float(
+
+            predicted.get(
+                "home"
             )
 
+        )
 
+
+        xg_away = safe_float(
+
+            predicted.get(
+                "away"
+            )
+
+        )
+
+
+
+
+
+        # -------------------------------------
+        # DECISION
+        # -------------------------------------
 
 
         decision = result.get(
@@ -261,49 +310,11 @@ def predict_match_pipeline(
 
 
 
-        xg = result.get(
-
-            "xg",
-
-            {}
-
-        ).get(
-
-            "predicted",
-
-            {}
-
-        )
 
 
-
-        xg_home = safe_float(
-
-            xg.get(
-
-                "home"
-
-            )
-
-        )
-
-
-        xg_away = safe_float(
-
-            xg.get(
-
-                "away"
-
-            )
-
-        )
-
-
-
-
-        # -----------------------------------------
-        # RATINGS
-        # -----------------------------------------
+        # -------------------------------------
+        # PASSPORTS
+        # -------------------------------------
 
 
         home_passport = get_passport(
@@ -337,9 +348,10 @@ def predict_match_pipeline(
 
 
 
-        # -----------------------------------------
-        # RISK ENGINE
-        # -----------------------------------------
+
+        # -------------------------------------
+        # RISK
+        # -------------------------------------
 
 
         confidence = safe_float(
@@ -390,13 +402,35 @@ def predict_match_pipeline(
 
 
 
-        # -----------------------------------------
-        # FINAL OBJECT
-        # -----------------------------------------
+        # -------------------------------------
+        # FACTORS
+        # -------------------------------------
+
+
+        factors = explain_prediction(
+
+            home_passport,
+
+            away_passport,
+
+            xg_home,
+
+            xg_away,
+
+            league
+
+        )
+
+
+
+
+
+        # -------------------------------------
+        # BUILD FINAL
+        # -------------------------------------
 
 
         prediction = {
-
 
 
             "home_team":
@@ -420,6 +454,17 @@ def predict_match_pipeline(
 
 
 
+            "xg_home":
+
+                xg_home,
+
+
+            "xg_away":
+
+                xg_away,
+
+
+
             "winner":
 
                 decision.get(
@@ -430,7 +475,7 @@ def predict_match_pipeline(
 
                         "winner",
 
-                        "-"
+                        "нет"
 
                     )
 
@@ -444,7 +489,7 @@ def predict_match_pipeline(
 
                     "expected_score",
 
-                    "-"
+                    ""
 
                 ),
 
@@ -483,18 +528,6 @@ def predict_match_pipeline(
                     0
 
                 ),
-
-
-
-            "xg_home":
-
-                xg_home,
-
-
-
-            "xg_away":
-
-                xg_away,
 
 
 
@@ -594,12 +627,21 @@ def predict_match_pipeline(
 
 
 
-            "model_version":
+            "factors":
 
-                core.version
+                factors
 
         }
 
+
+
+
+
+        logger.info(
+
+            f"FAJ pipeline finished: {home_team} - {away_team}"
+
+        )
 
 
 
@@ -608,15 +650,13 @@ def predict_match_pipeline(
 
 
 
-    except Exception as e:
 
+    except Exception as e:
 
 
         logger.error(
 
-            "Prediction pipeline error: %s",
-
-            e,
+            f"Pipeline error {home_team}-{away_team}: {e}",
 
             exc_info=True
 
