@@ -1,256 +1,773 @@
+# =====================================================
+# FAJ Platform v6.3
+# FAJ Core
+# =====================================================
+
 import time
 import numpy as np
-from math import exp, factorial
 
-from app.database import get_db
-from app.passport_manager import get_team_by_alias
+from math import exp
+from math import factorial
+
+from app.passport_manager import load_passport
 
 
 class FAJCore:
 
-    VERSION = "5.2"
+    VERSION = "6.3"
+
+    LEAGUE_MEAN = 1.35
+
+    HOME_ADVANTAGE = 1.08
+
+    MAX_GOALS = 8
+
+    SIMULATIONS = 10000
+
+    # ==============================================
 
     def __init__(self):
+
         self.version = self.VERSION
 
-    # ==========================================
-    # ОСНОВНОЙ ПРОГНОЗ
-    # ==========================================
-
-    def predict_match(self, home_team, away_team, league="RPL"):
-        start = time.time()
-
-        home_pass = self.load_team(home_team)
-        away_pass = self.load_team(away_team)
-
-        if not home_pass or not away_pass:
-            return {
-                "error": f"Паспорт не найден: {home_team} или {away_team}"
-            }
-
-        home_xg = self.calculate_xg(home_pass, away_pass, True)
-        away_xg = self.calculate_xg(away_pass, home_pass, False)
-
-        home_xg = max(0.1, min(4.0, home_xg))
-        away_xg = max(0.1, min(4.0, away_xg))
-
-        simulation = self.simulate(home_xg, away_xg)
-        decision = self.make_decision(simulation, home_xg, away_xg)
-
-        return {
-            "home_team": home_team,
-            "away_team": away_team,
-            "league": league,
-            "xg": {
-                "predicted": {
-                    "home": round(home_xg, 2),
-                    "away": round(away_xg, 2)
-                },
-                "historical": {
-                    "home": home_pass.get("historical_xg_value"),
-                    "away": away_pass.get("historical_xg_value")
-                }
-            },
-            "simulation": simulation,
-            "decision": decision,
-            "btts": self.btts_probability(home_xg, away_xg),
-            "over25": self.over25_probability(home_xg, away_xg),
-            "top_scores": simulation["top_scores"],
-            "processing_time": round(time.time() - start, 3),
-            "version": self.version
-        }
-
-    # ==========================================
-    # UNIVERSAL PREDICT API
-    # FAJ v6.0
-    # ==========================================
+    # ==============================================
+    # UNIVERSAL API
+    # ==============================================
 
     def predict(
+
         self,
+
         home_team,
+
         away_team,
+
         league="RPL"
+
     ):
-        """
-        Универсальный метод для получения прогноза.
-        Все модули FAJ обращаются к этому методу.
-        """
+
         return self.predict_match(
+
             home_team,
+
             away_team,
+
             league
+
         )
 
-    # ==========================================
-    # ЗАГРУЗКА ПАСПОРТА (ИСПРАВЛЕНА)
-    # ==========================================
+    # ==============================================
+    # MAIN
+    # ==============================================
 
-    def load_team(self, team):
-        real_team = get_team_by_alias(team)
-        if not real_team:
-            real_team = team
+    def predict_match(
 
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT *
-            FROM team_passports
-            WHERE team = %s
-            LIMIT 1
-            """,
-            (real_team,)
+        self,
+
+        home_team,
+
+        away_team,
+
+        league="RPL"
+
+    ):
+
+        started = time.time()
+
+        home = load_passport(home_team)
+
+        away = load_passport(away_team)
+
+        if home is None:
+
+            raise Exception(
+
+                f"Паспорт не найден: {home_team}"
+
+            )
+
+        if away is None:
+
+            raise Exception(
+
+                f"Паспорт не найден: {away_team}"
+
+            )
+
+        home_xg = self.calculate_xg(
+
+            home,
+
+            away,
+
+            True
+
         )
-        row = cur.fetchone()
-        conn.close()
 
-        if row:
-            return dict(row)
-        return None
+        away_xg = self.calculate_xg(
 
-    # ==========================================
-    # РАСЧЁТ xG
-    # ==========================================
+            away,
 
-    def calculate_xg(self, team, opponent, home=True):
-        base_xg = team.get("historical_xg_value") or 1.3
-        attack = team.get("attack") or 70
-        opponent_defense = opponent.get("defense") or 70
-        form = team.get("form_index") or 70
-        control = team.get("control") or 70
+            home,
 
-        factor = 1.0
+            False
 
-        # атака
-        factor *= (1 + (attack - 70) / 200)
+        )
 
-        # защита соперника
-        factor *= (1 + (70 - opponent_defense) / 250)
+        simulation = self.simulate(
 
-        # форма
-        factor *= (1 + (form - 70) / 300)
+            home_xg,
 
-        # контроль
-        factor *= (1 + (control - 70) / 500)
+            away_xg
 
-        # домашний / выездной фактор
+        )
+
+        decision = self.make_decision(
+
+            simulation,
+
+            home_xg,
+
+            away_xg
+
+        )
+
+        return {
+
+            "version": self.version,
+
+            "league": league,
+
+            "home_team": home_team,
+
+            "away_team": away_team,
+
+            "home_xg": round(home_xg, 2),
+
+            "away_xg": round(away_xg, 2),
+
+            "simulation": simulation,
+
+            "decision": decision,
+
+            "processing_time":
+
+                round(
+
+                    time.time() - started,
+
+                    3
+
+                )
+
+        }
+
+    # ==============================================
+    # XG MODEL
+    # FAJ Platform v6.3
+    # ==============================================
+
+    def calculate_xg(
+
+        self,
+
+        team,
+
+        opponent,
+
+        home=True
+
+    ):
+
+        # -------------------------
+        # Базовый xG
+        # -------------------------
+
+        base_attack = (
+
+            float(team.get("xg_for") or self.LEAGUE_MEAN)
+
+        )
+
+        base_defense = (
+
+            float(opponent.get("xg_against") or self.LEAGUE_MEAN)
+
+        )
+
+        xg = (
+
+            base_attack * 0.55 +
+
+            base_defense * 0.45
+
+        )
+
+        # -------------------------
+        # ATTACK
+        # -------------------------
+
+        attack = float(team.get("attack") or 70)
+
+        xg *= (
+
+            1 +
+
+            (attack - 70) / 200
+
+        )
+
+        # -------------------------
+        # OPPONENT DEFENCE
+        # -------------------------
+
+        defence = float(opponent.get("defense") or 70)
+
+        xg *= (
+
+            1 +
+
+            (70 - defence) / 250
+
+        )
+
+        # -------------------------
+        # FORM
+        # -------------------------
+
+        form = float(team.get("form") or 70)
+
+        xg *= (
+
+            1 +
+
+            (form - 70) / 300
+
+        )
+
+        # -------------------------
+        # CONTROL
+        # -------------------------
+
+        control = float(team.get("control") or 70)
+
+        xg *= (
+
+            1 +
+
+            (control - 70) / 500
+
+        )
+
+        # -------------------------
+        # EFFICIENCY
+        # -------------------------
+
+        efficiency = float(
+
+            team.get("efficiency") or 70
+
+        )
+
+        xg *= (
+
+            1 +
+
+            (efficiency - 70) / 450
+
+        )
+
+        # -------------------------
+        # MENTALITY
+        # -------------------------
+
+        mentality = float(
+
+            team.get("mentality") or 70
+
+        )
+
+        xg *= (
+
+            1 +
+
+            (mentality - 70) / 600
+
+        )
+
+        # -------------------------
+        # FITNESS
+        # -------------------------
+
+        fitness = float(
+
+            team.get("fitness") or 70
+
+        )
+
+        xg *= (
+
+            1 +
+
+            (fitness - 70) / 500
+
+        )
+
+        # -------------------------
+        # HOME BONUS
+        # -------------------------
+
         if home:
-            home_rating = team.get("home_rating") or 70
-            factor *= (1 + (home_rating - 70) / 300)
-        else:
-            away_rating = team.get("away_rating") or 70
-            factor *= (1 + (away_rating - 70) / 300)
 
-        # тренер
-        coach = team.get("coach_factor") or 70
-        factor *= (1 + (coach - 70) / 500)
+            xg *= self.HOME_ADVANTAGE
 
-        # травмы и усталость
-        injury = team.get("injury_index") or 0
-        fatigue = team.get("fatigue_index") or 0
-        factor *= (1 - (injury + fatigue) / 500)
+        # -------------------------
+        # INJURIES
+        # -------------------------
 
-        return base_xg * factor
+        injuries = float(
 
-    # ==========================================
-    # MONTE CARLO SIMULATION
-    # ==========================================
+            team.get("injury_index") or 0
 
-    def simulate(self, home_xg, away_xg, n=10000):
+        )
+
+        xg *= (
+
+            1 -
+
+            injuries / 500
+
+        )
+
+        # -------------------------
+        # FATIGUE
+        # -------------------------
+
+        fatigue = float(
+
+            team.get("fatigue_index") or 0
+
+        )
+
+        xg *= (
+
+            1 -
+
+            fatigue / 500
+
+        )
+
+        # -------------------------
+        # TRANSFERS
+        # -------------------------
+
+        transfer = float(
+
+            team.get("transfer_index") or 0
+
+        )
+
+        xg *= (
+
+            1 +
+
+            transfer / 1000
+
+        )
+
+        # -------------------------
+        # LIMITS
+        # -------------------------
+
+        xg = max(
+
+            0.10,
+
+            min(
+
+                4.00,
+
+                xg
+
+            )
+
+        )
+
+        return xg
+
+    # ==============================================
+    # POISSON
+    # ==============================================
+
+    def poisson(self, goals, xg):
+        return (
+            exp(-xg)
+            *
+            (xg ** goals)
+            /
+            factorial(goals)
+        )
+
+    # ==============================================
+    # MONTE CARLO
+    # ==============================================
+
+    def simulate(
+        self,
+        home_xg,
+        away_xg
+    ):
         np.random.seed(42)
-
-        home_goals = np.random.poisson(home_xg, n)
-        away_goals = np.random.poisson(away_xg, n)
-
-        home_win = np.sum(home_goals > away_goals)
-        draw = np.sum(home_goals == away_goals)
-        away_win = np.sum(home_goals < away_goals)
-
+        home_goals = np.random.poisson(
+            home_xg,
+            self.SIMULATIONS
+        )
+        away_goals = np.random.poisson(
+            away_xg,
+            self.SIMULATIONS
+        )
+        home_win = int(
+            np.sum(
+                home_goals > away_goals
+            )
+        )
+        draw = int(
+            np.sum(
+                home_goals == away_goals
+            )
+        )
+        away_win = int(
+            np.sum(
+                home_goals < away_goals
+            )
+        )
         scores = {}
-        for h, a in zip(home_goals, away_goals):
-            key = (int(h), int(a))
-            scores[key] = scores.get(key, 0) + 1
-
-        top_scores = sorted(
+        for h, a in zip(
+            home_goals,
+            away_goals
+        ):
+            h = min(
+                int(h),
+                self.MAX_GOALS
+            )
+            a = min(
+                int(a),
+                self.MAX_GOALS
+            )
+            key = (h, a)
+            scores[key] = (
+                scores.get(key, 0)
+                + 1
+            )
+        top = sorted(
             scores.items(),
             key=lambda x: x[1],
             reverse=True
-        )[:3]
-
-        formatted_scores = []
-        for score, count in top_scores:
-            formatted_scores.append({
-                "score": f"{score[0]}-{score[1]}",
-                "probability": round(count / n * 100, 1)
-            })
-
+        )[:10]
+        top_scores = []
+        for score, count in top:
+            top_scores.append(
+                {
+                    "score":
+                        f"{score[0]}-{score[1]}",
+                    "probability":
+                        round(
+                            count
+                            /
+                            self.SIMULATIONS
+                            *
+                            100,
+                            2
+                        )
+                }
+            )
         return {
-            "home_win_prob": round(home_win / n, 3),
-            "draw_prob": round(draw / n, 3),
-            "away_win_prob": round(away_win / n, 3),
-            "top_scores": formatted_scores
+            "home_win_prob":
+                round(
+                    home_win
+                    /
+                    self.SIMULATIONS,
+                    3
+                ),
+            "draw_prob":
+                round(
+                    draw
+                    /
+                    self.SIMULATIONS,
+                    3
+                ),
+            "away_win_prob":
+                round(
+                    away_win
+                    /
+                    self.SIMULATIONS,
+                    3
+                ),
+            "top_scores":
+                top_scores
         }
 
-    # ==========================================
-    # ОБЕ ЗАБЬЮТ
-    # ==========================================
+    # ==============================================
+    # BOTH TEAMS TO SCORE
+    # ==============================================
 
-    def btts_probability(self, home_xg, away_xg):
+    def btts_probability(
+        self,
+        home_xg,
+        away_xg
+    ):
         p_home_zero = exp(-home_xg)
         p_away_zero = exp(-away_xg)
-        probability = 1 - p_home_zero - p_away_zero + p_home_zero * p_away_zero
+        probability = (
+            1
+            - p_home_zero
+            - p_away_zero
+            + p_home_zero * p_away_zero
+        )
         return round(probability, 3)
 
-    # ==========================================
-    # ТОТАЛ 2.5
-    # ==========================================
+    # ==============================================
+    # OVER 2.5
+    # ==============================================
 
-    def over25_probability(self, home_xg, away_xg):
+    def over25_probability(
+        self,
+        home_xg,
+        away_xg
+    ):
         probability = 0
-        for h in range(0, 8):
-            for a in range(0, 8):
+        for h in range(
+            self.MAX_GOALS + 1
+        ):
+            for a in range(
+                self.MAX_GOALS + 1
+            ):
                 if h + a > 2:
                     probability += (
-                        (exp(-home_xg) * home_xg ** h / factorial(h)) *
-                        (exp(-away_xg) * away_xg ** a / factorial(a))
+                        self.poisson(
+                            h,
+                            home_xg
+                        )
+                        *
+                        self.poisson(
+                            a,
+                            away_xg
+                        )
                     )
         return round(probability, 3)
 
-    # ==========================================
-    # ИТОГОВОЕ РЕШЕНИЕ
-    # ==========================================
+    # ==============================================
+    # UNDER 2.5
+    # ==============================================
 
-    def make_decision(self, simulation, home_xg, away_xg):
+    def under25_probability(
+        self,
+        home_xg,
+        away_xg
+    ):
+        return round(
+            1 -
+            self.over25_probability(
+                home_xg,
+                away_xg
+            ),
+            3
+        )
+
+    # ==============================================
+    # OVER 1.5
+    # ==============================================
+
+    def over15_probability(
+        self,
+        home_xg,
+        away_xg
+    ):
+        probability = 0
+        for h in range(
+            self.MAX_GOALS + 1
+        ):
+            for a in range(
+                self.MAX_GOALS + 1
+            ):
+                if h + a > 1:
+                    probability += (
+                        self.poisson(h, home_xg)
+                        *
+                        self.poisson(a, away_xg)
+                    )
+        return round(probability, 3)
+
+    # ==============================================
+    # OVER 3.5
+    # ==============================================
+
+    def over35_probability(
+        self,
+        home_xg,
+        away_xg
+    ):
+        probability = 0
+        for h in range(
+            self.MAX_GOALS + 1
+        ):
+            for a in range(
+                self.MAX_GOALS + 1
+            ):
+                if h + a > 3:
+                    probability += (
+                        self.poisson(h, home_xg)
+                        *
+                        self.poisson(a, away_xg)
+                    )
+        return round(probability, 3)
+
+    # ==============================================
+    # FINAL DECISION
+    # ==============================================
+
+    def make_decision(
+
+        self,
+
+        simulation,
+
+        home_xg,
+
+        away_xg
+
+    ):
+
         home = simulation["home_win_prob"]
         draw = simulation["draw_prob"]
         away = simulation["away_win_prob"]
 
-        if home >= away and home >= draw:
+        if home >= draw and home >= away:
+
             winner = "home"
             winner_name = "Хозяева"
-        elif away >= home and away >= draw:
+
+        elif away >= draw and away >= home:
+
             winner = "away"
             winner_name = "Гости"
+
         else:
+
             winner = "draw"
             winner_name = "Ничья"
 
-        probability = max(home, draw, away)
+        confidence = int(
+            50 + max(home, draw, away) * 40
+        )
+
+        top_score = "1-1"
 
         if simulation["top_scores"]:
-            expected_score = simulation["top_scores"][0]["score"]
-        else:
-            expected_score = f"{round(home_xg)}-{round(away_xg)}"
 
-        confidence = int(50 + probability * 40)
+            top_score = simulation["top_scores"][0]["score"]
 
         return {
+
             "winner": winner,
+
             "winner_name": winner_name,
-            "winner_probability": round(probability * 100, 1),
-            "home_prob": round(home * 100, 1),
-            "draw_prob": round(draw * 100, 1),
-            "away_prob": round(away * 100, 1),
-            "expected_score": expected_score,
-            "confidence": confidence
+
+            "winner_probability":
+
+                round(
+
+                    max(home, draw, away) * 100,
+
+                    1
+
+                ),
+
+            "home_probability":
+
+                round(home * 100, 1),
+
+            "draw_probability":
+
+                round(draw * 100, 1),
+
+            "away_probability":
+
+                round(away * 100, 1),
+
+            "expected_score": top_score,
+
+            "confidence": confidence,
+
+            "btts":
+
+                self.btts_probability(
+
+                    home_xg,
+
+                    away_xg
+
+                ),
+
+            "over15":
+
+                self.over15_probability(
+
+                    home_xg,
+
+                    away_xg
+
+                ),
+
+            "over25":
+
+                self.over25_probability(
+
+                    home_xg,
+
+                    away_xg
+
+                ),
+
+            "under25":
+
+                self.under25_probability(
+
+                    home_xg,
+
+                    away_xg
+
+                ),
+
+            "over35":
+
+                self.over35_probability(
+
+                    home_xg,
+
+                    away_xg
+
+                )
+
+        }
+
+
+    # ==============================================
+    # VERSION
+    # ==============================================
+
+    def info(self):
+
+        return {
+
+            "engine": "FAJ Engine",
+
+            "version": self.version,
+
+            "simulations": self.SIMULATIONS,
+
+            "league_mean": self.LEAGUE_MEAN,
+
+            "home_advantage": self.HOME_ADVANTAGE
+
         }
