@@ -253,9 +253,17 @@ async def run_bot(
         Command("debug_soccer365")
     )
 
-    # ===== НОВАЯ КОМАНДА =====
+    # ===== DEBUG PREDICTION (исправленная регистрация) =====
+    async def debug_prediction_handler(
+        message: Message
+    ):
+        await cmd_debug_prediction(
+            message,
+            core
+        )
+
     dp.message.register(
-        lambda m: cmd_debug_prediction(m, core),
+        debug_prediction_handler,
         Command("debug_prediction")
     )
 
