@@ -2,7 +2,9 @@
 # FAJ Platform v6.3.4
 # app/services/tour_predictor.py
 #
-# Generate predictions for whole RPL tour
+# FAJ Tour Predictor
+#
+# Создание прогнозов всего тура
 # =====================================================
 
 
@@ -29,20 +31,27 @@ class TourPredictor:
 
 
 
-    def __init__(self, core=None):
+    def __init__(
 
-        self.core = core or FAJCore()
+        self,
+
+        core: FAJCore
+
+    ):
+
+
+        self.core = core
 
         self.journal = Journal()
 
 
 
     # =================================================
-    # GET UPCOMING FIXTURES
+    # GET FIXTURES
     # =================================================
 
 
-    def get_fixtures(
+    def get_tour_fixtures(
 
         self,
 
@@ -91,6 +100,7 @@ class TourPredictor:
         rows = cur.fetchall()
 
 
+
         cur.close()
 
         conn.close()
@@ -102,7 +112,7 @@ class TourPredictor:
 
 
     # =================================================
-    # GENERATE ONE PREDICTION
+    # CREATE ONE PREDICTION
     # =================================================
 
 
@@ -124,22 +134,25 @@ class TourPredictor:
 
 
 
-            result = self.core.predict(
+            prediction = self.core.predict(
 
                 home,
 
                 away,
 
                 fixture.get(
+
                     "league",
+
                     "RPL"
+
                 )
 
             )
 
 
 
-            return result
+            return prediction
 
 
 
@@ -164,7 +177,7 @@ class TourPredictor:
     # =================================================
 
 
-    def generate_tour(
+    def generate_tour_predictions(
 
         self,
 
@@ -175,7 +188,7 @@ class TourPredictor:
     ):
 
 
-        fixtures = self.get_fixtures(
+        fixtures = self.get_tour_fixtures(
 
             league,
 
@@ -184,81 +197,74 @@ class TourPredictor:
         )
 
 
-        generated = 0
 
-        errors = []
+        results = []
 
 
 
         for fixture in fixtures:
 
 
-            try:
 
+            prediction = self.predict_fixture(
 
-                prediction = self.predict_fixture(
+                fixture
 
-                    fixture
-
-                )
-
-
-                if not prediction:
-
-                    continue
+            )
 
 
 
-                fixture_id = fixture["id"]
+            if not prediction:
+
+                continue
 
 
 
-                prediction["home_team"] = fixture["home_team"]
+            fixture_id = fixture.get(
 
-                prediction["away_team"] = fixture["away_team"]
+                "id"
 
-                prediction["league"] = league
-
-
-
-                # сохраняем в журнал
-
-                self.journal.save(
-
-                    fixture,
-
-                    prediction,
-
-                    fixture_id
-
-                )
+            )
 
 
 
-                generated += 1
+            # сохраняем в журнал
+
+            self.journal.save(
+
+                fixture,
+
+                prediction,
+
+                fixture_id
+
+            )
 
 
 
-            except Exception as e:
+            results.append(
+
+                {
+
+                    "fixture": fixture,
+
+                    "prediction": prediction
+
+                }
+
+            )
 
 
-                errors.append(
 
-                    str(e)
+        logger.info(
 
-                )
+            f"Tour predictions generated: {len(results)}"
 
-
-
-        return {
+        )
 
 
-            "generated": generated,
 
-
-            "errors": errors
-
-        }
+        return results
 
 
 
@@ -267,13 +273,13 @@ class TourPredictor:
 # =====================================================
 
 
-def generate_tour_predictions(
+def create_tour_predictions(
+
+    core,
 
     league="RPL",
 
-    season="2026/27",
-
-    core=None
+    season="2026/27"
 
 ):
 
@@ -285,7 +291,7 @@ def generate_tour_predictions(
     )
 
 
-    return predictor.generate_tour(
+    return predictor.generate_tour_predictions(
 
         league,
 
