@@ -1,55 +1,62 @@
 # =====================================================
-# FAJ Platform v6.0
-# Generate Predictions Handler
-# Admin FAJ Prediction Builder
+# FAJ Platform v6.4
+# app/handlers/generate_predictions.py
+#
+# Generate Tour Predictions Handler
 # =====================================================
 
 
-from aiogram import types
+import logging
 
 
-from app.managers.faj_prediction_generator import (
-    generate_rpl_predictions
+from aiogram.types import Message
+
+
+from app.services.tour_predictor import (
+    predict_tour
 )
 
 
-from app.keyboards.main import (
-    main_keyboard
-)
 
+logger = logging.getLogger(__name__)
 
 
 
 # =====================================================
-# CREATE FAJ TOUR PREDICTIONS
+# CREATE TOUR PREDICTIONS
 # =====================================================
 
 
 async def cmd_generate_predictions(
-    message: types.Message
+
+    message: Message
+
 ):
 
 
     await message.answer(
 
         """
-⏳ FAJ создаёт прогнозы РПЛ 2026/27...
+🚀 FAJ начинает анализ тура...
 
 
-Запускаю:
+Проверяем:
 
-• календарь
-• паспорта команд
-• FAJ модель
-• xG расчёт
-• вероятности
-• точные счета
+📅 календарь матчей
+
+📁 паспорта команд
+
+📊 xG модель
+
+🧠 FAJ Core
+
+🎯 вероятности счёта
+
+📈 рейтинг команд
 
 
-Подождите...
-""",
-
-        reply_markup=main_keyboard()
+Пожалуйста, подождите...
+        """
 
     )
 
@@ -58,77 +65,216 @@ async def cmd_generate_predictions(
     try:
 
 
-        result = generate_rpl_predictions()
+
+        predictions = predict_tour()
 
 
 
-        generated = result.get(
-            "generated",
-            0
-        )
+        if not predictions:
 
 
-        errors = result.get(
-            "errors",
-            []
-        )
+            await message.answer(
+
+                """
+⚠️ FAJ не нашёл матчей для анализа.
 
 
-        error_text = ""
+Проверь:
+
+• календарь fixtures
+
+• статус матчей
+
+• сезон
+
+• загрузку паспортов
+                """
+
+            )
+
+
+            return
 
 
 
-        if errors:
+        text = """
+
+🏆 FAJ ПРОГНОЗЫ ТУРА
+
+🏟 Лига: RPL
+
+━━━━━━━━━━━━━━
+
+"""
 
 
-            error_text = "\n\nПодробности:\n"
+
+        for prediction in predictions:
 
 
-            for error in errors:
+
+            home = prediction.get(
+
+                "home_team",
+
+                "?"
+
+            )
 
 
-                error_text += (
+            away = prediction.get(
 
-                    f"\n⚠️ {error.get('match')}\n"
+                "away_team",
 
-                    f"{error.get('error')}\n"
+                "?"
+
+            )
+
+
+
+            winner = prediction.get(
+
+                "winner",
+
+                "нет"
+
+            )
+
+
+
+            score = prediction.get(
+
+                "expected_score",
+
+                "-"
+
+            )
+
+
+
+            confidence = prediction.get(
+
+                "confidence"
+
+            )
+
+
+            if confidence is None:
+
+                confidence_text = "Нет данных"
+
+            else:
+
+                confidence_text = (
+                    f"{float(confidence):.1f}%"
+                )
+
+
+
+            risk = prediction.get(
+
+                "risk",
+
+                "Нет данных"
+
+            )
+
+
+            grade = prediction.get(
+
+                "grade",
+
+                "Нет данных"
+
+            )
+
+
+
+            home_rating = prediction.get(
+
+                "home_rating"
+
+            )
+
+
+            away_rating = prediction.get(
+
+                "away_rating"
+
+            )
+
+
+
+            if home_rating is None:
+
+                rating_text = "Нет данных"
+
+            else:
+
+                rating_text = (
+
+                    f"{home_rating:.1f}"
+                    " — "
+                    f"{away_rating:.1f}"
 
                 )
 
 
 
+            text += f"""
+
+⚽ {home} — {away}
+
+
+🏆 Победа: {winner}
+
+
+🎯 Счёт:
+{score}
+
+
+🎯 Уверенность:
+{confidence_text}
+
+
+🧠 FAJ Rating:
+{rating_text}
+
+
+⚠️ Риск:
+{risk}
+
+
+🏷 Категория:
+{grade}
+
+
+──────────────
+
+"""
+
+
+
+        text += """
+
+✅ Прогнозы сохранены в FAJ Journal
+
+
+Теперь система сможет:
+
+📊 сравнить факт с прогнозом
+
+🧠 найти ошибки модели
+
+📈 улучшать FAJ Core
+
+"""
+
+
+
         await message.answer(
 
-            f"""
-✅ FAJ прогнозы созданы
-
-
-🏆 Лига:
-{result.get('league')}
-
-
-📅 Сезон:
-{result.get('season')}
-
-
-⚽ Матчей обработано:
-{generated}
-
-
-❌ Ошибок:
-{len(errors)}
-
-{error_text}
-
-
-Теперь доступно:
-
-🤖 FAJ прогнозы
-
-в основном меню.
-""",
-
-            reply_markup=main_keyboard()
+            text
 
         )
 
@@ -138,20 +284,26 @@ async def cmd_generate_predictions(
 
 
 
+        logger.exception(e)
+
+
+
         await message.answer(
 
             f"""
-❌ Критическая ошибка FAJ
+
+❌ Ошибка создания прогнозов тура
 
 
 Тип:
+
 {type(e).__name__}
 
 
 Ошибка:
-{str(e)}
-""",
 
-            reply_markup=main_keyboard()
+{str(e)}
+
+"""
 
         )
