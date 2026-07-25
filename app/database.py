@@ -1,5 +1,5 @@
 # =====================================================
-# FAJ Platform v6.3.1
+# FAJ Platform v6.3.2
 # app/database.py
 #
 # PostgreSQL Database Layer
@@ -126,209 +126,208 @@ def init_database():
 
 
     # =================================================
-    # JOURNAL MIGRATION (добавлены недостающие поля)
+    # AUTO MIGRATIONS
+    # FAJ Platform v6.3.2
     # =================================================
 
 
     migrations = [
 
-        # ============================================
-        # ДОПОЛНИТЕЛЬНЫЕ ПОЛЯ ДЛЯ JOURNAL
-        # FAJ Platform v6.3.1
-        # ============================================
+        # =================================================
+        # JOURNAL v6.3.2
+        # =================================================
+
         """
         ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS league TEXT;
+        ADD COLUMN IF NOT EXISTS fixture_id INTEGER;
         """,
+
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS home_team TEXT;
         """,
+
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS away_team TEXT;
         """,
+
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS league TEXT;
+        """,
+
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS winner TEXT;
         """,
+
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS winner_probability REAL;
         """,
+
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS home_probability REAL;
         """,
+
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS draw_probability REAL;
         """,
+
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS away_probability REAL;
         """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS xg_home REAL;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS xg_away REAL;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS expected_score TEXT;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS top_scores JSONB;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS btts REAL;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS over25 REAL;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS confidence REAL;
-        """,
+
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS home_rating REAL;
         """,
+
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS away_rating REAL;
         """,
+
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS risk TEXT;
         """,
+
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS grade TEXT;
         """,
+
         """
         ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS model_version TEXT;
+        ADD COLUMN IF NOT EXISTS grade_name TEXT;
         """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS data_version TEXT;
-        """,
+
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS actual_score TEXT;
         """,
+
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS winner_correct BOOLEAN;
+        """,
+
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS score_exact BOOLEAN;
+        """,
+
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS accuracy REAL;
+        """,
+
+        # =================================================
+        # JOURNAL МИГРАЦИИ (предыдущие версии)
+        # =================================================
+
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS date TIMESTAMP;
+        """,
+
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS match TEXT;
+        """,
+
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS prediction TEXT;
+        """,
+
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS winner_prob REAL;
+        """,
+
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS home_prob REAL;
+        """,
+
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS draw_prob REAL;
+        """,
+
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS away_prob REAL;
+        """,
+
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS xg_home REAL;
+        """,
+
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS xg_away REAL;
+        """,
+
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS expected_score TEXT;
+        """,
+
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS top_scores JSONB;
+        """,
+
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS btts REAL;
+        """,
+
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS over25 REAL;
+        """,
+
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS confidence REAL;
+        """,
+
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS actual_winner TEXT;
         """,
 
-        # ============================================
-        # ОСТАЛЬНЫЕ МИГРАЦИИ (уже были)
-        # ============================================
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS date TIMESTAMP;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS match TEXT;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS home_team TEXT;
-        """,  # уже есть выше, но можно оставить
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS away_team TEXT;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS winner TEXT;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS winner_prob REAL;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS home_prob REAL;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS draw_prob REAL;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS away_prob REAL;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS xg_home REAL;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS xg_away REAL;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS expected_score TEXT;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS top_scores JSONB;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS btts REAL;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS over25 REAL;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS actual_score TEXT;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS actual_winner TEXT;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS confidence REAL;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS risk TEXT;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS grade TEXT;
-        """,
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS faj_rating JSONB;
         """,
+
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS model_version TEXT;
         """,
+
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS data_version TEXT;
         """,
+
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS created TIMESTAMP DEFAULT NOW();
         """
+
     ]
+
 
 
     for migration in migrations:
@@ -345,7 +344,7 @@ def init_database():
         except Exception as e:
 
             logger.warning(
-                f"Journal migration skipped: {e}"
+                f"Migration skipped: {e}"
             )
 
             conn.connection.rollback()
@@ -380,6 +379,9 @@ def init_database():
 
 
             away_team TEXT,
+
+
+            league TEXT,
 
 
             prediction TEXT,
@@ -433,6 +435,9 @@ def init_database():
             grade TEXT,
 
 
+            grade_name TEXT,
+
+
             faj_rating JSONB,
 
 
@@ -443,6 +448,12 @@ def init_database():
 
 
             accuracy REAL,
+
+
+            winner_correct BOOLEAN,
+
+
+            score_exact BOOLEAN,
 
 
             error_type TEXT,
@@ -473,7 +484,7 @@ def init_database():
 
 
     logger.info(
-        "FAJ PostgreSQL database v6.3.1 initialized"
+        "FAJ PostgreSQL database v6.3.2 initialized"
     )
 
 
