@@ -3,7 +3,6 @@
 # app/handlers/predict.py
 #
 # Main Match Prediction Handler
-# Stable Core -> Formatter -> Journal chain
 # =====================================================
 
 
@@ -46,51 +45,75 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================
-# SAFE NUMBER
-# =====================================================
-
-def safe_float(value, default=0):
-
-    try:
-
-        if isinstance(value, dict):
-            return default
-
-        return float(value)
-
-    except Exception:
-
-        return default
-
-
-
-# =====================================================
-# PASSPORT
+# LOAD PASSPORT
 # =====================================================
 
 def load_team_passport(team):
 
-
     real_team = get_team_by_alias(team)
 
-
     if real_team:
-
         team = real_team
-
 
 
     passport = load_passport(team)
 
 
-
-    if isinstance(passport, dict):
-
-        return passport
+    return passport or {}
 
 
 
-    return {}
+# =====================================================
+# FAJ RATING
+# =====================================================
+
+def calculate_faj_rating(passport):
+
+    if not passport:
+
+        return 0
+
+
+
+    rating = (
+
+        float(passport.get("attack", 70)) * 0.18
+
+        +
+
+        float(passport.get("defense", 70)) * 0.18
+
+        +
+
+        float(passport.get("control", 70)) * 0.15
+
+        +
+
+        float(passport.get("efficiency", 70)) * 0.12
+
+        +
+
+        float(passport.get("mentality", 70)) * 0.10
+
+        +
+
+        float(passport.get("discipline", 70)) * 0.08
+
+        +
+
+        float(passport.get("fitness", 70)) * 0.07
+
+        +
+
+        float(passport.get("predictability", 70)) * 0.07
+
+    )
+
+
+    return round(
+        rating,
+        1
+    )
 
 
 
@@ -100,9 +123,7 @@ def load_team_passport(team):
 
 def parse_match(text):
 
-
     text = text.strip()
-
 
 
     if text.lower().startswith("прогноз"):
@@ -121,15 +142,18 @@ def parse_match(text):
 
 
 
-    return (
-        parts[0],
-        " ".join(parts[1:])
-    )
+    home = parts[0]
+
+
+    away = " ".join(parts[1:])
+
+
+    return home, away
 
 
 
 # =====================================================
-# MAIN HANDLER
+# HANDLE PREDICT
 # =====================================================
 
 async def handle_predict(
@@ -177,7 +201,6 @@ async def handle_predict(
     try:
 
 
-
         # =============================================
         # CORE
         # =============================================
@@ -194,10 +217,10 @@ async def handle_predict(
         )
 
 
-        if not isinstance(result, dict):
+        if not result:
 
             raise Exception(
-                "FAJ Core вернул неверный формат"
+                "FAJ Core пустой ответ"
             )
 
 
@@ -213,24 +236,25 @@ async def handle_predict(
         )
 
 
-        predicted = {}
-
-
-        if isinstance(xg_block, dict):
-
-            predicted = xg_block.get(
-                "predicted",
-                {}
-            )
-
-
-        xg_home = safe_float(
-            predicted.get("home")
+        predicted = xg_block.get(
+            "predicted",
+            {}
         )
 
 
-        xg_away = safe_float(
-            predicted.get("away")
+        xg_home = float(
+            predicted.get(
+                "home",
+                0
+            )
+        )
+
+
+        xg_away = float(
+            predicted.get(
+                "away",
+                0
+            )
         )
 
 
@@ -251,29 +275,18 @@ async def handle_predict(
 
 
 
-        home_rating = safe_float(
+        # =============================================
+        # FAJ RATING
+        # =============================================
 
-            home_pass.get(
-                "faj_rating",
-                home_pass.get(
-                    "rating",
-                    0
-                )
-            )
 
+        home_rating = calculate_faj_rating(
+            home_pass
         )
 
 
-        away_rating = safe_float(
-
-            away_pass.get(
-                "faj_rating",
-                away_pass.get(
-                    "rating",
-                    0
-                )
-            )
-
+        away_rating = calculate_faj_rating(
+            away_pass
         )
 
 
@@ -289,26 +302,20 @@ async def handle_predict(
         )
 
 
-        if not isinstance(decision, dict):
-
-            decision = {}
-
-
-
-        confidence = safe_float(
+        winner_probability = float(
 
             decision.get(
-                "confidence",
+                "winner_probability",
                 0
             )
 
         )
 
 
-        winner_probability = safe_float(
+        confidence = float(
 
             decision.get(
-                "winner_probability",
+                "confidence",
                 0
             )
 
@@ -339,6 +346,30 @@ async def handle_predict(
 
 
 
+        decision.update({
+
+            "risk":
+                risk.get(
+                    "risk",
+                    "Средний"
+                ),
+
+            "grade":
+                risk.get(
+                    "grade",
+                    "B"
+                ),
+
+            "grade_name":
+                risk.get(
+                    "grade_name",
+                    ""
+                )
+
+        })
+
+
+
         # =============================================
         # FACTORS
         # =============================================
@@ -361,51 +392,6 @@ async def handle_predict(
 
 
         # =============================================
-        # RATING OBJECT
-        # =============================================
-
-
-        faj_rating = {
-
-            home:
-                home_rating,
-
-
-            away:
-                away_rating
-
-        }
-
-
-
-        # =============================================
-        # SIMULATION
-        # =============================================
-
-
-        simulation = result.get(
-            "simulation",
-            {}
-        )
-
-
-        if not isinstance(simulation, dict):
-
-            simulation = {}
-
-
-
-        top_scores = simulation.get(
-
-            "top_scores",
-
-            []
-
-        )
-
-
-
-        # =============================================
         # FORMAT
         # =============================================
 
@@ -420,7 +406,6 @@ async def handle_predict(
 
 
             {
-
                 "home":
                     xg_home,
 
@@ -433,25 +418,44 @@ async def handle_predict(
             decision,
 
 
-            top_scores,
+            result.get(
+                "simulation",
+                {}
+            ).get(
+                "top_scores",
+                []
+            ),
 
 
             decision.get(
                 "btts",
-                0
+                result.get(
+                    "btts",
+                    0
+                )
             ),
 
 
             decision.get(
                 "over25",
-                0
+                result.get(
+                    "over25",
+                    0
+                )
             ),
 
 
             factors,
 
 
-            faj_rating,
+            {
+                home:
+                    home_rating,
+
+                away:
+                    away_rating
+
+            },
 
 
             risk.get(
@@ -467,7 +471,7 @@ async def handle_predict(
 
 
         # =============================================
-        # JOURNAL SAFE SAVE
+        # JOURNAL
         # =============================================
 
 
@@ -478,42 +482,13 @@ async def handle_predict(
 
             prediction={
 
-                "winner":
-                    decision.get(
-                        "winner",
-                        ""
-                    ),
+                **decision,
 
 
                 "winner_name":
                     decision.get(
                         "winner_name",
                         ""
-                    ),
-
-
-                "winner_probability":
-                    winner_probability,
-
-
-                "home_probability":
-                    decision.get(
-                        "home_probability",
-                        0
-                    ),
-
-
-                "draw_probability":
-                    decision.get(
-                        "draw_probability",
-                        0
-                    ),
-
-
-                "away_probability":
-                    decision.get(
-                        "away_probability",
-                        0
                     ),
 
 
@@ -525,15 +500,14 @@ async def handle_predict(
                     xg_away,
 
 
-                "expected_score":
-                    decision.get(
-                        "expected_score",
-                        ""
-                    ),
-
-
                 "top_scores":
-                    top_scores,
+                    result.get(
+                        "simulation",
+                        {}
+                    ).get(
+                        "top_scores",
+                        []
+                    ),
 
 
                 "btts":
@@ -551,7 +525,15 @@ async def handle_predict(
 
 
                 "confidence":
-                    confidence
+                    confidence,
+
+
+                "home_rating":
+                    home_rating,
+
+
+                "away_rating":
+                    away_rating
 
             }
 
