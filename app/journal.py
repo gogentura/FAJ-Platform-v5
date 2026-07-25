@@ -11,10 +11,6 @@ import json
 from app.database import get_db
 
 
-# =====================================================
-# CLEAN VALUES
-# =====================================================
-
 def clean_value(value):
 
     if hasattr(value, "item"):
@@ -24,16 +20,8 @@ def clean_value(value):
 
 
 
-# =====================================================
-# JOURNAL
-# =====================================================
-
 class Journal:
 
-
-    # =================================================
-    # SAVE PREDICTION
-    # =================================================
 
     def save(
         self,
@@ -44,13 +32,9 @@ class Journal:
 
         conn = get_db()
 
+
         now = datetime.now()
 
-
-
-        # =============================================
-        # PARSE TEAMS
-        # =============================================
 
         parts = (
             match
@@ -74,114 +58,60 @@ class Journal:
 
 
 
-        # =============================================
-        # TEXT
-        # =============================================
-
         prediction_text = (
 
             f"{prediction.get('winner_name','')} | "
-
             f"xG "
-
             f"{prediction.get('xg_home',0)}-"
-
             f"{prediction.get('xg_away',0)} | "
-
             f"{prediction.get('expected_score','')}"
 
         )
 
 
 
-        # =============================================
-        # INSERT
-        # =============================================
-
-        conn.execute(
-        """
+        sql = """
 
         INSERT INTO journal
         (
-
             date,
-
             match,
-
             home_team,
-
             away_team,
-
-
             prediction,
-
             winner,
-
             winner_prob,
-
-
             home_prob,
-
             draw_prob,
-
             away_prob,
-
-
             xg_home,
-
             xg_away,
-
-
             expected_score,
-
             top_scores,
-
-
             btts,
-
             over25,
-
-
             actual_score,
-
             actual_winner,
-
-
             confidence,
-
-
             model_version,
-
             data_version,
-
-
             accuracy,
-
-
             created
-
-
         )
 
         VALUES
-
         (
-
             %s,%s,%s,%s,%s,
-
             %s,%s,%s,%s,%s,
-
             %s,%s,%s,%s,%s,
-
             %s,%s,%s,%s,%s,
-
-            %s,%s,%s,%s
-
+            %s,%s,%s
         )
 
-        """,
+        """
 
-        (
+
+        params = (
 
             now,
 
@@ -209,7 +139,6 @@ class Journal:
             ),
 
 
-
             clean_value(
                 prediction.get(
                     "home_probability",
@@ -219,7 +148,6 @@ class Journal:
                     )
                 )
             ),
-
 
 
             clean_value(
@@ -233,7 +161,6 @@ class Journal:
             ),
 
 
-
             clean_value(
                 prediction.get(
                     "away_probability",
@@ -245,14 +172,12 @@ class Journal:
             ),
 
 
-
             clean_value(
                 prediction.get(
                     "xg_home",
                     0
                 )
             ),
-
 
 
             clean_value(
@@ -263,12 +188,10 @@ class Journal:
             ),
 
 
-
             prediction.get(
                 "expected_score",
                 ""
             ),
-
 
 
             json.dumps(
@@ -280,14 +203,12 @@ class Journal:
             ),
 
 
-
             clean_value(
                 prediction.get(
                     "btts",
                     0
                 )
             ),
-
 
 
             clean_value(
@@ -298,14 +219,12 @@ class Journal:
             ),
 
 
-
             actual.get(
                 "score",
                 ""
             )
             if actual
             else "",
-
 
 
             actual.get(
@@ -316,7 +235,6 @@ class Journal:
             else "",
 
 
-
             clean_value(
                 prediction.get(
                     "confidence",
@@ -325,36 +243,35 @@ class Journal:
             ),
 
 
-
             "6.3",
-
 
 
             "2026.07",
 
 
-
             None,
-
 
 
             now
 
         )
 
+
+        cur = conn.cursor()
+
+        cur.execute(
+            sql,
+            params
         )
 
-
-
         conn.commit()
+
+
+        cur.close()
 
         conn.close()
 
 
-
-    # =================================================
-    # LAST PREDICTIONS
-    # =================================================
 
     def get_all(
         self,
@@ -363,36 +280,31 @@ class Journal:
 
         conn = get_db()
 
+        cur = conn.cursor()
 
-        rows = conn.execute(
-        """
 
-        SELECT *
-
-        FROM journal
-
-        ORDER BY id DESC
-
-        LIMIT %s
-
-        """,
-
-        (
-            limit,
+        cur.execute(
+            """
+            SELECT *
+            FROM journal
+            ORDER BY id DESC
+            LIMIT %s
+            """,
+            (
+                limit,
+            )
         )
 
-        ).fetchall()
+
+        rows = cur.fetchall()
 
 
+        cur.close()
 
         conn.close()
 
 
-
         return [
-
             dict(row)
-
             for row in rows
-
         ]
