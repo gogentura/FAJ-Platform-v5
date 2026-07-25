@@ -76,6 +76,7 @@ def init_database():
     # FAJ Platform v6.2
     # ================================================
     migrations = [
+        # Fixtures
         """
         ALTER TABLE fixtures
         ADD COLUMN IF NOT EXISTS match_time TEXT;
@@ -108,10 +109,46 @@ def init_database():
         ALTER TABLE fixtures
         ADD COLUMN IF NOT EXISTS match_url TEXT;
         """,
-        # ===== МИГРАЦИЯ ДЛЯ СТАРОЙ ТАБЛИЦЫ passports =====
+        # Passports
         """
         ALTER TABLE passports
         ADD COLUMN IF NOT EXISTS season TEXT DEFAULT '2026/27';
+        """,
+        """
+        ALTER TABLE passports
+        ADD COLUMN IF NOT EXISTS discipline REAL DEFAULT 70;
+        """,
+        """
+        ALTER TABLE passports
+        ADD COLUMN IF NOT EXISTS fitness REAL DEFAULT 70;
+        """,
+        """
+        ALTER TABLE passports
+        ADD COLUMN IF NOT EXISTS predictability REAL DEFAULT 70;
+        """,
+        """
+        ALTER TABLE passports
+        ADD COLUMN IF NOT EXISTS transfer_index REAL DEFAULT 0;
+        """,
+        """
+        ALTER TABLE passports
+        ADD COLUMN IF NOT EXISTS injury_index REAL DEFAULT 0;
+        """,
+        """
+        ALTER TABLE passports
+        ADD COLUMN IF NOT EXISTS fatigue_index REAL DEFAULT 0;
+        """,
+        """
+        ALTER TABLE passports
+        ADD COLUMN IF NOT EXISTS historical_xg_value REAL DEFAULT 1.3;
+        """,
+        """
+        ALTER TABLE passports
+        ADD COLUMN IF NOT EXISTS historical_xg_source TEXT DEFAULT 'expert';
+        """,
+        """
+        ALTER TABLE passports
+        ADD COLUMN IF NOT EXISTS data JSONB;
         """
     ]
     for migration in migrations:
