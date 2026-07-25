@@ -2,13 +2,11 @@
 # FAJ Platform v6.4
 # app/services/tour_predictor.py
 #
-# Tour Predictor
-# Works with FAJCore + PostgreSQL
+# FAJ Tournament Predictor Service
 # =====================================================
 
 
 import logging
-from datetime import datetime
 
 
 from app.database import get_connection
@@ -30,7 +28,7 @@ journal = Journal()
 
 
 # =====================================================
-# GET FIXTURES
+# GET TOUR FIXTURES
 # =====================================================
 
 
@@ -42,9 +40,7 @@ def get_tour_fixtures(
 
 ):
 
-
     try:
-
 
         conn = get_connection()
 
@@ -52,30 +48,35 @@ def get_tour_fixtures(
 
 
 
+        # Диагностика
+
         cur.execute(
 
             """
 
-            SELECT *
+            SELECT
+
+                id,
+
+                home_team,
+
+                away_team,
+
+                league,
+
+                season,
+
+                status
 
             FROM fixtures
+
 
             WHERE league=%s
 
             AND season=%s
 
-            AND status IN
 
-            (
-
-                'scheduled',
-
-                'pending'
-
-            )
-
-
-            ORDER BY id
+            ORDER BY date NULLS LAST
 
 
             """,
@@ -111,6 +112,7 @@ def get_tour_fixtures(
         )
 
 
+
         return rows
 
 
@@ -120,7 +122,7 @@ def get_tour_fixtures(
 
         logger.error(
 
-            f"Fixtures loading error: {e}",
+            f"Tour fixtures error: {e}",
 
             exc_info=True
 
@@ -132,42 +134,292 @@ def get_tour_fixtures(
 
 
 
-
 # =====================================================
-# PREDICT ONE MATCH
+# SAVE PREDICTION HISTORY
 # =====================================================
 
 
-def predict_fixture(
+def save_prediction_history(
 
-    fixture,
+    fixture_id,
 
-    league="RPL"
+    prediction
 
 ):
 
 
-    home = fixture["home_team"]
-
-    away = fixture["away_team"]
+    try:
 
 
+        conn = get_connection()
 
-    result = core.predict_match(
+        cur = conn.cursor()
 
-        home,
 
-        away,
 
-        league
+        cur.execute(
+
+            """
+
+            INSERT INTO prediction_history
+
+            (
+
+                fixture_id,
+
+                home_team,
+
+                away_team,
+
+                league,
+
+                season,
+
+
+                xg_home,
+
+                xg_away,
+
+
+                predicted_score,
+
+                predicted_winner,
+
+
+                home_probability,
+
+                draw_probability,
+
+                away_probability,
+
+
+                confidence,
+
+                risk,
+
+                grade,
+
+
+                created
+
+            )
+
+
+            VALUES
+
+            (
+
+                %s,
+
+                %s,
+
+                %s,
+
+                %s,
+
+                %s,
+
+
+                %s,
+
+                %s,
+
+
+                %s,
+
+                %s,
+
+
+                %s,
+
+                %s,
+
+                %s,
+
+
+                %s,
+
+                %s,
+
+                %s,
+
+
+                NOW()
+
+            )
+
+
+            ON CONFLICT (fixture_id)
+
+            DO UPDATE SET
+
+
+                predicted_score =
+                EXCLUDED.predicted_score,
+
+
+                predicted_winner =
+                EXCLUDED.predicted_winner,
+
+
+                confidence =
+                EXCLUDED.confidence
+
+
+            """,
+
+            (
+
+                fixture_id,
+
+
+                prediction.get(
+                    "home_team"
+                ),
+
+
+                prediction.get(
+                    "away_team"
+                ),
+
+
+                prediction.get(
+                    "league",
+                    "RPL"
+                ),
+
+
+                prediction.get(
+                    "season",
+                    "2026/27"
+                ),
+
+
+
+                prediction.get(
+                    "xg_home",
+                    0
+                ),
+
+
+                prediction.get(
+                    "xg_away",
+                    0
+                ),
+
+
+
+                prediction.get(
+                    "expected_score",
+                    "-"
+                ),
+
+
+
+                prediction.get(
+                    "winner",
+                    "-"
+                ),
+
+
+
+                prediction.get(
+                    "home_probability",
+                    0
+                ),
+
+
+                prediction.get(
+                    "draw_probability",
+                    0
+                ),
+
+
+                prediction.get(
+                    "away_probability",
+                    0
+                ),
+
+
+
+                prediction.get(
+                    "confidence",
+                    0
+                ),
+
+
+
+                prediction.get(
+                    "risk",
+                    "Средний"
+                ),
+
+
+
+                prediction.get(
+                    "grade",
+                    "C"
+                )
+
+            )
+
+        )
+
+
+        conn.commit()
+
+
+        cur.close()
+
+        conn.close()
+
+
+
+    except Exception as e:
+
+
+        logger.warning(
+
+            f"History save skipped: {e}"
+
+        )
+
+
+
+
+# =====================================================
+# NORMALIZE CORE RESULT
+# =====================================================
+
+
+def normalize_prediction(
+
+    result,
+
+    home,
+
+    away,
+
+    league,
+
+    season
+
+):
+
+
+    xg = result.get(
+
+        "xg",
+
+        {}
+
+    ).get(
+
+        "predicted",
+
+        {}
 
     )
-
-
-
-    if not result:
-
-        return None
 
 
 
@@ -181,13 +433,17 @@ def predict_fixture(
 
 
 
-    prediction = {
+    simulation = result.get(
+
+        "simulation",
+
+        {}
+
+    )
 
 
-        "fixture_id":
 
-            fixture["id"],
-
+    return {
 
 
         "home_team":
@@ -195,11 +451,9 @@ def predict_fixture(
             home,
 
 
-
         "away_team":
 
             away,
-
 
 
         "league":
@@ -207,32 +461,31 @@ def predict_fixture(
             league,
 
 
-
         "season":
 
-            fixture.get(
+            season,
 
-                "season",
 
-                "2026/27"
+
+        "xg_home":
+
+            xg.get(
+
+                "home",
+
+                0
 
             ),
 
 
 
-        "winner":
+        "xg_away":
 
-            decision.get(
+            xg.get(
 
-                "winner_name",
+                "away",
 
-                decision.get(
-
-                    "winner",
-
-                    "нет"
-
-                )
+                0
 
             ),
 
@@ -250,51 +503,21 @@ def predict_fixture(
 
 
 
-        "confidence":
+        "winner":
 
             decision.get(
 
-                "confidence",
+                "winner_name",
 
-                0
+                decision.get(
 
-            ),
+                    "winner",
 
+                    "-"
 
-
-        "risk":
-
-            decision.get(
-
-                "risk",
-
-                "Средний"
+                )
 
             ),
-
-
-
-        "grade":
-
-            decision.get(
-
-                "grade",
-
-                "C"
-
-            ),
-
-
-
-        "xg_home":
-
-            result["xg"]["predicted"]["home"],
-
-
-
-        "xg_away":
-
-            result["xg"]["predicted"]["away"],
 
 
 
@@ -334,15 +557,21 @@ def predict_fixture(
 
 
 
+        "confidence":
+
+            decision.get(
+
+                "confidence",
+
+                0
+
+            ),
+
+
+
         "top_scores":
 
-            result.get(
-
-                "simulation",
-
-                {}
-
-            ).get(
+            simulation.get(
 
                 "top_scores",
 
@@ -354,14 +583,9 @@ def predict_fixture(
 
 
 
-    return prediction
-
-
-
-
 
 # =====================================================
-# TOUR PREDICTION
+# PREDICT TOUR
 # =====================================================
 
 
@@ -389,7 +613,7 @@ def predict_tour(
 
         logger.warning(
 
-            "No fixtures for prediction"
+            "FAJ: no fixtures"
 
         )
 
@@ -398,19 +622,54 @@ def predict_tour(
 
 
 
-    results = []
+    predictions = []
+
+
+
+    logger.info(
+
+        "FAJ tour start: %s matches",
+
+        len(fixtures)
+
+    )
 
 
 
     for fixture in fixtures:
 
 
+
         try:
 
 
-            prediction = predict_fixture(
+            fixture_id = fixture["id"]
 
-                fixture,
+
+            home = fixture["home_team"]
+
+
+            away = fixture["away_team"]
+
+
+
+            logger.info(
+
+                "Predicting %s - %s",
+
+                home,
+
+                away
+
+            )
+
+
+
+            result = core.predict_match(
+
+                home,
+
+                away,
 
                 league
 
@@ -418,28 +677,45 @@ def predict_tour(
 
 
 
-            if not prediction:
+            prediction = normalize_prediction(
 
-                continue
+                result,
+
+                home,
+
+                away,
+
+                league,
+
+                season
+
+            )
 
 
 
-            # сохраняем в журнал
+            prediction["fixture_id"] = fixture_id
 
+
+
+            # Journal
 
             journal.save(
 
-                match=
+                match=f"{home} — {away}",
 
-                f"{prediction['home_team']} — {prediction['away_team']}",
+                fixture_id=fixture_id,
+
+                prediction=prediction
+
+            )
 
 
-                fixture_id=
 
-                prediction["fixture_id"],
+            # History
 
+            save_prediction_history(
 
-                prediction=
+                fixture_id,
 
                 prediction
 
@@ -447,7 +723,7 @@ def predict_tour(
 
 
 
-            results.append(
+            predictions.append(
 
                 prediction
 
@@ -456,6 +732,7 @@ def predict_tour(
 
 
         except Exception as e:
+
 
 
             logger.error(
@@ -470,11 +747,12 @@ def predict_tour(
 
     logger.info(
 
-        "FAJ tour predictions created: %s",
+        "FAJ tour finished: %s",
 
-        len(results)
+        len(predictions)
 
     )
 
 
-    return results
+
+    return predictions
