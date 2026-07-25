@@ -126,158 +126,209 @@ def init_database():
 
 
     # =================================================
-    # JOURNAL MIGRATION
+    # JOURNAL MIGRATION (добавлены недостающие поля)
     # =================================================
 
 
     migrations = [
 
-
+        # ============================================
+        # ДОПОЛНИТЕЛЬНЫЕ ПОЛЯ ДЛЯ JOURNAL
+        # FAJ Platform v6.3.1
+        # ============================================
         """
         ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS date TIMESTAMP;
+        ADD COLUMN IF NOT EXISTS league TEXT;
         """,
-
-
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS match TEXT;
-        """,
-
-
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS home_team TEXT;
         """,
-
-
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS away_team TEXT;
         """,
-
-
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS winner TEXT;
         """,
-
-
         """
         ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS winner_prob REAL;
+        ADD COLUMN IF NOT EXISTS winner_probability REAL;
         """,
-
-
         """
         ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS home_prob REAL;
+        ADD COLUMN IF NOT EXISTS home_probability REAL;
         """,
-
-
         """
         ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS draw_prob REAL;
+        ADD COLUMN IF NOT EXISTS draw_probability REAL;
         """,
-
-
         """
         ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS away_prob REAL;
+        ADD COLUMN IF NOT EXISTS away_probability REAL;
         """,
-
-
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS xg_home REAL;
         """,
-
-
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS xg_away REAL;
         """,
-
-
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS expected_score TEXT;
         """,
-
-
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS top_scores JSONB;
         """,
-
-
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS btts REAL;
         """,
-
-
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS over25 REAL;
         """,
-
-
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS confidence REAL;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS home_rating REAL;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS away_rating REAL;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS risk TEXT;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS grade TEXT;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS model_version TEXT;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS data_version TEXT;
+        """,
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS actual_score TEXT;
         """,
-
-
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS actual_winner TEXT;
         """,
 
-
+        # ============================================
+        # ОСТАЛЬНЫЕ МИГРАЦИИ (уже были)
+        # ============================================
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS date TIMESTAMP;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS match TEXT;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS home_team TEXT;
+        """,  # уже есть выше, но можно оставить
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS away_team TEXT;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS winner TEXT;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS winner_prob REAL;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS home_prob REAL;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS draw_prob REAL;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS away_prob REAL;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS xg_home REAL;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS xg_away REAL;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS expected_score TEXT;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS top_scores JSONB;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS btts REAL;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS over25 REAL;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS actual_score TEXT;
+        """,
+        """
+        ALTER TABLE journal
+        ADD COLUMN IF NOT EXISTS actual_winner TEXT;
+        """,
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS confidence REAL;
         """,
-
-
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS risk TEXT;
         """,
-
-
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS grade TEXT;
         """,
-
-
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS faj_rating JSONB;
         """,
-
-
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS model_version TEXT;
         """,
-
-
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS data_version TEXT;
         """,
-
-
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS created TIMESTAMP DEFAULT NOW();
         """
-
     ]
-
 
 
     for migration in migrations:
