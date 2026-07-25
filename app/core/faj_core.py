@@ -44,99 +44,70 @@
             top_score = simulation["top_scores"][0]["score"]
 
         return {
-
             "winner": winner,
-
             "winner_name": winner_name,
-
             "winner_probability":
-
                 round(
-
                     max(home, draw, away) * 100,
-
                     1
-
                 ),
-
-            # НОВЫЕ ИМЕНА (для совместимости с будущими модулями)
             "home_probability":
-
-                round(home * 100, 1),
-
+                round(
+                    home * 100,
+                    1
+                ),
             "draw_probability":
-
-                round(draw * 100, 1),
-
+                round(
+                    draw * 100,
+                    1
+                ),
             "away_probability":
-
-                round(away * 100, 1),
-
-            # СТАРЫЕ ИМЕНА (для совместимости с formatter.py)
+                round(
+                    away * 100,
+                    1
+                ),
             "home_prob":
-
-                round(home * 100, 1),
-
+                round(
+                    home * 100,
+                    1
+                ),
             "draw_prob":
-
-                round(draw * 100, 1),
-
+                round(
+                    draw * 100,
+                    1
+                ),
             "away_prob":
-
-                round(away * 100, 1),
-
-            "expected_score": top_score,
-
-            "confidence": confidence,
-
+                round(
+                    away * 100,
+                    1
+                ),
+            "expected_score":
+                top_score,
+            "confidence":
+                confidence,
             "btts":
-
                 self.btts_probability(
-
                     home_xg,
-
                     away_xg
-
                 ),
-
             "over15":
-
                 self.over15_probability(
-
                     home_xg,
-
                     away_xg
-
                 ),
-
             "over25":
-
                 self.over25_probability(
-
                     home_xg,
-
                     away_xg
-
                 ),
-
             "under25":
-
                 self.under25_probability(
-
                     home_xg,
-
                     away_xg
-
                 ),
-
             "over35":
-
                 self.over35_probability(
-
                     home_xg,
-
                     away_xg
-
                 )
-
         }
