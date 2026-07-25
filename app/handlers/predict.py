@@ -3,37 +3,45 @@
 # app/handlers/predict.py
 #
 # Main Match Prediction Handler
-# PostgreSQL
+# SAFE VERSION
 # =====================================================
 
 import traceback
 import logging
 
+
 from aiogram import types
+
 
 from app.passport_manager import (
     load_passport,
     get_team_by_alias
 )
 
+
 from app.core.risk_engine import (
     risk_engine
 )
+
 
 from app.utils.formatter import (
     format_prediction
 )
 
+
 from app.utils.explainer import (
     explain_prediction
 )
+
 
 from app.handlers.keyboard import (
     get_main_keyboard
 )
 
 
+
 logger = logging.getLogger(__name__)
+
 
 
 # =====================================================
@@ -50,7 +58,12 @@ def load_team_passport(team):
 
     passport = load_passport(team)
 
-    return passport or {}
+
+    if not isinstance(passport, dict):
+        return {}
+
+
+    return passport
 
 
 
@@ -60,22 +73,21 @@ def load_team_passport(team):
 
 def calculate_faj_rating(passport):
 
-    if not passport:
+    if not isinstance(passport, dict):
         return 0
 
 
-    # если уже есть готовый рейтинг
-    existing = passport.get(
+    value = passport.get(
         "faj_rating"
     )
 
 
     if isinstance(
-        existing,
-        (int, float)
+        value,
+        (int,float)
     ):
         return round(
-            float(existing),
+            float(value),
             1
         )
 
@@ -136,7 +148,7 @@ def calculate_faj_rating(passport):
 
 
 # =====================================================
-# PARSE MATCH
+# PARSE
 # =====================================================
 
 def parse_match(text):
@@ -147,18 +159,14 @@ def parse_match(text):
     if text.lower().startswith(
         "прогноз"
     ):
-
         text = text[8:].strip()
-
 
 
     parts = text.split()
 
 
     if len(parts) < 2:
-
-        return None, None
-
+        return None,None
 
 
     home = parts[0]
@@ -169,94 +177,90 @@ def parse_match(text):
     )
 
 
-    return home, away
+    return home,away
 
 
 
 # =====================================================
-# XG EXTRACTOR
+# XG SAFE
 # =====================================================
 
 def extract_xg(result):
 
-    xg_home = 0
-    xg_away = 0
+    home = 0
+    away = 0
+
+
+    if not isinstance(
+        result,
+        dict
+    ):
+        return home,away
+
+
+
+    xg = result.get(
+        "xg",
+        {}
+    )
+
+
+    if isinstance(
+        xg,
+        dict
+    ):
+
+
+        if isinstance(
+            xg.get("predicted"),
+            dict
+        ):
+
+            home = xg["predicted"].get(
+                "home",
+                0
+            )
+
+            away = xg["predicted"].get(
+                "away",
+                0
+            )
+
+        else:
+
+            home = xg.get(
+                "home",
+                0
+            )
+
+            away = xg.get(
+                "away",
+                0
+            )
+
+
+    home = result.get(
+        "xg_home",
+        home
+    )
+
+
+    away = result.get(
+        "xg_away",
+        away
+    )
 
 
     try:
 
-        xg = result.get(
-            "xg",
-            {}
+        return (
+            round(float(home),2),
+            round(float(away),2)
         )
 
+    except:
 
-        # вариант FAJ v6
-        if isinstance(xg, dict):
-
-            if "predicted" in xg:
-
-                predicted = xg["predicted"]
-
-                xg_home = predicted.get(
-                    "home",
-                    0
-                )
-
-                xg_away = predicted.get(
-                    "away",
-                    0
-                )
-
-            else:
-
-                xg_home = xg.get(
-                    "home",
-                    0
-                )
-
-                xg_away = xg.get(
-                    "away",
-                    0
-                )
-
-
-        # прямые поля
-        if not xg_home:
-
-            xg_home = result.get(
-                "xg_home",
-                0
-            )
-
-
-        if not xg_away:
-
-            xg_away = result.get(
-                "xg_away",
-                0
-            )
-
-
-    except Exception:
-
-        pass
-
-
-
-    return (
-
-        round(
-            float(xg_home),
-            2
-        ),
-
-        round(
-            float(xg_away),
-            2
-        )
-
-    )
+        return 0,0
 
 
 
@@ -281,7 +285,7 @@ async def handle_predict(
 
 
 
-    home, away = parse_match(
+    home,away = parse_match(
         text
     )
 
@@ -309,10 +313,6 @@ async def handle_predict(
     try:
 
 
-        # =============================================
-        # CORE
-        # =============================================
-
         result = core.predict_match(
 
             home,
@@ -324,27 +324,21 @@ async def handle_predict(
         )
 
 
-        if not result:
-
+        if not isinstance(
+            result,
+            dict
+        ):
             raise Exception(
-                "FAJ Core пустой ответ"
+                "FAJ Core вернул не dict"
             )
 
 
 
-        # =============================================
-        # XG
-        # =============================================
-
-        xg_home, xg_away = extract_xg(
+        xg_home,xg_away = extract_xg(
             result
         )
 
 
-
-        # =============================================
-        # PASSPORTS
-        # =============================================
 
         home_pass = load_team_passport(
             home
@@ -368,40 +362,37 @@ async def handle_predict(
 
 
 
-        # =============================================
-        # DECISION
-        # =============================================
-
         decision = result.get(
             "decision",
             {}
         )
 
 
-        winner_probability = float(
+        if not isinstance(
+            decision,
+            dict
+        ):
 
+            decision = {}
+
+
+
+        winner_probability = float(
             decision.get(
                 "winner_probability",
                 0
             )
-
         )
 
 
         confidence = float(
-
             decision.get(
                 "confidence",
                 winner_probability
             )
-
         )
 
 
-
-        # =============================================
-        # RISK
-        # =============================================
 
         risk = risk_engine.analyze(
 
@@ -420,6 +411,23 @@ async def handle_predict(
         )
 
 
+        if not isinstance(
+            risk,
+            dict
+        ):
+
+            risk = {
+
+                "risk":"Средний",
+
+                "grade":"B",
+
+                "grade_name":
+                    "Рабочий прогноз"
+
+            }
+
+
 
         decision.update({
 
@@ -429,13 +437,11 @@ async def handle_predict(
                     "Средний"
                 ),
 
-
             "grade":
                 risk.get(
                     "grade",
                     "B"
                 ),
-
 
             "grade_name":
                 risk.get(
@@ -443,14 +449,9 @@ async def handle_predict(
                     "Рабочий прогноз"
                 )
 
-
         })
 
 
-
-        # =============================================
-        # FACTORS
-        # =============================================
 
         factors = explain_prediction(
 
@@ -468,9 +469,19 @@ async def handle_predict(
 
 
 
-        # =============================================
-        # FORMAT
-        # =============================================
+        simulation = result.get(
+            "simulation",
+            {}
+        )
+
+
+        if not isinstance(
+            simulation,
+            dict
+        ):
+            simulation = {}
+
+
 
         answer = format_prediction(
 
@@ -482,18 +493,15 @@ async def handle_predict(
 
 
             {
-                "home": xg_home,
-                "away": xg_away
+                "home":xg_home,
+                "away":xg_away
             },
 
 
             decision,
 
 
-            result.get(
-                "simulation",
-                {}
-            ).get(
+            simulation.get(
                 "top_scores",
                 []
             ),
@@ -524,10 +532,6 @@ async def handle_predict(
 
 
 
-        # =============================================
-        # JOURNAL
-        # =============================================
-
         journal.save(
 
             match=f"{home} — {away}",
@@ -536,28 +540,20 @@ async def handle_predict(
 
                 **decision,
 
-
-                "winner_probability":
-                    winner_probability,
-
-
                 "xg_home":
                     xg_home,
-
 
                 "xg_away":
                     xg_away,
 
+                "winner_probability":
+                    winner_probability,
 
                 "confidence":
                     confidence,
 
-
                 "top_scores":
-                    result.get(
-                        "simulation",
-                        {}
-                    ).get(
+                    simulation.get(
                         "top_scores",
                         []
                     )
