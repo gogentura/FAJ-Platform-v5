@@ -3,108 +3,45 @@
 # app/handlers/predict.py
 #
 # Prediction Handler
+# PostgreSQL + FAJ Core v6.3
 # =====================================================
 
 
 import traceback
-import logging
 
 from aiogram import types
 
-from app.database import get_db
-from app.passport_manager import get_team_by_alias
 
 from app.utils.formatter import format_prediction
 from app.utils.explainer import explain_prediction
 
+from app.passport_manager import load_passport
+
 from app.handlers.keyboard import get_main_keyboard
 
-
-logger = logging.getLogger(__name__)
 
 
 # =====================================================
 # LOAD PASSPORT
 # =====================================================
 
+def get_passport(team):
 
-def load_passport(team):
+    try:
 
-    real_team = get_team_by_alias(team)
+        passport = load_passport(team)
 
+        return passport or {}
 
-    conn = get_db()
+    except Exception:
 
-    cur = conn.cursor()
-
-
-    cur.execute(
-        """
-        SELECT *
-        FROM team_passports
-        WHERE team=%s
-        LIMIT 1
-        """,
-        (
-            real_team,
-        )
-    )
-
-
-    row = cur.fetchone()
-
-
-    conn.close()
-
-
-    if row:
-
-        return dict(row)
-
-
-    return None
-
-
-
-# =====================================================
-# MENU IGNORE
-# =====================================================
-
-
-IGNORE_BUTTONS = [
-
-    "📈 Прогноз",
-
-    "📋 Последние прогнозы",
-
-    "⚽ Статус",
-
-    "📁 Паспорта",
-
-    "🔄 Загрузить паспорта",
-
-    "Загрузить паспорта",
-
-    "Загрузить",
-
-    "паспорта",
-
-    "🔄 Синхронизировать календарь",
-
-    "📅 Матчи",
-
-    "⚙️ Админ",
-
-    "/start"
-
-]
+        return {}
 
 
 
 # =====================================================
 # HANDLER
 # =====================================================
-
 
 async def handle_predict(
 
@@ -123,47 +60,42 @@ async def handle_predict(
 
 
 
-    # -----------------------------------------
+    # =================================================
     # IGNORE BUTTONS
-    # -----------------------------------------
+    # =================================================
 
-    if text in IGNORE_BUTTONS:
+    ignore_buttons = [
 
-        return
+        "📈 Прогноз",
+
+        "📋 Последние прогнозы",
+
+        "⚽ Статус",
+
+        "📁 Паспорта",
+
+        "🔄 Загрузить паспорта",
+
+        "/start"
+
+    ]
 
 
-
-    lower = text.lower()
-
-
-
-    if lower in [
-
-        "загрузить",
-
-        "паспорта",
-
-        "календарь",
-
-        "статус",
-
-        "админ"
-
-    ]:
+    if text in ignore_buttons:
 
         return
 
 
 
-    # -----------------------------------------
+    # =================================================
     # PREFIX
-    # -----------------------------------------
+    # =================================================
 
-    if lower.startswith(
+    if text.lower().startswith(
         "прогноз "
     ):
 
-        text = text[9:].strip()
+        text = text[8:].strip()
 
 
 
@@ -177,9 +109,9 @@ async def handle_predict(
 
 
 
-    home_team = parts[0]
+    home = parts[0]
 
-    away_team = parts[1]
+    away = parts[1]
 
 
     league = "RPL"
@@ -188,9 +120,13 @@ async def handle_predict(
 
     if len(parts) >= 3:
 
-        possible_league = parts[2].upper()
+        possible_league = (
+            parts[2]
+            .upper()
+        )
 
-        if possible_league in [
+
+        allowed = [
 
             "RPL",
 
@@ -206,7 +142,10 @@ async def handle_predict(
 
             "LIGUE1"
 
-        ]:
+        ]
+
+
+        if possible_league in allowed:
 
             league = possible_league
 
@@ -214,13 +153,8 @@ async def handle_predict(
 
     await message.answer(
 
-        f"""
-⏳ FAJ анализирует матч
-
-⚽ {home_team} — {away_team}
-
-🧠 Модель v6.3
-""",
+        f"⏳ Анализирую матч\n\n"
+        f"⚽ {home} — {away}",
 
         reply_markup=get_main_keyboard()
 
@@ -232,16 +166,16 @@ async def handle_predict(
 
 
 
-        # -------------------------------------
+        # =================================================
         # CORE
-        # -------------------------------------
+        # =================================================
 
 
         result = core.predict_match(
 
-            home_team,
+            home,
 
-            away_team,
+            away,
 
             league
 
@@ -252,31 +186,54 @@ async def handle_predict(
         if not result:
 
             raise Exception(
+
                 "FAJ Core вернул пустой ответ"
+
             )
 
 
 
-        if "xg" not in result:
+        if "error" in result:
 
             raise Exception(
-                "FAJ Core не вернул xG"
+
+                result["error"]
+
             )
 
 
 
-        # -------------------------------------
+        # =================================================
         # XG
-        # -------------------------------------
+        # =================================================
 
 
-        predicted_xg = result["xg"].get(
+        predicted_xg = (
 
-            "predicted",
+            result
 
-            {}
+            .get(
+                "xg",
+                {}
+            )
+
+            .get(
+                "predicted",
+                {}
+            )
 
         )
+
+
+
+        if not predicted_xg:
+
+            raise Exception(
+
+                "FAJ Core не вернул xG"
+
+            )
+
 
 
         xg_home = float(
@@ -290,6 +247,7 @@ async def handle_predict(
             )
 
         )
+
 
 
         xg_away = float(
@@ -306,41 +264,34 @@ async def handle_predict(
 
 
 
-        # -------------------------------------
-        # PASSPORTS
-        # -------------------------------------
+        # =================================================
+        # SIMULATION
+        # =================================================
 
 
-        home_pass = load_passport(
-            home_team
-        ) or {}
+        simulation = result.get(
 
+            "simulation",
 
-        away_pass = load_passport(
-            away_team
-        ) or {}
-
-
-
-        factors = explain_prediction(
-
-            home_pass,
-
-            away_pass,
-
-            xg_home,
-
-            xg_away,
-
-            league
+            {}
 
         )
 
 
 
-        # -------------------------------------
-        # FORMAT
-        # -------------------------------------
+        top_scores = simulation.get(
+
+            "top_scores",
+
+            []
+
+        )
+
+
+
+        # =================================================
+        # DECISION
+        # =================================================
 
 
         decision = result.get(
@@ -352,53 +303,102 @@ async def handle_predict(
         )
 
 
+
+        btts = decision.get(
+
+            "btts",
+
+            0
+
+        )
+
+
+
+        over25 = decision.get(
+
+            "over25",
+
+            0
+
+        )
+
+
+
+        # =================================================
+        # PASSPORTS
+        # =================================================
+
+
+        home_passport = get_passport(
+
+            home
+
+        )
+
+
+        away_passport = get_passport(
+
+            away
+
+        )
+
+
+
+        factors = explain_prediction(
+
+            home_passport,
+
+            away_passport,
+
+            xg_home,
+
+            xg_away,
+
+            league
+
+        )
+
+
+
+        # =================================================
+        # FORMAT
+        # =================================================
+
+
         answer = format_prediction(
 
-            home_team,
+            home,
 
-            away_team,
+            away,
 
             league,
 
+
             {
 
-                "home": xg_home,
+                "home":
 
-                "away": xg_away
+                    xg_home,
+
+
+                "away":
+
+                    xg_away
 
             },
 
+
             decision,
 
-            result.get(
 
-                "top_scores",
+            top_scores,
 
-                []
 
-            ),
+            btts,
 
-            result.get(
 
-                "btts",
+            over25,
 
-                decision.get(
-                    "btts",
-                    0
-                )
-
-            ),
-
-            result.get(
-
-                "over25",
-
-                decision.get(
-                    "over25",
-                    0
-                )
-
-            ),
 
             factors
 
@@ -406,74 +406,48 @@ async def handle_predict(
 
 
 
-        # -------------------------------------
+        # =================================================
         # JOURNAL
-        # -------------------------------------
+        # =================================================
 
 
-        if journal:
+        journal_prediction = {
 
 
-            journal.save(
-
-                match=f"{home_team} — {away_team}",
+            **decision,
 
 
-                prediction={
+            "xg_home":
 
-                    "winner":
-
-                        decision.get(
-                            "winner_name",
-                            ""
-                        ),
+                xg_home,
 
 
-                    "winner_probability":
+            "xg_away":
 
-                        float(
-
-                            decision.get(
-                                "winner_probability",
-                                0
-                            )
-
-                        ),
+                xg_away,
 
 
-                    "xg_home":
+            "top_scores":
 
-                        xg_home,
+                top_scores
 
-
-                    "xg_away":
-
-                        xg_away,
+        }
 
 
-                    "expected_score":
 
-                        decision.get(
-                            "expected_score",
-                            ""
-                        ),
+        journal.save(
+
+            match=f"{home} — {away}",
+
+            prediction=journal_prediction
+
+        )
 
 
-                    "confidence":
 
-                        float(
-
-                            decision.get(
-                                "confidence",
-                                0
-                            )
-
-                        )
-
-                }
-
-            )
-
+        # =================================================
+        # SEND RESULT
+        # =================================================
 
 
         await message.answer(
@@ -491,26 +465,25 @@ async def handle_predict(
     except Exception as e:
 
 
-        logger.error(
+        print(
+
             traceback.format_exc()
+
         )
+
 
 
         await message.answer(
 
-            f"""
-❌ Ошибка модели
+            "❌ Ошибка модели\n\n"
 
+            f"Тип:\n"
 
-Тип:
+            f"{type(e).__name__}\n\n"
 
-{type(e).__name__}
+            f"Ошибка:\n"
 
-
-Ошибка:
-
-{str(e)}
-""",
+            f"{str(e)}",
 
             reply_markup=get_main_keyboard()
 
