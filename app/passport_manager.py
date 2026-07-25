@@ -2,500 +2,321 @@
 # FAJ Platform v6.3.3
 # app/passport_manager.py
 #
-# Team Passport Manager
+# Team Passport Manager (PostgreSQL)
 # =====================================================
 
-
 import logging
-
-
-from app.database import get_connection
-
+from datetime import datetime
+from app.database import get_db
 
 logger = logging.getLogger(__name__)
-
-
 
 # =====================================================
 # SAFE FLOAT
 # =====================================================
-
-
 def safe_float(value, default=0):
-
     try:
-
         if value is None:
-
             return default
-
-
         if isinstance(value, dict):
-
             return default
-
-
         return float(value)
-
-
     except Exception:
-
         return default
-
-
 
 # =====================================================
 # FAJ RATING CALCULATOR
 # =====================================================
-
-
 def calculate_faj_rating(passport):
-
-
     if not passport:
-
         return 0.0
-
-
-
-    # если уже есть рейтинг
     if passport.get("faj_rating"):
-
-        return round(
-
-            safe_float(
-                passport.get("faj_rating")
-            ),
-
-            1
-
-        )
-
-
-
+        return round(safe_float(passport.get("faj_rating")), 1)
     rating = (
-
-        safe_float(
-            passport.get(
-                "attack"
-            )
-        )
-
-        * 0.25
-
-
-        +
-
-        safe_float(
-            passport.get(
-                "defense"
-            )
-        )
-
-        * 0.25
-
-
-        +
-
-        safe_float(
-            passport.get(
-                "control"
-            )
-        )
-
-        * 0.20
-
-
-        +
-
-        safe_float(
-            passport.get(
-                "form"
-            )
-        )
-
-        * 0.20
-
-
-        +
-
-        safe_float(
-            passport.get(
-                "efficiency"
-            )
-        )
-
-        * 0.10
-
+        safe_float(passport.get("attack")) * 0.25 +
+        safe_float(passport.get("defense")) * 0.25 +
+        safe_float(passport.get("control")) * 0.20 +
+        safe_float(passport.get("form")) * 0.20 +
+        safe_float(passport.get("efficiency")) * 0.10
     )
-
-
-    return round(
-        rating,
-        1
-    )
-
-
+    return round(rating, 1)
 
 # =====================================================
-# TEAM ALIASES
+# TEAM ALIASES (твой старый список)
 # =====================================================
-
-
 TEAM_ALIASES = {
-
-
-    "зенит":
-        "Зенит",
-
-
-    "зенит спб":
-        "Зенит",
-
-
-    "акрон":
-        "Акрон",
-
-
-    "динамо":
-        "Динамо",
-
-
-    "динамо москва":
-        "Динамо",
-
-
-    "крылья":
-        "Крылья Советов",
-
-
-    "крылья советов":
-        "Крылья Советов",
-
-
-    "спартак":
-        "Спартак",
-
-
-    "цска":
-        "ЦСКА",
-
-
-    "локомотив":
-        "Локомотив",
-
-
-    "краснодар":
-        "Краснодар",
-
-
-    "ростов":
-        "Ростов",
-
-
-    "рубина":
-        "Рубин",
-
-
-    "рубин":
-        "Рубин"
-
+    "Зенит": "Зенит",
+    "зенит": "Зенит",
+    "Спартак": "Спартак",
+    "спартак": "Спартак",
+    "ЦСКА": "ЦСКА",
+    "цска": "ЦСКА",
+    "Краснодар": "Краснодар",
+    "краснодар": "Краснодар",
+    "Локомотив": "Локомотив",
+    "локомотив": "Локомотив",
+    "Динамо": "Динамо М",
+    "Динамо М": "Динамо М",
+    "Ахмат": "Ахмат",
+    "Рубин": "Рубин",
+    "Ростов": "Ростов",
+    "Балтика": "Балтика",
+    "Акрон": "Акрон",
+    "Оренбург": "Оренбург",
+    "Факел": "Факел",
+    "Крылья": "Крылья Советов",
+    "Крылья Советов": "Крылья Советов",
+    "Динамо Мх": "Динамо Мх",
+    "Родина": "Родина"
 }
 
-
+# =====================================================
+# ALIAS INIT
+# =====================================================
+def init_default_aliases():
+    logger.info("FAJ aliases initialized")
+    return TEAM_ALIASES
 
 # =====================================================
-# GET TEAM BY ALIAS
+# GET REAL TEAM NAME
 # =====================================================
-
-
-def get_team_by_alias(name):
-
-
-    if not name:
-
+def get_team_by_alias(team):
+    if not team:
         return None
-
-
-
-    key = (
-
-        name
-        .lower()
-        .strip()
-
-    )
-
-
-
-    return TEAM_ALIASES.get(
-        key
-    )
-
-
+    return TEAM_ALIASES.get(team.strip(), team.strip())
 
 # =====================================================
-# LOAD PASSPORT
+# SAVE PASSPORT (с вычислением faj_rating)
 # =====================================================
+def save_passport(team, passport):
+    conn = get_db()
+    cur = conn.cursor()
 
+    real_team = get_team_by_alias(team)
 
+    # вычисляем рейтинг
+    rating = calculate_faj_rating(passport)
+
+    query = """
+    INSERT INTO team_passports
+    (
+        team,
+        league,
+        season,
+        attack,
+        defense,
+        control,
+        efficiency,
+        mentality,
+        discipline,
+        fitness,
+        predictability,
+        xg_for,
+        xg_against,
+        form,
+        injury_index,
+        fatigue_index,
+        transfer_index,
+        faj_rating,
+        updated
+    )
+    VALUES
+    (
+        %s,%s,%s,
+        %s,%s,%s,
+        %s,%s,%s,%s,%s,
+        %s,%s,
+        %s,
+        %s,%s,%s,
+        %s,
+        %s
+    )
+    ON CONFLICT (league, season, team)
+    DO UPDATE SET
+        attack = EXCLUDED.attack,
+        defense = EXCLUDED.defense,
+        control = EXCLUDED.control,
+        efficiency = EXCLUDED.efficiency,
+        mentality = EXCLUDED.mentality,
+        discipline = EXCLUDED.discipline,
+        fitness = EXCLUDED.fitness,
+        predictability = EXCLUDED.predictability,
+        xg_for = EXCLUDED.xg_for,
+        xg_against = EXCLUDED.xg_against,
+        form = EXCLUDED.form,
+        injury_index = EXCLUDED.injury_index,
+        fatigue_index = EXCLUDED.fatigue_index,
+        transfer_index = EXCLUDED.transfer_index,
+        faj_rating = EXCLUDED.faj_rating,
+        updated = EXCLUDED.updated
+    """
+
+    cur.execute(
+        query,
+        (
+            real_team,
+            passport.get("league", "RPL"),
+            passport.get("season", "2026/27"),
+            passport.get("attack", 70),
+            passport.get("defense", 70),
+            passport.get("control", 70),
+            passport.get("efficiency", 70),
+            passport.get("mentality", 70),
+            passport.get("discipline", 70),
+            passport.get("fitness", 70),
+            passport.get("predictability", 70),
+            passport.get("xg_for", 1.3),
+            passport.get("xg_against", 1.3),
+            passport.get("form", 70),
+            passport.get("injury_index", 0),
+            passport.get("fatigue_index", 0),
+            passport.get("transfer_index", 0),
+            rating,
+            datetime.now()
+        )
+    )
+
+    conn.commit()
+    conn.close()
+    logger.info(f"Passport saved: {real_team}")
+
+# =====================================================
+# LOAD PASSPORT (с вычислением рейтинга)
+# =====================================================
 def load_passport(team):
-
-
-    try:
-
-
-        conn = get_connection()
-
-        cur = conn.cursor()
-
-
-
-        cur.execute(
-
-            """
-            SELECT *
-            FROM passports
-            WHERE LOWER(team)=LOWER(%s)
-            LIMIT 1
-            """,
-
-            (
-                team,
-            )
-
-        )
-
-
-
-        row = cur.fetchone()
-
-
-        conn.close()
-
-
-
-        if not row:
-
-
-            logger.warning(
-
-                "Passport not found: %s",
-
-                team
-
-            )
-
-
-            return {}
-
-
-
-        columns = [
-
-            desc[0]
-
-            for desc in cur.description
-
-        ]
-
-
-
-        passport = dict(
-
-            zip(
-
-                columns,
-
-                row
-
-            )
-
-        )
-
-
-
-        # =============================================
-        # NORMALIZE
-        # =============================================
-
-
-        numeric_fields = [
-
-            "attack",
-
-            "defense",
-
-            "control",
-
-            "form",
-
-            "efficiency",
-
-            "mentality",
-
-            "discipline",
-
-            "fitness",
-
-            "predictability",
-
-            "transfer_index",
-
-            "injury_index",
-
-            "fatigue_index",
-
-            "xg_for",
-
-            "xg_against"
-
-        ]
-
-
-
-        for field in numeric_fields:
-
-
-            passport[field] = safe_float(
-
-                passport.get(
-                    field,
-                    0
-                )
-
-            )
-
-
-
-        # =============================================
-        # FAJ RATING
-        # =============================================
-
-
-        passport["faj_rating"] = calculate_faj_rating(
-
-            passport
-
-        )
-
-
-
+    conn = get_db()
+    cur = conn.cursor()
+
+    real_team = get_team_by_alias(team)
+    if not real_team:
+        real_team = team
+
+    cur.execute(
+        """
+        SELECT *
+        FROM team_passports
+        WHERE team = %s
+        LIMIT 1
+        """,
+        (real_team,)
+    )
+    row = cur.fetchone()
+    conn.close()
+
+    if row:
+        passport = dict(row)
+        # нормализуем числовые поля
+        for field in ["attack", "defense", "control", "form", "efficiency",
+                      "mentality", "discipline", "fitness", "predictability",
+                      "transfer_index", "injury_index", "fatigue_index",
+                      "xg_for", "xg_against"]:
+            passport[field] = safe_float(passport.get(field, 0))
+        passport["faj_rating"] = calculate_faj_rating(passport)
         return passport
-
-
-
-    except Exception as e:
-
-
-        logger.error(
-
-            "Passport load error: %s",
-
-            e,
-
-            exc_info=True
-
-        )
-
-
-        return {}
-
-
+    return None
 
 # =====================================================
 # LOAD ALL PASSPORTS
 # =====================================================
+def load_all_passports(league="RPL"):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT *
+        FROM team_passports
+        WHERE league = %s
+        ORDER BY team
+        """,
+        (league,)
+    )
+    rows = cur.fetchall()
+    conn.close()
 
+    result = []
+    for row in rows:
+        passport = dict(row)
+        # нормализуем
+        for field in ["attack", "defense", "control", "form", "efficiency",
+                      "mentality", "discipline", "fitness", "predictability",
+                      "transfer_index", "injury_index", "fatigue_index",
+                      "xg_for", "xg_against"]:
+            passport[field] = safe_float(passport.get(field, 0))
+        passport["faj_rating"] = calculate_faj_rating(passport)
+        result.append(passport)
+    return result
 
-def load_all_passports():
+# =====================================================
+# DELETE PASSPORTS
+# =====================================================
+def clear_passports(league="RPL"):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        DELETE FROM team_passports
+        WHERE league = %s
+        """,
+        (league,)
+    )
+    conn.commit()
+    conn.close()
+    logger.info(f"Passports cleared: {league}")
 
+# =====================================================
+# ДОПОЛНИТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ СОВМЕСТИМОСТИ
+# =====================================================
+def get_passport(team):
+    return load_passport(team)
 
-    passports = []
+def update_passport(team, passport):
+    save_passport(team, passport)
 
+def passport_exists(team):
+    return load_passport(team) is not None
 
+def delete_passport(team):
+    # удаляем конкретную команду
+    conn = get_db()
+    cur = conn.cursor()
+    real_team = get_team_by_alias(team)
+    if not real_team:
+        real_team = team
+    cur.execute(
+        """
+        DELETE FROM team_passports
+        WHERE team = %s
+        """,
+        (real_team,)
+    )
+    conn.commit()
+    conn.close()
+    logger.info(f"Passport deleted: {real_team}")
 
-    try:
+def get_all_passports():
+    return load_all_passports()
 
-
-        conn = get_connection()
-
-        cur = conn.cursor()
-
-
-
+def list_teams(league=None):
+    conn = get_db()
+    cur = conn.cursor()
+    if league:
         cur.execute(
-
             """
-            SELECT *
-            FROM passports
+            SELECT team
+            FROM team_passports
+            WHERE league = %s
+            ORDER BY team
+            """,
+            (league,)
+        )
+    else:
+        cur.execute(
             """
-
+            SELECT team
+            FROM team_passports
+            ORDER BY team
+            """
         )
-
-
-        rows = cur.fetchall()
-
-
-
-        columns = [
-
-            desc[0]
-
-            for desc in cur.description
-
-        ]
-
-
-
-        for row in rows:
-
-
-            passport = dict(
-
-                zip(
-
-                    columns,
-
-                    row
-
-                )
-
-            )
-
-
-            passport["faj_rating"] = calculate_faj_rating(
-
-                passport
-
-            )
-
-
-            passports.append(
-
-                passport
-
-            )
-
-
-
-        conn.close()
-
-
-
-    except Exception as e:
-
-
-        logger.error(
-
-            "Load all passports error: %s",
-
-            e,
-
-            exc_info=True
-
-        )
-
-
-
-    return passports
+    rows = cur.fetchall()
+    conn.close()
+    return [r["team"] for r in rows]
