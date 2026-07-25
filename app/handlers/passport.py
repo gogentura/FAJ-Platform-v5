@@ -1,28 +1,59 @@
+# =====================================================
+# FAJ Platform v6.3
+# app/handlers/passports.py
+#
+# Team Passport Viewer
+# PostgreSQL compatible
+# =====================================================
+
+
 import logging
 
 from aiogram import types
 
-from app.passport_manager import load_passport, get_team_by_alias
-from app.handlers.keyboard import get_main_keyboard
+from app.passport_manager import (
+    load_passport,
+    get_team_by_alias
+)
+
+from app.handlers.keyboard import (
+    get_main_keyboard
+)
 
 
 logger = logging.getLogger(__name__)
 
 
-async def cmd_passport(message: types.Message):
 
-    text = message.text.strip()
+# =====================================================
+# PASSPORT COMMAND
+# =====================================================
 
-    parts = text.split(maxsplit=1)
+async def cmd_passport(
+    message: types.Message
+):
+
+    text = (
+        message.text
+        or ""
+    ).strip()
+
+
+    parts = text.split(
+        maxsplit=1
+    )
 
 
     if len(parts) < 2:
 
         await message.answer(
+
             "📁 Паспорт команды\n\n"
             "Пример:\n"
             "Паспорт Зенит",
+
             reply_markup=get_main_keyboard()
+
         )
 
         return
@@ -32,7 +63,14 @@ async def cmd_passport(message: types.Message):
     team_input = parts[1].strip()
 
 
-    team = get_team_by_alias(team_input)
+
+    # -----------------------------
+    # ALIAS
+    # -----------------------------
+
+    team = get_team_by_alias(
+        team_input
+    )
 
 
     if not team:
@@ -41,101 +79,153 @@ async def cmd_passport(message: types.Message):
 
 
 
-    passport = load_passport(team)
+    # -----------------------------
+    # LOAD
+    # -----------------------------
+
+    passport = load_passport(
+        team
+    )
 
 
 
     if not passport:
 
+
         await message.answer(
-            f"❌ Паспорт команды {team_input} не найден.\n\n"
-            "Проверь название команды.",
+
+            f"❌ Паспорт {team_input} не найден.\n\n"
+            "Доступные команды: РПЛ",
+
             reply_markup=get_main_keyboard()
+
         )
 
         return
 
 
 
+    # -----------------------------
+    # SAFE VALUES
+    # -----------------------------
+
+    def val(
+        key,
+        default=0
+    ):
+
+        return passport.get(
+            key,
+            default
+        )
+
+
+
     answer = f"""
-⚽ Паспорт: {passport['team']}
+⚽ *Паспорт: {val('team','')}*
 
-🏆 Лига: {passport['league']}
+🏆 Лига:
+{val('league','')}
 
-──────────────
+📅 Сезон:
+{val('season','')}
 
-📊 Сила команды
+━━━━━━━━━━━━━━
+
+📊 *Командная модель FAJ*
 
 ⚔️ Атака:
-{passport['attack']}
+{val('attack')}
 
 🛡 Защита:
-{passport['defense']}
+{val('defense')}
 
 🎯 Контроль:
-{passport['control']}
+{val('control')}
+
 
 📈 Форма:
-{passport['form_index']}
+{val('form')}
 
-──────────────
 
-📊 Исторические данные
+━━━━━━━━━━━━━━
 
-xG:
-{passport['historical_xg_value']}
+📊 *xG модель*
 
-Голы:
-{passport['avg_goals_value']}
+Создано:
+{val('xg_for')}
 
 Пропущено:
-{passport['avg_goals_conceded_value']}
+{val('xg_against')}
 
-Владение:
-{passport['avg_possession_value']}%
 
-──────────────
+━━━━━━━━━━━━━━
 
-🧠 Дополнительно
+🧠 *Индексы*
 
-Тренер:
-{passport['coach_factor']}
+Эффективность:
+{val('efficiency')}
 
-Дом:
-{passport['home_rating']}
+Ментальность:
+{val('mentality')}
 
-Выезд:
-{passport['away_rating']}
+Дисциплина:
+{val('discipline')}
 
-Травмы:
-{passport['injury_index']}
+Физика:
+{val('fitness')}
 
-Усталость:
-{passport['fatigue_index']}
+Предсказуемость:
+{val('predictability')}
 
-──────────────
 
-📌 Версия паспорта:
-{passport['version']}
+━━━━━━━━━━━━━━
 
-Обновлён:
-{passport['updated']}
+🔄 Трансферы:
+{val('transfer_index')}
+
+🏥 Травмы:
+{val('injury_index')}
+
+😴 Усталость:
+{val('fatigue_index')}
+
+
+━━━━━━━━━━━━━━
+
+Версия FAJ:
+v6.3
 """
 
 
     await message.answer(
+
         answer,
+
+        parse_mode="Markdown",
+
         reply_markup=get_main_keyboard()
+
     )
 
 
 
-async def button_passport(message: types.Message):
+
+# =====================================================
+# BUTTON
+# =====================================================
+
+async def button_passport(
+    message: types.Message
+):
 
     await message.answer(
+
         "📁 Раздел паспортов\n\n"
         "Пример:\n\n"
         "Паспорт Зенит\n\n"
         "Доступны паспорта команд РПЛ.",
+
         reply_markup=get_main_keyboard()
+
     )
