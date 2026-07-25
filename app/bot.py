@@ -47,7 +47,6 @@ from app.handlers.update_calendar import (
     cmd_update_calendar
 )
 
-# ===== НОВЫЙ ИМПОРТ =====
 from app.handlers.update_results import (
     cmd_update_results
 )
@@ -79,6 +78,9 @@ from app.handlers.debug_rpl_source import (
 from app.handlers.debug_soccer365 import (
     cmd_debug_soccer365
 )
+
+# ===== НОВЫЙ ИМПОРТ =====
+from app.debug_prediction import cmd_debug_prediction
 
 
 # =====================================================
@@ -122,7 +124,6 @@ SERVICE_BUTTONS = {
 
     "🔄 Синхронизировать календарь",
 
-    # ===== НОВАЯ КНОПКА =====
     "🔄 Обновить результаты",
 
     "🔍 Проверить календарь",
@@ -224,7 +225,7 @@ async def run_bot(
         Command("update_calendar")
     )
 
-    # ===== НОВАЯ КОМАНДА =====
+
     dp.message.register(
         cmd_update_results,
         Command("update_results")
@@ -250,6 +251,12 @@ async def run_bot(
     dp.message.register(
         cmd_debug_soccer365,
         Command("debug_soccer365")
+    )
+
+    # ===== НОВАЯ КОМАНДА =====
+    dp.message.register(
+        lambda m: cmd_debug_prediction(m, core),
+        Command("debug_prediction")
     )
 
 
@@ -391,7 +398,6 @@ async def run_bot(
 
 
 
-    # ===== НОВЫЙ ОБРАБОТЧИК КНОПКИ =====
     @dp.message(
         lambda m:
         m.text == "🔄 Обновить результаты"
@@ -466,7 +472,7 @@ async def run_bot(
         (
             m.text.lower().startswith("прогноз")
             or
-            len(m.text.split()) >= 2   # ИСПРАВЛЕНО: >= 2 вместо == 2
+            len(m.text.split()) >= 2
         )
 
     )
