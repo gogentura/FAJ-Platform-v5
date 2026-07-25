@@ -2,9 +2,9 @@
 # FAJ Platform v6.3
 # app/handlers/predict.py
 #
-# Prediction Handler
-# PostgreSQL compatible
+# Main Match Prediction Handler
 # =====================================================
+
 
 import traceback
 import logging
@@ -13,22 +13,30 @@ import logging
 from aiogram import types
 
 
-from app.database import get_db
-
-
 from app.passport_manager import (
     load_passport,
     get_team_by_alias
 )
 
 
-from app.utils.formatter import format_prediction
+from app.core.risk_engine import (
+    risk_engine
+)
 
 
-from app.utils.explainer import explain_prediction
+from app.utils.formatter import (
+    format_prediction
+)
 
 
-from app.handlers.keyboard import get_main_keyboard
+from app.utils.explainer import (
+    explain_prediction
+)
+
+
+from app.handlers.keyboard import (
+    get_main_keyboard
+)
 
 
 
@@ -37,249 +45,62 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================
-# FIXTURE ID
-# =====================================================
-
-def get_fixture_id(
-    home,
-    away,
-    league="RPL"
-):
-
-    conn = get_db()
-
-    try:
-
-        row = conn.execute(
-            """
-            SELECT id
-            FROM fixtures
-            WHERE home_team=%s
-            AND away_team=%s
-            AND league=%s
-            LIMIT 1
-            """,
-            (
-                home,
-                away,
-                league
-            )
-        ).fetchone()
-
-
-        if row:
-
-            return row["id"]
-
-
-    except Exception:
-
-        pass
-
-
-    finally:
-
-        conn.close()
-
-
-
-    return None
-
-
-
-# =====================================================
-# FAJ RATING
-# =====================================================
-
-def calculate_faj_rating(passport):
-
-    if not passport:
-
-        return 0
-
-
-
-    rating = (
-
-        float(passport.get("attack",70)) * 0.18 +
-
-        float(passport.get("defense",70)) * 0.18 +
-
-        float(passport.get("control",70)) * 0.15 +
-
-        float(passport.get("efficiency",70)) * 0.12 +
-
-        float(passport.get("mentality",70)) * 0.10 +
-
-        float(passport.get("fitness",70)) * 0.10 +
-
-        float(passport.get("form",70)) * 0.17
-
-    )
-
-
-
-    return round(
-        rating,
-        1
-    )
-
-
-
-# =====================================================
-# RISK
-# =====================================================
-
-def calculate_risk(decision):
-
-
-    probability = max(
-
-        decision.get(
-            "home_probability",
-            decision.get(
-                "home_prob",
-                0
-            )
-        ),
-
-        decision.get(
-            "draw_probability",
-            decision.get(
-                "draw_prob",
-                0
-            )
-        ),
-
-        decision.get(
-            "away_probability",
-            decision.get(
-                "away_prob",
-                0
-            )
-        )
-
-    )
-
-
-
-    if probability >= 70:
-
-        return "Низкий"
-
-
-
-    elif probability >=55:
-
-        return "Средний"
-
-
-
-    else:
-
-        return "Высокий"
-
-
-
-
-
-# =====================================================
-# CONFIDENCE
-# =====================================================
-
-def calculate_confidence(
-
-    decision,
-
-    xg_home,
-
-    xg_away
-
-):
-
-
-    main_probability = max(
-
-        decision.get(
-            "home_probability",
-            0
-        ),
-
-        decision.get(
-            "draw_probability",
-            0
-        ),
-
-        decision.get(
-            "away_probability",
-            0
-        )
-
-    )
-
-
-
-    score = 50
-
-
-
-    score += (
-
-        main_probability - 50
-
-    )
-
-
-
-    score += abs(
-
-        xg_home-xg_away
-
-    ) * 10
-
-
-
-    return round(
-
-        min(
-            score,
-            95
-        ),
-
-        1
-
-    )
-
-
-
-
-
-# =====================================================
-# LOAD PASSPORT SAFE
+# LOAD PASSPORT
 # =====================================================
 
 def load_team_passport(team):
 
+    real_team = get_team_by_alias(team)
 
-    real = get_team_by_alias(team)
+    if real_team:
 
-
-
-    if real:
-
-        team = real
+        team = real_team
 
 
-
-    return load_passport(team)
-
+    passport = load_passport(team)
 
 
+    return passport or {}
 
 
 
 # =====================================================
-# MAIN HANDLER
+# PARSE MATCH
+# =====================================================
+
+def parse_match(text):
+
+    text = text.strip()
+
+
+    if text.lower().startswith("прогноз"):
+
+        text = text[8:].strip()
+
+
+
+    parts = text.split()
+
+
+
+    if len(parts) < 2:
+
+        return None, None
+
+
+
+    home = parts[0]
+
+
+    away = " ".join(parts[1:])
+
+
+    return home, away
+
+
+
+# =====================================================
+# PREDICT HANDLER
 # =====================================================
 
 async def handle_predict(
@@ -294,12 +115,14 @@ async def handle_predict(
 
 
     text = (
-
         message.text or ""
-
     ).strip()
 
 
+
+    # -------------------------
+    # IGNORE BUTTONS
+    # -------------------------
 
     ignore = [
 
@@ -313,10 +136,23 @@ async def handle_predict(
 
         "🔄 Загрузить паспорта",
 
+        "📅 Матчи",
+
+        "🤖 FAJ прогнозы",
+
+        "🧠 Мои прогнозы",
+
+        "🏆 Турниры",
+
+        "📋 Журнал",
+
+        "⚙️ Админ",
+
+        "❤️ Проверка",
+
         "/start"
 
     ]
-
 
 
     if text in ignore:
@@ -325,58 +161,17 @@ async def handle_predict(
 
 
 
-
-    if text.lower().startswith(
-        "прогноз "
-    ):
-
-        text = text[9:].strip()
+    home, away = parse_match(text)
 
 
 
-
-    parts = text.split()
-
-
-
-    if len(parts)<2:
+    if not home or not away:
 
         return
 
 
 
-    home = parts[0]
-
-    away = parts[1]
-
-
-    league="RPL"
-
-
-
-    if len(parts)>=3:
-
-        if parts[2].upper() in [
-
-            "RPL",
-
-            "EPL",
-
-            "UCL",
-
-            "LALIGA",
-
-            "SERIEA",
-
-            "BUNDESLIGA",
-
-            "LIGUE1"
-
-        ]:
-
-            league = parts[2].upper()
-
-
+    league = "RPL"
 
 
 
@@ -391,13 +186,13 @@ async def handle_predict(
 
 
 
-
     try:
 
 
-        # =============================
+
+        # =================================================
         # CORE
-        # =============================
+        # =================================================
 
 
         result = core.predict_match(
@@ -412,101 +207,165 @@ async def handle_predict(
 
 
 
-
-        if "error" in result:
+        if not result:
 
             raise Exception(
 
-                result["error"]
+                "FAJ Core пустой ответ"
 
             )
 
 
 
-        xg_data = result.get(
-            "xg",
-            {}
-        ).get(
-            "predicted",
-            {}
-        )
+        if "xg" not in result:
 
+            raise Exception(
+
+                "FAJ Core не вернул xG"
+
+            )
+
+
+
+        # =================================================
+        # XG
+        # =================================================
+
+
+        predicted_xg = result["xg"]["predicted"]
 
 
         xg_home = float(
 
-            xg_data.get(
+            predicted_xg.get(
+
                 "home",
+
                 0
+
             )
 
         )
-
 
 
         xg_away = float(
 
-            xg_data.get(
+            predicted_xg.get(
+
                 "away",
+
                 0
+
             )
 
         )
 
 
 
-        if xg_home == 0 and xg_away ==0:
-
-            raise Exception(
-                "FAJ Core не вернул xG"
-            )
-
-
-
-
-
-        # =============================
+        # =================================================
         # PASSPORTS
-        # =============================
+        # =================================================
 
 
         home_pass = load_team_passport(
+
             home
+
         )
 
 
         away_pass = load_team_passport(
+
             away
+
         )
 
 
 
-        home_rating = calculate_faj_rating(
-            home_pass
+        home_rating = float(
+
+            home_pass.get(
+
+                "faj_rating",
+
+                0
+
+            )
+
         )
 
 
-        away_rating = calculate_faj_rating(
-            away_pass
+        away_rating = float(
+
+            away_pass.get(
+
+                "faj_rating",
+
+                0
+
+            )
+
         )
 
 
 
+        # =================================================
+        # DECISION
+        # =================================================
 
-        decision = result["decision"]
 
+        decision = result.get(
 
+            "decision",
 
+            {}
 
-        risk = calculate_risk(
-            decision
         )
 
 
 
-        confidence = calculate_confidence(
+        winner_probability = float(
 
-            decision,
+            decision.get(
+
+                "winner_probability",
+
+                0
+
+            )
+
+        )
+
+
+
+        confidence = float(
+
+            decision.get(
+
+                "confidence",
+
+                0
+
+            )
+
+        )
+
+
+
+        # =================================================
+        # RISK ENGINE
+        # =================================================
+
+
+        risk = risk_engine.analyze(
+
+            confidence,
+
+            home_rating,
+
+            away_rating,
+
+            winner_probability,
 
             xg_home,
 
@@ -516,12 +375,38 @@ async def handle_predict(
 
 
 
+        decision.update({
+
+
+            "risk":
+
+                risk["risk"],
+
+
+            "grade":
+
+                risk["grade"],
+
+
+            "grade_name":
+
+                risk["grade_name"]
+
+
+        })
+
+
+
+        # =================================================
+        # FACTORS
+        # =================================================
+
 
         factors = explain_prediction(
 
-            home_pass or {},
+            home_pass,
 
-            away_pass or {},
+            away_pass,
 
             xg_home,
 
@@ -533,10 +418,9 @@ async def handle_predict(
 
 
 
-
-        # =============================
+        # =================================================
         # FORMAT
-        # =============================
+        # =================================================
 
 
         answer = format_prediction(
@@ -550,9 +434,16 @@ async def handle_predict(
 
             {
 
-                "home":xg_home,
 
-                "away":xg_away
+                "home":
+
+                    xg_home,
+
+
+                "away":
+
+                    xg_away
+
 
             },
 
@@ -576,46 +467,42 @@ async def handle_predict(
 
 
             decision.get(
+
                 "btts",
+
                 0
+
             ),
 
 
             decision.get(
+
                 "over25",
+
                 0
+
             ),
 
 
-            factors
+            factors,
+
+
+            home_rating,
+
+
+            away_rating,
+
+
+            risk
+
 
         )
 
 
 
-        answer += (
-
-            "\n\n━━━━━━━━━━━━━━\n"
-
-            "🧠 *FAJ Rating*\n"
-
-            f"{home}: {home_rating}\n"
-
-            f"{away}: {away_rating}\n\n"
-
-            f"⚠️ Риск: {risk}\n"
-
-            f"🎯 Уверенность FAJ: {confidence}%"
-
-        )
-
-
-
-
-
-        # =============================
+        # =================================================
         # JOURNAL
-        # =============================
+        # =================================================
 
 
         journal.save(
@@ -625,105 +512,134 @@ async def handle_predict(
 
             prediction={
 
+
                 "winner":
+
                     decision.get(
+
                         "winner",
+
                         ""
+
                     ),
 
 
                 "winner_name":
+
                     decision.get(
+
                         "winner_name",
+
                         ""
+
                     ),
 
 
                 "winner_probability":
-                    decision.get(
-                        "winner_probability",
-                        0
-                    ),
+
+                    winner_probability,
 
 
                 "home_probability":
+
                     decision.get(
+
                         "home_probability",
-                        decision.get(
-                            "home_prob",
-                            0
-                        )
+
+                        0
+
                     ),
 
 
                 "draw_probability":
+
                     decision.get(
+
                         "draw_probability",
+
                         0
+
                     ),
 
 
                 "away_probability":
+
                     decision.get(
+
                         "away_probability",
+
                         0
+
                     ),
 
 
                 "xg_home":
+
                     xg_home,
 
 
                 "xg_away":
+
                     xg_away,
 
 
                 "expected_score":
+
                     decision.get(
+
                         "expected_score",
+
                         ""
+
                     ),
 
 
                 "top_scores":
+
                     result.get(
+
                         "simulation",
+
                         {}
+
                     ).get(
+
                         "top_scores",
+
                         []
+
                     ),
 
 
                 "btts":
+
                     decision.get(
+
                         "btts",
+
                         0
+
                     ),
 
 
                 "over25":
+
                     decision.get(
+
                         "over25",
+
                         0
+
                     ),
 
 
                 "confidence":
-                    confidence,
 
-
-                "fixture_id":
-                    get_fixture_id(
-                        home,
-                        away,
-                        league
-                    )
+                    confidence
 
             }
 
         )
-
 
 
 
@@ -743,18 +659,21 @@ async def handle_predict(
 
 
         logger.error(
-            traceback.format_exc()
-        )
 
+            traceback.format_exc()
+
+        )
 
 
         await message.answer(
 
             "❌ Ошибка модели\n\n"
 
-            f"Тип:\n{type(e).__name__}\n\n"
+            f"Тип:\n"
+            f"{type(e).__name__}\n\n"
 
-            f"Ошибка:\n{str(e)}",
+            f"Ошибка:\n"
+            f"{str(e)}",
 
             reply_markup=get_main_keyboard()
 
