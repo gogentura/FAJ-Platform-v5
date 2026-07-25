@@ -1,5 +1,5 @@
 # =====================================================
-# FAJ Platform v6.1
+# FAJ Platform v6.3
 # app/bot.py
 # =====================================================
 
@@ -348,8 +348,7 @@ async def run_bot(
         await message.answer(
 
             """
-⚙️ Админ панель FAJ
-
+⚙️ Админ панель FAJ v6.3
 
 📥 Загрузить паспорта
 
@@ -467,7 +466,7 @@ async def run_bot(
         (
             m.text.lower().startswith("прогноз")
             or
-            len(m.text.split()) == 2
+            len(m.text.split()) >= 2   # ИСПРАВЛЕНО: >= 2 вместо == 2
         )
 
     )
@@ -492,7 +491,7 @@ async def run_bot(
         await message.answer(
 
             """
-⚽ FAJ Platform v6.1
+⚽ FAJ Platform v6.3
 
 
 📊 Статус        📈 Прогноз
@@ -524,7 +523,7 @@ FAJ анализирует:
 
 
     logger.info(
-        "FAJ Platform v6.1 started"
+        "FAJ Platform v6.3 started"
     )
 
 
