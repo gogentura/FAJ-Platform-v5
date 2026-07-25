@@ -30,9 +30,11 @@ ALIASES = {
     "динамо м": "Динамо М",
 
     "локомотив": "Локомотив",
+
     "краснодар": "Краснодар",
 
     "ростов": "Ростов",
+
     "ахмат": "Ахмат",
 
     "рубин": "Рубин",
@@ -41,6 +43,7 @@ ALIASES = {
     "крылья советов": "Крылья Советов",
 
     "факел": "Факел",
+
     "оренбург": "Оренбург",
 
     "балтика": "Балтика",
@@ -55,7 +58,7 @@ ALIASES = {
 
 
 # =====================================================
-# ALIAS
+# ALIAS SEARCH
 # =====================================================
 
 def get_team_by_alias(name):
@@ -63,7 +66,7 @@ def get_team_by_alias(name):
     if not name:
         return None
 
-    clean = name.lower().strip()
+    clean = str(name).lower().strip()
 
     return ALIASES.get(
         clean,
@@ -76,148 +79,170 @@ def get_team_by_alias(name):
 # =====================================================
 
 def save_passport(
-    team,
-    passport
+        team,
+        passport
 ):
 
     conn = get_db()
 
-    cur = conn.cursor()
-
-
     now = datetime.now()
 
 
-    xg_value = passport.get(
-        "xg",
-        {}
+    data_json = json.dumps(
+        passport,
+        ensure_ascii=False
     )
 
 
-    if isinstance(xg_value, dict):
-
-        xg_for = (
-            xg_value
-            .get("historical", {})
-            .get("value", 1.3)
-        )
-
-    else:
-
-        xg_for = 1.3
-
-
-
-    avg_goals = passport.get(
-        "avg_goals",
-        {}
-    )
-
-
-    avg_conceded = passport.get(
-        "avg_goals_conceded",
-        {}
-    )
-
-
-    possession = passport.get(
-        "avg_possession",
-        {}
-    )
-
+    cur = conn.cursor()
 
 
     cur.execute(
         """
-
-        INSERT INTO team_passports
+        INSERT INTO passports
         (
-
+            team,
             league,
             season,
-            team,
 
             attack,
             defense,
             control,
 
+            form_index,
+
             efficiency,
             mentality,
 
-            form,
+            discipline,
+            fitness,
+            predictability,
 
-            xg_for,
-            xg_against,
+            historical_xg_value,
+            historical_xg_source,
 
+            avg_goals_value,
+            avg_goals_source,
+
+            avg_goals_conceded_value,
+            avg_goals_conceded_source,
+
+            avg_possession_value,
+            avg_possession_source,
+
+            transfer_index,
             injury_index,
             fatigue_index,
-            transfer_index,
 
-            updated
+            version,
 
+            created,
+            updated,
+
+            data
         )
 
         VALUES
 
         (
+            %s,%s,%s,
 
-            %s,
-            %s,
-            %s,
-
-            %s,
-            %s,
-            %s,
-
-            %s,
-            %s,
+            %s,%s,%s,
 
             %s,
 
-            %s,
-            %s,
+            %s,%s,
+
+            %s,%s,%s,
+
+            %s,%s,
+
+            %s,%s,
+
+            %s,%s,
+
+            %s,%s,
+
+            %s,%s,%s,
 
             %s,
-            %s,
-            %s,
+
+            %s,%s,
 
             %s
-
         )
 
 
-        ON CONFLICT
-        (
-            league,
-            season,
-            team
-        )
+        ON CONFLICT(team)
 
         DO UPDATE SET
+
+
+            league = EXCLUDED.league,
+            season = EXCLUDED.season,
 
 
             attack = EXCLUDED.attack,
             defense = EXCLUDED.defense,
             control = EXCLUDED.control,
 
+
+            form_index = EXCLUDED.form_index,
+
+
             efficiency = EXCLUDED.efficiency,
             mentality = EXCLUDED.mentality,
 
-            form = EXCLUDED.form,
 
-            xg_for = EXCLUDED.xg_for,
-            xg_against = EXCLUDED.xg_against,
+            discipline = EXCLUDED.discipline,
+            fitness = EXCLUDED.fitness,
+            predictability = EXCLUDED.predictability,
 
-            injury_index = EXCLUDED.injury_index,
-            fatigue_index = EXCLUDED.fatigue_index,
-            transfer_index = EXCLUDED.transfer_index,
 
-            updated = EXCLUDED.updated
+            historical_xg_value =
+                EXCLUDED.historical_xg_value,
 
+            historical_xg_source =
+                EXCLUDED.historical_xg_source,
+
+
+            avg_goals_value =
+                EXCLUDED.avg_goals_value,
+
+            avg_goals_conceded_value =
+                EXCLUDED.avg_goals_conceded_value,
+
+
+            avg_possession_value =
+                EXCLUDED.avg_possession_value,
+
+
+            transfer_index =
+                EXCLUDED.transfer_index,
+
+            injury_index =
+                EXCLUDED.injury_index,
+
+            fatigue_index =
+                EXCLUDED.fatigue_index,
+
+
+            version =
+                EXCLUDED.version,
+
+
+            updated =
+                EXCLUDED.updated,
+
+
+            data =
+                EXCLUDED.data
 
         """,
 
         (
+
+            team,
 
             passport.get(
                 "league",
@@ -228,8 +253,6 @@ def save_passport(
                 "season",
                 "2026/27"
             ),
-
-            team,
 
 
             passport.get(
@@ -249,6 +272,15 @@ def save_passport(
 
 
             passport.get(
+                "form",
+                passport.get(
+                    "form_index",
+                    70
+                )
+            ),
+
+
+            passport.get(
                 "efficiency",
                 70
             ),
@@ -260,24 +292,57 @@ def save_passport(
 
 
             passport.get(
-                "form_index",
+                "discipline",
+                70
+            ),
+
+            passport.get(
+                "fitness",
+                70
+            ),
+
+            passport.get(
+                "predictability",
                 70
             ),
 
 
-            xg_for,
-
-
-            avg_conceded.get(
-                "value",
+            passport.get(
+                "xg_for",
                 1.3
-            )
-            if isinstance(
-                avg_conceded,
-                dict
-            )
-            else 1.3,
+            ),
 
+            "expert",
+
+
+            passport.get(
+                "avg_goals",
+                0
+            ),
+
+            "expert",
+
+
+            passport.get(
+                "avg_goals_conceded",
+                0
+            ),
+
+            "expert",
+
+
+            passport.get(
+                "avg_possession",
+                50
+            ),
+
+            "expert",
+
+
+            passport.get(
+                "transfer_index",
+                0
+            ),
 
             passport.get(
                 "injury_index",
@@ -289,13 +354,16 @@ def save_passport(
                 0
             ),
 
-            passport.get(
-                "transfer_index",
-                0
-            ),
+
+            1,
 
 
-            now
+            now,
+
+            now,
+
+
+            data_json
 
         )
 
@@ -305,6 +373,12 @@ def save_passport(
     conn.commit()
 
     conn.close()
+
+
+    logger.info(
+        f"Passport saved: {team}"
+    )
+
 
 
 # =====================================================
@@ -324,17 +398,14 @@ def load_passport(team):
 
 
     cur.execute(
-
         """
-
         SELECT *
 
-        FROM team_passports
+        FROM passports
 
         WHERE team=%s
 
         LIMIT 1
-
         """,
 
         (
@@ -359,7 +430,10 @@ def load_passport(team):
 
 
 
-# Совместимость
+# =====================================================
+# COMPATIBILITY
+# =====================================================
+
 def get_passport(team):
 
     return load_passport(team)
@@ -372,11 +446,55 @@ def get_passport(team):
 
 def init_default_aliases():
 
-    logger.info(
-        "Aliases loaded"
-    )
+    conn = get_db()
 
-    return True
+    cur = conn.cursor()
+
+
+    for alias, team in ALIASES.items():
+
+        try:
+
+            cur.execute(
+                """
+                INSERT INTO team_aliases
+                (
+                    team,
+                    alias
+                )
+
+                VALUES
+                (
+                    %s,
+                    %s
+                )
+
+                ON CONFLICT(alias)
+
+                DO UPDATE SET
+
+                    team =
+                    EXCLUDED.team
+
+                """,
+
+                (
+                    team,
+                    alias
+                )
+
+            )
+
+        except Exception as e:
+
+            logger.warning(
+                f"Alias skipped {alias}: {e}"
+            )
+
+
+    conn.commit()
+
+    conn.close()
 
 
 
@@ -393,13 +511,11 @@ def get_all_passports():
 
     cur.execute(
         """
-
         SELECT *
 
-        FROM team_passports
+        FROM passports
 
         ORDER BY team
-
         """
     )
 
