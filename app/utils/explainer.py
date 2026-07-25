@@ -1,9 +1,6 @@
 # =====================================================
 # FAJ Platform v6.3
-# app/utils/explainer.py
-#
-# Prediction Explanation Layer
-# PostgreSQL compatible
+# Prediction Explainer
 # =====================================================
 
 
@@ -12,197 +9,127 @@ def explain_prediction(
     away_passport,
     xg_home,
     xg_away,
-    league="RPL"
+    league
 ):
 
     factors = []
 
 
-    # Если паспорта отсутствуют
-    if not home_passport or not away_passport:
-
-        factors.append(
-            "Недостаточно данных паспортов"
-        )
-
-        return factors
+    if home_passport and away_passport:
 
 
+        if (
+            home_passport.get("attack",0)
+            >
+            away_passport.get("attack",0)
+        ):
 
-    # ==========================================
-    # ATTACK
-    # ==========================================
+            factors.append(
+                "Преимущество хозяев в атаке"
+            )
 
-    home_attack = float(
-        home_passport.get(
-            "attack",
-            0
-        )
-    )
+        elif (
+            away_passport.get("attack",0)
+            >
+            home_passport.get("attack",0)
+        ):
 
-    away_attack = float(
-        away_passport.get(
-            "attack",
-            0
-        )
-    )
-
-
-    if home_attack > away_attack:
-
-        factors.append(
-            "Преимущество хозяев в атаке"
-        )
-
-    elif away_attack > home_attack:
-
-        factors.append(
-            "Преимущество гостей в атаке"
-        )
+            factors.append(
+                "Преимущество гостей в атаке"
+            )
 
 
+        if (
+            home_passport.get("defense",0)
+            >
+            away_passport.get("defense",0)
+        ):
 
-    # ==========================================
-    # DEFENSE
-    # ==========================================
+            factors.append(
+                "Хозяева надёжнее в обороне"
+            )
 
-    home_def = float(
-        home_passport.get(
-            "defense",
-            0
-        )
-    )
+        elif (
+            away_passport.get("defense",0)
+            >
+            home_passport.get("defense",0)
+        ):
 
-    away_def = float(
-        away_passport.get(
-            "defense",
-            0
-        )
-    )
-
-
-    if home_def > away_def:
-
-        factors.append(
-            "Хозяева сильнее в обороне"
-        )
-
-    elif away_def > home_def:
-
-        factors.append(
-            "Гости сильнее в обороне"
-        )
+            factors.append(
+                "Гости сильнее в обороне"
+            )
 
 
+        if (
+            home_passport.get("form",0)
+            >
+            away_passport.get("form",0)
+        ):
 
-    # ==========================================
-    # FORM
-    # ==========================================
+            factors.append(
+                "Лучшая текущая форма хозяев"
+            )
 
-    home_form = float(
-        home_passport.get(
-            "form",
-            0
-        )
-    )
+        elif (
+            away_passport.get("form",0)
+            >
+            home_passport.get("form",0)
+        ):
 
-    away_form = float(
-        away_passport.get(
-            "form",
-            0
-        )
-    )
-
-
-    if home_form > away_form:
-
-        factors.append(
-            "Лучшее текущее состояние хозяев"
-        )
-
-    elif away_form > home_form:
-
-        factors.append(
-            "Лучшее текущее состояние гостей"
-        )
+            factors.append(
+                "Лучшее текущее состояние гостей"
+            )
 
 
+        if (
+            home_passport.get("control",0)
+            >
+            away_passport.get("control",0)
+        ):
 
-    # ==========================================
-    # CONTROL
-    # ==========================================
+            factors.append(
+                "Хозяева лучше контролируют игру"
+            )
 
-    home_control = float(
-        home_passport.get(
-            "control",
-            0
-        )
-    )
+        elif (
+            away_passport.get("control",0)
+            >
+            home_passport.get("control",0)
+        ):
 
-    away_control = float(
-        away_passport.get(
-            "control",
-            0
-        )
-    )
+            factors.append(
+                "Гости лучше контролируют игру"
+            )
 
-
-    if home_control > away_control:
-
-        factors.append(
-            "Хозяева лучше контролируют игру"
-        )
-
-    elif away_control > home_control:
-
-        factors.append(
-            "Гости лучше контролируют игру"
-        )
-
-
-
-    # ==========================================
-    # xG DIFFERENCE
-    # ==========================================
 
     diff = xg_home - xg_away
 
 
-    if diff > 0.30:
+    if diff > 0.3:
 
         factors.append(
-            f"xG преимущество хозяев +{diff:.2f}"
+            f"Разница xG в пользу хозяев +{diff:.2f}"
         )
 
 
-    elif diff < -0.30:
+    elif diff < -0.3:
 
         factors.append(
-            f"xG преимущество гостей {diff:.2f}"
+            f"Разница xG в пользу гостей +{abs(diff):.2f}"
         )
 
 
-
-    # ==========================================
-    # HOME FIELD
-    # ==========================================
-
-    if league.upper() == "RPL":
+    if league == "RPL":
 
         factors.append(
-            "Учтён фактор домашнего поля"
+            "Фактор домашнего поля"
         )
 
-
-
-    # ==========================================
-    # EMPTY
-    # ==========================================
 
     if not factors:
 
         factors.append(
-            "Команды близки по аналитическим показателям"
+            "Команды близки по силе"
         )
 
 
