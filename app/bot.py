@@ -12,7 +12,7 @@ from aiogram.types import Message
 from app.config import Config
 
 from app.core.faj_core import FAJCore
-from app.journal import Journal, clear_journal   # добавлен clear_journal
+from app.journal import Journal, clear_journal
 
 # =====================================================
 # HANDLERS
@@ -62,6 +62,7 @@ from app.handlers.expert_predictions import (
     cmd_expert_predictions
 )
 
+# ===== ВАЖНО: импорт генератора прогнозов =====
 from app.handlers.generate_predictions import (
     cmd_generate_predictions
 )
@@ -135,7 +136,6 @@ SERVICE_BUTTONS = {
 
     "⬅️ Главное меню",
 
-    # ===== НОВАЯ КНОПКА =====
     "🗑 Очистить журнал"
 }
 
@@ -295,6 +295,17 @@ async def run_bot(
                 "❌ Ошибка очистки журнала."
             )
 
+    # ===== КОМАНДА ДЛЯ ГЕНЕРАЦИИ ТУРА =====
+    @dp.message(
+        Command("generate_tour")
+    )
+    async def generate_tour_command(
+        message: Message
+    ):
+        await cmd_generate_predictions(
+            message
+        )
+
 
     # =================================================
     # MAIN MENU
@@ -415,6 +426,18 @@ async def run_bot(
         )
 
 
+    # ===== ОБРАБОТЧИК КНОПКИ "🚀 Создать прогнозы тура" =====
+    @dp.message(
+        lambda m:
+        m.text == "🚀 Создать прогнозы тура"
+    )
+    async def generate_tour_button(
+        message: Message
+    ):
+        await cmd_generate_predictions(
+            message
+        )
+
 
     @dp.message(
         lambda m:
@@ -458,21 +481,21 @@ async def run_bot(
 
     @dp.message(
         lambda m:
-        m.text == "🚀 Создать прогнозы тура"
-    )
-    async def generate_button(message: Message):
-
-        await cmd_generate_predictions(message)
-
-
-
-    @dp.message(
-        lambda m:
         m.text == "📥 Загрузить паспорта"
     )
     async def passports_button(message: Message):
 
         await cmd_load_passports(message)
+
+
+
+    @dp.message(
+        lambda m:
+        m.text == "🗄 Проверка базы"
+    )
+    async def db_check_button(message: Message):
+
+        await cmd_dbcheck(message)
 
 
 
