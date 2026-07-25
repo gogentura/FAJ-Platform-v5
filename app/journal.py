@@ -1,240 +1,114 @@
 # =====================================================
-# FAJ Platform v6.3.1
+# FAJ Platform v6.3.2
 # app/journal.py
-#
-# PostgreSQL Journal Layer
 # =====================================================
 
-
-from datetime import datetime
 import json
 import logging
 
-
-from app.database import get_db
-
+from app.database import get_connection
 
 
 logger = logging.getLogger(__name__)
 
 
-
-# =====================================================
-# CLEAN VALUES
-# =====================================================
-
-def clean_value(value):
-
-    if value is None:
-
-        return None
-
-
-    if hasattr(value, "item"):
-
-        return value.item()
-
-
-    return value
-
-
-
-# =====================================================
-# JOURNAL
-# =====================================================
-
-
 class Journal:
-
-
-
-    # =================================================
-    # SAVE PREDICTION
-    # =================================================
 
 
     def save(
 
         self,
 
-        match: str,
+        match,
 
-        prediction: dict,
+        prediction,
 
-        actual: dict = None
+        fixture_id=None
 
     ):
 
 
-
-        conn = get_db()
-
-
-
         try:
 
+            conn = get_connection()
+
+            cur = conn.cursor()
 
 
-            now = datetime.now()
+            home = prediction.get(
+                "home_team"
+            )
 
+            away = prediction.get(
+                "away_team"
+            )
 
-
-            # =========================================
-            # PARSE TEAMS
-            # =========================================
-
-
-            parts = (
-
-                match
-
-                .replace("-", "—")
-
-                .split("—")
-
+            league = prediction.get(
+                "league",
+                "RPL"
             )
 
 
+            cur.execute(
 
-            home_team = (
+                """
 
-                parts[0].strip()
+                INSERT INTO journal
+                (
 
-                if len(parts) > 0
-
-                else ""
-
-            )
-
-
-
-            away_team = (
-
-                parts[1].strip()
-
-                if len(parts) > 1
-
-                else ""
-
-            )
-
-
-
-            # =========================================
-            # JSON
-            # =========================================
-
-
-            top_scores = json.dumps(
-
-                prediction.get(
-
-                    "top_scores",
-
-                    []
-
-                ),
-
-                ensure_ascii=False
-
-            )
-
-
-
-            # =========================================
-            # INSERT
-            # =========================================
-
-
-            conn.execute(
-
-            """
-
-            INSERT INTO journal
-
-            (
-
-                league,
+                fixture_id,
 
                 home_team,
-
                 away_team,
-
+                league,
 
                 winner,
 
                 winner_probability,
 
-
                 home_probability,
-
                 draw_probability,
-
                 away_probability,
 
-
                 xg_home,
-
                 xg_away,
-
 
                 expected_score,
 
                 top_scores,
 
-
                 btts,
-
                 over25,
 
-
-                confidence,
-
-
                 home_rating,
-
                 away_rating,
 
+                confidence,
 
                 risk,
 
                 grade,
+                grade_name
 
+                )
 
-                model_version,
+                VALUES
 
-                data_version,
+                (
 
+                %s,
 
-                actual_score,
+                %s,%s,%s,
 
-                actual_winner,
+                %s,
 
-
-                accuracy,
-
-
-                created
-
-
-            )
-
-
-            VALUES
-
-            (
+                %s,
 
                 %s,%s,%s,
 
                 %s,%s,
 
-                %s,%s,%s,
-
-                %s,%s,
-
-                %s,%s,
-
-                %s,%s,
+                %s,
 
                 %s,
 
@@ -242,404 +116,154 @@ class Journal:
 
                 %s,%s,
 
-                %s,%s,
-
-                %s,%s,
+                %s,
 
                 %s,
 
-                %s
-
-            )
-
-
-            """,
-
-
-            (
-
-
-
-                prediction.get(
-
-                    "league",
-
-                    "RPL"
-
-                ),
-
-
-
-                home_team,
-
-                away_team,
-
-
-
-                prediction.get(
-
-                    "winner",
-
-                    ""
-
-                ),
-
-
-
-                clean_value(
-
-                    prediction.get(
-
-                        "winner_probability",
-
-                        0
-
-                    )
-
-                ),
-
-
-
-                clean_value(
-
-                    prediction.get(
-
-                        "home_probability",
-
-                        prediction.get(
-
-                            "home_prob",
-
-                            0
-
-                        )
-
-                    )
-
-                ),
-
-
-
-                clean_value(
-
-                    prediction.get(
-
-                        "draw_probability",
-
-                        prediction.get(
-
-                            "draw_prob",
-
-                            0
-
-                        )
-
-                    )
-
-                ),
-
-
-
-                clean_value(
-
-                    prediction.get(
-
-                        "away_probability",
-
-                        prediction.get(
-
-                            "away_prob",
-
-                            0
-
-                        )
-
-                    )
-
-                ),
-
-
-
-                clean_value(
-
-                    prediction.get(
-
-                        "xg_home",
-
-                        0
-
-                    )
-
-                ),
-
-
-
-                clean_value(
-
-                    prediction.get(
-
-                        "xg_away",
-
-                        0
-
-                    )
-
-                ),
-
-
-
-                prediction.get(
-
-                    "expected_score",
-
-                    ""
-
-                ),
-
-
-
-                top_scores,
-
-
-
-                clean_value(
-
-                    prediction.get(
-
-                        "btts",
-
-                        0
-
-                    )
-
-                ),
-
-
-
-                clean_value(
-
-                    prediction.get(
-
-                        "over25",
-
-                        0
-
-                    )
-
-                ),
-
-
-
-                clean_value(
-
-                    prediction.get(
-
-                        "confidence",
-
-                        0
-
-                    )
-
-                ),
-
-
-
-                clean_value(
-
-                    prediction.get(
-
-                        "home_rating",
-
-                        0
-
-                    )
-
-                ),
-
-
-
-                clean_value(
-
-                    prediction.get(
-
-                        "away_rating",
-
-                        0
-
-                    )
-
-                ),
-
-
-
-                prediction.get(
-
-                    "risk",
-
-                    "Средний"
-
-                ),
-
-
-
-                prediction.get(
-
-                    "grade",
-
-                    "B"
-
-                ),
-
-
-
-                "6.3.1",
-
-
-
-                "2026.07",
-
-
-
-                actual.get(
-
-                    "score",
-
-                    ""
+                %s,%s
 
                 )
 
-                if actual
 
-                else "",
+                ON CONFLICT (fixture_id)
 
-
-
-                actual.get(
-
-                    "winner",
-
-                    ""
-
-                )
-
-                if actual
-
-                else "",
+                DO UPDATE SET
 
 
+                winner = EXCLUDED.winner,
 
-                clean_value(
+                winner_probability =
+                EXCLUDED.winner_probability,
+
+                xg_home =
+                EXCLUDED.xg_home,
+
+                xg_away =
+                EXCLUDED.xg_away,
+
+                expected_score =
+                EXCLUDED.expected_score,
+
+                confidence =
+                EXCLUDED.confidence,
+
+                risk =
+                EXCLUDED.risk,
+
+                grade =
+                EXCLUDED.grade
+
+
+                """,
+
+                (
+
+                fixture_id,
+
+                home,
+                away,
+                league,
+
+                prediction.get(
+                    "winner"
+                ),
+
+                prediction.get(
+                    "winner_probability"
+                ),
+
+
+                prediction.get(
+                    "home_probability"
+                ),
+
+                prediction.get(
+                    "draw_probability"
+                ),
+
+                prediction.get(
+                    "away_probability"
+                ),
+
+
+                prediction.get(
+                    "xg_home"
+                ),
+
+                prediction.get(
+                    "xg_away"
+                ),
+
+
+                prediction.get(
+                    "expected_score"
+                ),
+
+
+                json.dumps(
 
                     prediction.get(
-
-                        "accuracy",
-
-                        None
-
+                        "top_scores",
+                        []
                     )
 
                 ),
 
 
+                prediction.get(
+                    "btts"
+                ),
 
-                now
+                prediction.get(
+                    "over25"
+                ),
 
+
+                prediction.get(
+                    "home_rating"
+                ),
+
+                prediction.get(
+                    "away_rating"
+                ),
+
+
+                prediction.get(
+                    "confidence"
+                ),
+
+                prediction.get(
+                    "risk"
+                ),
+
+
+                prediction.get(
+                    "grade"
+                ),
+
+                prediction.get(
+                    "grade_name"
+                )
+
+                )
 
             )
-
-            )
-
 
 
             conn.commit()
 
+            conn.close()
 
 
         except Exception as e:
 
 
-            conn.rollback()
-
-
             logger.error(
 
-                f"Journal save error: {e}"
+                "Journal save error: %s",
+
+                e,
+
+                exc_info=True
 
             )
-
-
-            raise
-
-
-
-        finally:
-
-
-            conn.close()
-
-
-
-    # =================================================
-    # GET ALL
-    # =================================================
-
-
-    def get_all(
-
-        self,
-
-        limit=20
-
-    ):
-
-
-
-        conn = get_db()
-
-
-
-        try:
-
-
-            cursor = conn.execute(
-
-            """
-
-            SELECT *
-
-            FROM journal
-
-            ORDER BY id DESC
-
-            LIMIT %s
-
-            """,
-
-            (
-
-                limit,
-
-            )
-
-            )
-
-
-
-            rows = cursor.fetchall()
-
-
-
-            return [
-
-                dict(row)
-
-                for row in rows
-
-            ]
-
-
-
-        finally:
-
-
-            conn.close()
