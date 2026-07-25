@@ -10,6 +10,8 @@ from math import exp
 from math import factorial
 
 from app.passport_manager import load_passport
+from app.passport_manager import get_team_by_alias
+from app.database import get_db   # добавлен импорт для load_team
 
 
 class FAJCore:
@@ -74,9 +76,8 @@ class FAJCore:
 
         started = time.time()
 
-        home = load_passport(home_team)
-
-        away = load_passport(away_team)
+        home = self.load_team(home_team)
+        away = self.load_team(away_team)
 
         if home is None:
 
@@ -142,13 +143,40 @@ class FAJCore:
 
             "away_team": away_team,
 
-            "home_xg": round(home_xg, 2),
-
-            "away_xg": round(away_xg, 2),
+            "xg": {
+                "predicted": {
+                    "home": round(home_xg, 2),
+                    "away": round(away_xg, 2)
+                }
+            },
 
             "simulation": simulation,
 
             "decision": decision,
+
+            "btts": self.btts_probability(
+
+                home_xg,
+
+                away_xg
+
+            ),
+
+            "over25": self.over25_probability(
+
+                home_xg,
+
+                away_xg
+
+            ),
+
+            "under25": self.under25_probability(
+
+                home_xg,
+
+                away_xg
+
+            ),
 
             "processing_time":
 
@@ -163,8 +191,34 @@ class FAJCore:
         }
 
     # ==============================================
+    # LOAD TEAM (исправлено под team_passports)
+    # ==============================================
+
+    def load_team(self, team):
+        real_team = get_team_by_alias(team)
+        if not real_team:
+            real_team = team
+
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT *
+            FROM team_passports
+            WHERE team = %s
+            LIMIT 1
+            """,
+            (real_team,)
+        )
+        row = cur.fetchone()
+        conn.close()
+
+        if row:
+            return dict(row)
+        return None
+
+    # ==============================================
     # XG MODEL
-    # FAJ Platform v6.3
     # ==============================================
 
     def calculate_xg(
