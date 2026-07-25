@@ -12,8 +12,7 @@ from aiogram.types import Message
 from app.config import Config
 
 from app.core.faj_core import FAJCore
-from app.journal import Journal
-
+from app.journal import Journal, clear_journal   # добавлен clear_journal
 
 # =====================================================
 # HANDLERS
@@ -134,7 +133,10 @@ SERVICE_BUTTONS = {
 
     "🗄 Проверка базы",
 
-    "⬅️ Главное меню"
+    "⬅️ Главное меню",
+
+    # ===== НОВАЯ КНОПКА =====
+    "🗑 Очистить журнал"
 }
 
 
@@ -253,7 +255,7 @@ async def run_bot(
         Command("debug_soccer365")
     )
 
-    # ===== DEBUG PREDICTION (исправленная регистрация) =====
+    # ===== DEBUG PREDICTION =====
     async def debug_prediction_handler(
         message: Message
     ):
@@ -266,6 +268,32 @@ async def run_bot(
         debug_prediction_handler,
         Command("debug_prediction")
     )
+
+    # ===== НОВЫЕ КОМАНДЫ =====
+    dp.message.register(
+        cmd_show_fixtures,
+        Command("тур")
+    )
+    dp.message.register(
+        cmd_show_fixtures,
+        Command("fixtures")
+    )
+
+    @dp.message(
+        Command("clear_journal")
+    )
+    async def clear_journal_handler(
+        message: Message
+    ):
+        ok = clear_journal()
+        if ok:
+            await message.answer(
+                "🗑 Журнал прогнозов очищен."
+            )
+        else:
+            await message.answer(
+                "❌ Ошибка очистки журнала."
+            )
 
 
     # =================================================
@@ -378,6 +406,8 @@ async def run_bot(
 🚀 Создать прогнозы тура
 
 🗄 Проверка базы
+
+🗑 Очистить журнал
 """,
 
             reply_markup=admin_keyboard()
@@ -444,6 +474,25 @@ async def run_bot(
 
         await cmd_load_passports(message)
 
+
+
+    # ===== НОВЫЙ ОБРАБОТЧИК =====
+    @dp.message(
+        lambda m:
+        m.text == "🗑 Очистить журнал"
+    )
+    async def clear_journal_button(
+        message: Message
+    ):
+        ok = clear_journal()
+        if ok:
+            await message.answer(
+                "🗑 Журнал очищен."
+            )
+        else:
+            await message.answer(
+                "❌ Не удалось очистить журнал."
+            )
 
 
     # =================================================
