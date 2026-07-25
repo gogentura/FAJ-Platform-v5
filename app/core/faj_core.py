@@ -82,7 +82,7 @@ class FAJCore:
         )
 
     # ==========================================
-    # ЗАГРУЗКА ПАСПОРТА
+    # ЗАГРУЗКА ПАСПОРТА (ИСПРАВЛЕНА)
     # ==========================================
 
     def load_team(self, team):
@@ -91,14 +91,17 @@ class FAJCore:
             real_team = team
 
         conn = get_db()
-        row = conn.execute(
+        cur = conn.cursor()
+        cur.execute(
             """
             SELECT *
-            FROM passports
-            WHERE team = ?
+            FROM team_passports
+            WHERE team = %s
+            LIMIT 1
             """,
             (real_team,)
-        ).fetchone()
+        )
+        row = cur.fetchone()
         conn.close()
 
         if row:
