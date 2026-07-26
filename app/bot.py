@@ -62,9 +62,6 @@ from app.handlers.expert_predictions import (
     cmd_expert_predictions
 )
 
-# ===== ВРЕМЕННО ОТКЛЮЧЕНО (калибровка) =====
-# from app.handlers.calibration import cmd_calibration
-
 # ===== ВАЖНО: импорт генератора прогнозов =====
 from app.handlers.generate_predictions import (
     cmd_generate_predictions
@@ -82,13 +79,13 @@ from app.handlers.debug_soccer365 import (
     cmd_debug_soccer365
 )
 
-# ===== ВКЛЮЧАЕМ DEBUG RESULTS =====
+# ===== DEBUG RESULTS =====
 from app.handlers.debug_results import cmd_debug_results
 
-# ===== ВКЛЮЧАЕМ DEBUG FIXTURES =====
-from app.debug_fixtures import cmd_debug_fixtures
+# ===== DEBUG FIXTURES (исправлен импорт) =====
+from app.debug_fixtures import debug_fixtures
 
-# ===== ОСТАВЛЯЕМ DEBUG PREDICTION =====
+# ===== DEBUG PREDICTION =====
 from app.debug_prediction import cmd_debug_prediction
 
 
@@ -122,7 +119,6 @@ SERVICE_BUTTONS = {
 
     "🤖 FAJ прогнозы",
     "🧠 Мои прогнозы",
-    # "🧠 Анализ ошибок FAJ",   # пока убрал, пока калибровка не подключена
 
     "🏆 Турниры",
     "📋 Журнал",
@@ -285,9 +281,9 @@ async def run_bot(
         Command("debug_results")
     )
 
-    # ===== DEBUG FIXTURES =====
+    # ===== DEBUG FIXTURES (исправлена регистрация) =====
     dp.message.register(
-        cmd_debug_fixtures,
+        debug_fixtures,
         Command("debug_fixtures")
     )
 
@@ -327,12 +323,6 @@ async def run_bot(
         await cmd_generate_predictions(
             message
         )
-
-    # ===== КАЛИБРОВКА ПОКА ОТКЛЮЧЕНА =====
-    # dp.message.register(
-    #     cmd_calibration,
-    #     Command("calibration")
-    # )
 
 
     # =================================================
@@ -414,17 +404,6 @@ async def run_bot(
 
         await cmd_expert_predictions(message)
 
-
-
-    # ===== КАЛИБРОВОЧНАЯ КНОПКА ПОКА ОТКЛЮЧЕНА =====
-    # @dp.message(
-    #     lambda m:
-    #     m.text == "🧠 Анализ ошибок FAJ"
-    # )
-    # async def calibration_button(
-    #     message: Message
-    # ):
-    #     await cmd_calibration(message)
 
 
     # =================================================
