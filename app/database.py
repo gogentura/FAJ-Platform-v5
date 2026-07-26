@@ -362,6 +362,26 @@ def init_database():
         );
     """)
 
+    # ---------- calibration_log (НОВАЯ ТАБЛИЦА) ----------
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS calibration_log (
+            id SERIAL PRIMARY KEY,
+            fixture_id INTEGER,
+            faj_score TEXT,
+            fact_score TEXT,
+            faj_winner TEXT,
+            fact_winner TEXT,
+            expert_score TEXT,
+            expert_winner TEXT,
+            error_type TEXT,
+            rating_gap_error FLOAT DEFAULT 0,
+            xg_error FLOAT DEFAULT 0,
+            confidence_error FLOAT DEFAULT 0,
+            conclusion TEXT,
+            created TIMESTAMP DEFAULT NOW()
+        );
+    """)
+
     conn.commit()
     cur.close()
     conn.close()
