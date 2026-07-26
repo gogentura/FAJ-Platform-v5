@@ -1,7 +1,10 @@
 # =====================================================
-# FAJ Platform v6.2
+# FAJ Platform v6.6
+# app/keyboards/admin.py
+#
 # Admin Keyboard
 # =====================================================
+
 
 from aiogram.types import (
     ReplyKeyboardMarkup,
@@ -9,9 +12,12 @@ from aiogram.types import (
 )
 
 
+
 def admin_keyboard():
 
+
     buttons = [
+
 
         [
             KeyboardButton(
@@ -19,11 +25,15 @@ def admin_keyboard():
             ),
         ],
 
+
+
         [
             KeyboardButton(
                 text="🔄 Синхронизировать календарь"
             ),
         ],
+
+
 
         [
             KeyboardButton(
@@ -31,11 +41,15 @@ def admin_keyboard():
             ),
         ],
 
+
+
         [
             KeyboardButton(
                 text="🔍 Проверить календарь"
             ),
         ],
+
+
 
         [
             KeyboardButton(
@@ -43,11 +57,39 @@ def admin_keyboard():
             ),
         ],
 
+
+
+        [
+            KeyboardButton(
+                text="🤖 FAJ прогнозы"
+            ),
+        ],
+
+
+
+        [
+            KeyboardButton(
+                text="🧠 Анализ ошибок FAJ"
+            ),
+        ],
+
+
+
         [
             KeyboardButton(
                 text="🗄 Проверка базы"
             ),
         ],
+
+
+
+        [
+            KeyboardButton(
+                text="🗑 Очистить журнал"
+            ),
+        ],
+
+
 
         [
             KeyboardButton(
@@ -56,6 +98,7 @@ def admin_keyboard():
         ]
 
     ]
+
 
 
     return ReplyKeyboardMarkup(
