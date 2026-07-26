@@ -1,32 +1,80 @@
 # =====================================================
-# FAJ Platform v6.3
+# FAJ Platform v6.7
 # app/utils/explainer.py
 #
-# Prediction Explainer Layer
+# FAJ Prediction Explanation Layer
 # =====================================================
 
 
-def safe_number(value):
+import logging
+
+
+logger = logging.getLogger(__name__)
+
+
+
+
+
+# =====================================================
+# SAFE TEXT
+# =====================================================
+
+
+def safe_text(value):
+
+    if value is None:
+
+        return None
+
 
     try:
-        return float(value)
+
+        text = str(value).strip()
+
+
+        if not text:
+
+            return None
+
+
+        return text
+
 
     except Exception:
-        return 0.0
+
+        return None
 
 
-
-def safe_passport(passport):
-
-    if isinstance(passport, dict):
-        return passport
-
-    return {}
 
 
 
 # =====================================================
-# EXPLAIN PREDICTION
+# FACTOR BUILDER
+# =====================================================
+
+
+def add_factor(
+
+    factors,
+
+    text
+
+):
+
+
+    text = safe_text(text)
+
+
+    if text:
+
+        factors.append(text)
+
+
+
+
+
+# =====================================================
+# MAIN EXPLAINER
 # =====================================================
 
 
@@ -40,7 +88,7 @@ def explain_prediction(
 
     xg_away,
 
-    league
+    league="RPL"
 
 ):
 
@@ -48,213 +96,248 @@ def explain_prediction(
     factors = []
 
 
-    home_passport = safe_passport(
-        home_passport
-    )
+
+    try:
 
 
-    away_passport = safe_passport(
-        away_passport
-    )
+        # ==========================================
+        # PASSPORT CHECK
+        # ==========================================
 
 
-    xg_home = safe_number(
-        xg_home
-    )
+        if not home_passport:
+
+            home_passport = {}
 
 
-    xg_away = safe_number(
-        xg_away
-    )
+        if not away_passport:
+
+            away_passport = {}
 
 
 
-    # =============================================
-    # ATTACK
-    # =============================================
-
-    home_attack = safe_number(
-        home_passport.get(
-            "attack",
-            0
-        )
-    )
 
 
-    away_attack = safe_number(
-        away_passport.get(
-            "attack",
-            0
-        )
-    )
+        # ==========================================
+        # ATTACK
+        # ==========================================
 
 
-    if home_attack > away_attack:
-
-        factors.append(
-            "Преимущество хозяев в атаке"
+        home_attack = home_passport.get(
+            "attack"
         )
 
-    elif away_attack > home_attack:
 
-        factors.append(
-            "Преимущество гостей в атаке"
+        away_attack = away_passport.get(
+            "attack"
         )
 
 
 
-    # =============================================
-    # DEFENSE
-    # =============================================
+        if home_attack is not None and away_attack is not None:
 
-    home_defense = safe_number(
-        home_passport.get(
-            "defense",
-            0
+
+            if float(home_attack) > float(away_attack):
+
+                add_factor(
+
+                    factors,
+
+                    "🏹 Преимущество хозяев в атаке"
+
+                )
+
+
+            elif float(home_attack) < float(away_attack):
+
+                add_factor(
+
+                    factors,
+
+                    "🏹 Преимущество гостей в атаке"
+
+                )
+
+
+
+
+
+        # ==========================================
+        # DEFENSE
+        # ==========================================
+
+
+        home_def = home_passport.get(
+            "defense"
         )
-    )
 
 
-    away_defense = safe_number(
-        away_passport.get(
-            "defense",
-            0
-        )
-    )
-
-
-    if home_defense > away_defense:
-
-        factors.append(
-            "Хозяева надёжнее в обороне"
-        )
-
-    elif away_defense > home_defense:
-
-        factors.append(
-            "Гости сильнее в обороне"
+        away_def = away_passport.get(
+            "defense"
         )
 
 
 
-    # =============================================
-    # FORM
-    # =============================================
+        if home_def is not None and away_def is not None:
 
-    home_form = safe_number(
-        home_passport.get(
-            "form",
-            home_passport.get(
-                "form_index",
-                0
+
+            if float(home_def) > float(away_def):
+
+                add_factor(
+
+                    factors,
+
+                    "🛡 Более стабильная оборона хозяев"
+
+                )
+
+
+            elif float(home_def) < float(away_def):
+
+                add_factor(
+
+                    factors,
+
+                    "🛡 Более стабильная оборона гостей"
+
+                )
+
+
+
+
+
+        # ==========================================
+        # FORM
+        # ==========================================
+
+
+        home_form = home_passport.get(
+            "form"
+        )
+
+
+        away_form = away_passport.get(
+            "form"
+        )
+
+
+
+        if home_form is not None and away_form is not None:
+
+
+            if float(home_form) > float(away_form):
+
+                add_factor(
+
+                    factors,
+
+                    "🔥 Хозяева лучше по текущей форме"
+
+                )
+
+
+            elif float(home_form) < float(away_form):
+
+                add_factor(
+
+                    factors,
+
+                    "🔥 Гости лучше по текущей форме"
+
+                )
+
+
+
+
+
+        # ==========================================
+        # xG
+        # ==========================================
+
+
+        if xg_home > xg_away:
+
+
+            add_factor(
+
+                factors,
+
+                f"📈 xG преимущество хозяев ({xg_home:.2f})"
+
             )
-        )
-    )
 
 
-    away_form = safe_number(
-        away_passport.get(
-            "form",
-            away_passport.get(
-                "form_index",
-                0
+        elif xg_home < xg_away:
+
+
+            add_factor(
+
+                factors,
+
+                f"📈 xG преимущество гостей ({xg_away:.2f})"
+
             )
-        )
-    )
 
 
-    if home_form > away_form:
+        else:
 
-        factors.append(
-            "Лучшая текущая форма хозяев"
-        )
 
-    elif away_form > home_form:
+            add_factor(
 
-        factors.append(
-            "Лучшее текущее состояние гостей"
-        )
+                factors,
+
+                "📊 xG команд близкие"
+
+            )
 
 
 
-    # =============================================
-    # CONTROL
-    # =============================================
-
-    home_control = safe_number(
-        home_passport.get(
-            "control",
-            0
-        )
-    )
 
 
-    away_control = safe_number(
-        away_passport.get(
-            "control",
-            0
-        )
-    )
+        # ==========================================
+        # LEAGUE
+        # ==========================================
 
 
-    if home_control > away_control:
+        add_factor(
 
-        factors.append(
-            "Хозяева лучше контролируют игру"
-        )
+            factors,
 
+            f"🏆 Турнир: {league}"
 
-    elif away_control > home_control:
-
-        factors.append(
-            "Гости лучше контролируют игру"
         )
 
 
 
-    # =============================================
-    # XG DIFFERENCE
-    # =============================================
-
-    xg_diff = xg_home - xg_away
 
 
-    if xg_diff > 0.3:
-
-        factors.append(
-            f"Разница xG в пользу хозяев +{xg_diff:.2f}"
-        )
+    except Exception as e:
 
 
-    elif xg_diff < -0.3:
+        logger.exception(
 
-        factors.append(
-            f"Разница xG в пользу гостей +{abs(xg_diff):.2f}"
+            f"Explainer error: {e}"
+
         )
 
 
 
-    # =============================================
-    # HOME FACTOR
-    # =============================================
-
-    if league == "RPL":
-
-        factors.append(
-            "Фактор домашнего поля"
-        )
 
 
+    # ==========================================
+    # FALLBACK
+    # ==========================================
 
-    # =============================================
-    # EMPTY
-    # =============================================
 
     if not factors:
 
-        factors.append(
-            "Команды близки по силе"
-        )
+
+        factors = [
+
+            "📊 Недостаточно данных паспорта"
+
+        ]
+
 
 
     return factors
