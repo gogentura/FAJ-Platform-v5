@@ -1,8 +1,9 @@
 # =====================================================
-# FAJ Platform v6.8
+# FAJ Platform v6.7
 # app/services/prediction_pipeline.py
 #
-# Main Prediction Pipeline
+# Prediction Pipeline
+# Bridge between Tour Predictor and FAJ Core
 # =====================================================
 
 
@@ -12,12 +13,6 @@ import logging
 from app.core.faj_core import FAJCore
 
 
-from app.passport_manager import (
-    load_passport,
-    get_team_by_alias
-)
-
-
 logger = logging.getLogger(__name__)
 
 
@@ -25,27 +20,32 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================
-# PIPELINE
+# PIPELINE CLASS
 # =====================================================
 
 
 class PredictionPipeline:
 
 
-
-    VERSION = "6.8"
+    VERSION = "6.7"
 
 
 
     def __init__(self):
 
-
         self.core = FAJCore()
+
+        logger.info(
+            "FAJ Prediction Pipeline %s initialized",
+            self.VERSION
+        )
+
+
 
 
 
     # =================================================
-    # MAIN API
+    # PREDICT MATCH
     # =================================================
 
 
@@ -64,14 +64,12 @@ class PredictionPipeline:
     ):
 
 
-
         try:
-
 
 
             logger.info(
 
-                "FAJ Pipeline start %s - %s",
+                "Pipeline prediction: %s - %s",
 
                 home_team,
 
@@ -79,55 +77,6 @@ class PredictionPipeline:
 
             )
 
-
-
-            # ---------------------------------
-            # PASSPORT CHECK
-            # ---------------------------------
-
-
-            home_passport = self.get_passport(
-
-                home_team
-
-            )
-
-
-            away_passport = self.get_passport(
-
-                away_team
-
-            )
-
-
-
-            if not home_passport:
-
-
-                raise Exception(
-
-                    f"Нет паспорта хозяев: {home_team}"
-
-                )
-
-
-
-            if not away_passport:
-
-
-                raise Exception(
-
-                    f"Нет паспорта гостей: {away_team}"
-
-                )
-
-
-
-
-
-            # ---------------------------------
-            # CORE
-            # ---------------------------------
 
 
             result = self.core.predict_match(
@@ -142,140 +91,30 @@ class PredictionPipeline:
 
 
 
+            if not result:
 
 
-            # ---------------------------------
-            # EXTRA LAYERS
-            # ---------------------------------
+                logger.warning(
 
+                    "Empty Core result: %s - %s",
 
-            decision = result.get(
+                    home_team,
 
-                "decision",
-
-                {}
-
-            )
-
-
-
-            confidence = decision.get(
-
-                "confidence",
-
-                0
-
-            )
-
-
-
-            risk = self.calculate_risk(
-
-                confidence
-
-            )
-
-
-
-            grade = self.calculate_grade(
-
-                confidence
-
-            )
-
-
-
-
-
-            factors = self.generate_factors(
-
-                result,
-
-                home_passport,
-
-                away_passport
-
-            )
-
-
-
-
-
-            # ---------------------------------
-            # FINAL
-            # ---------------------------------
-
-
-            decision.update(
-
-
-                {
-
-                "risk": risk,
-
-
-                "grade": grade,
-
-
-                "factors": factors,
-
-
-                }
-
-            )
-
-
-
-            result["decision"] = decision
-
-
-
-            result["season"] = season
-
-
-
-            result["pipeline_version"] = self.VERSION
-
-
-
-            result["passport_quality"] = {
-
-
-                "home":
-
-                self.passport_quality(
-
-                    home_passport
-
-                ),
-
-
-                "away":
-
-                self.passport_quality(
-
-                    away_passport
+                    away_team
 
                 )
 
 
-            }
+                return None
 
 
 
-            result["season_phase"] = self.get_phase()
 
+            # добавляем служебные данные
 
+            result["pipeline_version"] = self.VERSION
 
-            logger.info(
-
-                "FAJ Pipeline finished %s - %s",
-
-                home_team,
-
-                away_team
-
-            )
+            result["season"] = season
 
 
 
@@ -287,10 +126,13 @@ class PredictionPipeline:
         except Exception as e:
 
 
-
             logger.error(
 
-                "Pipeline error %s",
+                "Pipeline prediction error %s - %s: %s",
+
+                home_team,
+
+                away_team,
 
                 e,
 
@@ -305,351 +147,86 @@ class PredictionPipeline:
 
 
 
+
+
     # =================================================
-    # PASSPORT
+    # BATCH PREDICTION
     # =================================================
 
 
-    def get_passport(
+    def predict_fixtures(
 
         self,
 
-        team
+        fixtures
 
     ):
 
 
-        real_team = get_team_by_alias(
+        results = []
 
-            team
 
-        )
 
+        for fixture in fixtures:
 
-        if real_team:
 
-            team = real_team
+            try:
 
 
+                prediction = self.predict_match(
 
-        return load_passport(
+                    fixture.get(
+                        "home_team"
+                    ),
 
-            team
+                    fixture.get(
+                        "away_team"
+                    ),
 
-        )
+                    fixture.get(
+                        "league",
+                        "RPL"
+                    ),
 
-
-
-
-
-    # =================================================
-    # RISK ENGINE
-    # =================================================
-
-
-    def calculate_risk(
-
-        self,
-
-        confidence
-
-    ):
-
-
-        try:
-
-
-            confidence=float(
-
-                confidence
-
-            )
-
-
-
-        except:
-
-
-            return "Высокий"
-
-
-
-
-        if confidence >= 70:
-
-            return "Низкий"
-
-
-
-        if confidence >= 45:
-
-            return "Средний"
-
-
-
-        return "Высокий"
-
-
-
-
-
-    # =================================================
-    # GRADE ENGINE
-    # =================================================
-
-
-    def calculate_grade(
-
-        self,
-
-        confidence
-
-    ):
-
-
-        try:
-
-            confidence=float(
-
-                confidence
-
-            )
-
-
-        except:
-
-
-            return "C"
-
-
-
-        if confidence >= 80:
-
-            return "A"
-
-
-
-        if confidence >= 60:
-
-            return "B"
-
-
-
-        if confidence >= 40:
-
-            return "C"
-
-
-
-        return "D"
-
-
-
-
-
-
-
-    # =================================================
-    # FACTOR ENGINE
-    # =================================================
-
-
-    def generate_factors(
-
-        self,
-
-        result,
-
-        home,
-
-        away
-
-    ):
-
-
-        factors=[]
-
-
-
-        decision=result.get(
-
-            "decision",
-
-            {}
-
-        )
-
-
-
-        winner=decision.get(
-
-            "winner"
-
-        )
-
-
-
-
-        if winner=="home":
-
-
-            factors.append(
-
-                "🏹 Преимущество хозяев"
-
-            )
-
-
-
-        elif winner=="away":
-
-
-            factors.append(
-
-                "🏹 Преимущество гостей"
-
-            )
-
-
-
-        else:
-
-
-            factors.append(
-
-                "⚖️ Равная сила команд"
-
-            )
-
-
-
-
-        xg=result.get(
-
-            "xg",
-
-            {}
-
-        ).get(
-
-            "predicted",
-
-            {}
-
-        )
-
-
-
-        if xg:
-
-
-
-            if xg.get("home",0) > xg.get("away",0):
-
-                factors.append(
-
-                    f"📈 xG преимущество хозяев ({xg.get('home')})"
-
-                )
-
-
-            elif xg.get("away",0) > xg.get("home",0):
-
-                factors.append(
-
-                    f"📈 xG преимущество гостей ({xg.get('away')})"
+                    fixture.get(
+                        "season",
+                        "2026/27"
+                    )
 
                 )
 
 
 
+                if prediction:
 
 
-        factors.append(
-
-            f"🏆 Турнир: {result.get('league','RPL')}"
-
-        )
+                    prediction["fixture_id"] = fixture.get(
+                        "id"
+                    )
 
 
-
-        return factors
-
-
-
+                    results.append(
+                        prediction
+                    )
 
 
 
-
-    # =================================================
-    # PASSPORT QUALITY
-    # =================================================
+            except Exception as e:
 
 
-    def passport_quality(
+                logger.error(
 
-        self,
+                    "Fixture prediction failed: %s",
 
-        passport
+                    fixture,
 
-    ):
-
-
-        fields=[
-
-            "attack",
-
-            "defense",
-
-            "control",
-
-            "form",
-
-            "fitness"
-
-        ]
-
-
-
-        score=0
-
-
-
-        count=0
-
-
-
-        for field in fields:
-
-
-            if passport.get(field) is not None:
-
-
-                score += float(
-
-                    passport.get(field)
+                    exc_info=True
 
                 )
 
 
-                count+=1
 
-
-
-
-        if count==0:
-
-            return 0
-
-
-
-        return round(
-
-            score/count,
-
-            1
-
-        )
+        return results
 
 
 
@@ -658,14 +235,31 @@ class PredictionPipeline:
 
 
     # =================================================
-    # SEASON PHASE
+    # INFO
     # =================================================
 
 
-    def get_phase(self):
+    def info(self):
 
 
-        return "START"
+        return {
+
+
+            "pipeline":
+
+            "FAJ Prediction Pipeline",
+
+
+            "version":
+
+            self.VERSION,
+
+
+            "core":
+
+            self.core.info()
+
+        }
 
 
 
@@ -674,7 +268,7 @@ class PredictionPipeline:
 
 
 # =====================================================
-# GLOBAL INSTANCE
+# SINGLETON INSTANCE
 # =====================================================
 
 
