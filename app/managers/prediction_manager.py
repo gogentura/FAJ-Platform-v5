@@ -1,6 +1,7 @@
 # =====================================================
-# FAJ Platform v6.1
-# Prediction Manager
+# FAJ Platform v6.6
+# app/managers/prediction_manager.py
+# PostgreSQL Edition
 # =====================================================
 from datetime import datetime
 import ast
@@ -16,33 +17,40 @@ def clean_value(value):
         return value.item()
     return value
 
-def clean_prediction(prediction):
-    if prediction is None:
+def clean_prediction(data):
+    if data is None:
         return {}
-    cleaned = {}
-    for key, value in prediction.items():
-        if isinstance(value, dict):
-            cleaned[key] = clean_prediction(value)
-        elif isinstance(value, list):
-            cleaned[key] = [
-                clean_prediction(v) if isinstance(v, dict)
-                else clean_value(v)
-                for v in value
-            ]
-        else:
-            cleaned[key] = clean_value(value)
-    return cleaned
+    if isinstance(data, dict):
+        result = {}
+        for k, v in data.items():
+            if isinstance(v, dict):
+                result[k] = clean_prediction(v)
+            elif isinstance(v, list):
+                result[k] = [
+                    clean_prediction(i)
+                    if isinstance(i, dict)
+                    else clean_value(i)
+                    for i in v
+                ]
+            else:
+                result[k] = clean_value(v)
+        return result
+    return data
 
 # =====================================================
-# NORMALIZE FAJ CORE RESPONSE
+# NORMALIZE FAJ RESPONSE
 # =====================================================
-def normalize_prediction(raw_prediction):
-    raw_prediction = clean_prediction(raw_prediction)
-    decision = raw_prediction.get("decision", {})
-    predicted_xg = (
-        raw_prediction
+def normalize_prediction(raw):
+    raw = clean_prediction(raw)
+    decision = raw.get("decision", {})
+    predicted = (
+        raw
         .get("xg", {})
         .get("predicted", {})
+    )
+    simulation = raw.get(
+        "simulation",
+        {}
     )
     return {
         "winner":
@@ -50,45 +58,91 @@ def normalize_prediction(raw_prediction):
         "winner_name":
             decision.get("winner_name"),
         "home_probability":
-            float(decision.get("home_prob", 0)),
+            float(
+                decision.get(
+                    "home_probability",
+                    decision.get("home_prob", 0)
+                )
+            ),
         "draw_probability":
-            float(decision.get("draw_prob", 0)),
+            float(
+                decision.get(
+                    "draw_probability",
+                    decision.get("draw_prob", 0)
+                )
+            ),
         "away_probability":
-            float(decision.get("away_prob", 0)),
+            float(
+                decision.get(
+                    "away_probability",
+                    decision.get("away_prob", 0)
+                )
+            ),
         "winner_probability":
-            float(decision.get("winner_probability", 0)),
+            float(
+                decision.get(
+                    "winner_probability",
+                    0
+                )
+            ),
         "xg_home":
-            float(predicted_xg.get("home", 0)),
+            float(
+                predicted.get(
+                    "home",
+                    0
+                )
+            ),
         "xg_away":
-            float(predicted_xg.get("away", 0)),
+            float(
+                predicted.get(
+                    "away",
+                    0
+                )
+            ),
         "expected_score":
-            decision.get("expected_score"),
+            decision.get(
+                "expected_score",
+                ""
+            ),
         "top_scores":
-            raw_prediction.get("simulation", {}).get(
+            simulation.get(
                 "top_scores",
                 []
             ),
         "btts":
-            float(raw_prediction.get("btts", 0)),
+            raw.get(
+                "btts",
+                0
+            ),
         "over25":
-            float(raw_prediction.get("over25", 0)),
+            raw.get(
+                "over25",
+                0
+            ),
+        "under25":
+            raw.get(
+                "under25",
+                0
+            ),
         "confidence":
-            float(decision.get("confidence", 0))
+            float(
+                decision.get(
+                    "confidence",
+                    0
+                )
+            )
     }
 
 # =====================================================
 # SAVE PREDICTION
 # =====================================================
-def save_prediction(
-    fixture,
-    prediction
-):
+def save_prediction(fixture, prediction):
     prediction = clean_prediction(
         prediction
     )
     conn = get_db()
-    try:
-        conn.execute(
+    cur = conn.cursor()
+    cur.execute(
         """
         INSERT INTO predictions
         (
@@ -114,26 +168,33 @@ def save_prediction(
         )
         VALUES
         (
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?
+            %s,%s,%s,%s,
+            %s,%s,
+            %s,
+            %s,%s,%s,
+            %s,%s,
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+            NOW()
         )
+        ON CONFLICT (fixture_id)
+        DO UPDATE SET
+            winner_prediction=EXCLUDED.winner_prediction,
+            home_probability=EXCLUDED.home_probability,
+            draw_probability=EXCLUDED.draw_probability,
+            away_probability=EXCLUDED.away_probability,
+            xg_home=EXCLUDED.xg_home,
+            xg_away=EXCLUDED.xg_away,
+            expected_score=EXCLUDED.expected_score,
+            top_scores=EXCLUDED.top_scores,
+            btts_probability=EXCLUDED.btts_probability,
+            over25_probability=EXCLUDED.over25_probability,
+            confidence=EXCLUDED.confidence,
+            model_version=EXCLUDED.model_version
         """,
         (
             fixture.get("id"),
@@ -158,16 +219,12 @@ def save_prediction(
             prediction.get("btts"),
             prediction.get("over25"),
             prediction.get("confidence"),
-            FAJCore.VERSION,
-            datetime.now().isoformat()
+            FAJCore.VERSION
         )
-        )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
 
 # =====================================================
 # CREATE SINGLE PREDICTION
@@ -178,41 +235,27 @@ def create_prediction(
 ):
     if core is None:
         core = FAJCore()
-    home_team = fixture.get(
-        "home_team"
-    )
-    away_team = fixture.get(
-        "away_team"
-    )
-    # -----------------------------------------
-    # Поддержка всех версий FAJCore
-    # -----------------------------------------
+    home = fixture.get("home_team")
+    away = fixture.get("away_team")
+    league = fixture.get("league", "RPL")
+
     if hasattr(core, "predict"):
-        raw_prediction = core.predict(
-            home_team,
-            away_team,
-            fixture.get(
-                "league",
-                "RPL"
-            )
+        raw = core.predict(
+            home,
+            away,
+            league
         )
     else:
-        raw_prediction = core.predict_match(
-            home_team,
-            away_team,
-            fixture.get(
-                "league",
-                "RPL"
-            )
+        raw = core.predict_match(
+            home,
+            away,
+            league
         )
-    # -----------------------------------------
-    if raw_prediction.get("error"):
-        raise Exception(
-            raw_prediction["error"]
-        )
-    prediction = normalize_prediction(
-        raw_prediction
-    )
+
+    if raw is None:
+        return None
+
+    prediction = normalize_prediction(raw)
     save_prediction(
         fixture,
         prediction
@@ -220,7 +263,7 @@ def create_prediction(
     return prediction
 
 # =====================================================
-# CREATE TOUR PREDICTIONS
+# CREATE TOUR
 # =====================================================
 def create_tour_predictions(
     fixtures,
@@ -228,7 +271,7 @@ def create_tour_predictions(
 ):
     if core is None:
         core = FAJCore()
-    generated = 0
+    created = 0
     errors = []
     for fixture in fixtures:
         try:
@@ -236,21 +279,19 @@ def create_tour_predictions(
                 fixture,
                 core
             )
-            generated += 1
+            created += 1
         except Exception as e:
             errors.append(
                 {
                     "match":
-                    f"{fixture.get('home_team')} - {fixture.get('away_team')}",
+                        f"{fixture.get('home_team')} — {fixture.get('away_team')}",
                     "error":
-                    str(e)
+                        str(e)
                 }
             )
     return {
-        "generated": generated,
-        "errors": errors,
-        "league": "RPL",
-        "season": "2026/27"
+        "generated": created,
+        "errors": errors
     }
 
 # =====================================================
@@ -262,76 +303,112 @@ def get_predictions(
     round_number=None
 ):
     conn = get_db()
-    try:
-        query = """
+    cur = conn.cursor()
+    query = """
         SELECT
             p.*,
             f.match_date
         FROM predictions p
         LEFT JOIN fixtures f
             ON p.fixture_id = f.id
-        WHERE 1=1
-        """
-        params = []
-        if league:
-            query += """
-            AND p.league = ?
-            """
-            params.append(
-                league
-            )
-        if season:
-            query += """
-            AND p.season = ?
-            """
-            params.append(
-                season
-            )
-        if round_number:
-            query += """
-            AND p.round = ?
-            """
-            params.append(
-                round_number
-            )
-        query += """
+        WHERE TRUE
+    """
+    params = []
+    if league:
+        query += " AND p.league = %s"
+        params.append(league)
+    if season:
+        query += " AND p.season = %s"
+        params.append(season)
+    if round_number:
+        query += " AND p.round = %s"
+        params.append(round_number)
+    query += """
         ORDER BY
-            p.round ASC,
-            f.match_date ASC,
-            p.fixture_id ASC
+            f.match_date,
+            p.fixture_id
+    """
+    cur.execute(query, tuple(params))
+    rows = cur.fetchall()
+    predictions = []
+    for row in rows:
+        item = dict(row)
+        try:
+            if item.get("top_scores"):
+                item["top_scores"] = ast.literal_eval(
+                    item["top_scores"]
+                )
+        except Exception:
+            item["top_scores"] = []
+        predictions.append(item)
+    cur.close()
+    conn.close()
+    return predictions
+
+# =====================================================
+# GET BY FIXTURE
+# =====================================================
+def get_prediction_by_fixture(fixture_id):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
         """
-        rows = conn.execute(
-            query,
-            tuple(params)
-        ).fetchall()
-        predictions = []
-        for row in rows:
-            item = dict(row)
-            # превращаем строку обратно в список
-            try:
-                if item.get("top_scores"):
-                    item["top_scores"] = ast.literal_eval(
-                        item["top_scores"]
-                    )
-            except Exception:
-                item["top_scores"] = []
-            predictions.append(item)
-        return predictions
-    finally:
-        conn.close()
+        SELECT *
+        FROM predictions
+        WHERE fixture_id=%s
+        LIMIT 1
+        """,
+        (fixture_id,)
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if row:
+        item = dict(row)
+        try:
+            if item.get("top_scores"):
+                item["top_scores"] = ast.literal_eval(
+                    item["top_scores"]
+                )
+        except Exception:
+            item["top_scores"] = []
+        return item
+    return None
 
 # =====================================================
 # COUNT
 # =====================================================
 def count_predictions():
     conn = get_db()
-    try:
-        row = conn.execute(
-            """
-            SELECT COUNT(*) AS cnt
-            FROM predictions
-            """
-        ).fetchone()
-        return row["cnt"] if row else 0
-    finally:
-        conn.close()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT COUNT(*) AS cnt
+        FROM predictions
+        """
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if row:
+        return row["cnt"]
+    return 0
+
+# =====================================================
+# DELETE ALL
+# =====================================================
+def clear_predictions():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        "DELETE FROM predictions"
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+# =====================================================
+# VERSION
+# =====================================================
+def manager_version():
+    return "PredictionManager v6.6 PostgreSQL"
