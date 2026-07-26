@@ -1,8 +1,8 @@
 # =====================================================
-# FAJ Platform v6.8
+# FAJ Platform v6.9
 # app/services/prediction_pipeline.py
 #
-# Unified Prediction Pipeline
+# Unified FAJ Prediction Pipeline
 # =====================================================
 
 
@@ -46,23 +46,17 @@ def get_core():
 
 
 # =====================================================
-# RISK ENGINE
+# HELPERS
 # =====================================================
 
 
-def calculate_risk(
-
-    confidence
-
-):
-
+def get_risk(confidence):
 
     try:
 
         confidence = float(confidence)
 
-
-    except Exception:
+    except:
 
         confidence = 0
 
@@ -73,14 +67,12 @@ def calculate_risk(
         return "Низкий"
 
 
-    elif confidence >= 45:
+    if confidence >= 45:
 
         return "Средний"
 
 
-    else:
-
-        return "Высокий"
+    return "Высокий"
 
 
 
@@ -88,17 +80,7 @@ def calculate_risk(
 
 
 
-# =====================================================
-# CATEGORY
-# =====================================================
-
-
-def calculate_category(
-
-    confidence
-
-):
-
+def get_category(confidence):
 
     try:
 
@@ -115,14 +97,12 @@ def calculate_category(
         return "A"
 
 
-    elif confidence >= 50:
+    if confidence >= 50:
 
         return "B"
 
 
-    else:
-
-        return "C"
+    return "C"
 
 
 
@@ -131,22 +111,14 @@ def calculate_category(
 
 
 # =====================================================
-# FACTORS
+# RESTORE DECISION
 # =====================================================
 
 
-def build_factors(
-
-    result
-
-):
+def restore_decision(raw):
 
 
-    factors = []
-
-
-
-    decision = result.get(
+    decision = raw.get(
 
         "decision",
 
@@ -155,14 +127,170 @@ def build_factors(
     )
 
 
-    winner = decision.get(
+    simulation = raw.get(
 
-        "winner"
+        "simulation",
+
+        {}
 
     )
 
 
-    xg = result.get(
+
+    # если Core decision потерян
+
+    if not decision:
+
+
+        home = simulation.get(
+
+            "home_win_prob",
+
+            0
+
+        )
+
+
+        draw = simulation.get(
+
+            "draw_prob",
+
+            0
+
+        )
+
+
+        away = simulation.get(
+
+            "away_win_prob",
+
+            0
+
+        )
+
+
+
+        if home >= away and home >= draw:
+
+
+            winner = "home"
+
+            winner_name = "Хозяева"
+
+
+
+        elif away >= home and away >= draw:
+
+
+            winner = "away"
+
+            winner_name = "Гости"
+
+
+
+        else:
+
+
+            winner = "draw"
+
+            winner_name = "Ничья"
+
+
+
+        scores = simulation.get(
+
+            "top_scores",
+
+            []
+
+        )
+
+
+        score = "-"
+
+
+
+        if scores:
+
+            score = scores[0].get(
+
+                "score",
+
+                "-"
+
+            )
+
+
+
+        decision = {
+
+
+            "winner":
+
+                winner,
+
+
+            "winner_name":
+
+                winner_name,
+
+
+
+            "expected_score":
+
+                score,
+
+
+
+            "winner_probability":
+
+                max(
+
+                    home,
+
+                    draw,
+
+                    away
+
+                ) * 100
+
+        }
+
+
+
+    return decision
+
+
+
+
+
+
+
+# =====================================================
+# NORMALIZE
+# =====================================================
+
+
+def normalize_prediction(
+
+    raw,
+
+    home,
+
+    away
+
+):
+
+
+    decision = restore_decision(
+
+        raw
+
+    )
+
+
+
+    xg_block = raw.get(
 
         "xg",
 
@@ -178,20 +306,89 @@ def build_factors(
 
 
 
-    home_xg = xg.get(
+    home_xg = float(
 
-        "home",
+        xg_block.get(
 
-        0
+            "home",
+
+            0
+
+        )
 
     )
 
 
-    away_xg = xg.get(
 
-        "away",
+    away_xg = float(
 
-        0
+        xg_block.get(
+
+            "away",
+
+            0
+
+        )
+
+    )
+
+
+
+    home_rating = raw.get(
+
+        "home_rating",
+
+        decision.get(
+
+            "home_rating",
+
+            0
+
+        )
+
+    )
+
+
+
+    away_rating = raw.get(
+
+        "away_rating",
+
+        decision.get(
+
+            "away_rating",
+
+            0
+
+        )
+
+    )
+
+
+
+    confidence = raw.get(
+
+        "confidence",
+
+        decision.get(
+
+            "confidence",
+
+            0
+
+        )
+
+    )
+
+
+
+    factors = []
+
+
+
+    winner = decision.get(
+
+        "winner"
 
     )
 
@@ -218,18 +415,20 @@ def build_factors(
 
     if home_xg > away_xg:
 
+
         factors.append(
 
-            f"📈 xG преимущество хозяев ({home_xg})"
+            f"📈 xG преимущество хозяев ({round(home_xg,2)})"
 
         )
 
 
     elif away_xg > home_xg:
 
+
         factors.append(
 
-            f"📈 xG преимущество гостей ({away_xg})"
+            f"📈 xG преимущество гостей ({round(away_xg,2)})"
 
         )
 
@@ -242,82 +441,20 @@ def build_factors(
     )
 
 
-    return factors
 
 
 
-
-
-
-
-# =====================================================
-# NORMALIZE
-# =====================================================
-
-
-def normalize_prediction(
-
-    result,
-
-    home_team,
-
-    away_team
-
-):
-
-
-    if not result:
-
-        return None
-
-
-
-    decision = result.get(
-
-        "decision",
-
-        {}
-
-    )
-
-
-    xg = result.get(
-
-        "xg",
-
-        {}
-
-    ).get(
-
-        "predicted",
-
-        {}
-
-    )
-
-
-
-    confidence = decision.get(
-
-        "confidence",
-
-        0
-
-    )
-
-
-
-    normalized = {
+    return {
 
 
         "home_team":
 
-            home_team,
+            home,
 
 
         "away_team":
 
-            away_team,
+            away,
 
 
 
@@ -325,7 +462,9 @@ def normalize_prediction(
 
             decision.get(
 
-                "winner"
+                "winner",
+
+                "-"
 
             ),
 
@@ -355,22 +494,11 @@ def normalize_prediction(
 
 
 
-
         "xg_home":
 
             round(
 
-                float(
-
-                    xg.get(
-
-                        "home",
-
-                        0
-
-                    )
-
-                ),
+                home_xg,
 
                 2
 
@@ -382,17 +510,7 @@ def normalize_prediction(
 
             round(
 
-                float(
-
-                    xg.get(
-
-                        "away",
-
-                        0
-
-                    )
-
-                ),
+                away_xg,
 
                 2
 
@@ -400,14 +518,13 @@ def normalize_prediction(
 
 
 
-
         "home_rating":
 
-            result.get(
+            round(
 
-                "home_rating",
+                float(home_rating),
 
-                0
+                1
 
             ),
 
@@ -415,26 +532,31 @@ def normalize_prediction(
 
         "away_rating":
 
-            result.get(
+            round(
 
-                "away_rating",
+                float(away_rating),
 
-                0
+                1
 
             ),
 
 
 
-
         "confidence":
 
-            confidence,
+            round(
+
+                float(confidence),
+
+                1
+
+            ),
 
 
 
         "risk":
 
-            calculate_risk(
+            get_risk(
 
                 confidence
 
@@ -444,7 +566,7 @@ def normalize_prediction(
 
         "category":
 
-            calculate_category(
+            get_category(
 
                 confidence
 
@@ -454,18 +576,13 @@ def normalize_prediction(
 
         "factors":
 
-            build_factors(
-
-                result
-
-            ),
-
+            factors,
 
 
 
         "simulation":
 
-            result.get(
+            raw.get(
 
                 "simulation",
 
@@ -475,9 +592,27 @@ def normalize_prediction(
 
 
 
+        "top_scores":
+
+            raw.get(
+
+                "simulation",
+
+                {}
+
+            ).get(
+
+                "top_scores",
+
+                []
+
+            ),
+
+
+
         "btts":
 
-            result.get(
+            raw.get(
 
                 "btts",
 
@@ -489,7 +624,7 @@ def normalize_prediction(
 
         "over25":
 
-            result.get(
+            raw.get(
 
                 "over25",
 
@@ -501,14 +636,13 @@ def normalize_prediction(
 
         "under25":
 
-            result.get(
+            raw.get(
 
                 "under25",
 
                 0
 
             ),
-
 
 
 
@@ -522,17 +656,18 @@ def normalize_prediction(
 
             {
 
-                "home":100,
+                "home":
 
-                "away":100
+                    100,
+
+
+                "away":
+
+                    100
 
             }
 
     }
-
-
-
-    return normalized
 
 
 
@@ -555,15 +690,13 @@ class PredictionPipeline:
 
 
 
-
-
     def predict_match(
 
         self,
 
-        home_team,
+        home,
 
-        away_team,
+        away,
 
         league="RPL",
 
@@ -575,11 +708,11 @@ class PredictionPipeline:
         try:
 
 
-            result = self.core.predict_match(
+            raw = self.core.predict_match(
 
-                home_team,
+                home,
 
-                away_team,
+                away,
 
                 league
 
@@ -587,24 +720,35 @@ class PredictionPipeline:
 
 
 
+            if not raw:
+
+
+                logger.warning(
+
+                    "Empty Core response"
+
+                )
+
+
+                return None
+
+
+
             prediction = normalize_prediction(
 
-                result,
+                raw,
 
-                home_team,
+                home,
 
-                away_team
+                away
 
             )
 
 
 
-            if prediction:
+            prediction["league"] = league
 
-
-                prediction["league"] = league
-
-                prediction["season"] = season
+            prediction["season"] = season
 
 
 
@@ -615,9 +759,13 @@ class PredictionPipeline:
         except Exception as e:
 
 
-            logger.exception(
+            logger.error(
 
-                "FAJ pipeline error"
+                "Prediction pipeline error: %s",
+
+                e,
+
+                exc_info=True
 
             )
 
@@ -644,7 +792,7 @@ prediction_pipeline = PredictionPipeline()
 
 
 # =====================================================
-# COMPATIBILITY API
+# COMPATIBILITY FUNCTIONS
 # =====================================================
 
 
