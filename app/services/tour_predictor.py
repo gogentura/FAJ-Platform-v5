@@ -1,9 +1,8 @@
 # =====================================================
-# FAJ Platform v6.5
+# FAJ Platform v6.8
 # app/services/tour_predictor.py
 #
-# Tournament / Round Predictor
-# FIXED VERSION
+# Tournament Predictor Service
 # =====================================================
 
 
@@ -31,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================
-# GET TOUR FIXTURES
+# LOAD FIXTURES
 # =====================================================
 
 
@@ -43,68 +42,59 @@ def get_tour_fixtures(
 
 ):
 
+
     try:
 
 
-        conn = get_db()
+        conn=get_db()
 
-        cur = conn.cursor()
+        cur=conn.cursor()
 
 
 
         cur.execute(
 
-            """
-            SELECT *
+"""
+SELECT *
 
-            FROM fixtures
+FROM fixtures
 
-            WHERE league = %s
+WHERE league=%s
 
-            AND season = %s
+AND season=%s
 
-            AND status = 'scheduled'
+AND status='scheduled'
 
-            ORDER BY match_date, match_time
+ORDER BY match_date, match_time
 
-            """,
+""",
 
-            (
-                league,
-                season
-            )
+(
+league,
+season
+)
 
-        )
-
-
-        rows = cur.fetchall()
+)
 
 
+        rows=cur.fetchall()
 
-        cur.close()
+
 
         conn.close()
 
 
 
-        fixtures = []
+        fixtures=[]
 
 
 
         for row in rows:
 
 
-            try:
-
-                fixtures.append(
-                    dict(row)
-                )
-
-            except Exception:
-
-                fixtures.append(
-                    row
-                )
+            fixtures.append(
+                dict(row)
+            )
 
 
 
@@ -125,9 +115,13 @@ def get_tour_fixtures(
     except Exception as e:
 
 
-        logger.exception(
+        logger.error(
 
-            "Fixtures loading failed"
+            "Fixture load error %s",
+
+            e,
+
+            exc_info=True
 
         )
 
@@ -140,8 +134,194 @@ def get_tour_fixtures(
 
 
 
+
 # =====================================================
-# PREDICT SINGLE FIXTURE
+# NORMALIZE CORE
+# =====================================================
+
+
+def enrich_prediction(
+
+    prediction,
+
+    fixture
+
+):
+
+
+    if not prediction:
+
+        return None
+
+
+
+    decision=prediction.get(
+
+        "decision",
+
+        {}
+
+    )
+
+
+
+    # переносим поля наверх
+
+    prediction["winner"]=decision.get(
+
+        "winner"
+
+    )
+
+
+    prediction["winner_name"]=decision.get(
+
+        "winner_name"
+
+    )
+
+
+
+    prediction["expected_score"]=decision.get(
+
+        "expected_score",
+
+        "-"
+
+    )
+
+
+
+    prediction["confidence"]=decision.get(
+
+        "confidence",
+
+        0
+
+    )
+
+
+
+    prediction["home_rating"]=decision.get(
+
+        "home_rating",
+
+        0
+
+    )
+
+
+    prediction["away_rating"]=decision.get(
+
+        "away_rating",
+
+        0
+
+    )
+
+
+
+    # новые поля v6.8
+
+
+    prediction["risk"]=decision.get(
+
+        "risk",
+
+        prediction.get(
+            "risk",
+            "Средний"
+        )
+
+    )
+
+
+    prediction["grade"]=decision.get(
+
+        "grade",
+
+        prediction.get(
+            "grade",
+            "C"
+        )
+
+    )
+
+
+
+    prediction["factors"]=decision.get(
+
+        "factors",
+
+        prediction.get(
+            "factors",
+            []
+        )
+
+    )
+
+
+
+    prediction["season_phase"]=prediction.get(
+
+        "season_phase",
+
+        "start"
+
+    )
+
+
+
+    prediction["passport_quality"]=prediction.get(
+
+        "passport_quality",
+
+        {
+
+        "home":0,
+
+        "away":0
+
+        }
+
+    )
+
+
+
+    prediction["fixture_id"]=fixture.get(
+
+        "id"
+
+    )
+
+
+
+    prediction["match_date"]=fixture.get(
+
+        "match_date"
+
+    )
+
+
+
+    prediction["round"]=fixture.get(
+
+        "round"
+
+    )
+
+
+
+    return prediction
+
+
+
+
+
+
+
+# =====================================================
+# SINGLE MATCH
 # =====================================================
 
 
@@ -152,89 +332,66 @@ def predict_fixture(
 ):
 
 
-    home = fixture.get(
-        "home_team"
-    )
-
-
-    away = fixture.get(
-        "away_team"
-    )
-
-
-    league = fixture.get(
-        "league",
-        "RPL"
-    )
-
-
-
     try:
 
 
-        logger.info(
+        home=fixture.get(
 
-            "FAJ predicting fixture: %s - %s",
+            "home_team"
 
-            home,
+        )
 
-            away
+
+        away=fixture.get(
+
+            "away_team"
+
+        )
+
+
+        league=fixture.get(
+
+            "league",
+
+            "RPL"
+
+        )
+
+
+        season=fixture.get(
+
+            "season",
+
+            "2026/27"
 
         )
 
 
 
-        # =============================================
-        # FIX:
-        # prediction_pipeline v6.5
-        # принимает:
-        #
-        # home
-        # away
-        # league
-        #
-        # season НЕ передаем
-        # =============================================
-
-
-        prediction = prediction_pipeline.predict_match(
+        result=prediction_pipeline.predict_match(
 
             home,
 
             away,
 
-            league
+            league,
+
+            season
 
         )
 
 
 
-        if not prediction:
+        if not result:
 
 
-            logger.error(
+            logger.warning(
 
-                """
-FAJ EMPTY PREDICTION
-
-MATCH:
-%s - %s
-
-LEAGUE:
-%s
-
-FIXTURE:
-%s
-
-""",
+                "Empty prediction %s-%s",
 
                 home,
 
-                away,
-
-                league,
-
-                fixture
+                away
 
             )
 
@@ -243,65 +400,30 @@ FIXTURE:
 
 
 
+        return enrich_prediction(
 
+            result,
 
-        # =============================================
-        # META DATA
-        # =============================================
+            fixture
 
-
-        prediction["fixture_id"] = fixture.get(
-            "id"
         )
-
-
-        prediction["round"] = fixture.get(
-            "round"
-        )
-
-
-        prediction["match_date"] = fixture.get(
-            "match_date"
-        )
-
-
-        prediction["match_time"] = fixture.get(
-            "match_time"
-        )
-
-
-        prediction["season"] = fixture.get(
-            "season",
-            "2026/27"
-        )
-
-
-        return prediction
-
-
 
 
 
     except Exception as e:
 
 
-        logger.exception(
+        logger.error(
 
-            """
-FAJ FIXTURE ERROR
+            "Prediction failed %s-%s : %s",
 
-%s - %s
+            fixture.get("home_team"),
 
-ERROR:
-%s
+            fixture.get("away_team"),
 
-""",
+            e,
 
-            home,
-
-            away,
-
-            e
+            exc_info=True
 
         )
 
@@ -315,70 +437,7 @@ ERROR:
 
 
 # =====================================================
-# SAVE TOUR PREDICTION
-# =====================================================
-
-
-def save_tour_prediction(
-
-    fixture,
-
-    prediction
-
-):
-
-
-    try:
-
-
-        save_prediction(
-
-            fixture,
-
-            prediction
-
-        )
-
-
-        logger.info(
-
-            "Prediction saved: %s - %s",
-
-            fixture.get(
-                "home_team"
-            ),
-
-            fixture.get(
-                "away_team"
-            )
-
-        )
-
-
-        return True
-
-
-
-    except Exception as e:
-
-
-        logger.exception(
-
-            "Prediction save failed"
-
-        )
-
-
-        return False
-
-
-
-
-
-
-
-# =====================================================
-# MAIN TOUR GENERATOR
+# TOUR GENERATION
 # =====================================================
 
 
@@ -391,7 +450,7 @@ def predict_tour(
 ):
 
 
-    fixtures = get_tour_fixtures(
+    fixtures=get_tour_fixtures(
 
         league,
 
@@ -406,20 +465,7 @@ def predict_tour(
 
         logger.warning(
 
-            """
-NO FIXTURES
-
-League:
-%s
-
-Season:
-%s
-
-""",
-
-            league,
-
-            season
+            "No fixtures found"
 
         )
 
@@ -428,15 +474,13 @@ Season:
 
 
 
-
-
-    results = []
+    results=[]
 
 
 
     logger.info(
 
-        "FAJ TOUR START %s matches",
+        "FAJ tour started %s matches",
 
         len(fixtures)
 
@@ -444,13 +488,11 @@ Season:
 
 
 
-
-
     for fixture in fixtures:
 
 
 
-        prediction = predict_fixture(
+        prediction=predict_fixture(
 
             fixture
 
@@ -460,35 +502,32 @@ Season:
 
         if prediction is None:
 
-
-            logger.error(
-
-                "Skipped fixture: %s - %s",
-
-                fixture.get(
-                    "home_team"
-                ),
-
-                fixture.get(
-                    "away_team"
-                )
-
-            )
-
-
             continue
 
 
 
+        try:
 
 
-        save_tour_prediction(
+            save_prediction(
 
-            fixture,
+                fixture,
 
-            prediction
+                prediction
 
-        )
+            )
+
+
+        except Exception as e:
+
+
+            logger.error(
+
+                "Save failed %s",
+
+                e
+
+            )
 
 
 
@@ -500,11 +539,9 @@ Season:
 
 
 
-
-
     logger.info(
 
-        "FAJ TOUR FINISHED predictions=%s",
+        "FAJ tour completed %s",
 
         len(results)
 
