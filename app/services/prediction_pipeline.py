@@ -2,8 +2,9 @@
 # FAJ Platform v6.7
 # app/services/prediction_pipeline.py
 #
-# Prediction Pipeline
-# Bridge between Tour Predictor and FAJ Core
+# Prediction Pipeline Layer
+# Bridge:
+# Handler -> Pipeline -> FAJCore
 # =====================================================
 
 
@@ -18,36 +19,50 @@ logger = logging.getLogger(__name__)
 
 
 
+# =====================================================
+# GLOBAL CORE
+# =====================================================
+
+
+_core = None
+
+
+
+
+def get_core():
+
+    global _core
+
+
+    if _core is None:
+
+        _core = FAJCore()
+
+
+    return _core
+
+
+
+
+
 
 # =====================================================
-# PIPELINE CLASS
+# MAIN PIPELINE CLASS
 # =====================================================
 
 
 class PredictionPipeline:
 
 
-    VERSION = "6.7"
-
-
-
     def __init__(self):
 
-        self.core = FAJCore()
-
-        logger.info(
-            "FAJ Prediction Pipeline %s initialized",
-            self.VERSION
-        )
+        self.core = get_core()
 
 
 
-
-
-    # =================================================
-    # PREDICT MATCH
-    # =================================================
-
+    # -------------------------------------------------
+    # SINGLE MATCH
+    # -------------------------------------------------
 
     def predict_match(
 
@@ -67,18 +82,6 @@ class PredictionPipeline:
         try:
 
 
-            logger.info(
-
-                "Pipeline prediction: %s - %s",
-
-                home_team,
-
-                away_team
-
-            )
-
-
-
             result = self.core.predict_match(
 
                 home_team,
@@ -93,10 +96,9 @@ class PredictionPipeline:
 
             if not result:
 
-
                 logger.warning(
 
-                    "Empty Core result: %s - %s",
+                    "Empty FAJ Core result %s-%s",
 
                     home_team,
 
@@ -105,14 +107,12 @@ class PredictionPipeline:
                 )
 
 
+
                 return None
 
 
 
-
-            # добавляем служебные данные
-
-            result["pipeline_version"] = self.VERSION
+            # добавляем метаданные
 
             result["season"] = season
 
@@ -122,13 +122,12 @@ class PredictionPipeline:
 
 
 
-
         except Exception as e:
 
 
             logger.error(
 
-                "Pipeline prediction error %s - %s: %s",
+                "Pipeline prediction error %s-%s: %s",
 
                 home_team,
 
@@ -141,125 +140,7 @@ class PredictionPipeline:
             )
 
 
-            raise
-
-
-
-
-
-
-
-    # =================================================
-    # BATCH PREDICTION
-    # =================================================
-
-
-    def predict_fixtures(
-
-        self,
-
-        fixtures
-
-    ):
-
-
-        results = []
-
-
-
-        for fixture in fixtures:
-
-
-            try:
-
-
-                prediction = self.predict_match(
-
-                    fixture.get(
-                        "home_team"
-                    ),
-
-                    fixture.get(
-                        "away_team"
-                    ),
-
-                    fixture.get(
-                        "league",
-                        "RPL"
-                    ),
-
-                    fixture.get(
-                        "season",
-                        "2026/27"
-                    )
-
-                )
-
-
-
-                if prediction:
-
-
-                    prediction["fixture_id"] = fixture.get(
-                        "id"
-                    )
-
-
-                    results.append(
-                        prediction
-                    )
-
-
-
-            except Exception as e:
-
-
-                logger.error(
-
-                    "Fixture prediction failed: %s",
-
-                    fixture,
-
-                    exc_info=True
-
-                )
-
-
-
-        return results
-
-
-
-
-
-
-
-    # =================================================
-    # INFO
-    # =================================================
-
-
-    def info(self):
-
-
-        return {
-
-
-            "pipeline":
-
-            "FAJ Prediction Pipeline",
-
-
-            "version":
-
-            self.VERSION,
-
-
-            "core":
-
-            self.core.info()
-
-        }
+            return None
 
 
 
@@ -268,8 +149,83 @@ class PredictionPipeline:
 
 
 # =====================================================
-# SINGLETON INSTANCE
+# GLOBAL PIPELINE INSTANCE
 # =====================================================
 
 
 prediction_pipeline = PredictionPipeline()
+
+
+
+
+
+
+
+# =====================================================
+# COMPATIBILITY FUNCTION
+#
+# ВАЖНО:
+# Этот импорт нужен старым handler/debug файлам
+# =====================================================
+
+
+def predict_match_pipeline(
+
+    home_team,
+
+    away_team,
+
+    league="RPL",
+
+    season="2026/27"
+
+):
+
+
+    return prediction_pipeline.predict_match(
+
+        home_team,
+
+        away_team,
+
+        league,
+
+        season
+
+    )
+
+
+
+
+
+
+
+# =====================================================
+# SHORT API
+# =====================================================
+
+
+def predict_match(
+
+    home_team,
+
+    away_team,
+
+    league="RPL",
+
+    season="2026/27"
+
+):
+
+
+    return predict_match_pipeline(
+
+        home_team,
+
+        away_team,
+
+        league,
+
+        season
+
+    )
