@@ -1,5 +1,5 @@
 # =====================================================
-# FAJ Platform v6.6
+# FAJ Platform v6.7.1
 # FAJ Core Engine
 # =====================================================
 import time
@@ -16,13 +16,21 @@ from app.passport_manager import (
 )
 
 class FAJCore:
-    VERSION = "6.6"
+    VERSION = "6.7.1"
     LEAGUE_MEAN = 1.35
     HOME_ADVANTAGE = 1.08
     MAX_GOALS = 8
     SIMULATIONS = 10000
     MIN_XG = 0.10
     MAX_XG = 4.00
+
+    # Сезонные коэффициенты
+    SEASON_PHASE = {
+        "start": 0.90,
+        "early": 0.95,
+        "mid": 1.00,
+        "end": 1.05
+    }
 
     def __init__(self):
         self.version = self.VERSION
@@ -133,6 +141,72 @@ class FAJCore:
             return default
 
     # =====================================================
+    # SEASON PHASE
+    # =====================================================
+    def get_season_phase(
+        self,
+        season="2026/27"
+    ):
+        today = datetime.now()
+        start_date = datetime(
+            2026,
+            7,
+            25
+        )
+        days = (
+            today - start_date
+        ).days
+        if days < 30:
+            return "start"
+        elif days < 90:
+            return "early"
+        elif days < 210:
+            return "mid"
+        else:
+            return "end"
+
+    # =====================================================
+    # PASSPORT QUALITY
+    # =====================================================
+    def passport_quality(
+        self,
+        team
+    ):
+        fields = [
+            "attack",
+            "defense",
+            "control",
+            "form",
+            "xg_for",
+            "xg_against"
+        ]
+        filled = 0
+        for f in fields:
+            if team.get(f) is not None:
+                filled += 1
+        return round(
+            filled / len(fields),
+            2
+        )
+
+    # =====================================================
+    # VOLATILITY
+    # =====================================================
+    def calculate_volatility(
+        self,
+        simulation
+    ):
+        probs = [
+            simulation["home_win_prob"],
+            simulation["draw_prob"],
+            simulation["away_win_prob"]
+        ]
+        return round(
+            max(probs) - min(probs),
+            3
+        )
+
+    # =====================================================
     # XG MODEL
     # =====================================================
     def calculate_xg(
@@ -168,6 +242,15 @@ class FAJCore:
         xg *= (1 + transfers / 900)
         if home:
             xg *= self.HOME_ADVANTAGE
+
+        # ---- Сезонный модификатор ----
+        phase = self.get_season_phase()
+        modifier = self.SEASON_PHASE.get(
+            phase,
+            1.0
+        )
+        xg *= modifier
+
         return round(
             max(
                 self.MIN_XG,
@@ -296,7 +379,7 @@ class FAJCore:
         )
 
     # =====================================================
-    # CONFIDENCE
+    # CONFIDENCE (улучшенный с учётом качества паспортов)
     # =====================================================
     def calculate_confidence(
         self,
@@ -305,7 +388,9 @@ class FAJCore:
         home_xg,
         away_xg,
         winner_probability,
-        stability
+        stability,
+        home_quality,
+        away_quality
     ):
         rating_gap = abs(
             home_rating - away_rating
@@ -319,6 +404,13 @@ class FAJCore:
             xg_gap * 25 * 0.15 +
             stability * 0.20
         )
+        # ---- Корректировка на качество данных ----
+        quality_modifier = (
+            home_quality +
+            away_quality
+        ) / 2
+        confidence *= quality_modifier
+
         confidence = max(
             35,
             min(
@@ -475,15 +567,25 @@ class FAJCore:
             home_xg,
             away_xg
         )
+
+        # ---- Новые показатели ----
+        home_quality = self.passport_quality(home)
+        away_quality = self.passport_quality(away)
+        volatility = self.calculate_volatility(simulation)
+        season_phase = self.get_season_phase()
+
         confidence = self.calculate_confidence(
             home_rating,
             away_rating,
             home_xg,
             away_xg,
             decision["winner_probability"],
-            decision["stability"]
+            decision["stability"],
+            home_quality,
+            away_quality
         )
         decision["confidence"] = confidence
+
         over15 = self.total_probability(
             home_xg,
             away_xg,
@@ -499,6 +601,7 @@ class FAJCore:
             away_xg,
             3
         )
+
         result = {
             "version": self.VERSION,
             "fixture_id": fixture_id,
@@ -507,6 +610,12 @@ class FAJCore:
             "away_team": away_team,
             "home_rating": round(home_rating, 1),
             "away_rating": round(away_rating, 1),
+            "season_phase": season_phase,
+            "passport_quality": {
+                "home": home_quality,
+                "away": away_quality
+            },
+            "volatility": volatility,
             "xg": {
                 "predicted": {
                     "home": round(home_xg, 2),
