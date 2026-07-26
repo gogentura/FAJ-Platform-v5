@@ -1,10 +1,16 @@
 # =====================================================
-# FAJ Platform v6.7
+# FAJ Platform v6.8
 # app/services/prediction_pipeline.py
 #
-# Prediction Pipeline Layer
-# Bridge:
-# Handler -> Pipeline -> FAJCore
+# Unified Prediction Pipeline
+#
+# Handler
+#    ↓
+# PredictionPipeline
+#    ↓
+# FAJCore
+#    ↓
+# Team Passport / xG / Monte Carlo
 # =====================================================
 
 
@@ -19,27 +25,28 @@ logger = logging.getLogger(__name__)
 
 
 
+
 # =====================================================
 # GLOBAL CORE
 # =====================================================
 
 
-_core = None
-
+_core_instance = None
 
 
 
 def get_core():
 
-    global _core
+    global _core_instance
 
 
-    if _core is None:
+    if _core_instance is None:
 
-        _core = FAJCore()
+        _core_instance = FAJCore()
 
 
-    return _core
+    return _core_instance
+
 
 
 
@@ -47,11 +54,305 @@ def get_core():
 
 
 # =====================================================
-# MAIN PIPELINE CLASS
+# NORMALIZE CORE OUTPUT
+# =====================================================
+
+
+def normalize_core_result(
+
+    result,
+
+    home_team,
+
+    away_team
+
+):
+
+
+    if not result:
+
+        return None
+
+
+
+    decision = result.get(
+
+        "decision",
+
+        {}
+
+    )
+
+
+
+    xg_block = result.get(
+
+        "xg",
+
+        {}
+
+    )
+
+
+    predicted_xg = xg_block.get(
+
+        "predicted",
+
+        {}
+
+    )
+
+
+
+    simulation = result.get(
+
+        "simulation",
+
+        {}
+
+    )
+
+
+
+    return {
+
+
+        # teams
+
+        "home_team":
+            home_team,
+
+
+        "away_team":
+            away_team,
+
+
+
+        # xG
+
+        "xg": {
+
+            "predicted": {
+
+                "home":
+                    round(
+                        float(
+                            predicted_xg.get(
+                                "home",
+                                0
+                            )
+                        ),
+                        2
+                    ),
+
+
+                "away":
+                    round(
+                        float(
+                            predicted_xg.get(
+                                "away",
+                                0
+                            )
+                        ),
+                        2
+                    )
+
+            }
+
+        },
+
+
+
+        "xg_home":
+            round(
+                float(
+                    predicted_xg.get(
+                        "home",
+                        0
+                    )
+                ),
+                2
+            ),
+
+
+        "xg_away":
+            round(
+                float(
+                    predicted_xg.get(
+                        "away",
+                        0
+                    )
+                ),
+                2
+            ),
+
+
+
+
+        # decision
+
+        "decision": {
+
+
+            "winner":
+                decision.get(
+                    "winner"
+                ),
+
+
+            "winner_name":
+                decision.get(
+                    "winner_name"
+                ),
+
+
+            "expected_score":
+                decision.get(
+                    "expected_score",
+                    "-"
+                ),
+
+
+            "confidence":
+                decision.get(
+                    "confidence",
+                    0
+                ),
+
+
+
+            "home_probability":
+                decision.get(
+                    "home_probability",
+                    0
+                ),
+
+
+            "draw_probability":
+                decision.get(
+                    "draw_probability",
+                    0
+                ),
+
+
+            "away_probability":
+                decision.get(
+                    "away_probability",
+                    0
+                )
+
+        },
+
+
+
+        # simulation
+
+        "simulation":
+
+            simulation,
+
+
+
+        # ratings
+
+        "home_rating":
+
+            result.get(
+                "home_rating",
+                0
+            ),
+
+
+        "away_rating":
+
+            result.get(
+                "away_rating",
+                0
+            ),
+
+
+
+        # markets
+
+        "btts":
+
+            result.get(
+                "btts",
+                0
+            ),
+
+
+        "over25":
+
+            result.get(
+                "over25",
+                0
+            ),
+
+
+        "under25":
+
+            result.get(
+                "under25",
+                0
+            ),
+
+
+
+        # meta
+
+        "phase":
+
+            result.get(
+                "phase",
+                "start"
+            ),
+
+
+
+        "data_quality": {
+
+
+            "home":
+
+                result.get(
+                    "data_quality",
+                    {}
+                ).get(
+                    "home",
+                    100
+                ),
+
+
+            "away":
+
+                result.get(
+                    "data_quality",
+                    {}
+                ).get(
+                    "away",
+                    100
+                )
+
+        }
+
+
+
+    }
+
+
+
+
+
+
+
+# =====================================================
+# PIPELINE CLASS
 # =====================================================
 
 
 class PredictionPipeline:
+
 
 
     def __init__(self):
@@ -60,9 +361,12 @@ class PredictionPipeline:
 
 
 
+
+
     # -------------------------------------------------
-    # SINGLE MATCH
+    # MAIN MATCH PREDICTION
     # -------------------------------------------------
+
 
     def predict_match(
 
@@ -82,7 +386,7 @@ class PredictionPipeline:
         try:
 
 
-            result = self.core.predict_match(
+            raw = self.core.predict_match(
 
                 home_team,
 
@@ -94,31 +398,27 @@ class PredictionPipeline:
 
 
 
-            if not result:
+            normalized = normalize_core_result(
 
-                logger.warning(
+                raw,
 
-                    "Empty FAJ Core result %s-%s",
+                home_team,
 
-                    home_team,
+                away_team
 
-                    away_team
-
-                )
+            )
 
 
 
-                return None
+            if normalized:
+
+                normalized["league"] = league
+
+                normalized["season"] = season
 
 
 
-            # добавляем метаданные
-
-            result["season"] = season
-
-
-
-            return result
+            return normalized
 
 
 
@@ -127,11 +427,7 @@ class PredictionPipeline:
 
             logger.error(
 
-                "Pipeline prediction error %s-%s: %s",
-
-                home_team,
-
-                away_team,
+                "Prediction pipeline error: %s",
 
                 e,
 
@@ -148,8 +444,9 @@ class PredictionPipeline:
 
 
 
+
 # =====================================================
-# GLOBAL PIPELINE INSTANCE
+# GLOBAL INSTANCE
 # =====================================================
 
 
@@ -162,10 +459,9 @@ prediction_pipeline = PredictionPipeline()
 
 
 # =====================================================
-# COMPATIBILITY FUNCTION
+# LEGACY SUPPORT
 #
-# ВАЖНО:
-# Этот импорт нужен старым handler/debug файлам
+# Для старых файлов FAJ v6.5
 # =====================================================
 
 
@@ -201,7 +497,7 @@ def predict_match_pipeline(
 
 
 # =====================================================
-# SHORT API
+# SHORT FUNCTION API
 # =====================================================
 
 
@@ -218,7 +514,7 @@ def predict_match(
 ):
 
 
-    return predict_match_pipeline(
+    return prediction_pipeline.predict_match(
 
         home_team,
 
