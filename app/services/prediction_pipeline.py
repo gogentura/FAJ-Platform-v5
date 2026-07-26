@@ -3,14 +3,6 @@
 # app/services/prediction_pipeline.py
 #
 # Unified Prediction Pipeline
-#
-# Handler
-#    ↓
-# PredictionPipeline
-#    ↓
-# FAJCore
-#    ↓
-# Team Passport / xG / Monte Carlo
 # =====================================================
 
 
@@ -27,25 +19,25 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================
-# GLOBAL CORE
+# CORE INSTANCE
 # =====================================================
 
 
-_core_instance = None
+_core = None
 
 
 
 def get_core():
 
-    global _core_instance
+    global _core
 
 
-    if _core_instance is None:
+    if _core is None:
 
-        _core_instance = FAJCore()
+        _core = FAJCore()
 
 
-    return _core_instance
+    return _core
 
 
 
@@ -54,11 +46,216 @@ def get_core():
 
 
 # =====================================================
-# NORMALIZE CORE OUTPUT
+# RISK ENGINE
 # =====================================================
 
 
-def normalize_core_result(
+def calculate_risk(
+
+    confidence
+
+):
+
+
+    try:
+
+        confidence = float(confidence)
+
+
+    except Exception:
+
+        confidence = 0
+
+
+
+    if confidence >= 70:
+
+        return "Низкий"
+
+
+    elif confidence >= 45:
+
+        return "Средний"
+
+
+    else:
+
+        return "Высокий"
+
+
+
+
+
+
+
+# =====================================================
+# CATEGORY
+# =====================================================
+
+
+def calculate_category(
+
+    confidence
+
+):
+
+
+    try:
+
+        confidence = float(confidence)
+
+    except:
+
+        confidence = 0
+
+
+
+    if confidence >= 70:
+
+        return "A"
+
+
+    elif confidence >= 50:
+
+        return "B"
+
+
+    else:
+
+        return "C"
+
+
+
+
+
+
+
+# =====================================================
+# FACTORS
+# =====================================================
+
+
+def build_factors(
+
+    result
+
+):
+
+
+    factors = []
+
+
+
+    decision = result.get(
+
+        "decision",
+
+        {}
+
+    )
+
+
+    winner = decision.get(
+
+        "winner"
+
+    )
+
+
+    xg = result.get(
+
+        "xg",
+
+        {}
+
+    ).get(
+
+        "predicted",
+
+        {}
+
+    )
+
+
+
+    home_xg = xg.get(
+
+        "home",
+
+        0
+
+    )
+
+
+    away_xg = xg.get(
+
+        "away",
+
+        0
+
+    )
+
+
+
+    if winner == "home":
+
+        factors.append(
+
+            "🏹 Преимущество хозяев в атаке"
+
+        )
+
+
+    elif winner == "away":
+
+        factors.append(
+
+            "🏹 Преимущество гостей в атаке"
+
+        )
+
+
+
+    if home_xg > away_xg:
+
+        factors.append(
+
+            f"📈 xG преимущество хозяев ({home_xg})"
+
+        )
+
+
+    elif away_xg > home_xg:
+
+        factors.append(
+
+            f"📈 xG преимущество гостей ({away_xg})"
+
+        )
+
+
+
+    factors.append(
+
+        "🏆 Турнир: RPL"
+
+    )
+
+
+    return factors
+
+
+
+
+
+
+
+# =====================================================
+# NORMALIZE
+# =====================================================
+
+
+def normalize_prediction(
 
     result,
 
@@ -84,17 +281,13 @@ def normalize_core_result(
     )
 
 
-
-    xg_block = result.get(
+    xg = result.get(
 
         "xg",
 
         {}
 
-    )
-
-
-    predicted_xg = xg_block.get(
+    ).get(
 
         "predicted",
 
@@ -104,241 +297,242 @@ def normalize_core_result(
 
 
 
-    simulation = result.get(
+    confidence = decision.get(
 
-        "simulation",
+        "confidence",
 
-        {}
+        0
 
     )
 
 
 
-    return {
+    normalized = {
 
-
-        # teams
 
         "home_team":
+
             home_team,
 
 
         "away_team":
+
             away_team,
 
 
 
-        # xG
+        "winner":
 
-        "xg": {
+            decision.get(
 
-            "predicted": {
+                "winner"
 
-                "home":
-                    round(
-                        float(
-                            predicted_xg.get(
-                                "home",
-                                0
-                            )
-                        ),
-                        2
-                    ),
+            ),
 
 
-                "away":
-                    round(
-                        float(
-                            predicted_xg.get(
-                                "away",
-                                0
-                            )
-                        ),
-                        2
-                    )
 
-            }
+        "winner_name":
 
-        },
+            decision.get(
+
+                "winner_name",
+
+                "-"
+
+            ),
+
+
+
+        "expected_score":
+
+            decision.get(
+
+                "expected_score",
+
+                "-"
+
+            ),
+
 
 
 
         "xg_home":
+
             round(
+
                 float(
-                    predicted_xg.get(
+
+                    xg.get(
+
                         "home",
+
                         0
+
                     )
+
                 ),
+
                 2
+
             ),
+
 
 
         "xg_away":
+
             round(
+
                 float(
-                    predicted_xg.get(
+
+                    xg.get(
+
                         "away",
+
                         0
+
                     )
+
                 ),
+
                 2
+
             ),
 
 
 
-
-        # decision
-
-        "decision": {
-
-
-            "winner":
-                decision.get(
-                    "winner"
-                ),
-
-
-            "winner_name":
-                decision.get(
-                    "winner_name"
-                ),
-
-
-            "expected_score":
-                decision.get(
-                    "expected_score",
-                    "-"
-                ),
-
-
-            "confidence":
-                decision.get(
-                    "confidence",
-                    0
-                ),
-
-
-
-            "home_probability":
-                decision.get(
-                    "home_probability",
-                    0
-                ),
-
-
-            "draw_probability":
-                decision.get(
-                    "draw_probability",
-                    0
-                ),
-
-
-            "away_probability":
-                decision.get(
-                    "away_probability",
-                    0
-                )
-
-        },
-
-
-
-        # simulation
-
-        "simulation":
-
-            simulation,
-
-
-
-        # ratings
 
         "home_rating":
 
             result.get(
+
                 "home_rating",
+
                 0
+
             ),
+
 
 
         "away_rating":
 
             result.get(
+
                 "away_rating",
+
                 0
+
             ),
 
 
 
-        # markets
+
+        "confidence":
+
+            confidence,
+
+
+
+        "risk":
+
+            calculate_risk(
+
+                confidence
+
+            ),
+
+
+
+        "category":
+
+            calculate_category(
+
+                confidence
+
+            ),
+
+
+
+        "factors":
+
+            build_factors(
+
+                result
+
+            ),
+
+
+
+
+        "simulation":
+
+            result.get(
+
+                "simulation",
+
+                {}
+
+            ),
+
+
 
         "btts":
 
             result.get(
+
                 "btts",
+
                 0
+
             ),
+
 
 
         "over25":
 
             result.get(
+
                 "over25",
+
                 0
+
             ),
+
 
 
         "under25":
 
             result.get(
+
                 "under25",
+
                 0
+
             ),
 
 
 
-        # meta
 
         "phase":
 
-            result.get(
-                "phase",
-                "start"
-            ),
+            "start",
 
 
 
-        "data_quality": {
+        "data_quality":
 
+            {
 
-            "home":
+                "home":100,
 
-                result.get(
-                    "data_quality",
-                    {}
-                ).get(
-                    "home",
-                    100
-                ),
+                "away":100
 
-
-            "away":
-
-                result.get(
-                    "data_quality",
-                    {}
-                ).get(
-                    "away",
-                    100
-                )
-
-        }
-
-
+            }
 
     }
+
+
+
+    return normalized
 
 
 
@@ -363,11 +557,6 @@ class PredictionPipeline:
 
 
 
-    # -------------------------------------------------
-    # MAIN MATCH PREDICTION
-    # -------------------------------------------------
-
-
     def predict_match(
 
         self,
@@ -386,7 +575,7 @@ class PredictionPipeline:
         try:
 
 
-            raw = self.core.predict_match(
+            result = self.core.predict_match(
 
                 home_team,
 
@@ -398,9 +587,9 @@ class PredictionPipeline:
 
 
 
-            normalized = normalize_core_result(
+            prediction = normalize_prediction(
 
-                raw,
+                result,
 
                 home_team,
 
@@ -410,34 +599,30 @@ class PredictionPipeline:
 
 
 
-            if normalized:
-
-                normalized["league"] = league
-
-                normalized["season"] = season
+            if prediction:
 
 
+                prediction["league"] = league
 
-            return normalized
+                prediction["season"] = season
+
+
+
+            return prediction
 
 
 
         except Exception as e:
 
 
-            logger.error(
+            logger.exception(
 
-                "Prediction pipeline error: %s",
-
-                e,
-
-                exc_info=True
+                "FAJ pipeline error"
 
             )
 
 
             return None
-
 
 
 
@@ -459,9 +644,7 @@ prediction_pipeline = PredictionPipeline()
 
 
 # =====================================================
-# LEGACY SUPPORT
-#
-# Для старых файлов FAJ v6.5
+# COMPATIBILITY API
 # =====================================================
 
 
@@ -494,11 +677,6 @@ def predict_match_pipeline(
 
 
 
-
-
-# =====================================================
-# SHORT FUNCTION API
-# =====================================================
 
 
 def predict_match(
