@@ -3,6 +3,7 @@
 # app/handlers/calibration.py
 #
 # FAJ Calibration Monitor
+# PostgreSQL compatible
 # =====================================================
 
 
@@ -25,21 +26,45 @@ async def cmd_calibration(
         cur = conn.cursor()
 
 
-        # Проверяем таблицу
+
+        # =========================================
+        # COUNT
+        # =========================================
 
         cur.execute(
             """
-            SELECT COUNT(*)
+            SELECT COUNT(*) AS cnt
             FROM calibration_log
             """
         )
 
 
-        total = cur.fetchone()[0]
+        row = cur.fetchone()
+
+
+        total = 0
+
+
+        if row:
+
+            if isinstance(row, dict):
+
+                total = row.get(
+                    "cnt",
+                    0
+                )
+
+            else:
+
+                total = row[0]
 
 
 
-        # Последние ошибки
+
+
+        # =========================================
+        # LAST ERRORS
+        # =========================================
 
         cur.execute(
             """
@@ -62,7 +87,10 @@ async def cmd_calibration(
         rows = cur.fetchall()
 
 
+
         conn.close()
+
+
 
 
 
@@ -79,10 +107,53 @@ async def cmd_calibration(
 """
 
 
+
         if rows:
 
 
+
             for r in rows:
+
+
+                if isinstance(
+                    r,
+                    dict
+                ):
+
+                    faj_score = r.get(
+                        "faj_score",
+                        "-"
+                    )
+
+                    fact_score = r.get(
+                        "fact_score",
+                        "-"
+                    )
+
+                    faj_winner = r.get(
+                        "faj_winner",
+                        "-"
+                    )
+
+                    fact_winner = r.get(
+                        "fact_winner",
+                        "-"
+                    )
+
+                    error_type = r.get(
+                        "error_type",
+                        "-"
+                    )
+
+
+                else:
+
+                    faj_score = r[0]
+                    fact_score = r[1]
+                    faj_winner = r[2]
+                    fact_winner = r[3]
+                    error_type = r[4]
+
 
 
                 text += f"""
@@ -90,25 +161,26 @@ async def cmd_calibration(
 ⚽ Матч
 
 FAJ:
-{r[0]}
+{faj_score}
 
 Факт:
-{r[1]}
+{fact_score}
 
 
 🏆 FAJ:
-{r[2]}
+{faj_winner}
 
 🏆 Факт:
-{r[3]}
+{fact_winner}
 
 
 ⚠️ Ошибка:
-{r[4]}
+{error_type}
 
 
 ────────────
 """
+
 
 
         else:
@@ -116,7 +188,8 @@ FAJ:
 
             text += """
 
-Пока ошибок нет.
+Пока нет данных.
+
 
 После завершения матчей:
 
@@ -124,12 +197,14 @@ FAJ:
 
 ↓
 
-🧠 Calibration
+🧠 Calibration Layer
 
 ↓
 
-FAJ Learning Layer
+📈 FAJ Core обучение
 """
+
+
 
 
 
@@ -139,18 +214,24 @@ FAJ Learning Layer
 
 
 
+
     except Exception as e:
 
 
         await message.answer(
+
             f"""
 ❌ Ошибка Calibration
 
 
 Тип:
+
 {type(e).__name__}
 
 
+Ошибка:
+
 {e}
 """
+
         )
