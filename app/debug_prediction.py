@@ -1,76 +1,25 @@
 # =====================================================
-# FAJ Platform v6.3
+# FAJ Platform v6.7
 # app/debug_prediction.py
 #
-# Prediction Debug Handler
+# Full Prediction Pipeline Debug
 # =====================================================
 
-import traceback
+
 import logging
+import traceback
+
 
 from aiogram import types
 
-from app.passport_manager import (
-    load_passport,
-    get_team_by_alias
+
+from app.services.prediction_pipeline import (
+    predict_match_pipeline
 )
 
 
 logger = logging.getLogger(__name__)
 
-
-# =====================================================
-# TEAM PASSPORT DEBUG
-# =====================================================
-
-def debug_passport(team):
-
-    real_team = get_team_by_alias(team)
-
-    if real_team:
-        team = real_team
-
-
-    passport = load_passport(team)
-
-
-    if not passport:
-        return {
-            "team": team,
-            "status": "NOT FOUND"
-        }
-
-
-    return {
-        "team": passport.get("team"),
-        "league": passport.get("league"),
-        "season": passport.get("season"),
-
-        "attack": passport.get("attack"),
-        "defense": passport.get("defense"),
-        "control": passport.get("control"),
-
-        "form": passport.get(
-            "form",
-            passport.get(
-                "form_index",
-                0
-            )
-        ),
-
-        "xg_for": passport.get(
-            "xg_for",
-            passport.get(
-                "historical_xg_value",
-                0
-            )
-        ),
-
-        "xg_against": passport.get(
-            "xg_against",
-            0
-        )
-    }
 
 
 
@@ -78,149 +27,250 @@ def debug_passport(team):
 # DEBUG COMMAND
 # =====================================================
 
+
 async def cmd_debug_prediction(
+
     message: types.Message,
-    core
+
+    core=None
+
 ):
+
 
     try:
 
+
         text = (
+
             message.text
+
             .replace(
                 "/debug_prediction",
                 ""
             )
+
             .strip()
+
         )
+
 
 
         parts = text.split()
 
 
+
         if len(parts) < 2:
 
+
             await message.answer(
+
                 """
-🧪 Debug Prediction
+🧪 FAJ Debug Prediction
+
 
 Пример:
 
 /debug_prediction Акрон Зенит
 """
+
             )
 
+
             return
+
 
 
 
         home = parts[0]
 
-        away = " ".join(parts[1:])
+
+        away = " ".join(
+
+            parts[1:]
+
+        )
+
 
 
 
         await message.answer(
+
             f"""
-🧪 FAJ Debug
+🧪 FAJ Pipeline Debug
+
 
 Матч:
 
 ⚽ {home} — {away}
 
+
 Проверяю:
-• паспорта
-• FAJ Core
-• xG
-• decision
-• simulation
+
+✅ Team Passport
+
+✅ FAJ Rating
+
+✅ xG Engine
+
+✅ Monte Carlo
+
+✅ Risk Engine
+
+✅ Expert Layer
+
 """
+
         )
 
 
 
-        # ==============================
-        # PASSPORTS
-        # ==============================
+
+        # =============================================
+        # PIPELINE
+        # =============================================
 
 
-        home_pass = debug_passport(
-            home
-        )
-
-        away_pass = debug_passport(
-            away
-        )
-
-
-
-        # ==============================
-        # CORE
-        # ==============================
-
-
-        result = core.predict_match(
+        prediction = predict_match_pipeline(
 
             home,
 
             away,
 
-            "RPL"
+            "RPL",
+
+            "2026/27"
 
         )
 
 
 
-        if not result:
+        if prediction is None:
 
-            await message.answer(
-                "❌ FAJ Core вернул пустой результат"
+
+            raise Exception(
+
+                "Prediction pipeline вернул None"
+
             )
 
-            return
 
 
 
-        # ==============================
+        # =============================================
         # OUTPUT
-        # ==============================
+        # =============================================
 
 
         answer = f"""
-✅ DEBUG OK
+
+✅ FAJ PIPELINE OK
 
 
-🏠 {home_pass}
-
-🚩 {away_pass}
+⚽ {home} — {away}
 
 
-🧠 CORE:
+━━━━━━━━━━━━━━
 
-Ключи результата:
 
-{list(result.keys())}
+🏆 Победитель:
+
+{prediction.get(
+    "winner",
+    "-"
+)}
+
+
+🎯 Счёт:
+
+{prediction.get(
+    "expected_score",
+    "-"
+)}
+
+
+━━━━━━━━━━━━━━
 
 
 📊 xG:
 
-{result.get('xg')}
+{prediction.get(
+    "xg_home",
+    0
+)}
+
+-
+
+{prediction.get(
+    "xg_away",
+    0
+)}
 
 
-📈 Decision:
 
-{result.get('decision')}
+🧠 FAJ Rating:
+
+{prediction.get(
+    "home_rating",
+    0
+)}
+
+-
+
+{prediction.get(
+    "away_rating",
+    0
+)}
 
 
-🎯 Simulation:
+━━━━━━━━━━━━━━
 
-{result.get('simulation')}
+
+🔥 Уверенность:
+
+{prediction.get(
+    "confidence",
+    0
+)}%
+
+
+
+⚠️ Риск:
+
+{prediction.get(
+    "risk",
+    "-"
+)}
+
+
+
+🏷 Категория:
+
+{prediction.get(
+    "grade",
+    "-"
+)}
+
+
+━━━━━━━━━━━━━━
+
+
+🧠 Факторы:
+
+
+{prediction.get(
+    "factors",
+    []
+)}
+
 """
 
 
         await message.answer(
+
             answer
+
         )
+
 
 
 
@@ -228,16 +278,27 @@ async def cmd_debug_prediction(
 
 
         logger.error(
+
             traceback.format_exc()
+
         )
 
 
         await message.answer(
 
-            "❌ DEBUG ERROR\n\n"
+            f"""
+❌ DEBUG ERROR
 
-            f"{type(e).__name__}\n\n"
 
-            f"{str(e)}"
+Тип:
+
+{type(e).__name__}
+
+
+Ошибка:
+
+{str(e)}
+
+"""
 
         )
