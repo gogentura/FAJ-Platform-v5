@@ -1,23 +1,18 @@
 # =====================================================
-# FAJ Platform v6.6
-# app/monitoring/results_monitor.py
+# FAJ Platform v7.0
+# Results Monitor
 #
-# Match Results Monitor
-#
-# Source:
-#   Soccer365
-#
-# DB:
-#   PostgreSQL fixtures
+# Soccer365 Results
+# Database Sync
+# Calibration Pipeline
 # =====================================================
 
 
 import logging
-import re
 
 
-from app.monitoring.sources.soccer365 import (
-    Soccer365Source
+from app.data_sources.soccer365_results import (
+    Soccer365Results
 )
 
 
@@ -26,27 +21,7 @@ from app.database import (
 )
 
 
-
 logger = logging.getLogger(__name__)
-
-
-
-
-
-# =====================================================
-# SAFE INT
-# =====================================================
-
-def safe_int(value):
-
-    try:
-        return int(value)
-
-    except Exception:
-        return None
-
-
-
 
 
 # =====================================================
@@ -59,7 +34,7 @@ class ResultsMonitor:
 
     def __init__(self):
 
-        self.source = Soccer365Source()
+        self.source = Soccer365Results()
 
 
 
@@ -69,226 +44,57 @@ class ResultsMonitor:
 
     def get_results(self):
 
-
         try:
 
-
-            html = self.source.get_html()
-
-
-
-            if not html:
-
-
-                logger.warning(
-                    "Soccer365 returned empty html"
-                )
-
-
-                return []
-
-
+            results = self.source.get_results()
 
             logger.info(
-                f"Soccer365 html length: {len(html)}"
-            )
 
-
-
-            results = []
-
-
-
-            # =================================================
-            # VARIANT 1
-            # Акрон - Зенит (0-5)
-            # =================================================
-
-
-            patterns = [
-
-
-                r"(.+?)\s-\s(.+?)\s\((\d+)-(\d+)\)",
-
-
-                r"(.+?)\s-\s(.+?)\s\((\d+):(\d+)\)",
-
-
-                r"(.+?)\s+(\d+)\s*:\s*(\d+)\s+(.+?)"
-
-
-            ]
-
-
-
-            for pattern in patterns:
-
-
-                matches = re.findall(
-
-                    pattern,
-
-                    html,
-
-                    re.MULTILINE
-
-                )
-
-
-
-                if matches:
-
-
-                    logger.info(
-
-                        f"Soccer365 matches found: {len(matches)}"
-
-                    )
-
-
-                    for m in matches:
-
-
-
-                        try:
-
-
-
-                            if len(m) == 4:
-
-
-                                home = m[0].strip()
-
-                                away = m[1].strip()
-
-                                home_score = safe_int(
-                                    m[2]
-                                )
-
-                                away_score = safe_int(
-                                    m[3]
-                                )
-
-
-
-                            else:
-
-
-                                home = m[0].strip()
-
-                                home_score = safe_int(
-                                    m[1]
-                                )
-
-                                away_score = safe_int(
-                                    m[2]
-                                )
-
-                                away = m[3].strip()
-
-
-
-                            if (
-
-                                home_score is None
-
-                                or
-
-                                away_score is None
-
-                            ):
-
-                                continue
-
-
-
-
-
-                            results.append(
-
-                                {
-
-                                    "home_team":
-                                    self.source.normalize_team(
-                                        home
-                                    ),
-
-
-                                    "away_team":
-                                    self.source.normalize_team(
-                                        away
-                                    ),
-
-
-                                    "home_score":
-                                    home_score,
-
-
-                                    "away_score":
-                                    away_score,
-
-
-                                    "status":
-                                    "finished"
-
-                                }
-
-                            )
-
-
-
-                        except Exception as e:
-
-
-                            logger.warning(
-
-                                f"Parse error: {e}"
-
-                            )
-
-
-
-                    break
-
-
-
-
-
-            logger.info(
-
-                f"Final results parsed: {len(results)}"
+                f"Loaded results: {len(results)}"
 
             )
-
-
 
             return results
 
 
-
         except Exception as e:
 
-
-
-            logger.exception(
-
-                f"Get results error: {e}"
-
-            )
-
+            logger.exception(e)
 
             return []
 
 
 
+    # =================================================
+    # CALCULATE RESULT
+    # =================================================
 
+    @staticmethod
+    def calculate_result(
+
+        home_score,
+
+        away_score
+
+    ):
+
+        if home_score > away_score:
+
+            return "home_win"
+
+
+        if home_score < away_score:
+
+            return "away_win"
+
+
+        return "draw"
 
 
 
     # =================================================
     # UPDATE DATABASE
     # =================================================
-
 
     def update_results(self):
 
@@ -302,23 +108,17 @@ class ResultsMonitor:
 
             return {
 
-
                 "updated": 0,
 
-
                 "errors": [
-
-                    "Soccer365 results not found"
-
+                    "Soccer365 results empty"
                 ]
 
             }
 
 
 
-
         conn = get_connection()
-
 
         cur = conn.cursor()
 
@@ -330,38 +130,25 @@ class ResultsMonitor:
 
 
 
-        for item in results:
-
+        for match in results:
 
 
             try:
 
 
+                result = self.calculate_result(
 
-                if item["home_score"] > item["away_score"]:
+                    match["home_score"],
 
-                    result = "home_win"
+                    match["away_score"]
 
-
-
-                elif item["home_score"] < item["away_score"]:
-
-                    result = "away_win"
-
-
-
-                else:
-
-                    result = "draw"
-
-
+                )
 
 
 
                 cur.execute(
 
                     """
-
                     UPDATE fixtures
 
                     SET
@@ -389,29 +176,23 @@ class ResultsMonitor:
 
                         away_team = %s
 
-
-                    AND
-
-                        status != 'finished'
-
-
                     """,
 
                     (
 
                         "finished",
 
-                        item["home_score"],
+                        match["home_score"],
 
-                        item["away_score"],
+                        match["away_score"],
 
                         result,
 
                         "RPL",
 
-                        item["home_team"],
+                        match["home_team"],
 
-                        item["away_team"]
+                        match["away_team"]
 
                     )
 
@@ -419,28 +200,22 @@ class ResultsMonitor:
 
 
 
-
                 if cur.rowcount > 0:
 
-
                     updated += 1
-
 
 
 
             except Exception as e:
 
 
-
                 logger.exception(e)
-
 
                 errors.append(
 
                     str(e)
 
                 )
-
 
 
 
@@ -463,9 +238,6 @@ class ResultsMonitor:
             errors
 
         }
-
-
-
 
 
 
