@@ -1,22 +1,31 @@
 # =====================================================
-# FAJ Platform v6.3
-# Soccer365 Source v3
+# FAJ Platform v6.6
+# app/monitoring/sources/soccer365.py
 #
-# RPL Calendar + Match URL
+# Soccer365 Source
+#
+# Calendar + Results Parser
 # =====================================================
+
 
 import logging
 import re
+
 from datetime import datetime
 
 import requests
+
 from bs4 import BeautifulSoup
+
 
 
 logger = logging.getLogger(__name__)
 
 
+
+
 class Soccer365Source:
+
 
 
     URL = (
@@ -29,22 +38,33 @@ class Soccer365Source:
     )
 
 
+
     HEADERS = {
 
         "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        (
+            "Mozilla/5.0 "
+            "(Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 "
+            "Chrome/120 Safari/537.36"
+        )
 
     }
 
 
 
+
+
     # =================================================
-    # HTML
+    # HTML LOAD
     # =================================================
+
 
     def get_html(self):
 
+
         try:
+
 
             response = requests.get(
 
@@ -57,19 +77,27 @@ class Soccer365Source:
             )
 
 
+
+            logger.info(
+
+                f"Soccer365 HTTP: {response.status_code}"
+
+            )
+
+
+
             if response.status_code != 200:
 
-                logger.error(
-                    f"Soccer365 HTTP {response.status_code}"
-                )
-
                 return None
+
 
 
             return response.text
 
 
+
         except Exception as e:
+
 
             logger.exception(e)
 
@@ -77,9 +105,14 @@ class Soccer365Source:
 
 
 
+
+
+
+
     # =================================================
     # CALENDAR PARSER
     # =================================================
+
 
     def parse_calendar(self):
 
@@ -102,6 +135,7 @@ class Soccer365Source:
         )
 
 
+
         fixtures = []
 
 
@@ -117,6 +151,7 @@ class Soccer365Source:
 
 
         for link in links:
+
 
 
             text = link.get_text(
@@ -135,22 +170,18 @@ class Soccer365Source:
 
 
 
-            # пример:
-            #
-            # 25.07, 06:15 Акрон - Зенит -
-            #
-
 
             match = re.search(
 
                 r"(\d{2}\.\d{2}),\s*"
                 r"(\d{2}:\d{2})\s+"
                 r"(.+?)\s+-\s+"
-                r"(.+?)\s+-$",
+                r"(.+?)(?:\s+-|\s)$",
 
                 text
 
             )
+
 
 
             if not match:
@@ -159,53 +190,13 @@ class Soccer365Source:
 
 
 
-            date = match.group(1)
+            day_month = match.group(1)
 
-            time = match.group(2)
+            match_time = match.group(2)
 
             home = match.group(3).strip()
 
             away = match.group(4).strip()
-
-
-
-            banned = [
-
-                "Видео",
-
-                "Обзор",
-
-                "Лига",
-
-                "Премьер"
-
-            ]
-
-
-
-            if any(
-                x in home
-                for x in banned
-            ):
-
-                continue
-
-
-
-            if any(
-                x in away
-                for x in banned
-            ):
-
-                continue
-
-
-
-            fixture_url = self.extract_match_url(
-
-                link
-
-            )
 
 
 
@@ -214,35 +205,66 @@ class Soccer365Source:
                 {
 
                     "league":
+
                     "RPL",
 
 
+
                     "season":
+
                     "2026/27",
 
 
-                    "date":
-                    self.convert_date(date),
+
+                    "match_date":
+
+                    self.convert_date(
+
+                        day_month
+
+                    ),
 
 
-                    "time":
-                    time,
+
+                    "match_time":
+
+                    match_time,
+
 
 
                     "home_team":
-                    self.normalize_team(home),
+
+                    self.normalize_team(
+
+                        home
+
+                    ),
+
 
 
                     "away_team":
-                    self.normalize_team(away),
+
+                    self.normalize_team(
+
+                        away
+
+                    ),
+
 
 
                     "status":
+
                     "scheduled",
 
 
+
                     "match_url":
-                    fixture_url
+
+                    self.extract_match_url(
+
+                        link
+
+                    )
 
                 }
 
@@ -252,9 +274,10 @@ class Soccer365Source:
 
         logger.info(
 
-            f"Soccer365 parsed fixtures: {len(fixtures)}"
+            f"Soccer365 fixtures parsed: {len(fixtures)}"
 
         )
+
 
 
         return fixtures
@@ -262,9 +285,241 @@ class Soccer365Source:
 
 
 
+
+
+
+    # =================================================
+    # RESULTS PARSER
+    # =================================================
+
+
+    def parse_results(self):
+
+
+        html = self.get_html()
+
+
+
+        if not html:
+
+            logger.warning(
+
+                "Soccer365 empty html"
+
+            )
+
+            return []
+
+
+
+
+        logger.info(
+
+            f"Soccer365 html length: {len(html)}"
+
+        )
+
+
+
+        soup = BeautifulSoup(
+
+            html,
+
+            "html.parser"
+
+        )
+
+
+
+        text = soup.get_text(
+
+            " ",
+
+            strip=True
+
+        )
+
+
+
+        results = []
+
+
+
+        patterns = [
+
+
+
+            # Акрон - Зенит 0:5
+
+            r"(.+?)\s-\s(.+?)\s"
+            r"(\d+):(\d+)",
+
+
+
+            # Акрон - Зенит (0:5)
+
+            r"(.+?)\s-\s(.+?)\s"
+            r"\((\d+):(\d+)\)",
+
+
+
+            # Акрон 0 Зенит 5
+
+            r"(.+?)\s(\d+)\s+"
+            r"(.+?)\s(\d+)"
+
+        ]
+
+
+
+
+        for pattern in patterns:
+
+
+
+            matches = re.findall(
+
+                pattern,
+
+                text
+
+            )
+
+
+
+            if not matches:
+
+                continue
+
+
+
+            logger.info(
+
+                f"Pattern results found: {len(matches)}"
+
+            )
+
+
+
+            for match in matches:
+
+
+
+                try:
+
+
+
+                    if len(match) == 4:
+
+
+
+                        home = match[0]
+
+                        home_score = int(
+
+                            match[1]
+
+                        )
+
+
+                        away = match[2]
+
+                        away_score = int(
+
+                            match[3]
+
+                        )
+
+
+
+                    else:
+
+                        continue
+
+
+
+
+
+                    results.append(
+
+                        {
+
+
+                        "home_team":
+
+                        self.normalize_team(
+
+                            home.strip()
+
+                        ),
+
+
+
+                        "away_team":
+
+                        self.normalize_team(
+
+                            away.strip()
+
+                        ),
+
+
+
+                        "home_score":
+
+                        home_score,
+
+
+
+                        "away_score":
+
+                        away_score,
+
+
+
+                        "status":
+
+                        "finished"
+
+
+                        }
+
+                    )
+
+
+
+                except Exception:
+
+
+                    continue
+
+
+
+            break
+
+
+
+
+        logger.info(
+
+            f"Soccer365 results parsed: {len(results)}"
+
+        )
+
+
+
+        return results
+
+
+
+
+
+
+
     # =================================================
     # MATCH URL
     # =================================================
+
 
     def extract_match_url(
 
@@ -282,43 +537,33 @@ class Soccer365Source:
         )
 
 
+
         if not href:
 
             return None
 
 
 
-        # матчи Soccer365 обычно:
 
-        if (
+        if href.startswith("http"):
 
-            "/live/" in href
-
-            or
-
-            "/matches/" in href
-
-        ):
-
-
-            if href.startswith("http"):
-
-                return href
-
-
-            return (
-
-                self.BASE_URL
-
-                +
-
-                href
-
-            )
+            return href
 
 
 
-        return None
+        return (
+
+            self.BASE_URL
+
+            +
+
+            href
+
+        )
+
+
+
+
 
 
 
@@ -326,6 +571,7 @@ class Soccer365Source:
     # =================================================
     # DATE
     # =================================================
+
 
     def convert_date(
 
@@ -339,7 +585,9 @@ class Soccer365Source:
         day, month = value.split(".")
 
 
+
         year = datetime.now().year
+
 
 
         return (
@@ -355,9 +603,14 @@ class Soccer365Source:
 
 
 
+
+
+
+
     # =================================================
     # TEAM NORMALIZATION
     # =================================================
+
 
     def normalize_team(
 
@@ -368,23 +621,54 @@ class Soccer365Source:
     ):
 
 
+        name = (
+
+            name
+
+            .replace(
+
+                "\n",
+
+                " "
+
+            )
+
+            .strip()
+
+        )
+
+
+
         mapping = {
 
 
             "Динамо Москва":
+
             "Динамо М",
 
 
+
             "Динамо Махачкала":
+
             "Динамо Мх",
 
 
+
             "Локомотив Москва":
+
             "Локомотив",
 
 
+
             "Спартак Москва":
-            "Спартак"
+
+            "Спартак",
+
+
+
+            "Ростов":
+
+            "Ростов"
 
         }
 
