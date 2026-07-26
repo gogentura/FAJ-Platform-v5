@@ -63,9 +63,7 @@ from app.handlers.expert_predictions import (
 )
 
 # ===== НОВЫЙ ИМПОРТ =====
-from app.handlers.calibration import (
-    cmd_calibration
-)
+from app.handlers.calibration import cmd_calibration
 
 # ===== ВАЖНО: импорт генератора прогнозов =====
 from app.handlers.generate_predictions import (
@@ -118,7 +116,7 @@ SERVICE_BUTTONS = {
 
     "🤖 FAJ прогнозы",
     "🧠 Мои прогнозы",
-    "🧠 Анализ ошибок FAJ",   # <- новая кнопка
+    "🧠 Анализ ошибок FAJ",
 
     "🏆 Турниры",
     "📋 Журнал",
@@ -312,6 +310,12 @@ async def run_bot(
             message
         )
 
+    # ===== НОВАЯ КОМАНДА КАЛИБРОВКИ =====
+    dp.message.register(
+        cmd_calibration,
+        Command("calibration")
+    )
+
 
     # =================================================
     # MAIN MENU
@@ -394,7 +398,7 @@ async def run_bot(
 
 
 
-    # ===== НОВЫЙ ОБРАБОТЧИК =====
+    # ===== ОБРАБОТЧИК КНОПКИ "🧠 Анализ ошибок FAJ" =====
     @dp.message(
         lambda m:
         m.text == "🧠 Анализ ошибок FAJ"
