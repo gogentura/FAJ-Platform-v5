@@ -1,8 +1,13 @@
 # =====================================================
-# FAJ Platform v6.0
-# FAJ Predictions Handler
-# With Team Passport Analysis
+# FAJ Platform v6.5
+# app/handlers/faj_predictions.py
+#
+# FAJ Predictions Viewer
+# PostgreSQL version
 # =====================================================
+
+
+import logging
 
 
 from aiogram import types
@@ -24,9 +29,14 @@ from app.keyboards.main import (
 
 
 
+logger = logging.getLogger(__name__)
+
+
+
+
 
 # =====================================================
-# FORMAT PROBABILITY
+# FORMAT %
 # =====================================================
 
 
@@ -42,18 +52,22 @@ def format_probability(value):
             value *= 100
 
 
-        return round(value, 1)
+        return round(
+            value,
+            1
+        )
 
 
-    except:
+    except Exception:
 
         return 0
 
 
 
 
+
 # =====================================================
-# CONFIDENCE LABEL
+# CONFIDENCE
 # =====================================================
 
 
@@ -79,24 +93,63 @@ def confidence_label(value):
             return "🔴 Низкая"
 
 
-    except:
+    except Exception:
 
         return "⚪ Нет данных"
 
 
 
 
+
+
 # =====================================================
-# SHOW FAJ PREDICTIONS
+# SAFE GET
+# =====================================================
+
+
+def safe_get(
+
+    item,
+
+    key,
+
+    default="-"
+
+):
+
+
+    value = item.get(
+
+        key
+
+    )
+
+
+    if value is None:
+
+        return default
+
+
+    return value
+
+
+
+
+
+# =====================================================
+# FAJ PREDICTIONS
 # =====================================================
 
 
 async def cmd_faj_predictions(
+
     message: types.Message
+
 ):
 
 
     try:
+
 
 
         predictions = get_predictions(
@@ -115,27 +168,35 @@ async def cmd_faj_predictions(
             await message.answer(
 
                 """
-🤖 FAJ прогнозы
+🤖 FAJ ПРОГНОЗЫ
 
 
-Прогнозы модели пока не созданы.
+Прогнозы пока отсутствуют.
 
 
-Сначала:
+Запусти:
 
-⚙️ Админ
+⚙️ Админ панель
+
 ↓
+
 🚀 Создать прогнозы тура
 
 
 После этого появятся:
 
-• анализ команд
+• xG анализ
+
+• FAJ Rating
+
 • вероятности
-• xG
-• точные счета
-• надёжность прогноза
-• версия модели
+
+• точный счёт
+
+• риск
+
+• категория
+
 """,
 
                 reply_markup=main_keyboard()
@@ -148,146 +209,174 @@ async def cmd_faj_predictions(
 
 
 
-        text = (
 
-            "🤖 *FAJ прогнозы РПЛ 2026/27*\n\n"
+        text = """
 
-            "🧠 FAJ Engine v6.0\n"
+🏆 *FAJ ПРОГНОЗЫ РПЛ*
 
-            "🎲 Monte Carlo: 10000\n"
+🧠 FAJ Engine v6.5
 
-            "📊 xG + Team Passport\n\n"
+🎲 Monte Carlo: 10000
 
-        )
+📊 xG + Team Passport
+
+━━━━━━━━━━━━━━
+
+"""
 
 
 
-        for item in predictions[:8]:
+        for item in predictions[:10]:
 
 
-            home_team = item.get(
+            home = safe_get(
+
+                item,
+
                 "home_team"
+
             )
 
 
-            away_team = item.get(
+            away = safe_get(
+
+                item,
+
                 "away_team"
-            )
-
-
-
-            confidence = item.get(
-                "confidence",
-                0
-            )
-
-
-
-            text += (
-
-                "\n━━━━━━━━━━━━━━\n"
-
-                f"⚽ *{home_team} — {away_team}*\n\n"
-
-                f"📅 Тур: {item.get('round','-')}\n\n"
 
             )
 
 
 
-            # ===============================
-            # PASSPORT ANALYSIS
-            # ===============================
+            text += f"""
 
+⚽ *{home} — {away}*
 
-            text += format_passport_block(
-
-                home_team,
-
-                away_team
-
-            )
-
-
-            text += "\n"
+"""
 
 
 
+            # паспорт
 
-            # ===============================
-            # MODEL OUTPUT
-            # ===============================
-
-
-            text += (
-
-                "📊 Вероятности:\n"
-
-                f"🏠 П1: "
-                f"{format_probability(item.get('home_probability'))}%\n"
-
-                f"🤝 X: "
-                f"{format_probability(item.get('draw_probability'))}%\n"
-
-                f"🚩 П2: "
-                f"{format_probability(item.get('away_probability'))}%\n\n"
-
-            )
+            try:
 
 
+                text += format_passport_block(
 
-            text += (
+                    home,
 
-                f"📈 xG: "
+                    away
 
-                f"{item.get('xg_home','-')} - "
+                )
 
-                f"{item.get('xg_away','-')}\n\n"
 
-            )
+                text += "\n"
+
+
+            except Exception:
+
+
+                pass
 
 
 
-            text += (
 
-                f"🎯 Ожидаемый счёт: "
+            text += f"""
 
-                f"*{item.get('expected_score','-')}*\n\n"
-
-            )
+📊 Вероятности:
 
 
-
-            text += (
-
-                f"🔥 Надёжность прогноза: "
-
-                f"{confidence}%\n"
-
-                f"{confidence_label(confidence)}\n\n"
-
-            )
+🏠 П1:
+{format_probability(
+    safe_get(item,"home_probability",0)
+)}%
 
 
-
-            text += (
-
-                f"⚽ Обе забьют: "
-
-                f"{format_probability(item.get('btts_probability'))}%\n"
-
-            )
+🤝 X:
+{format_probability(
+    safe_get(item,"draw_probability",0)
+)}%
 
 
-            text += (
-
-                f"⚽ Тотал больше 2.5: "
-
-                f"{format_probability(item.get('over25_probability'))}%\n"
-
-            )
+🚩 П2:
+{format_probability(
+    safe_get(item,"away_probability",0)
+)}%
 
 
+
+📈 xG:
+
+{safe_get(item,"xg_home")} -
+{safe_get(item,"xg_away")}
+
+
+
+🎯 Ожидаемый счёт:
+
+*{safe_get(
+    item,
+    "expected_score"
+)}*
+
+
+
+🔥 Уверенность:
+
+{format_probability(
+    safe_get(item,"confidence",0)
+)}%
+
+{confidence_label(
+    safe_get(item,"confidence",0)
+)}
+
+
+
+⚠️ Риск:
+
+{safe_get(
+    item,
+    "risk",
+    "Нет данных"
+)}
+
+
+
+🏷 Категория:
+
+{safe_get(
+    item,
+    "grade",
+    "C"
+)}
+
+
+
+━━━━━━━━━━━━━━
+
+"""
+
+
+
+
+
+        text += """
+
+✅ FAJ Journal обновлён
+
+
+После завершения матчей система сможет:
+
+
+📊 сравнить прогноз и факт
+
+🧠 найти ошибки
+
+📈 откалибровать FAJ Core
+
+
+"""
 
 
 
@@ -304,7 +393,16 @@ async def cmd_faj_predictions(
 
 
 
+
     except Exception as e:
+
+
+
+        logger.exception(
+
+            "FAJ predictions handler error"
+
+        )
 
 
         await message.answer(
@@ -314,11 +412,14 @@ async def cmd_faj_predictions(
 
 
 Тип:
+
 {type(e).__name__}
 
 
 Ошибка:
+
 {str(e)}
+
 """,
 
             reply_markup=main_keyboard()
