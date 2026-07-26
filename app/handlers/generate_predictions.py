@@ -1,8 +1,10 @@
 # =====================================================
-# FAJ Platform v6.5
+# FAJ Platform v6.7
 # app/handlers/generate_predictions.py
 #
 # Generate Tour Predictions Handler
+#
+# FAJ Pipeline + Journal + Calibration Ready
 # =====================================================
 
 
@@ -17,8 +19,8 @@ from app.services.tour_predictor import (
 )
 
 
-from app.handlers.keyboard import (
-    get_main_keyboard
+from app.keyboards.main import (
+    main_keyboard
 )
 
 
@@ -30,53 +32,36 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================
-# SAFE VALUE
+# SAFE
 # =====================================================
 
 
 def safe_value(
-
     value,
-
     default="-"
-
 ):
-
 
     if value is None:
 
         return default
 
 
-    return value
+    return str(value)
 
 
 
 
 
-# =====================================================
-# FORMAT %
-# =====================================================
-
-
-def format_percent(
-
-    value
-
-):
-
+def format_percent(value):
 
     try:
 
-
-        value = float(value)
-
+        value=float(value or 0)
 
 
         if value <= 1:
 
-            value *= 100
-
+            value*=100
 
 
         return f"{value:.1f}%"
@@ -85,9 +70,7 @@ def format_percent(
 
     except Exception:
 
-
-        return "Нет данных"
-
+        return "0%"
 
 
 
@@ -95,7 +78,7 @@ def format_percent(
 
 
 # =====================================================
-# CREATE TOUR
+# GENERATE TOUR
 # =====================================================
 
 
@@ -109,28 +92,33 @@ async def cmd_generate_predictions(
     await message.answer(
 
         """
-🚀 FAJ начинает анализ тура...
+🚀 FAJ запускает прогноз тура
 
 
-Проверяем:
+Версия:
 
-📅 календарь матчей
+🧠 FAJ Engine v6.7
 
-📁 паспорта команд
 
-📊 xG модель
+Модули:
 
-🧠 FAJ Core
+📁 Team Passport
+
+📊 xG Engine
 
 🎲 Monte Carlo 10000
 
+🧠 Expert Layer
+
 ⚠️ Risk Engine
 
+📈 Calibration Ready
 
-Пожалуйста, подождите...
-        """,
 
-        reply_markup=get_main_keyboard()
+Ожидайте...
+""",
+
+        reply_markup=main_keyboard()
 
     )
 
@@ -153,32 +141,30 @@ async def cmd_generate_predictions(
         if not predictions:
 
 
-
             await message.answer(
 
                 """
-⚠️ FAJ не нашёл матчей для анализа.
+⚠️ Нет прогнозов
 
 
 Проверь:
 
-• календарь fixtures
+• fixtures
 
-• статус scheduled
+• сезон
 
-• сезон 2026/27
+• паспорта команд
 
-• загрузку паспортов
+• статус матчей
 
-                """,
+""",
 
-                reply_markup=get_main_keyboard()
+                reply_markup=main_keyboard()
 
             )
 
 
             return
-
 
 
 
@@ -189,7 +175,7 @@ async def cmd_generate_predictions(
 
 🏟 Лига: RPL
 
-🧠 FAJ Engine v6.5
+🧠 FAJ Engine v6.7
 
 🎲 Monte Carlo: 10000
 
@@ -202,111 +188,153 @@ async def cmd_generate_predictions(
         for prediction in predictions:
 
 
+            if not prediction:
 
-            home = prediction.get(
-
-                "home_team",
-
-                "?"
-
-            )
+                continue
 
 
-            away = prediction.get(
 
-                "away_team",
+            home=safe_value(
 
-                "?"
+                prediction.get(
+                    "home_team"
+                )
 
             )
 
 
+            away=safe_value(
 
-            winner = prediction.get(
+                prediction.get(
+                    "away_team"
+                )
 
-                "winner",
+            )
 
-                "Нет"
+
+            winner=safe_value(
+
+                prediction.get(
+                    "winner"
+                )
+
+            )
+
+
+            score=safe_value(
+
+                prediction.get(
+                    "expected_score"
+                )
+
+            )
+
+
+            confidence=format_percent(
+
+                prediction.get(
+                    "confidence"
+                )
+
+            )
+
+
+            risk=safe_value(
+
+                prediction.get(
+                    "risk",
+                    "Средний"
+
+                )
+
+            )
+
+
+            grade=safe_value(
+
+                prediction.get(
+                    "grade",
+                    "C"
+
+                )
+
+            )
+
+
+            xg_home=safe_value(
+
+                prediction.get(
+                    "xg_home",
+                    0
+
+                )
+
+            )
+
+
+            xg_away=safe_value(
+
+                prediction.get(
+                    "xg_away",
+                    0
+
+                )
+
+            )
+
+
+            rating_home=safe_value(
+
+                prediction.get(
+                    "home_rating",
+                    0
+
+                )
+
+            )
+
+
+            rating_away=safe_value(
+
+                prediction.get(
+                    "away_rating",
+                    0
+
+                )
+
+            )
+
+
+            factors=prediction.get(
+
+                "factors",
+
+                []
 
             )
 
 
 
-            score = prediction.get(
-
-                "expected_score",
-
-                "-"
-
-            )
+            factor_text=""
 
 
-
-            confidence = prediction.get(
-
-                "confidence",
-
-                0
-
-            )
+            if factors:
 
 
+                factor_text="\n".join(
 
-            risk = prediction.get(
+                    [
 
-                "risk",
+                        f"• {str(x)}"
 
-                "Нет данных"
+                        for x in factors[:3]
 
-            )
+                        if x is not None
 
+                    ]
 
+                )
 
-            grade = prediction.get(
-
-                "grade",
-
-                "C"
-
-            )
-
-
-
-            home_rating = prediction.get(
-
-                "home_rating",
-
-                0
-
-            )
-
-
-            away_rating = prediction.get(
-
-                "away_rating",
-
-                0
-
-            )
-
-
-
-            xg_home = prediction.get(
-
-                "xg_home",
-
-                "-"
-
-            )
-
-
-            xg_away = prediction.get(
-
-                "xg_away",
-
-                "-"
-
-            )
 
 
 
@@ -316,12 +344,13 @@ async def cmd_generate_predictions(
 
 
 🏆 Победа:
+
 {winner}
 
 
 🎯 Счёт:
 
-{safe_value(score)}
+{score}
 
 
 📊 xG:
@@ -329,14 +358,14 @@ async def cmd_generate_predictions(
 {xg_home} — {xg_away}
 
 
-🎯 Уверенность:
+🔥 Уверенность:
 
-{format_percent(confidence)}
+{confidence}
 
 
 🧠 FAJ Rating:
 
-{home_rating} — {away_rating}
+{rating_home} — {rating_away}
 
 
 ⚠️ Риск:
@@ -349,6 +378,11 @@ async def cmd_generate_predictions(
 {grade}
 
 
+🧠 Факторы:
+
+{factor_text}
+
+
 ──────────────
 
 """
@@ -358,16 +392,18 @@ async def cmd_generate_predictions(
 
         text += """
 
-✅ Прогнозы сохранены в FAJ Journal
+✅ Прогнозы сохранены
 
 
-Теперь система сможет:
+FAJ Learning Layer:
 
-📊 сравнить факт с прогнозом
+📊 сравнение факт/прогноз
 
-🧠 найти ошибки модели
+🧠 поиск ошибок
 
-📈 улучшать FAJ Core
+📈 Calibration Layer
+
+🚀 улучшение FAJ Core
 
 """
 
@@ -379,28 +415,23 @@ async def cmd_generate_predictions(
 
             parse_mode="Markdown",
 
-            reply_markup=get_main_keyboard()
+            reply_markup=main_keyboard()
 
         )
-
 
 
 
     except Exception as e:
 
 
+        logger.exception(e)
 
-        logger.exception(
-
-            "Generate predictions error"
-
-        )
 
 
         await message.answer(
 
             f"""
-❌ Ошибка создания прогнозов тура
+❌ Ошибка генерации тура FAJ
 
 
 Тип:
@@ -414,6 +445,6 @@ async def cmd_generate_predictions(
 
 """,
 
-            reply_markup=get_main_keyboard()
+            reply_markup=main_keyboard()
 
         )
