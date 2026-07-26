@@ -82,6 +82,11 @@ from app.handlers.debug_soccer365 import (
     cmd_debug_soccer365
 )
 
+# ===== НОВЫЙ ИМПОРТ (debug_results) =====
+from app.handlers.debug_results import (
+    cmd_debug_results
+)
+
 # ===== НОВЫЙ ИМПОРТ =====
 from app.debug_prediction import cmd_debug_prediction
 
@@ -271,6 +276,12 @@ async def run_bot(
     dp.message.register(
         debug_prediction_handler,
         Command("debug_prediction")
+    )
+
+    # ===== НОВАЯ КОМАНДА DEBUG RESULTS =====
+    dp.message.register(
+        cmd_debug_results,
+        Command("debug_results")
     )
 
     # ===== НОВЫЕ КОМАНДЫ =====
