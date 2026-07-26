@@ -1,14 +1,42 @@
 # =====================================================
-# FAJ Platform v6.3
+# FAJ Platform v6.7
 # app/utils/formatter.py
 #
 # Prediction Formatter
+#
+# Safe None Protection
 # =====================================================
+
+
+
+# =====================================================
+# SAFE TEXT
+# =====================================================
+
+
+def safe_text(value, default=""):
+
+    if value is None:
+
+        return default
+
+
+    try:
+
+        return str(value)
+
+    except Exception:
+
+        return default
+
+
+
 
 
 # =====================================================
 # CONFIDENCE LABEL
 # =====================================================
+
 
 def get_confidence_label(confidence):
 
@@ -17,42 +45,29 @@ def get_confidence_label(confidence):
 
     if confidence >= 90:
 
-        return (
-            "AAA",
-            "Очень сильный прогноз"
-        )
+        return "AAA", "Очень сильный прогноз"
 
 
     elif confidence >= 80:
 
-        return (
-            "AA",
-            "Высокая уверенность"
-        )
+        return "AA", "Высокая уверенность"
 
 
     elif confidence >= 70:
 
-        return (
-            "A",
-            "Хороший прогноз"
-        )
+        return "A", "Хороший прогноз"
 
 
     elif confidence >= 60:
 
-        return (
-            "B",
-            "Рабочий прогноз"
-        )
+        return "B", "Рабочий прогноз"
 
 
     else:
 
-        return (
-            "C",
-            "Высокий риск"
-        )
+        return "C", "Высокий риск"
+
+
 
 
 
@@ -60,35 +75,37 @@ def get_confidence_label(confidence):
 # RISK LABEL
 # =====================================================
 
+
 def get_risk_label(risk):
 
-    if isinstance(risk, str):
+    if isinstance(risk,str):
 
         return risk
 
 
-    risk = float(risk or 0)
+    risk=float(risk or 0)
 
 
-    if risk >= 70:
+    if risk>=70:
 
         return "Высокий"
 
 
-    elif risk >= 40:
+    elif risk>=40:
 
         return "Средний"
 
 
-    else:
+    return "Низкий"
 
-        return "Низкий"
+
 
 
 
 # =====================================================
 # FORMAT PREDICTION
 # =====================================================
+
 
 def format_prediction(
 
@@ -119,12 +136,24 @@ def format_prediction(
 ):
 
 
-    lines = []
+    lines=[]
 
 
-    # ================================================
+
+    home=safe_text(home,"-")
+    away=safe_text(away,"-")
+
+
+    decision = decision or {}
+
+    xg = xg or {}
+
+    factors = factors or []
+
+
+
     # HEADER
-    # ================================================
+
 
     lines.append(
         f"⚽ *{home} — {away}*"
@@ -142,9 +171,8 @@ def format_prediction(
 
 
 
-    # ================================================
     # XG
-    # ================================================
+
 
     lines.append(
         "📊 *xG*"
@@ -162,9 +190,8 @@ def format_prediction(
 
 
 
-    # ================================================
     # PROBABILITIES
-    # ================================================
+
 
     lines.append("")
 
@@ -176,16 +203,19 @@ def format_prediction(
     lines.append(
 
         f"П1 "
-        f"{decision.get('home_probability',
-                        decision.get('home_prob',0))}%  "
+        f"{safe_text(decision.get('home_probability',
+        decision.get('home_prob',0)))}%  "
+
         f"Х "
-        f"{decision.get('draw_probability',
-                        decision.get('draw_prob',0))}%  "
+        f"{safe_text(decision.get('draw_probability',
+        decision.get('draw_prob',0)))}%  "
+
         f"П2 "
-        f"{decision.get('away_probability',
-                        decision.get('away_prob',0))}%"
+        f"{safe_text(decision.get('away_probability',
+        decision.get('away_prob',0)))}%"
 
     )
+
 
 
     lines.append(
@@ -194,35 +224,74 @@ def format_prediction(
 
 
 
-    # ================================================
     # SCORE
-    # ================================================
+
 
     lines.append(
-        "🎯 *Наиболее вероятные счета*"
+        "🎯 *Наиболее вероятный счёт*"
     )
+
 
 
     if top_scores:
 
 
-        medals = [
+        medals=[
             "1️⃣",
             "2️⃣",
             "3️⃣"
         ]
 
 
-        for i, score in enumerate(top_scores[:3]):
+        for i,score in enumerate(top_scores[:3]):
+
+
+            if score is None:
+
+                continue
+
+
+
+            if isinstance(score,dict):
+
+
+                value=safe_text(
+                    score.get("score")
+                )
+
+
+                probability=float(
+                    score.get(
+                        "probability",
+                        0
+                    )
+                    or 0
+                )
+
+
+            else:
+
+
+                value=safe_text(score)
+
+                probability=0
+
+
 
             lines.append(
 
                 f"{medals[i]} "
-                f"{score.get('score','')}"
-                f" "
-                f"({float(score.get('probability',0)):.1f}%)"
+                f"{value}"
+                +
+
+                (
+                    f" ({probability:.1f}%)"
+                    if probability
+                    else ""
+                )
 
             )
+
 
 
     else:
@@ -230,53 +299,46 @@ def format_prediction(
 
         lines.append(
 
-            decision.get(
-                "expected_score",
-                ""
+            safe_text(
+
+                decision.get(
+                    "expected_score"
+                ),
+
+                "-"
+
             )
 
         )
 
 
 
-    # ================================================
     # MARKETS
-    # ================================================
+
 
     lines.append("")
 
 
-    lines.append(
-        "🤝 *Обе забьют*"
-    )
-
-
-    btts_value = float(btts or 0)
+    btts_value=float(btts or 0)
 
 
     lines.append(
 
-        f"{'Да ✅' if btts_value > 0.5 else 'Нет ❌'} "
+        f"🤝 Обе забьют: "
+        f"{'Да ✅' if btts_value>0.5 else 'Нет ❌'} "
         f"({btts_value*100:.1f}%)"
 
     )
 
 
 
-    lines.append("")
-
-
-    lines.append(
-        "⚽ *Тотал >2.5*"
-    )
-
-
-    over_value = float(over25 or 0)
+    over_value=float(over25 or 0)
 
 
     lines.append(
 
-        f"{'Да ✅' if over_value > 0.5 else 'Нет ❌'} "
+        f"⚽ Тотал >2.5: "
+        f"{'Да ✅' if over_value>0.5 else 'Нет ❌'} "
         f"({over_value*100:.1f}%)"
 
     )
@@ -289,41 +351,56 @@ def format_prediction(
 
 
 
-    # ================================================
     # ANALYSIS
-    # ================================================
+
 
     lines.append(
         "📌 *Аналитический вывод*"
     )
 
 
-    winner_probability = float(
+
+    winner_probability=float(
 
         decision.get(
             "winner_probability",
             0
         )
+        or 0
 
     )
 
 
-    if winner_probability >= 55:
+    winner=safe_text(
+
+        decision.get(
+            "winner_name",
+            decision.get(
+                "winner"
+            )
+        ),
+
+        "-"
+
+    )
+
+
+
+    if winner_probability>=55:
 
 
         lines.append(
 
-            f"Преимущество: "
-            f"*{decision.get('winner_name','')}*"
+            f"Преимущество: *{winner}*"
 
         )
 
 
-    elif winner_probability >= 45:
+    elif winner_probability>=45:
 
 
         lines.append(
-            "Матч сбалансирован, явного фаворита нет"
+            "Матч сбалансирован"
         )
 
 
@@ -331,16 +408,30 @@ def format_prediction(
 
 
         lines.append(
-            "Высокий риск, прогноз нестабилен"
+            "Высокий риск"
         )
 
 
 
-    # ================================================
     # FACTORS
-    # ================================================
 
-    if factors:
+
+    clean_factors=[]
+
+
+    for factor in factors:
+
+
+        if factor is not None:
+
+
+            clean_factors.append(
+                str(factor)
+            )
+
+
+
+    if clean_factors:
 
 
         lines.append("")
@@ -350,7 +441,8 @@ def format_prediction(
         )
 
 
-        for factor in factors[:4]:
+        for factor in clean_factors[:4]:
+
 
             lines.append(
                 f"• {factor}"
@@ -358,19 +450,13 @@ def format_prediction(
 
 
 
-    # ================================================
-    # FAJ RATING
-    # ================================================
+    # RATING
+
 
     if faj_rating:
 
 
         lines.append("")
-
-        lines.append(
-            "━━━━━━━━━━━━━━"
-        )
-
 
         lines.append(
             "🧠 *FAJ Rating*"
@@ -394,14 +480,13 @@ def format_prediction(
 
 
 
-    # ================================================
-    # RISK + CONFIDENCE
-    # ================================================
+    # CONFIDENCE
+
 
     if confidence is not None:
 
 
-        label, description = get_confidence_label(
+        label,description = get_confidence_label(
             confidence
         )
 
@@ -411,19 +496,14 @@ def format_prediction(
 
         lines.append(
 
-            f"⚠️ Риск: "
-            f"{get_risk_label(risk)}"
+            f"⚠️ Риск: {get_risk_label(risk)}"
 
         )
 
 
-        lines.append("")
-
-
         lines.append(
 
-            f"🎯 Уверенность FAJ: "
-            f"{float(confidence):.1f}%"
+            f"🎯 Уверенность FAJ: {float(confidence):.1f}%"
 
         )
 
@@ -442,4 +522,16 @@ def format_prediction(
         )
 
 
-    return "\n".join(lines)
+
+    # FINAL SAFE JOIN
+
+
+    return "\n".join(
+
+        str(line)
+
+        for line in lines
+
+        if line is not None
+
+    )
