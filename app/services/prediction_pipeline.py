@@ -1,10 +1,8 @@
 # =====================================================
-# FAJ Platform v6.6
+# FAJ Platform v6.8
 # app/services/prediction_pipeline.py
 #
-# FAJ Prediction Pipeline
-#
-# Core + Passport + Risk + Explain
+# Main Prediction Pipeline
 # =====================================================
 
 
@@ -20,42 +18,7 @@ from app.passport_manager import (
 )
 
 
-from app.core.risk_engine import (
-    risk_engine
-)
-
-
-from app.utils.explainer import (
-    explain_prediction
-)
-
-
-
 logger = logging.getLogger(__name__)
-
-
-
-
-# =====================================================
-# SAFE FLOAT
-# =====================================================
-
-
-def safe_float(value, default=0):
-
-    try:
-
-        if value is None:
-
-            return default
-
-
-        return float(value)
-
-
-    except Exception:
-
-        return default
 
 
 
@@ -69,202 +32,20 @@ def safe_float(value, default=0):
 class PredictionPipeline:
 
 
-    VERSION = "6.6"
+
+    VERSION = "6.8"
 
 
 
     def __init__(self):
 
+
         self.core = FAJCore()
 
 
 
-
-
     # =================================================
-    # PASSPORT
-    # =================================================
-
-
-    def get_passport(self, team):
-
-        try:
-
-            alias = get_team_by_alias(team)
-
-
-            if alias:
-
-                team = alias
-
-
-
-            passport = load_passport(team)
-
-
-            return passport or {}
-
-
-
-        except Exception as e:
-
-
-            logger.error(
-
-                f"Passport error {team}: {e}"
-
-            )
-
-
-            return {}
-
-
-
-
-
-    # =================================================
-    # RATING
-    # =================================================
-
-
-    def calculate_rating(self, passport):
-
-        if not passport:
-
-            return 0
-
-
-
-        if passport.get("faj_rating"):
-
-
-            return round(
-
-                safe_float(
-                    passport["faj_rating"]
-                ),
-
-                1
-
-            )
-
-
-
-        rating = (
-
-            safe_float(
-                passport.get("attack")
-            ) * 0.25
-
-
-            +
-
-            safe_float(
-                passport.get("defense")
-            ) * 0.25
-
-
-            +
-
-            safe_float(
-                passport.get("control")
-            ) * 0.20
-
-
-            +
-
-            safe_float(
-                passport.get("form")
-            ) * 0.20
-
-
-            +
-
-            safe_float(
-                passport.get("efficiency")
-            ) * 0.10
-
-        )
-
-
-        return round(rating,1)
-
-
-
-
-
-    # =================================================
-    # CORE CALL
-    # =================================================
-
-
-    def call_core(
-
-        self,
-
-        home_team,
-
-        away_team,
-
-        league
-
-    ):
-
-
-        if hasattr(
-
-            self.core,
-
-            "predict"
-
-        ):
-
-
-            return self.core.predict(
-
-                home_team,
-
-                away_team,
-
-                league
-
-            )
-
-
-
-        if hasattr(
-
-            self.core,
-
-            "predict_match"
-
-        ):
-
-
-            return self.core.predict_match(
-
-                home_team,
-
-                away_team,
-
-                league
-
-            )
-
-
-
-        raise Exception(
-
-            "FAJCore has no prediction method"
-
-        )
-
-
-
-
-
-    # =================================================
-    # MAIN PREDICTION
+    # MAIN API
     # =================================================
 
 
@@ -283,93 +64,26 @@ class PredictionPipeline:
     ):
 
 
+
         try:
+
 
 
             logger.info(
 
-                f"Pipeline start {home_team}-{away_team}"
-
-            )
-
-
-
-            # CORE
-
-            core_result = self.call_core(
+                "FAJ Pipeline start %s - %s",
 
                 home_team,
 
-                away_team,
-
-                league
+                away_team
 
             )
 
 
 
-            if not core_result:
-
-
-                raise Exception(
-
-                    "FAJ Core returned None"
-
-                )
-
-
-
-            if isinstance(core_result,dict):
-
-                if core_result.get("error"):
-
-                    raise Exception(
-
-                        core_result["error"]
-
-                    )
-
-
-
-
-
-            # ===============================
-            # XG
-            # ===============================
-
-
-            xg = (
-
-                core_result
-
-                .get("xg", {})
-
-                .get("predicted", {})
-
-            )
-
-
-
-            xg_home = safe_float(
-
-                xg.get("home")
-
-            )
-
-
-            xg_away = safe_float(
-
-                xg.get("away")
-
-            )
-
-
-
-
-
-            # ===============================
-            # PASSPORT
-            # ===============================
+            # ---------------------------------
+            # PASSPORT CHECK
+            # ---------------------------------
 
 
             home_passport = self.get_passport(
@@ -387,109 +101,40 @@ class PredictionPipeline:
 
 
 
-            home_rating = self.calculate_rating(
-
-                home_passport
-
-            )
+            if not home_passport:
 
 
-            away_rating = self.calculate_rating(
+                raise Exception(
 
-                away_passport
-
-            )
-
-
-
-
-
-            # ===============================
-            # DECISION
-            # ===============================
-
-
-            decision = core_result.get(
-
-                "decision",
-
-                {}
-
-            )
-
-
-
-            confidence = safe_float(
-
-                decision.get(
-
-                    "confidence",
-
-                    0
+                    f"Нет паспорта хозяев: {home_team}"
 
                 )
 
-            )
 
 
+            if not away_passport:
 
 
+                raise Exception(
 
-            winner_probability = safe_float(
-
-                decision.get(
-
-                    "winner_probability",
-
-                    0
+                    f"Нет паспорта гостей: {away_team}"
 
                 )
 
-            )
 
 
 
 
-
-            # ===============================
-            # RISK
-            # ===============================
-
-
-            risk = risk_engine.analyze(
-
-                confidence,
-
-                home_rating,
-
-                away_rating,
-
-                winner_probability,
-
-                xg_home,
-
-                xg_away
-
-            )
+            # ---------------------------------
+            # CORE
+            # ---------------------------------
 
 
+            result = self.core.predict_match(
 
+                home_team,
 
-
-            # ===============================
-            # EXPLAIN
-            # ===============================
-
-
-            factors = explain_prediction(
-
-                home_passport,
-
-                away_passport,
-
-                xg_home,
-
-                xg_away,
+                away_team,
 
                 league
 
@@ -499,202 +144,530 @@ class PredictionPipeline:
 
 
 
-            # ===============================
-            # FINAL OBJECT
-            # ===============================
+            # ---------------------------------
+            # EXTRA LAYERS
+            # ---------------------------------
 
 
-            return {
+            decision = result.get(
 
+                "decision",
 
-                "home_team":
-                    home_team,
+                {}
 
-
-                "away_team":
-                    away_team,
-
-
-                "league":
-                    league,
-
-
-                "season":
-                    season,
-
-
-                "winner":
-                    decision.get(
-                        "winner_name",
-                        decision.get(
-                            "winner"
-                        )
-                    ),
-
-
-                "expected_score":
-                    decision.get(
-                        "expected_score",
-                        "-"
-                    ),
+            )
 
 
 
-                "home_probability":
-                    safe_float(
-                        decision.get(
-                            "home_prob",
-                            decision.get(
-                                "home_probability",
-                                0
-                            )
-                        )
-                    ),
+            confidence = decision.get(
+
+                "confidence",
+
+                0
+
+            )
 
 
 
-                "draw_probability":
-                    safe_float(
-                        decision.get(
-                            "draw_prob",
-                            decision.get(
-                                "draw_probability",
-                                0
-                            )
-                        )
-                    ),
+            risk = self.calculate_risk(
+
+                confidence
+
+            )
 
 
 
-                "away_probability":
-                    safe_float(
-                        decision.get(
-                            "away_prob",
-                            decision.get(
-                                "away_probability",
-                                0
-                            )
-                        )
-                    ),
+            grade = self.calculate_grade(
+
+                confidence
+
+            )
 
 
 
-                "xg_home":
-                    xg_home,
 
 
-                "xg_away":
-                    xg_away,
+            factors = self.generate_factors(
 
+                result,
 
+                home_passport,
 
-                "top_scores":
-                    core_result.get(
-                        "simulation",
-                        {}
-                    ).get(
-                        "top_scores",
-                        []
-                    ),
+                away_passport
+
+            )
 
 
 
-                "btts":
-                    safe_float(
-                        core_result.get(
-                            "btts",
-                            0
-                        )
-                    ),
+
+
+            # ---------------------------------
+            # FINAL
+            # ---------------------------------
+
+
+            decision.update(
+
+
+                {
+
+                "risk": risk,
+
+
+                "grade": grade,
+
+
+                "factors": factors,
+
+
+                }
+
+            )
 
 
 
-                "over25":
-                    safe_float(
-                        core_result.get(
-                            "over25",
-                            0
-                        )
-                    ),
+            result["decision"] = decision
 
 
 
-                "confidence":
-                    confidence,
+            result["season"] = season
 
 
-                "home_rating":
-                    home_rating,
+
+            result["pipeline_version"] = self.VERSION
 
 
-                "away_rating":
-                    away_rating,
+
+            result["passport_quality"] = {
 
 
-                "risk":
-                    risk.get(
-                        "risk",
-                        "Средний"
-                    ),
+                "home":
+
+                self.passport_quality(
+
+                    home_passport
+
+                ),
 
 
-                "grade":
-                    risk.get(
-                        "grade",
-                        "C"
-                    ),
+                "away":
 
+                self.passport_quality(
 
-                "factors":
-                    factors
+                    away_passport
+
+                )
+
 
             }
+
+
+
+            result["season_phase"] = self.get_phase()
+
+
+
+            logger.info(
+
+                "FAJ Pipeline finished %s - %s",
+
+                home_team,
+
+                away_team
+
+            )
+
+
+
+            return result
+
 
 
 
         except Exception as e:
 
 
-            logger.exception(
 
-                f"Pipeline failed {home_team}-{away_team}"
+            logger.error(
+
+                "Pipeline error %s",
+
+                e,
+
+                exc_info=True
 
             )
 
 
-            return {
+            raise
 
 
-                "error":
-
-                    str(e),
 
 
-                "home_team":
 
-                    home_team,
-
-
-                "away_team":
-
-                    away_team,
+    # =================================================
+    # PASSPORT
+    # =================================================
 
 
-                "league":
+    def get_passport(
 
-                    league,
+        self,
+
+        team
+
+    ):
 
 
-                "confidence":
+        real_team = get_team_by_alias(
 
-                    0,
+            team
+
+        )
 
 
-                "expected_score":
+        if real_team:
 
-                    None
+            team = real_team
 
-            }
+
+
+        return load_passport(
+
+            team
+
+        )
+
+
+
+
+
+    # =================================================
+    # RISK ENGINE
+    # =================================================
+
+
+    def calculate_risk(
+
+        self,
+
+        confidence
+
+    ):
+
+
+        try:
+
+
+            confidence=float(
+
+                confidence
+
+            )
+
+
+
+        except:
+
+
+            return "Высокий"
+
+
+
+
+        if confidence >= 70:
+
+            return "Низкий"
+
+
+
+        if confidence >= 45:
+
+            return "Средний"
+
+
+
+        return "Высокий"
+
+
+
+
+
+    # =================================================
+    # GRADE ENGINE
+    # =================================================
+
+
+    def calculate_grade(
+
+        self,
+
+        confidence
+
+    ):
+
+
+        try:
+
+            confidence=float(
+
+                confidence
+
+            )
+
+
+        except:
+
+
+            return "C"
+
+
+
+        if confidence >= 80:
+
+            return "A"
+
+
+
+        if confidence >= 60:
+
+            return "B"
+
+
+
+        if confidence >= 40:
+
+            return "C"
+
+
+
+        return "D"
+
+
+
+
+
+
+
+    # =================================================
+    # FACTOR ENGINE
+    # =================================================
+
+
+    def generate_factors(
+
+        self,
+
+        result,
+
+        home,
+
+        away
+
+    ):
+
+
+        factors=[]
+
+
+
+        decision=result.get(
+
+            "decision",
+
+            {}
+
+        )
+
+
+
+        winner=decision.get(
+
+            "winner"
+
+        )
+
+
+
+
+        if winner=="home":
+
+
+            factors.append(
+
+                "🏹 Преимущество хозяев"
+
+            )
+
+
+
+        elif winner=="away":
+
+
+            factors.append(
+
+                "🏹 Преимущество гостей"
+
+            )
+
+
+
+        else:
+
+
+            factors.append(
+
+                "⚖️ Равная сила команд"
+
+            )
+
+
+
+
+        xg=result.get(
+
+            "xg",
+
+            {}
+
+        ).get(
+
+            "predicted",
+
+            {}
+
+        )
+
+
+
+        if xg:
+
+
+
+            if xg.get("home",0) > xg.get("away",0):
+
+                factors.append(
+
+                    f"📈 xG преимущество хозяев ({xg.get('home')})"
+
+                )
+
+
+            elif xg.get("away",0) > xg.get("home",0):
+
+                factors.append(
+
+                    f"📈 xG преимущество гостей ({xg.get('away')})"
+
+                )
+
+
+
+
+
+        factors.append(
+
+            f"🏆 Турнир: {result.get('league','RPL')}"
+
+        )
+
+
+
+        return factors
+
+
+
+
+
+
+
+    # =================================================
+    # PASSPORT QUALITY
+    # =================================================
+
+
+    def passport_quality(
+
+        self,
+
+        passport
+
+    ):
+
+
+        fields=[
+
+            "attack",
+
+            "defense",
+
+            "control",
+
+            "form",
+
+            "fitness"
+
+        ]
+
+
+
+        score=0
+
+
+
+        count=0
+
+
+
+        for field in fields:
+
+
+            if passport.get(field) is not None:
+
+
+                score += float(
+
+                    passport.get(field)
+
+                )
+
+
+                count+=1
+
+
+
+
+        if count==0:
+
+            return 0
+
+
+
+        return round(
+
+            score/count,
+
+            1
+
+        )
+
+
+
+
+
+
+
+    # =================================================
+    # SEASON PHASE
+    # =================================================
+
+
+    def get_phase(self):
+
+
+        return "START"
+
+
 
 
 
@@ -706,37 +679,3 @@ class PredictionPipeline:
 
 
 prediction_pipeline = PredictionPipeline()
-
-
-
-
-
-# =====================================================
-# LEGACY FUNCTION
-# =====================================================
-
-
-def predict_match_pipeline(
-
-    home_team,
-
-    away_team,
-
-    league="RPL",
-
-    season="2026/27"
-
-):
-
-
-    return prediction_pipeline.predict_match(
-
-        home_team,
-
-        away_team,
-
-        league,
-
-        season
-
-    )
