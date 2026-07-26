@@ -2,7 +2,8 @@
 # FAJ Platform v6.6
 # app/handlers/calibration.py
 #
-# FAJ Calibration Telegram Handler
+# FAJ Calibration Handler
+# PostgreSQL version
 # =====================================================
 
 
@@ -12,16 +13,16 @@ import logging
 from aiogram import types
 
 
-from app.core.expert_engine import (
-    analyze_match
-)
-
-
 from app.database import get_db
 
 
-from app.keyboards.main import (
-    main_keyboard
+from app.keyboards.admin import (
+    admin_keyboard
+)
+
+
+from app.core.expert_engine import (
+    analyze_match
 )
 
 
@@ -33,11 +34,120 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================
-# GET FINISHED MATCHES
+# GET COMPLETED MATCHES
 # =====================================================
 
 
-def get_finished_matches():
+def get_completed_matches():
+
+
+    conn = get_db()
+
+
+    try:
+
+
+        cur = conn.cursor()
+
+
+
+        cur.execute(
+            """
+            SELECT
+
+                f.id,
+
+                f.home_team,
+
+                f.away_team,
+
+                f.home_score,
+
+                f.away_score,
+
+                f.status,
+
+                f.season,
+
+
+                p.expected_score,
+
+                p.winner_prediction,
+
+                p.confidence
+
+
+            FROM fixtures f
+
+
+            LEFT JOIN predictions p
+
+            ON p.fixture_id = f.id
+
+
+            WHERE
+
+                f.status = 'finished'
+
+            AND
+
+                f.home_score IS NOT NULL
+
+            AND
+
+                f.away_score IS NOT NULL
+
+
+            ORDER BY f.id DESC
+
+
+            LIMIT 50
+
+            """
+        )
+
+
+
+        rows = cur.fetchall()
+
+
+
+        return rows
+
+
+
+    finally:
+
+        conn.close()
+
+
+
+
+
+
+
+# =====================================================
+# SAVE CALIBRATION RESULT
+# =====================================================
+
+
+def save_calibration(
+
+    fixture_id,
+
+    faj_score,
+
+    fact_score,
+
+    faj_winner,
+
+    fact_winner,
+
+    error_type,
+
+    confidence=0
+
+):
 
 
     conn = get_db()
@@ -54,46 +164,88 @@ def get_finished_matches():
 
         """
 
-        SELECT
+        INSERT INTO calibration_log
 
-        id,
+        (
 
-        home_team,
+            fixture_id,
 
-        away_team,
+            faj_score,
 
-        result
+            fact_score,
 
+            faj_winner,
 
-        FROM fixtures
+            fact_winner,
 
+            error_type,
 
-        WHERE status='finished'
+            created
 
-
-        ORDER BY id DESC
-
-
-        LIMIT 20
+        )
 
 
-        """
+        VALUES
+
+        (
+
+            %s,
+
+            %s,
+
+            %s,
+
+            %s,
+
+            %s,
+
+            %s,
+
+            NOW()
+
+        )
+
+
+        """,
+
+        (
+
+            fixture_id,
+
+            faj_score,
+
+            fact_score,
+
+            faj_winner,
+
+            fact_winner,
+
+            error_type
+
+        )
 
         )
 
 
 
-        rows = cur.fetchall()
+        conn.commit()
 
 
 
-        return [
+    except Exception as e:
 
-            dict(row)
 
-            for row in rows
+        conn.rollback()
 
-        ]
+
+        logger.error(
+
+            f"Calibration save error: {e}"
+
+        )
+
+
+        raise
 
 
 
@@ -107,8 +259,10 @@ def get_finished_matches():
 
 
 
+
+
 # =====================================================
-# CALIBRATION REPORT
+# CALIBRATION BUTTON
 # =====================================================
 
 
@@ -122,7 +276,8 @@ async def cmd_calibration(
     try:
 
 
-        matches = get_finished_matches()
+
+        matches = get_completed_matches()
 
 
 
@@ -134,20 +289,26 @@ async def cmd_calibration(
                 """
 🧠 FAJ Calibration
 
-Нет завершённых матчей для анализа.
 
-После окончания матчей:
+Нет завершённых матчей.
 
-FAJ сравнит:
 
-• прогноз модели
-• прогноз эксперта
-• фактический результат
+После обновления результатов:
 
-и создаст отчёт обучения.
+🔄 Обновить результаты
+
+FAJ сможет сравнить:
+
+🤖 модель
+
+👤 эксперт
+
+🏟 факт
+
+и обучить ядро.
 """,
 
-                reply_markup=main_keyboard()
+                reply_markup=admin_keyboard()
 
             )
 
@@ -159,16 +320,25 @@ FAJ сравнит:
 
 
 
-        analyzed = 0
+        total = 0
+
+        errors_count = 0
+
+        correct = 0
 
 
-        expert_better = 0
 
 
-        faj_better = 0
+
+        text = (
+
+            "🧠 *FAJ CALIBRATION REPORT*\n\n"
+
+            "━━━━━━━━━━━━━━\n\n"
+
+        )
 
 
-        errors = []
 
 
 
@@ -177,52 +347,121 @@ FAJ сравнит:
         for match in matches:
 
 
+
             try:
 
 
-                result = analyze_match(
+                fixture_id = match["id"]
 
-                    match["id"]
+
+
+                home = match["home_team"]
+
+                away = match["away_team"]
+
+
+
+                fact_score = (
+
+                    f"{match['home_score']}"
+
+                    "-"
+
+                    f"{match['away_score']}"
 
                 )
 
 
 
-                if result:
+                if match["home_score"] > match["away_score"]:
+
+                    fact_winner = home
 
 
-                    analyzed += 1
+                elif match["away_score"] > match["home_score"]:
+
+                    fact_winner = away
 
 
+                else:
 
-                    if result.get(
-
-                        "expert_better"
-
-                    ):
-
-
-                        expert_better += 1
-
-
-                    else:
-
-
-                        faj_better += 1
+                    fact_winner = "Ничья"
 
 
 
-                    errors.append(
 
-                        result.get(
 
-                            "error_type",
+                faj_score = match["expected_score"] or "-"
 
-                            ""
 
-                        )
+
+                faj_winner = match["winner_prediction"] or "-"
+
+
+
+
+
+                error_type = "OK"
+
+
+
+                if faj_winner != fact_winner:
+
+
+                    error_type = (
+
+                        "Ошибка победителя"
 
                     )
+
+                    errors_count += 1
+
+
+                else:
+
+
+                    correct += 1
+
+
+
+
+
+
+                save_calibration(
+
+                    fixture_id,
+
+                    faj_score,
+
+                    fact_score,
+
+                    faj_winner,
+
+                    fact_winner,
+
+                    error_type
+
+                )
+
+
+
+                total += 1
+
+
+
+
+                text += (
+
+                    f"⚽ {home} — {away}\n"
+
+                    f"FAJ: {faj_score} ({faj_winner})\n"
+
+                    f"Факт: {fact_score} ({fact_winner})\n"
+
+                    f"📌 {error_type}\n\n"
+
+                )
+
 
 
 
@@ -231,9 +470,7 @@ FAJ сравнит:
 
                 logger.error(
 
-                    "Calibration match error: %s",
-
-                    e,
+                    f"Calibration match error: {e}",
 
                     exc_info=True
 
@@ -246,57 +483,17 @@ FAJ сравнит:
 
 
 
-        text = (
-
-            "🧠 *FAJ CALIBRATION REPORT*\n\n"
+        text += (
 
             "━━━━━━━━━━━━━━\n\n"
 
-            f"📊 Проанализировано матчей: {analyzed}\n\n"
+            f"📊 Матчей: {total}\n"
 
-            f"👤 Эксперт лучше: {expert_better}\n"
+            f"✅ Верных: {correct}\n"
 
-            f"🤖 FAJ ближе: {faj_better}\n\n"
+            f"❌ Ошибок: {errors_count}\n\n"
 
-        )
-
-
-
-        if errors:
-
-
-            text += (
-
-                "Ошибки модели:\n\n"
-
-            )
-
-
-            unique = set(errors)
-
-
-            for error in unique:
-
-
-                text += (
-
-                    f"• {error}\n"
-
-                )
-
-
-
-        text += (
-
-            "\n━━━━━━━━━━━━━━\n\n"
-
-            "FAJ Learning Engine готов собирать данные.\n\n"
-
-            "Следующий этап:\n"
-
-            "📈 Калибровка FAJ Core\n"
-
-            "⚖️ Настройка разницы классов команд\n"
+            "FAJ Learning Engine обновляет данные.\n"
 
         )
 
@@ -310,7 +507,7 @@ FAJ сравнит:
 
             parse_mode="Markdown",
 
-            reply_markup=main_keyboard()
+            reply_markup=admin_keyboard()
 
         )
 
@@ -318,6 +515,15 @@ FAJ сравнит:
 
 
     except Exception as e:
+
+
+        logger.error(
+
+            f"Calibration handler error: {e}",
+
+            exc_info=True
+
+        )
 
 
         await message.answer(
@@ -336,6 +542,6 @@ FAJ сравнит:
 {e}
 """,
 
-            reply_markup=main_keyboard()
+            reply_markup=admin_keyboard()
 
         )
