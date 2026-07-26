@@ -87,6 +87,9 @@ from app.handlers.debug_results import (
     cmd_debug_results
 )
 
+# ===== НОВЫЙ ИМПОРТ (debug_fixtures) =====
+from app.debug_fixtures import cmd_debug_fixtures
+
 # ===== НОВЫЙ ИМПОРТ =====
 from app.debug_prediction import cmd_debug_prediction
 
@@ -282,6 +285,12 @@ async def run_bot(
     dp.message.register(
         cmd_debug_results,
         Command("debug_results")
+    )
+
+    # ===== НОВАЯ КОМАНДА DEBUG FIXTURES =====
+    dp.message.register(
+        cmd_debug_fixtures,
+        Command("debug_fixtures")
     )
 
     # ===== НОВЫЕ КОМАНДЫ =====
