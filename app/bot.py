@@ -62,8 +62,8 @@ from app.handlers.expert_predictions import (
     cmd_expert_predictions
 )
 
-# ===== НОВЫЙ ИМПОРТ =====
-from app.handlers.calibration import cmd_calibration
+# ===== ВРЕМЕННО ОТКЛЮЧЕНО =====
+# from app.handlers.calibration import cmd_calibration
 
 # ===== ВАЖНО: импорт генератора прогнозов =====
 from app.handlers.generate_predictions import (
@@ -82,13 +82,9 @@ from app.handlers.debug_soccer365 import (
     cmd_debug_soccer365
 )
 
-# ===== НОВЫЙ ИМПОРТ (debug_results) =====
-from app.handlers.debug_results import (
-    cmd_debug_results
-)
-
-# ===== НОВЫЙ ИМПОРТ (debug_fixtures) =====
-from app.debug_fixtures import cmd_debug_fixtures
+# ===== ВРЕМЕННО ОТКЛЮЧЕНО =====
+# from app.handlers.debug_results import cmd_debug_results
+# from app.debug_fixtures import cmd_debug_fixtures
 
 # ===== НОВЫЙ ИМПОРТ =====
 from app.debug_prediction import cmd_debug_prediction
@@ -124,7 +120,7 @@ SERVICE_BUTTONS = {
 
     "🤖 FAJ прогнозы",
     "🧠 Мои прогнозы",
-    "🧠 Анализ ошибок FAJ",
+    "🧠 Анализ ошибок FAJ",   # пока оставляем, но обработчик отключён
 
     "🏆 Турниры",
     "📋 Журнал",
@@ -281,17 +277,15 @@ async def run_bot(
         Command("debug_prediction")
     )
 
-    # ===== НОВАЯ КОМАНДА DEBUG RESULTS =====
-    dp.message.register(
-        cmd_debug_results,
-        Command("debug_results")
-    )
-
-    # ===== НОВАЯ КОМАНДА DEBUG FIXTURES =====
-    dp.message.register(
-        cmd_debug_fixtures,
-        Command("debug_fixtures")
-    )
+    # ===== ВРЕМЕННО ОТКЛЮЧЕНО =====
+    # dp.message.register(
+    #     cmd_debug_results,
+    #     Command("debug_results")
+    # )
+    # dp.message.register(
+    #     cmd_debug_fixtures,
+    #     Command("debug_fixtures")
+    # )
 
     # ===== НОВЫЕ КОМАНДЫ =====
     dp.message.register(
@@ -330,11 +324,11 @@ async def run_bot(
             message
         )
 
-    # ===== НОВАЯ КОМАНДА КАЛИБРОВКИ =====
-    dp.message.register(
-        cmd_calibration,
-        Command("calibration")
-    )
+    # ===== ВРЕМЕННО ОТКЛЮЧЕНО =====
+    # dp.message.register(
+    #     cmd_calibration,
+    #     Command("calibration")
+    # )
 
 
     # =================================================
@@ -418,15 +412,15 @@ async def run_bot(
 
 
 
-    # ===== ОБРАБОТЧИК КНОПКИ "🧠 Анализ ошибок FAJ" =====
-    @dp.message(
-        lambda m:
-        m.text == "🧠 Анализ ошибок FAJ"
-    )
-    async def calibration_button(
-        message: Message
-    ):
-        await cmd_calibration(message)
+    # ===== ОБРАБОТЧИК ДЛЯ "🧠 Анализ ошибок FAJ" ВРЕМЕННО ОТКЛЮЧЁН =====
+    # @dp.message(
+    #     lambda m:
+    #     m.text == "🧠 Анализ ошибок FAJ"
+    # )
+    # async def calibration_button(
+    #     message: Message
+    # ):
+    #     await cmd_calibration(message)
 
 
     # =================================================
@@ -457,7 +451,7 @@ async def run_bot(
 
 🚀 Создать прогнозы тура
 
-🧠 Анализ ошибок FAJ
+🧠 Анализ ошибок FAJ (временно)
 
 🗄 Проверка базы
 
