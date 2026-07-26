@@ -1,15 +1,18 @@
 # =====================================================
-# FAJ Platform v6.0
-# Expert Predictions Handler
+# FAJ Platform v6.5
+# app/handlers/expert_predictions.py
+#
+# Expert Prediction Layer
 # =====================================================
+
+
+import logging
 
 
 from aiogram import types
 
 
-from app.managers.expert_manager import (
-    get_expert_predictions
-)
+from app.database import get_db
 
 
 from app.keyboards.main import (
@@ -18,98 +21,314 @@ from app.keyboards.main import (
 
 
 
+logger = logging.getLogger(__name__)
+
+
+
+
+
 # =====================================================
-# SHOW EXPERT PREDICTIONS
+# EXPERT BASELINE
+#
+# Эксперт Марк
+# FAJ Expert Layer v1
 # =====================================================
 
 
-async def cmd_expert_predictions(
-    message: types.Message
+EXPERT_PREDICTIONS = {
+
+
+    "ЦСКА - Балтика":
+
+    {
+        "score": "1-0",
+        "winner": "ЦСКА"
+    },
+
+
+    "Динамо М - Крылья Советов":
+
+    {
+        "score": "3-1",
+        "winner": "Динамо М"
+    },
+
+
+    "Акрон - Зенит":
+
+    {
+        "score": "0-2",
+        "winner": "Зенит"
+    },
+
+
+    "Факел - Динамо Мх":
+
+    {
+        "score": "1-0",
+        "winner": "Факел"
+    },
+
+
+    "Спартак - Родина":
+
+    {
+        "score": "3-0",
+        "winner": "Спартак"
+    },
+
+
+    "Оренбург - Ростов":
+
+    {
+        "score": "2-1",
+        "winner": "Оренбург"
+    },
+
+
+    "Локомотив - Ахмат":
+
+    {
+        "score": "2-1",
+        "winner": "Локомотив"
+    },
+
+
+    "Рубин - Краснодар":
+
+    {
+        "score": "1-2",
+        "winner": "Краснодар"
+    }
+
+
+}
+
+
+
+
+
+
+# =====================================================
+# SAVE EXPERT PREDICTION
+# =====================================================
+
+
+def save_expert_prediction(
+
+    match,
+
+    prediction,
+
+    league="RPL",
+
+    season="2026/27"
+
 ):
 
 
     try:
 
 
-        predictions = get_expert_predictions(
+        conn = get_db()
 
-            league="RPL",
+        cur = conn.cursor()
 
-            season="2026/27"
+
+
+        cur.execute(
+
+            """
+
+            INSERT INTO expert_predictions
+
+            (
+
+            match,
+
+            league,
+
+            season,
+
+            predicted_score,
+
+            predicted_winner
+
+            )
+
+
+            VALUES
+
+            (%s,%s,%s,%s,%s)
+
+
+            ON CONFLICT (match,season)
+
+            DO UPDATE SET
+
+
+            predicted_score =
+            EXCLUDED.predicted_score,
+
+
+            predicted_winner =
+            EXCLUDED.predicted_winner
+
+            """,
+
+            (
+
+                match,
+
+                league,
+
+                season,
+
+                prediction["score"],
+
+                prediction["winner"]
+
+            )
 
         )
 
 
 
-        if not predictions:
+        conn.commit()
 
 
-            await message.answer(
+        cur.close()
 
-                """
-🧠 Мои прогнозы
-
-
-Экспертные прогнозы пока не добавлены.
+        conn.close()
 
 
-Добавьте прогноз через:
 
-⚙️ Админ
-↓
-🧠 Создать мой прогноз
+        return True
 
 
-Они будут идти отдельно от FAJ модели.
+
+    except Exception as e:
 
 
-Не влияют на обучение модели.
-""",
+        logger.error(
 
-                reply_markup=main_keyboard()
+            "Expert save error: %s",
 
-            )
+            e,
+
+            exc_info=True
+
+        )
 
 
-            return
+        return False
+
+
+
+
+
+
+
+# =====================================================
+# GENERATE EXPERT PREDICTIONS
+# =====================================================
+
+
+async def cmd_expert_predictions(
+
+    message: types.Message
+
+):
+
+
+    try:
+
+
+
+        saved = 0
+
+
+
+        for match, prediction in EXPERT_PREDICTIONS.items():
+
+
+            if save_expert_prediction(
+
+                match,
+
+                prediction
+
+            ):
+
+                saved += 1
+
 
 
 
 
         text = """
 
-🧠 Мои прогнозы
+🧠 *FAJ EXPERT LAYER*
 
-🏆 РПЛ 2026/27
+
+Экспертские прогнозы сохранены.
+
+
+Версия:
+
+FAJ Expert Baseline v1
+
+
+━━━━━━━━━━━━━━
 
 
 """
 
 
 
-        for item in predictions[:10]:
+        for match, prediction in EXPERT_PREDICTIONS.items():
 
 
-            text += (
+            text += f"""
 
-                "──────────────\n"
+⚽ {match}
 
-                f"⚽ {item.get('home_team','-')} — "
-                f"{item.get('away_team','-')}\n\n"
 
-                f"🎯 Мой счёт: "
-                f"{item.get('score_prediction','-')}\n\n"
+🎯 Счёт:
 
-                f"🏁 Исход: "
-                f"{item.get('winner_prediction','-')}\n\n"
+{prediction["score"]}
 
-                f"🔥 Уверенность: "
-                f"{item.get('confidence','-')}/10\n\n"
 
-                f"💬 Комментарий:\n"
-                f"{item.get('comment','-')}\n\n"
+🏆 Победа:
 
-            )
+{prediction["winner"]}
+
+
+──────────────
+
+"""
+
+
+
+        text += f"""
+
+✅ Сохранено:
+
+{saved}
+
+матчей
+
+
+Теперь FAJ сможет:
+
+
+📊 сравнить модель и эксперта
+
+🧠 определить сильные стороны
+
+📈 обучить калибровку модели
+
+"""
 
 
 
@@ -117,28 +336,41 @@ async def cmd_expert_predictions(
 
             text,
 
+            parse_mode="Markdown",
+
             reply_markup=main_keyboard()
 
         )
 
 
 
+
     except Exception as e:
 
+
+        logger.exception(
+
+            "Expert handler error"
+
+        )
 
 
         await message.answer(
 
             f"""
+
 ❌ Ошибка экспертских прогнозов
 
 
 Тип:
+
 {type(e).__name__}
 
 
 Ошибка:
+
 {str(e)}
+
 """,
 
             reply_markup=main_keyboard()
