@@ -1,150 +1,443 @@
 # =====================================================
 # FAJ Platform v6.5
 # app/services/tour_predictor.py
+#
+# Tournament / Round Predictor
 # =====================================================
+
 
 import logging
 
+
 from app.database import get_db
-from app.services.prediction_pipeline import PredictionPipeline
+
+
+from app.services.prediction_pipeline import (
+    prediction_pipeline
+)
+
+
+from app.managers.prediction_manager import (
+    save_prediction
+)
+
+
 
 logger = logging.getLogger(__name__)
+
+
 
 
 # =====================================================
 # GET TOUR FIXTURES
 # =====================================================
 
+
 def get_tour_fixtures(
+
     league="RPL",
+
     season="2026/27"
+
 ):
 
-    conn = get_db()
 
     try:
 
+
+        conn = get_db()
+
         cur = conn.cursor()
 
+
+
         cur.execute(
+
             """
             SELECT *
 
             FROM fixtures
 
-            WHERE league=%s
-              AND season=%s
-              AND status='scheduled'
-              AND prediction_created = FALSE
+            WHERE league = %s
 
-            ORDER BY match_date,
-                     match_time
+            AND season = %s
+
+            AND status = 'scheduled'
+
+            ORDER BY match_date, match_time
+
             """,
+
             (
+
                 league,
+
                 season
+
             )
+
         )
+
+
 
         rows = cur.fetchall()
 
+
+
         cur.close()
+
         conn.close()
 
-        return rows
+
+
+        fixtures = []
+
+
+
+        for row in rows:
+
+
+            try:
+
+                fixtures.append(
+                    dict(row)
+                )
+
+
+            except Exception:
+
+
+                fixtures.append(
+                    row
+                )
+
+
+
+        logger.info(
+
+            "FAJ fixtures loaded: %s",
+
+            len(fixtures)
+
+        )
+
+
+
+        return fixtures
+
+
 
     except Exception as e:
 
-        logger.exception(e)
 
-        conn.close()
+        logger.error(
+
+            "Fixtures loading error: %s",
+
+            e,
+
+            exc_info=True
+
+        )
+
 
         return []
 
 
+
+
+
 # =====================================================
-# SAVE FLAG
+# PREDICT SINGLE MATCH
 # =====================================================
 
-def mark_prediction_created(fixture_id):
 
-    conn = get_db()
+def predict_fixture(
+
+    fixture
+
+):
+
 
     try:
 
-        cur = conn.cursor()
 
-        cur.execute(
-            """
-            UPDATE fixtures
+        home = fixture.get(
 
-            SET prediction_created = TRUE
+            "home_team"
 
-            WHERE id=%s
-            """,
-            (fixture_id,)
         )
 
-        conn.commit()
 
-        cur.close()
-        conn.close()
+        away = fixture.get(
 
-    except Exception:
+            "away_team"
 
-        logger.exception("mark_prediction_created")
+        )
 
-        conn.close()
+
+
+        league = fixture.get(
+
+            "league",
+
+            "RPL"
+
+        )
+
+
+
+        season = fixture.get(
+
+            "season",
+
+            "2026/27"
+
+        )
+
+
+
+
+        prediction = prediction_pipeline.predict_match(
+
+            home,
+
+            away,
+
+            league,
+
+            season
+
+        )
+
+
+
+        if not prediction:
+
+
+            logger.warning(
+
+                "Empty prediction %s - %s",
+
+                home,
+
+                away
+
+            )
+
+
+            return None
+
+
+
+
+        prediction["fixture_id"] = fixture.get(
+
+            "id"
+
+        )
+
+
+        prediction["round"] = fixture.get(
+
+            "round"
+
+        )
+
+
+        prediction["match_date"] = fixture.get(
+
+            "match_date"
+
+        )
+
+
+
+        return prediction
+
+
+
+    except Exception as e:
+
+
+        logger.error(
+
+            "Prediction error %s: %s",
+
+            fixture,
+
+            e,
+
+            exc_info=True
+
+        )
+
+
+        return None
+
+
+
 
 
 # =====================================================
-# PREDICT TOUR
+# SAVE
 # =====================================================
 
-def predict_tour(
-    league="RPL",
-    season="2026/27"
+
+def save_tour_prediction(
+
+    fixture,
+
+    prediction
+
 ):
 
+
+    try:
+
+
+        save_prediction(
+
+            fixture,
+
+            prediction
+
+        )
+
+
+
+        logger.info(
+
+            "Prediction saved %s - %s",
+
+            fixture.get(
+                "home_team"
+            ),
+
+            fixture.get(
+                "away_team"
+            )
+
+        )
+
+
+
+    except Exception as e:
+
+
+        logger.error(
+
+            "Prediction save error: %s",
+
+            e,
+
+            exc_info=True
+
+        )
+
+
+
+
+
+# =====================================================
+# MAIN TOUR
+# =====================================================
+
+
+def predict_tour(
+
+    league="RPL",
+
+    season="2026/27"
+
+):
+
+
     fixtures = get_tour_fixtures(
+
         league,
+
         season
+
     )
 
-    logger.info(
-        "Fixtures found: %s",
-        len(fixtures)
-    )
 
-    pipeline = PredictionPipeline()
+
+    if not fixtures:
+
+
+        logger.warning(
+
+            "No scheduled fixtures"
+
+        )
+
+
+        return []
+
+
+
 
     results = []
 
-    for fixture in fixtures:
 
-        try:
-
-            prediction = pipeline.predict_fixture(
-                fixture
-            )
-
-            if prediction:
-
-                results.append(prediction)
-
-                mark_prediction_created(
-                    fixture["id"]
-                )
-
-        except Exception:
-
-            logger.exception(
-                "Prediction error"
-            )
 
     logger.info(
-        "Predictions created: %s",
-        len(results)
+
+        "FAJ tour prediction started: %s matches",
+
+        len(fixtures)
+
     )
+
+
+
+
+    for fixture in fixtures:
+
+
+        prediction = predict_fixture(
+
+            fixture
+
+        )
+
+
+
+        if not prediction:
+
+
+            continue
+
+
+
+        save_tour_prediction(
+
+            fixture,
+
+            prediction
+
+        )
+
+
+
+        results.append(
+
+            prediction
+
+        )
+
+
+
+
+    logger.info(
+
+        "FAJ tour prediction finished: %s",
+
+        len(results)
+
+    )
+
+
 
     return results
