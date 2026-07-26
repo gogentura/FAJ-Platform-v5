@@ -1,10 +1,13 @@
 # =====================================================
-# FAJ Platform v6.3.4
+# FAJ Platform v6.6
 # app/services/result_analyzer.py
 #
 # FAJ Result Analyzer
 #
-# Сравнение прогноза с фактом
+# Сравнение:
+# FAJ прогноз
+# Факт матча
+# Calibration Log
 # =====================================================
 
 
@@ -19,38 +22,18 @@ logger = logging.getLogger(__name__)
 
 
 
+
+
 # =====================================================
-# HELPERS
+# WINNER DETECTOR
 # =====================================================
 
 
-def normalize_team(team):
-
-    if not team:
-
-        return ""
-
-
-    return (
-
-        team
-        .lower()
-        .strip()
-
-    )
-
-
-
-def get_winner_from_score(
-
+def detect_winner(
     home_score,
-
     away_score,
-
     home_team,
-
     away_team
-
 ):
 
 
@@ -59,152 +42,241 @@ def get_winner_from_score(
         return home_team
 
 
-    if away_score > home_score:
+    elif away_score > home_score:
 
         return away_team
 
 
-    return "draw"
+    else:
+
+        return "Ничья"
 
 
 
-def parse_score(score):
+
+
+
+
+# =====================================================
+# ANALYZE FINISHED MATCHES
+# =====================================================
+
+
+def analyze_finished_matches():
+
+
+    conn = get_connection()
+
+
+    analyzed = 0
+
+
 
     try:
 
-        if not score:
-
-            return None, None
-
-
-        parts = score.split("-")
-
-
-        return (
-
-            int(parts[0]),
-
-            int(parts[1])
-
-        )
-
-
-    except Exception:
-
-        return None, None
-
-
-
-# =====================================================
-# RESULT ANALYZER
-# =====================================================
-
-
-class ResultAnalyzer:
-
-
-
-    # =================================================
-    # GET FINISHED FIXTURES
-    # =================================================
-
-
-    def get_finished_matches(
-
-        self,
-
-        league="RPL"
-
-    ):
-
-
-        conn = get_connection()
 
         cur = conn.cursor()
 
 
 
+        # Берём матчи,
+        # где есть факт и прогноз
+
+
         cur.execute(
 
-            """
+        """
 
-            SELECT *
-
-            FROM fixtures
-
-            WHERE league=%s
-
-            AND status IN
-
-            (
-
-                'finished',
-
-                'FINISHED',
-
-                'completed'
-
-            )
-
-            ORDER BY date DESC
+        SELECT
 
 
-            """,
+            f.id,
 
-            (
+            f.home_team,
 
-                league,
+            f.away_team,
 
-            )
+            f.home_score,
+
+            f.away_score,
+
+
+            p.expected_score,
+
+            p.winner_prediction
+
+
+        FROM fixtures f
+
+
+        LEFT JOIN predictions p
+
+
+        ON p.fixture_id = f.id
+
+
+        WHERE
+
+
+            f.status = %s
+
+
+        AND
+
+            f.home_score IS NOT NULL
+
+
+        AND
+
+            f.away_score IS NOT NULL
+
+
+        AND
+
+            p.id IS NOT NULL
+
+
+        ORDER BY
+
+            f.match_date DESC
+
+
+        """,
+
+        (
+
+            "finished",
+
+        )
 
         )
 
 
-        rows = cur.fetchall()
+
+
+        matches = cur.fetchall()
 
 
 
-        cur.close()
-
-        conn.close()
 
 
-
-        return rows
-
+        for match in matches:
 
 
-    # =================================================
-    # GET PREDICTION
-    # =================================================
+            fixture_id = match[0]
 
 
-    def get_prediction(
+            home = match[1]
 
-        self,
-
-        fixture_id
-
-    ):
+            away = match[2]
 
 
-        conn = get_connection()
+            home_score = match[3]
 
-        cur = conn.cursor()
+            away_score = match[4]
+
+
+            faj_score = match[5]
+
+            faj_winner = match[6]
 
 
 
-        cur.execute(
+
+
+            fact_score = (
+
+                f"{home_score}-{away_score}"
+
+            )
+
+
+            fact_winner = detect_winner(
+
+                home_score,
+
+                away_score,
+
+                home,
+
+                away
+
+            )
+
+
+
+            error_type = "OK"
+
+
+
+            if faj_score != fact_score:
+
+
+                error_type = "Ошибка счёта"
+
+
+
+
+            if faj_winner != fact_winner:
+
+
+                if error_type == "OK":
+
+                    error_type = "Ошибка победителя"
+
+                else:
+
+                    error_type += "+ победитель"
+
+
+
+
+
+
+
+            # сохраняем ошибку
+
+
+            cur.execute(
 
             """
 
-            SELECT *
+            INSERT INTO calibration_log
 
-            FROM journal
+            (
 
-            WHERE fixture_id=%s
+                fixture_id,
 
-            LIMIT 1
+                faj_score,
+
+                fact_score,
+
+                faj_winner,
+
+                fact_winner,
+
+                error_type
+
+            )
+
+
+            VALUES
+
+            (
+
+                %s,
+
+                %s,
+
+                %s,
+
+                %s,
+
+                %s,
+
+                %s
+
+            )
 
 
             """,
@@ -213,88 +285,26 @@ class ResultAnalyzer:
 
                 fixture_id,
 
-            )
+                faj_score,
 
-        )
+                fact_score,
 
+                faj_winner,
 
-        row = cur.fetchone()
+                fact_winner,
 
-
-
-        cur.close()
-
-        conn.close()
-
-
-
-        return row
-
-
-
-    # =================================================
-    # UPDATE JOURNAL RESULT
-    # =================================================
-
-
-    def update_journal(
-
-        self,
-
-        fixture_id,
-
-        data
-
-    ):
-
-
-        conn = get_connection()
-
-        cur = conn.cursor()
-
-
-
-        cur.execute(
-
-            """
-
-            UPDATE journal
-
-            SET
-
-                actual_score=%s,
-
-                actual_winner=%s,
-
-                winner_correct=%s,
-
-                score_exact=%s,
-
-                accuracy=%s
-
-
-            WHERE fixture_id=%s
-
-
-            """,
-
-            (
-
-                data["actual_score"],
-
-                data["actual_winner"],
-
-                data["winner_correct"],
-
-                data["score_exact"],
-
-                data["accuracy"],
-
-                fixture_id
+                error_type
 
             )
 
-        )
+            )
+
+
+
+            analyzed += 1
+
+
+
 
 
 
@@ -302,318 +312,38 @@ class ResultAnalyzer:
 
 
 
-        cur.close()
+        logger.info(
+
+            f"FAJ analyzed matches: {analyzed}"
+
+        )
+
+
+
+        return analyzed
+
+
+
+
+
+    except Exception as e:
+
+
+        conn.rollback()
+
+
+        logger.exception(
+
+            f"Result analyzer error: {e}"
+
+        )
+
+
+        raise
+
+
+
+    finally:
+
 
         conn.close()
-
-
-
-    # =================================================
-    # ANALYZE ONE MATCH
-    # =================================================
-
-
-    def analyze_match(
-
-        self,
-
-        fixture
-
-    ):
-
-
-        fixture_id = fixture.get(
-
-            "id"
-
-        )
-
-
-        prediction = self.get_prediction(
-
-            fixture_id
-
-        )
-
-
-
-        if not prediction:
-
-
-            logger.warning(
-
-                f"No prediction for fixture {fixture_id}"
-
-            )
-
-
-            return None
-
-
-
-        home = fixture.get(
-
-            "home_team"
-
-        )
-
-
-        away = fixture.get(
-
-            "away_team"
-
-        )
-
-
-
-        home_score = fixture.get(
-
-            "home_score",
-
-            0
-
-        )
-
-
-        away_score = fixture.get(
-
-            "away_score",
-
-            0
-
-        )
-
-
-
-        actual_score = (
-
-            f"{home_score}-{away_score}"
-
-        )
-
-
-
-        actual_winner = get_winner_from_score(
-
-            home_score,
-
-            away_score,
-
-            home,
-
-            away
-
-        )
-
-
-
-        predicted_winner = prediction.get(
-
-            "winner"
-
-        )
-
-
-
-        winner_correct = False
-
-
-
-        if predicted_winner:
-
-            if normalize_team(predicted_winner) == normalize_team(actual_winner):
-
-                winner_correct = True
-
-
-
-        predicted_score = prediction.get(
-
-            "expected_score"
-
-        )
-
-
-
-        score_exact = (
-
-            predicted_score == actual_score
-
-        )
-
-
-
-        accuracy = 0
-
-
-
-        if winner_correct:
-
-            accuracy += 0.7
-
-
-
-        if score_exact:
-
-            accuracy += 0.3
-
-
-
-        result = {
-
-
-            "actual_score":
-
-                actual_score,
-
-
-            "actual_winner":
-
-                actual_winner,
-
-
-            "winner_correct":
-
-                winner_correct,
-
-
-            "score_exact":
-
-                score_exact,
-
-
-            "accuracy":
-
-                round(
-
-                    accuracy,
-
-                    2
-
-                )
-
-        }
-
-
-
-        self.update_journal(
-
-            fixture_id,
-
-            result
-
-        )
-
-
-
-        return result
-
-
-
-    # =================================================
-    # ANALYZE ALL
-    # =================================================
-
-
-    def analyze_all(
-
-        self,
-
-        league="RPL"
-
-    ):
-
-
-        fixtures = self.get_finished_matches(
-
-            league
-
-        )
-
-
-        analyzed = 0
-
-        skipped = 0
-
-
-
-        for fixture in fixtures:
-
-
-            result = self.analyze_match(
-
-                fixture
-
-            )
-
-
-            if result:
-
-                analyzed += 1
-
-            else:
-
-                skipped += 1
-
-
-
-        return {
-
-
-            "league":
-
-                league,
-
-
-            "analyzed":
-
-                analyzed,
-
-
-            "skipped":
-
-                skipped
-
-        }
-
-
-
-# =====================================================
-# SERVICE FUNCTION
-# =====================================================
-
-
-def analyze_results(
-
-    league="RPL"
-
-):
-
-
-    analyzer = ResultAnalyzer()
-
-
-    return analyzer.analyze_all(
-
-        league
-
-    )
-
-
-
-# =====================================================
-# COMPATIBILITY OLD HANDLERS
-# =====================================================
-
-
-def analyze_finished_matches(
-
-    league="RPL"
-
-):
-
-    return analyze_results(
-
-        league
-
-    )
