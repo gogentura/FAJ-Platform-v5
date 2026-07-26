@@ -5,7 +5,6 @@
 # Soccer365 Source
 #
 # Calendar + Results Parser
-# RPL
 # =====================================================
 
 
@@ -19,19 +18,10 @@ import requests
 from bs4 import BeautifulSoup
 
 
-
 logger = logging.getLogger(__name__)
 
 
-
-
 class Soccer365Source:
-
-
-
-    # =================================================
-    # URLS
-    # =================================================
 
 
     CALENDAR_URL = (
@@ -49,21 +39,17 @@ class Soccer365Source:
     )
 
 
-
     HEADERS = {
 
         "User-Agent":
-
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
     }
 
 
 
-
-
     # =================================================
-    # LOAD HTML
+    # HTML
     # =================================================
 
 
@@ -75,11 +61,8 @@ class Soccer365Source:
 
         try:
 
-
             if url is None:
-
                 url = self.CALENDAR_URL
-
 
 
             response = requests.get(
@@ -93,18 +76,13 @@ class Soccer365Source:
             )
 
 
-
             if response.status_code != 200:
 
-
                 logger.error(
-
                     f"Soccer365 HTTP {response.status_code}"
-
                 )
 
                 return None
-
 
 
             return response.text
@@ -112,7 +90,6 @@ class Soccer365Source:
 
 
         except Exception as e:
-
 
             logger.exception(e)
 
@@ -123,7 +100,7 @@ class Soccer365Source:
 
 
     # =================================================
-    # CALENDAR PARSER
+    # CALENDAR
     # =================================================
 
 
@@ -143,130 +120,74 @@ class Soccer365Source:
 
 
 
-        soup = BeautifulSoup(
+        text = BeautifulSoup(
 
             html,
 
             "html.parser"
 
+        ).get_text(
+
+            " ",
+
+            strip=True
+
         )
+
 
 
         fixtures = []
 
 
 
-        blocks = soup.select(
+        pattern = re.compile(
 
-            ".game_block"
+            r"(\d{2}\.\d{2}),\s*(\d{2}:\d{2}).{0,100}?"
+            r"([А-Яа-яЁё\s]+)"
+            r"\s[-―]\s"
+            r"([А-Яа-яЁё\s]+)"
 
         )
 
 
 
-        for block in blocks:
-
-
-            text = block.get_text(
-
-                " ",
-
-                strip=True
-
-            )
+        matches = pattern.findall(text)
 
 
 
-            match = re.search(
-
-                r"(\d{2}\.\d{2}).*?"
-                r"(\d{2}:\d{2}).*?"
-                r"(.+?)\s-\s(.+?)(?:\s|$)",
-
-                text
-
-            )
-
-
-
-            if not match:
-
-                continue
-
-
-
-            home = self.normalize_team(
-
-                match.group(3)
-
-            )
-
-
-            away = self.normalize_team(
-
-                match.group(4)
-
-            )
-
-
-
-            if not home or not away:
-
-                continue
-
+        for item in matches:
 
 
             fixtures.append(
 
                 {
 
-
                     "league":
-
                     "RPL",
 
-
                     "season":
-
                     "2026/27",
 
-
                     "date":
-
                     self.convert_date(
-
-                        match.group(1)
-
+                        item[0]
                     ),
 
-
                     "time":
-
-                    match.group(2),
-
+                    item[1],
 
                     "home_team":
-
-                    home,
-
+                    self.normalize_team(
+                        item[2]
+                    ),
 
                     "away_team":
-
-                    away,
-
+                    self.normalize_team(
+                        item[3]
+                    ),
 
                     "status":
-
-                    "scheduled",
-
-
-                    "match_url":
-
-                    self.extract_url(
-
-                        block
-
-                    )
+                    "scheduled"
 
                 }
 
@@ -276,10 +197,9 @@ class Soccer365Source:
 
         logger.info(
 
-            f"Calendar fixtures: {len(fixtures)}"
+            f"Calendar found {len(fixtures)}"
 
         )
-
 
 
         return fixtures
@@ -289,7 +209,7 @@ class Soccer365Source:
 
 
     # =================================================
-    # RESULTS PARSER
+    # RESULTS
     # =================================================
 
 
@@ -318,126 +238,92 @@ class Soccer365Source:
         )
 
 
+        text = soup.get_text(
 
-        results = []
+            "\n",
 
-
-
-        blocks = soup.select(
-
-            ".game_block"
+            strip=True
 
         )
 
 
 
-        for block in blocks:
-
-
-            text = block.get_text(
-
-                " ",
-
-                strip=True
-
-            )
+        results = []
 
 
 
-            # ищем команды
+        # ищем:
+        #
+        # Акрон
+        # -
+        # Зенит
+        # 0
+        # :
+        # 5
+        #
 
 
-            teams = re.search(
+        pattern = re.compile(
 
-                r"(.+?)\s-\s(.+?)",
+            r"([А-Яа-яЁё\s]+)"
+            r"\s[-―]\s"
+            r"([А-Яа-яЁё\s]+)"
+            r".{0,150}?"
+            r"(\d+)"
+            r"\s*:\s*"
+            r"(\d+)",
 
-                text
+            re.S
 
-            )
-
-
-
-            if not teams:
-
-                continue
-
-
-
-            # ищем счет
-
-
-            score = re.search(
-
-                r"(\d+)\s*:\s*(\d+)",
-
-                text
-
-            )
+        )
 
 
 
-            if not score:
+        matches = pattern.findall(
 
-                continue
+            text
 
+        )
+
+
+
+        for item in matches:
 
 
             home = self.normalize_team(
 
-                teams.group(1)
+                item[0]
 
             )
 
 
             away = self.normalize_team(
 
-                teams.group(2)
+                item[1]
 
             )
 
 
 
-            # исключаем меню сайта
+            if not home or not away:
 
-
-            banned = [
-
-                "Россия",
-
-                "Премьер",
-
-                "Результаты",
-
-                "Таблица",
-
-                "Статистика"
-
-            ]
+                continue
 
 
 
-            if any(
-
-                x in home
-
-                for x in banned
-
+            if self.is_garbage_team(
+                home
             ):
 
                 continue
 
 
 
-            if any(
-
-                x in away
-
-                for x in banned
-
+            if self.is_garbage_team(
+                away
             ):
 
                 continue
-
 
 
 
@@ -445,37 +331,19 @@ class Soccer365Source:
 
                 {
 
-
                     "home_team":
-
                     home,
 
-
                     "away_team":
-
                     away,
 
-
                     "home_score":
-
-                    int(
-
-                        score.group(1)
-
-                    ),
-
+                    int(item[2]),
 
                     "away_score":
-
-                    int(
-
-                        score.group(2)
-
-                    ),
-
+                    int(item[3]),
 
                     "status":
-
                     "finished"
 
                 }
@@ -486,7 +354,7 @@ class Soccer365Source:
 
         logger.info(
 
-            f"Results found: {len(results)}"
+            f"Soccer365 results: {len(results)}"
 
         )
 
@@ -499,19 +367,11 @@ class Soccer365Source:
 
 
     # =================================================
-    # COMPATIBILITY
+    # OLD COMPATIBILITY
     # =================================================
 
 
     def parse_results(self):
-
-        """
-        Старый интерфейс FAJ v6.2-v6.5
-
-        Используется:
-        debug_results
-        старые handler
-        """
 
         return self.get_results()
 
@@ -520,48 +380,23 @@ class Soccer365Source:
 
 
     # =================================================
-    # MATCH URL
+    # URL
     # =================================================
 
 
-    def extract_url(
-
+    def extract_match_url(
         self,
-
-        block
-
+        href
     ):
 
 
-        link = block.find(
-
-            "a",
-
-            href=True
-
-        )
-
-
-
-        if not link:
+        if not href:
 
             return None
 
 
 
-        href = link.get(
-
-            "href"
-
-        )
-
-
-
-        if href.startswith(
-
-            "http"
-
-        ):
+        if href.startswith("http"):
 
             return href
 
@@ -582,7 +417,7 @@ class Soccer365Source:
 
 
     # =================================================
-    # DATE CONVERT
+    # DATE
     # =================================================
 
 
@@ -597,28 +432,20 @@ class Soccer365Source:
 
         try:
 
-
             day, month = value.split(".")
-
 
 
             year = datetime.now().year
 
 
-
             return (
 
-                f"{year}-"
-
-                f"{month}-"
-
-                f"{day}"
+                f"{year}-{month}-{day}"
 
             )
 
 
         except:
-
 
             return None
 
@@ -651,11 +478,8 @@ class Soccer365Source:
             name
 
             .replace(
-
                 "\n",
-
                 " "
-
             )
 
             .strip()
@@ -668,32 +492,35 @@ class Soccer365Source:
 
 
             "Динамо Москва":
-
             "Динамо М",
 
 
-
             "Динамо Махачкала":
-
             "Динамо Мх",
 
 
-
-            "Локомотив Москва":
-
-            "Локомотив",
-
-
-
-            "Спартак Москва":
-
-            "Спартак",
-
+            "Динамо Махачкала ":
+            "Динамо Мх",
 
 
             "ЦСКА Москва":
+            "ЦСКА",
 
-            "ЦСКА"
+
+            "Спартак Москва":
+            "Спартак",
+
+
+            "Локомотив Москва":
+            "Локомотив",
+
+
+            "Акрон Тольятти":
+            "Акрон",
+
+
+            "Ростов-на-Дону":
+            "Ростов"
 
         }
 
@@ -706,3 +533,53 @@ class Soccer365Source:
             name
 
         )
+
+
+
+
+
+    # =================================================
+    # FILTER
+    # =================================================
+
+
+    def is_garbage_team(
+
+        self,
+
+        name
+
+    ):
+
+
+        garbage = [
+
+            "Россия",
+
+            "Премьер",
+
+            "Результаты",
+
+            "Таблица",
+
+            "Матчи",
+
+            "Новости",
+
+            "Соревнования",
+
+            "Soccer365"
+
+        ]
+
+
+
+        for word in garbage:
+
+            if word.lower() in name.lower():
+
+                return True
+
+
+
+        return False
