@@ -742,3 +742,24 @@ class PredictionPipeline:
 
 
 prediction_pipeline = PredictionPipeline()
+
+
+# =====================================================
+# LEGACY COMPATIBILITY
+# FAJ v6.5
+#
+# Для старых импортов:
+# from app.services.prediction_pipeline import predict_match_pipeline
+# =====================================================
+def predict_match_pipeline(
+    home_team,
+    away_team,
+    league="RPL",
+    season="2026/27"
+):
+    return prediction_pipeline.predict_match(
+        home_team,
+        away_team,
+        league,
+        season
+    )
