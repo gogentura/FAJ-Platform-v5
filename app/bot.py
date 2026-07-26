@@ -62,7 +62,7 @@ from app.handlers.expert_predictions import (
     cmd_expert_predictions
 )
 
-# ===== ВРЕМЕННО ОТКЛЮЧЕНО =====
+# ===== ВРЕМЕННО ОТКЛЮЧЕНО (калибровка) =====
 # from app.handlers.calibration import cmd_calibration
 
 # ===== ВАЖНО: импорт генератора прогнозов =====
@@ -82,11 +82,13 @@ from app.handlers.debug_soccer365 import (
     cmd_debug_soccer365
 )
 
-# ===== ВРЕМЕННО ОТКЛЮЧЕНО =====
-# from app.handlers.debug_results import cmd_debug_results
-# from app.debug_fixtures import cmd_debug_fixtures
+# ===== ВКЛЮЧАЕМ DEBUG RESULTS =====
+from app.handlers.debug_results import cmd_debug_results
 
-# ===== НОВЫЙ ИМПОРТ =====
+# ===== ВКЛЮЧАЕМ DEBUG FIXTURES =====
+from app.debug_fixtures import cmd_debug_fixtures
+
+# ===== ОСТАВЛЯЕМ DEBUG PREDICTION =====
 from app.debug_prediction import cmd_debug_prediction
 
 
@@ -120,7 +122,7 @@ SERVICE_BUTTONS = {
 
     "🤖 FAJ прогнозы",
     "🧠 Мои прогнозы",
-    "🧠 Анализ ошибок FAJ",   # пока оставляем, но обработчик отключён
+    # "🧠 Анализ ошибок FAJ",   # пока убрал, пока калибровка не подключена
 
     "🏆 Турниры",
     "📋 Журнал",
@@ -277,15 +279,17 @@ async def run_bot(
         Command("debug_prediction")
     )
 
-    # ===== ВРЕМЕННО ОТКЛЮЧЕНО =====
-    # dp.message.register(
-    #     cmd_debug_results,
-    #     Command("debug_results")
-    # )
-    # dp.message.register(
-    #     cmd_debug_fixtures,
-    #     Command("debug_fixtures")
-    # )
+    # ===== DEBUG RESULTS =====
+    dp.message.register(
+        cmd_debug_results,
+        Command("debug_results")
+    )
+
+    # ===== DEBUG FIXTURES =====
+    dp.message.register(
+        cmd_debug_fixtures,
+        Command("debug_fixtures")
+    )
 
     # ===== НОВЫЕ КОМАНДЫ =====
     dp.message.register(
@@ -324,7 +328,7 @@ async def run_bot(
             message
         )
 
-    # ===== ВРЕМЕННО ОТКЛЮЧЕНО =====
+    # ===== КАЛИБРОВКА ПОКА ОТКЛЮЧЕНА =====
     # dp.message.register(
     #     cmd_calibration,
     #     Command("calibration")
@@ -412,7 +416,7 @@ async def run_bot(
 
 
 
-    # ===== ОБРАБОТЧИК ДЛЯ "🧠 Анализ ошибок FAJ" ВРЕМЕННО ОТКЛЮЧЁН =====
+    # ===== КАЛИБРОВОЧНАЯ КНОПКА ПОКА ОТКЛЮЧЕНА =====
     # @dp.message(
     #     lambda m:
     #     m.text == "🧠 Анализ ошибок FAJ"
@@ -450,8 +454,6 @@ async def run_bot(
 🗑 Очистить календарь
 
 🚀 Создать прогнозы тура
-
-🧠 Анализ ошибок FAJ (временно)
 
 🗄 Проверка базы
 
@@ -621,8 +623,6 @@ async def run_bot(
 📁 Паспорта      📅 Матчи
 
 🤖 FAJ прогнозы  🧠 Мои прогнозы
-
-🧠 Анализ ошибок FAJ
 
 🏆 Турниры       📋 Журнал
 
