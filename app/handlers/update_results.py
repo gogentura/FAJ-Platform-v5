@@ -1,10 +1,10 @@
 # =====================================================
-# FAJ Platform v6.4
+# FAJ Platform v6.6
 # app/handlers/update_results.py
 #
 # Match Results Update Handler
 #
-# Results Sync + Journal Analyzer
+# PostgreSQL Compatible
 # =====================================================
 
 
@@ -24,13 +24,20 @@ from app.services.result_analyzer import (
 )
 
 
+from app.keyboards.admin import (
+    admin_keyboard
+)
+
+
 
 logger = logging.getLogger(__name__)
 
 
 
+
+
 # =====================================================
-# UPDATE RESULTS COMMAND
+# UPDATE RESULTS BUTTON
 # =====================================================
 
 
@@ -56,11 +63,14 @@ async def cmd_update_results(
 
 • завершённые матчи
 • счета
-• победителя
+• победителей
 • статус fixtures
-• сравнение прогнозов FAJ с фактом
+• сравнение FAJ прогнозов с фактом
 
-        """
+⏳ Выполняется...
+""",
+
+        reply_markup=admin_keyboard()
 
     )
 
@@ -69,17 +79,24 @@ async def cmd_update_results(
     try:
 
 
+
         # =============================================
         # STEP 1
         # SYNC RESULTS
         # =============================================
 
 
-        result = sync_results()
+        sync_result = sync_results()
 
 
 
-        updated = result.get(
+        if sync_result is None:
+
+            sync_result = {}
+
+
+
+        updated = sync_result.get(
 
             "updated",
 
@@ -89,7 +106,7 @@ async def cmd_update_results(
 
 
 
-        errors = result.get(
+        sync_errors = sync_result.get(
 
             "errors",
 
@@ -99,13 +116,24 @@ async def cmd_update_results(
 
 
 
+
+
         # =============================================
         # STEP 2
-        # ANALYZE RESULTS
+        # CALIBRATION ANALYSIS
         # =============================================
 
 
         analyzed = analyze_finished_matches()
+
+
+
+        if analyzed is None:
+
+            analyzed = 0
+
+
+
 
 
 
@@ -114,107 +142,106 @@ async def cmd_update_results(
         # =============================================
 
 
-        text = f"""
+        text = (
 
-✅ Результаты FAJ обновлены
+            "🏆 *FAJ Results Update*\n\n"
 
+            "━━━━━━━━━━━━━━\n\n"
 
-🏆 Лига:
+            f"🔄 Обновлено матчей: {updated}\n\n"
 
-RPL
+            f"🧠 Проверено прогнозов: {analyzed}\n\n"
 
+            "━━━━━━━━━━━━━━\n\n"
 
-━━━━━━━━━━━━━━
+            "FAJ Learning Layer:\n\n"
 
+            "✅ факт матча получен\n"
 
-🔄 Матчей обновлено:
+            "✅ прогноз сравнен\n"
 
-{updated}
+            "✅ ошибки записаны\n"
 
+            "✅ Calibration Log обновлён\n\n"
 
-🧠 Прогнозов проверено:
-
-{analyzed}
-
-
-━━━━━━━━━━━━━━
-
-
-FAJ Learning Layer:
-
-✅ победитель сравнен
-
-✅ точный счёт проверен
-
-✅ журнал обновлён
-
-"""
+        )
 
 
 
-        if errors:
+
+        if sync_errors:
 
 
-            text += """
+            text += (
 
-━━━━━━━━━━━━━━
+                "⚠️ Ошибки синхронизации:\n\n"
 
-⚠️ Ошибки:
-
-"""
+            )
 
 
-            for error in errors[:10]:
+            for error in sync_errors[:10]:
 
 
-                text += f"""
+                text += (
 
-❌ {error}
+                    f"❌ {error}\n"
 
-"""
+                )
 
 
 
         else:
 
 
-            text += """
+            text += (
 
-━━━━━━━━━━━━━━
+                "✅ Ошибок синхронизации нет\n\n"
 
-✅ Ошибок нет
+                "FAJ готов к анализу:\n\n"
 
-FAJ продолжает:
+                "📊 точность модели\n"
 
-📊 сбор статистики
+                "🎯 ошибки счёта\n"
 
-🧠 анализ точности модели
+                "🧠 ошибки победителя\n"
 
-📈 обновление качества прогнозов
+                "📈 калибровка FAJ Core"
 
-"""
+            )
+
+
 
 
 
         await message.answer(
 
-            text
+            text,
+
+            parse_mode="Markdown",
+
+            reply_markup=admin_keyboard()
 
         )
+
+
 
 
 
     except Exception as e:
 
 
-        logger.exception(e)
+
+        logger.exception(
+
+            "FAJ update results failed"
+
+        )
 
 
 
         await message.answer(
 
             f"""
-
 ❌ Ошибка обновления результатов FAJ
 
 
@@ -226,7 +253,8 @@ FAJ продолжает:
 Ошибка:
 
 {str(e)}
+""",
 
-"""
+            reply_markup=admin_keyboard()
 
         )
