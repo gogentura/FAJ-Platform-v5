@@ -1,5 +1,5 @@
 # =====================================================
-# FAJ Platform v6.6
+# FAJ Platform v6.7
 # app/monitoring/sources/soccer365.py
 #
 # Soccer365 Source
@@ -28,8 +28,18 @@ class Soccer365Source:
 
 
 
-    URL = (
+    # ===============================
+    # URLS
+    # ===============================
+
+
+    CALENDAR_URL = (
         "https://soccer365.ru/competitions/13/"
+    )
+
+
+    RESULTS_URL = (
+        "https://soccer365.ru/competitions/13/results/"
     )
 
 
@@ -45,7 +55,6 @@ class Soccer365Source:
         (
             "Mozilla/5.0 "
             "(Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 "
             "Chrome/120 Safari/537.36"
         )
 
@@ -55,12 +64,16 @@ class Soccer365Source:
 
 
 
-    # =================================================
-    # HTML LOAD
-    # =================================================
+
+    # =====================================================
+    # HTML REQUEST
+    # =====================================================
 
 
-    def get_html(self):
+    def request_html(
+        self,
+        url
+    ):
 
 
         try:
@@ -68,7 +81,7 @@ class Soccer365Source:
 
             response = requests.get(
 
-                self.URL,
+                url,
 
                 headers=self.HEADERS,
 
@@ -77,10 +90,9 @@ class Soccer365Source:
             )
 
 
-
             logger.info(
 
-                f"Soccer365 HTTP: {response.status_code}"
+                f"Soccer365 HTTP {url}: {response.status_code}"
 
             )
 
@@ -89,6 +101,14 @@ class Soccer365Source:
             if response.status_code != 200:
 
                 return None
+
+
+
+            logger.info(
+
+                f"HTML size: {len(response.text)}"
+
+            )
 
 
 
@@ -108,16 +128,55 @@ class Soccer365Source:
 
 
 
+    # =====================================================
+    # CALENDAR HTML
+    # =====================================================
 
-    # =================================================
+
+    def get_html(self):
+
+
+        return self.request_html(
+
+            self.CALENDAR_URL
+
+        )
+
+
+
+
+
+
+    # =====================================================
+    # RESULTS HTML
+    # =====================================================
+
+
+    def get_results_html(self):
+
+
+        return self.request_html(
+
+            self.RESULTS_URL
+
+        )
+
+
+
+
+
+
+
+    # =====================================================
     # CALENDAR PARSER
-    # =================================================
+    # =====================================================
 
 
     def parse_calendar(self):
 
 
         html = self.get_html()
+
 
 
         if not html:
@@ -140,17 +199,13 @@ class Soccer365Source:
 
 
 
-        links = soup.find_all(
+        for link in soup.find_all(
 
             "a",
 
             href=True
 
-        )
-
-
-
-        for link in links:
+        ):
 
 
 
@@ -161,13 +216,6 @@ class Soccer365Source:
                 strip=True
 
             )
-
-
-
-            if not text:
-
-                continue
-
 
 
 
@@ -190,16 +238,6 @@ class Soccer365Source:
 
 
 
-            day_month = match.group(1)
-
-            match_time = match.group(2)
-
-            home = match.group(3).strip()
-
-            away = match.group(4).strip()
-
-
-
             fixtures.append(
 
                 {
@@ -207,7 +245,6 @@ class Soccer365Source:
                     "league":
 
                     "RPL",
-
 
 
                     "season":
@@ -220,7 +257,7 @@ class Soccer365Source:
 
                     self.convert_date(
 
-                        day_month
+                        match.group(1)
 
                     ),
 
@@ -228,7 +265,7 @@ class Soccer365Source:
 
                     "match_time":
 
-                    match_time,
+                    match.group(2),
 
 
 
@@ -236,7 +273,7 @@ class Soccer365Source:
 
                     self.normalize_team(
 
-                        home
+                        match.group(3)
 
                     ),
 
@@ -246,7 +283,7 @@ class Soccer365Source:
 
                     self.normalize_team(
 
-                        away
+                        match.group(4)
 
                     ),
 
@@ -274,7 +311,7 @@ class Soccer365Source:
 
         logger.info(
 
-            f"Soccer365 fixtures parsed: {len(fixtures)}"
+            f"Calendar fixtures: {len(fixtures)}"
 
         )
 
@@ -288,36 +325,28 @@ class Soccer365Source:
 
 
 
-    # =================================================
+    # =====================================================
     # RESULTS PARSER
-    # =================================================
+    # =====================================================
 
 
     def parse_results(self):
 
 
-        html = self.get_html()
+        html = self.get_results_html()
 
 
 
         if not html:
 
+
             logger.warning(
 
-                "Soccer365 empty html"
+                "Results html empty"
 
             )
 
             return []
-
-
-
-
-        logger.info(
-
-            f"Soccer365 html length: {len(html)}"
-
-        )
 
 
 
@@ -345,31 +374,33 @@ class Soccer365Source:
 
 
 
+
         patterns = [
 
 
+            # Динамо М - Крылья Советов 0:0
 
-            # Акрон - Зенит 0:5
-
-            r"(.+?)\s-\s(.+?)\s"
-            r"(\d+):(\d+)",
+            r"(.+?)\s-\s(.+?)\s(\d+):(\d+)",
 
 
 
-            # Акрон - Зенит (0:5)
+            # Динамо М - Крылья Советов (0:0)
 
-            r"(.+?)\s-\s(.+?)\s"
-            r"\((\d+):(\d+)\)",
-
+            r"(.+?)\s-\s(.+?)\s\((\d+):(\d+)\)",
 
 
-            # Акрон 0 Зенит 5
 
-            r"(.+?)\s(\d+)\s+"
-            r"(.+?)\s(\d+)"
+            # Динамо М 0 - Крылья Советов 0
+
+            r"(.+?)\s(\d+)\s-\s(.+?)\s(\d+)"
 
         ]
 
+
+
+
+
+        found = False
 
 
 
@@ -393,42 +424,35 @@ class Soccer365Source:
 
 
 
+            found = True
+
+
+
             logger.info(
 
-                f"Pattern results found: {len(matches)}"
+                f"Result pattern matched: {len(matches)}"
 
             )
 
 
 
-            for match in matches:
-
+            for m in matches:
 
 
                 try:
 
 
-
-                    if len(match) == 4:
-
+                    if len(m) == 4:
 
 
-                        home = match[0]
 
-                        home_score = int(
+                        home = m[0]
 
-                            match[1]
+                        away = m[1]
 
-                        )
+                        hs = int(m[2])
 
-
-                        away = match[2]
-
-                        away_score = int(
-
-                            match[3]
-
-                        )
+                        aws = int(m[3])
 
 
 
@@ -439,56 +463,53 @@ class Soccer365Source:
 
 
 
-
                     results.append(
 
                         {
 
 
-                        "home_team":
+                            "home_team":
 
-                        self.normalize_team(
+                            self.normalize_team(
 
-                            home.strip()
+                                home
 
-                        ),
-
-
-
-                        "away_team":
-
-                        self.normalize_team(
-
-                            away.strip()
-
-                        ),
+                            ),
 
 
 
-                        "home_score":
+                            "away_team":
 
-                        home_score,
+                            self.normalize_team(
 
+                                away
 
-
-                        "away_score":
-
-                        away_score,
+                            ),
 
 
 
-                        "status":
+                            "home_score":
 
-                        "finished"
+                            hs,
 
+
+
+                            "away_score":
+
+                            aws,
+
+
+
+                            "status":
+
+                            "finished"
 
                         }
 
                     )
 
 
-
-                except Exception:
+                except:
 
 
                     continue
@@ -502,7 +523,7 @@ class Soccer365Source:
 
         logger.info(
 
-            f"Soccer365 results parsed: {len(results)}"
+            f"Final results parsed: {len(results)}"
 
         )
 
@@ -516,9 +537,9 @@ class Soccer365Source:
 
 
 
-    # =================================================
-    # MATCH URL
-    # =================================================
+    # =====================================================
+    # URL
+    # =====================================================
 
 
     def extract_match_url(
@@ -544,8 +565,11 @@ class Soccer365Source:
 
 
 
+        if href.startswith(
 
-        if href.startswith("http"):
+            "http"
+
+        ):
 
             return href
 
@@ -567,10 +591,9 @@ class Soccer365Source:
 
 
 
-
-    # =================================================
+    # =====================================================
     # DATE
-    # =================================================
+    # =====================================================
 
 
     def convert_date(
@@ -592,11 +615,7 @@ class Soccer365Source:
 
         return (
 
-            f"{year}-"
-
-            f"{month}-"
-
-            f"{day}"
+            f"{year}-{month}-{day}"
 
         )
 
@@ -606,10 +625,9 @@ class Soccer365Source:
 
 
 
-
-    # =================================================
+    # =====================================================
     # TEAM NORMALIZATION
-    # =================================================
+    # =====================================================
 
 
     def normalize_team(
@@ -662,13 +680,7 @@ class Soccer365Source:
 
             "Спартак Москва":
 
-            "Спартак",
-
-
-
-            "Ростов":
-
-            "Ростов"
+            "Спартак"
 
         }
 
