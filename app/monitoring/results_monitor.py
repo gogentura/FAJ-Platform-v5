@@ -1,5 +1,5 @@
 # =====================================================
-# FAJ Platform v6.2
+# FAJ Platform v6.6
 # app/monitoring/results_monitor.py
 #
 # Match Results Monitor
@@ -31,13 +31,30 @@ logger = logging.getLogger(__name__)
 
 
 
+
+
+# =====================================================
+# SAFE INT
+# =====================================================
+
+def safe_int(value):
+
+    try:
+        return int(value)
+
+    except Exception:
+        return None
+
+
+
+
+
 # =====================================================
 # RESULTS MONITOR
 # =====================================================
 
 
 class ResultsMonitor:
-
 
 
     def __init__(self):
@@ -53,112 +70,218 @@ class ResultsMonitor:
     def get_results(self):
 
 
-        html = self.source.get_html()
+        try:
 
 
-        if not html:
+            html = self.source.get_html()
+
+
+
+            if not html:
+
+
+                logger.warning(
+                    "Soccer365 returned empty html"
+                )
+
+
+                return []
+
+
+
+            logger.info(
+                f"Soccer365 html length: {len(html)}"
+            )
+
+
+
+            results = []
+
+
+
+            # =================================================
+            # VARIANT 1
+            # Акрон - Зенит (0-5)
+            # =================================================
+
+
+            patterns = [
+
+
+                r"(.+?)\s-\s(.+?)\s\((\d+)-(\d+)\)",
+
+
+                r"(.+?)\s-\s(.+?)\s\((\d+):(\d+)\)",
+
+
+                r"(.+?)\s+(\d+)\s*:\s*(\d+)\s+(.+?)"
+
+
+            ]
+
+
+
+            for pattern in patterns:
+
+
+                matches = re.findall(
+
+                    pattern,
+
+                    html,
+
+                    re.MULTILINE
+
+                )
+
+
+
+                if matches:
+
+
+                    logger.info(
+
+                        f"Soccer365 matches found: {len(matches)}"
+
+                    )
+
+
+                    for m in matches:
+
+
+
+                        try:
+
+
+
+                            if len(m) == 4:
+
+
+                                home = m[0].strip()
+
+                                away = m[1].strip()
+
+                                home_score = safe_int(
+                                    m[2]
+                                )
+
+                                away_score = safe_int(
+                                    m[3]
+                                )
+
+
+
+                            else:
+
+
+                                home = m[0].strip()
+
+                                home_score = safe_int(
+                                    m[1]
+                                )
+
+                                away_score = safe_int(
+                                    m[2]
+                                )
+
+                                away = m[3].strip()
+
+
+
+                            if (
+
+                                home_score is None
+
+                                or
+
+                                away_score is None
+
+                            ):
+
+                                continue
+
+
+
+
+
+                            results.append(
+
+                                {
+
+                                    "home_team":
+                                    self.source.normalize_team(
+                                        home
+                                    ),
+
+
+                                    "away_team":
+                                    self.source.normalize_team(
+                                        away
+                                    ),
+
+
+                                    "home_score":
+                                    home_score,
+
+
+                                    "away_score":
+                                    away_score,
+
+
+                                    "status":
+                                    "finished"
+
+                                }
+
+                            )
+
+
+
+                        except Exception as e:
+
+
+                            logger.warning(
+
+                                f"Parse error: {e}"
+
+                            )
+
+
+
+                    break
+
+
+
+
+
+            logger.info(
+
+                f"Final results parsed: {len(results)}"
+
+            )
+
+
+
+            return results
+
+
+
+        except Exception as e:
+
+
+
+            logger.exception(
+
+                f"Get results error: {e}"
+
+            )
+
 
             return []
 
 
 
-        results = []
 
-
-
-        # ------------------------------------------------
-        # Ищем завершённые матчи
-        #
-        # пример Soccer365:
-        #
-        # Акрон - Ротор (0-1)
-        #
-        # ------------------------------------------------
-
-
-        pattern = re.compile(
-
-            r"(.+?)\s-\s(.+?)\s"
-            r"\((\d+)-(\d+)\)"
-
-        )
-
-
-
-        matches = pattern.findall(
-            html
-        )
-
-
-
-        for match in matches:
-
-
-            home = (
-                match[0]
-                .strip()
-            )
-
-
-            away = (
-                match[1]
-                .strip()
-            )
-
-
-            home_score = int(
-                match[2]
-            )
-
-
-            away_score = int(
-                match[3]
-            )
-
-
-
-            results.append(
-
-                {
-
-                    "home_team":
-                    self.source.normalize_team(
-                        home
-                    ),
-
-
-                    "away_team":
-                    self.source.normalize_team(
-                        away
-                    ),
-
-
-                    "home_score":
-                    home_score,
-
-
-                    "away_score":
-                    away_score,
-
-
-                    "status":
-                    "finished"
-
-                }
-
-            )
-
-
-
-        logger.info(
-
-            f"Results found: {len(results)}"
-
-        )
-
-
-
-        return results
 
 
 
@@ -166,23 +289,31 @@ class ResultsMonitor:
     # UPDATE DATABASE
     # =================================================
 
+
     def update_results(self):
 
 
         results = self.get_results()
 
 
+
         if not results:
+
 
             return {
 
+
                 "updated": 0,
 
+
                 "errors": [
-                    "No results found"
+
+                    "Soccer365 results not found"
+
                 ]
 
             }
+
 
 
 
@@ -202,7 +333,9 @@ class ResultsMonitor:
         for item in results:
 
 
+
             try:
+
 
 
                 if item["home_score"] > item["away_score"]:
@@ -210,9 +343,11 @@ class ResultsMonitor:
                     result = "home_win"
 
 
+
                 elif item["home_score"] < item["away_score"]:
 
                     result = "away_win"
+
 
 
                 else:
@@ -221,31 +356,44 @@ class ResultsMonitor:
 
 
 
+
+
                 cur.execute(
 
                     """
+
                     UPDATE fixtures
 
                     SET
 
-                    status=%s,
+                        status = %s,
 
-                    home_score=%s,
+                        home_score = %s,
 
-                    away_score=%s,
+                        away_score = %s,
 
-                    result=%s,
+                        result = %s,
 
-                    updated=NOW()
+                        updated = NOW()
 
 
                     WHERE
 
-                    league=%s
+                        league = %s
 
-                    AND home_team=%s
+                    AND
 
-                    AND away_team=%s
+                        home_team = %s
+
+                    AND
+
+                        away_team = %s
+
+
+                    AND
+
+                        status != 'finished'
+
 
                     """,
 
@@ -271,13 +419,17 @@ class ResultsMonitor:
 
 
 
+
                 if cur.rowcount > 0:
+
 
                     updated += 1
 
 
 
+
             except Exception as e:
+
 
 
                 logger.exception(e)
@@ -288,6 +440,7 @@ class ResultsMonitor:
                     str(e)
 
                 )
+
 
 
 
@@ -310,6 +463,9 @@ class ResultsMonitor:
             errors
 
         }
+
+
+
 
 
 
