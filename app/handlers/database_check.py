@@ -1,65 +1,74 @@
-from aiogram import types
+# =====================================================
+# FAJ Platform v6.9.6
+# app/handlers/database_check.py
+# =====================================================
+
+import logging
+
+from aiogram.types import Message
 
 from app.database import get_db
-from app.handlers.keyboard import get_main_keyboard
 
 
-async def cmd_dbcheck(message: types.Message):
+logger = logging.getLogger(__name__)
+
+
+async def cmd_database_check(
+    message: Message
+):
 
     try:
 
         conn = get_db()
+        cur = conn.cursor()
 
-        text = "🗄 Проверка PostgreSQL\n\n"
 
-        try:
-            passports = conn.execute(
-                "SELECT COUNT(*) FROM passports"
-            ).fetchone()[0]
+        cur.execute(
+            """
+            SELECT column_name
 
-            text += f"✅ passports: {passports}\n"
+            FROM information_schema.columns
 
-        except Exception as e:
-            text += f"❌ passports: {repr(e)}\n"
+            WHERE table_name='passports'
 
-        try:
-            fixtures = conn.execute(
-                "SELECT COUNT(*) FROM fixtures"
-            ).fetchone()[0]
+            ORDER BY ordinal_position
+            """
+        )
 
-            text += f"✅ fixtures: {fixtures}\n"
 
-        except Exception as e:
-            text += f"❌ fixtures: {repr(e)}\n"
+        columns = cur.fetchall()
 
-        try:
-
-            rows = conn.execute(
-
-                "SELECT * FROM fixtures LIMIT 3"
-
-            ).fetchall()
-
-            text += "\nПервые записи fixtures:\n"
-
-            for row in rows:
-
-                text += f"{dict(row)}\n\n"
-
-        except Exception as e:
-
-            text += f"\n❌ SELECT * fixtures:\n{repr(e)}"
 
         conn.close()
 
+
+        text = "🗄 FAJ DATABASE CHECK\n\n"
+
+        text += "Таблица passports:\n"
+
+
+        for row in columns:
+
+            try:
+
+                text += f"• {row['column_name']}\n"
+
+            except:
+
+                text += f"• {row[0]}\n"
+
+
+
         await message.answer(
-            text,
-            reply_markup=get_main_keyboard()
+            text
         )
+
 
     except Exception as e:
 
+
         await message.answer(
-            f"Общая ошибка:\n\n{repr(e)}",
-            reply_markup=get_main_keyboard()
+
+            f"❌ Database error\n\n{e}"
+
         )
