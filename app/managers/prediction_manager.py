@@ -1,569 +1,140 @@
 # =====================================================
-# FAJ Platform v6.9.2
+# FAJ Platform v6.9.3
 # app/managers/prediction_manager.py
 #
 # Prediction Manager
 #
-# PredictionPipeline
-#        |
-#        v
-# PredictionManager
-#        |
-#        v
-# PostgreSQL
-#
+# Compatible:
+# - prediction_pipeline.py v6.9.3
+# - tour_predictor.py v6.9.3
+# - generate_predictions.py
+# - PostgreSQL
 # =====================================================
-
-
-import json
 import logging
-from datetime import datetime
-
-
 from app.database import get_db
-
 
 logger = logging.getLogger(__name__)
 
 
-
-
-
 # =====================================================
-# HELPERS
+# SAFE HELPERS
 # =====================================================
-
-
-def safe_float(
-    value,
-    default=0
-):
-
+def safe_float(value, default=0):
     try:
-
         if value is None:
             return default
-
         return float(value)
-
-    except:
-
+    except Exception:
         return default
 
 
-
-
-
-def safe_json(
-    value
-):
-
+def row_to_dict(row):
     try:
-
-        return json.dumps(
-            value,
-            ensure_ascii=False
-        )
-
-    except:
-
-        return "{}"
-
-
-
+        return dict(row)
+    except Exception:
+        return row
 
 
 # =====================================================
-# CLEAR OLD PREDICTIONS
+# SAVE SINGLE PREDICTION
 # =====================================================
-
-
-def clear_predictions():
-
-    """
-    Удаляет старые прогнозы перед новым туром
-    FAJ v6.9.2
-    """
-
+def save_prediction(fixture, prediction):
     try:
-
-        conn = get_db()
-        cur = conn.cursor()
-
-
-        cur.execute(
-            """
-            DELETE FROM predictions
-            """
-        )
-
-
-        conn.commit()
-        conn.close()
-
-
-        logger.info(
-            "FAJ old predictions cleared"
-        )
-
-
-        return True
-
-
-    except Exception as e:
-
-
-        logger.error(
-            "Clear predictions error: %s",
-            e,
-            exc_info=True
-        )
-
-
-        return False
-
-
-
-
-
-# =====================================================
-# NORMALIZE
-# =====================================================
-
-
-def normalize_prediction(
-    fixture,
-    prediction
-):
-
-
-    if not prediction:
-
-        return {}
-
-
-
-    return {
-
-
-        "fixture_id":
-            fixture.get("id"),
-
-
-        "home_team":
-            fixture.get(
-                "home_team",
-                "-"
-            ),
-
-
-        "away_team":
-            fixture.get(
-                "away_team",
-                "-"
-            ),
-
-
-        "league":
-            fixture.get(
-                "league",
-                "RPL"
-            ),
-
-
-        "season":
-            fixture.get(
-                "season",
-                "2026/27"
-            ),
-
-
-
-        "winner":
-            prediction.get(
-                "winner",
-                "-"
-            ),
-
-
-
-        "expected_score":
-            prediction.get(
-                "expected_score",
-                "-"
-            ),
-
-
-
-        "xg_home":
-            safe_float(
-                prediction.get(
-                    "xg_home"
-                )
-            ),
-
-
-        "xg_away":
-            safe_float(
-                prediction.get(
-                    "xg_away"
-                )
-            ),
-
-
-
-        "home_rating":
-            safe_float(
-                prediction.get(
-                    "home_rating"
-                )
-            ),
-
-
-        "away_rating":
-            safe_float(
-                prediction.get(
-                    "away_rating"
-                )
-            ),
-
-
-
-
-        "home_probability":
-            safe_float(
-                prediction.get(
-                    "home_probability"
-                )
-            ) / 100,
-
-
-
-        "draw_probability":
-            safe_float(
-                prediction.get(
-                    "draw_probability"
-                )
-            ) / 100,
-
-
-
-        "away_probability":
-            safe_float(
-                prediction.get(
-                    "away_probability"
-                )
-            ) / 100,
-
-
-
-        "confidence":
-            safe_float(
-                prediction.get(
-                    "confidence"
-                )
-            ),
-
-
-
-        "risk":
-            prediction.get(
-                "risk",
-                "-"
-            ),
-
-
-
-        "category":
-            prediction.get(
-                "category",
-                prediction.get(
-                    "grade",
-                    "C"
-                )
-            ),
-
-
-
-        "factors":
-            safe_json(
-                prediction.get(
-                    "factors",
-                    []
-                )
-            ),
-
-
-
-        "season_phase":
-            prediction.get(
-                "season_phase",
-                "start"
-            ),
-
-
-
-        "passport_quality":
-            safe_json(
-                prediction.get(
-                    "data_quality",
-                    {}
-                )
-            ),
-
-
-
-        "model_version":
-            "6.9.2",
-
-
-
-        "created_at":
-            datetime.now()
-
-    }
-
-
-
-
-
-
-# =====================================================
-# SAVE SINGLE
-# =====================================================
-
-
-def save_prediction(
-    fixture,
-    prediction
-):
-
-
-    try:
-
-
-        data = normalize_prediction(
-            fixture,
-            prediction
-        )
-
-
-        if not data:
-
+        if not fixture or not prediction:
+            logger.warning("Empty fixture or prediction")
             return False
 
-
-
         conn = get_db()
         cur = conn.cursor()
-
-
 
         cur.execute(
             """
             INSERT INTO predictions
             (
                 fixture_id,
-
-                home_team,
-                away_team,
-
-                league,
-                season,
-
-                winner,
-                expected_score,
-
+                home_win,
+                draw,
+                away_win,
                 xg_home,
                 xg_away,
-
-                home_rating,
-                away_rating,
-
-                home_probability,
-                draw_probability,
-                away_probability,
-
+                score_prediction,
                 confidence,
-
-                risk,
-                category,
-
-                factors,
-
-                season_phase,
-
-                passport_quality,
-
-                model_version,
-
-                created_at
+                model_version
             )
-
-
             VALUES
-
             (
-                %s,%s,%s,%s,%s,
-                %s,%s,
-                %s,%s,
-                %s,%s,
-                %s,%s,%s,
                 %s,
-                %s,%s,
+                %s,
+                %s,
+                %s,
                 %s,
                 %s,
                 %s,
                 %s,
                 %s
             )
-
             """,
-
             (
-                data["fixture_id"],
-
-                data["home_team"],
-                data["away_team"],
-
-                data["league"],
-                data["season"],
-
-                data["winner"],
-                data["expected_score"],
-
-                data["xg_home"],
-                data["xg_away"],
-
-                data["home_rating"],
-                data["away_rating"],
-
-                data["home_probability"],
-                data["draw_probability"],
-                data["away_probability"],
-
-                data["confidence"],
-
-                data["risk"],
-                data["category"],
-
-                data["factors"],
-
-                data["season_phase"],
-
-                data["passport_quality"],
-
-                data["model_version"],
-
-                data["created_at"]
+                fixture.get("id"),
+                safe_float(prediction.get("home_probability", 0)) / 100,
+                safe_float(prediction.get("draw_probability", 0)) / 100,
+                safe_float(prediction.get("away_probability", 0)) / 100,
+                safe_float(prediction.get("xg_home", 0)),
+                safe_float(prediction.get("xg_away", 0)),
+                prediction.get("expected_score", "-"),
+                safe_float(prediction.get("confidence", 0)),
+                prediction.get("pipeline_version", "6.9.3")
             )
-
         )
-
 
         conn.commit()
         conn.close()
 
-
-
         logger.info(
-            "Prediction saved %s - %s",
-            data["home_team"],
-            data["away_team"]
+            "FAJ Prediction saved %s - %s",
+            fixture.get("home_team"),
+            fixture.get("away_team")
         )
-
-
         return True
 
-
-
     except Exception as e:
-
-
-        logger.error(
-            "Save prediction error: %s",
-            e,
-            exc_info=True
-        )
-
-
+        logger.error("save_prediction error: %s", e, exc_info=True)
         return False
 
 
-
-
-
-
-
 # =====================================================
-# SAVE TOUR
+# SAVE TOUR BATCH
 # =====================================================
-
-
-def save_predictions_batch(
-    fixtures,
-    predictions
-):
-
-
-    # очистка старого тура
-
-    clear_predictions()
-
-
-
+def save_predictions_batch(fixtures, predictions):
+    """
+    Сохранение полного тура FAJ
+    """
     saved = 0
+    if not fixtures or not predictions:
+        logger.warning("Empty batch data")
+        return 0
 
+    for fixture, prediction in zip(fixtures, predictions):
+        try:
+            if save_prediction(fixture, prediction):
+                saved += 1
+        except Exception as e:
+            logger.error("Batch save item error: %s", e, exc_info=True)
 
-
-    for fixture, prediction in zip(
-        fixtures,
-        predictions
-    ):
-
-
-        if save_prediction(
-            fixture,
-            prediction
-        ):
-
-            saved += 1
-
-
-
-
-    logger.info(
-        "FAJ TOUR SAVED %s/%s",
-        saved,
-        len(predictions)
-    )
-
-
+    logger.info("FAJ predictions saved: %s/%s", saved, len(predictions))
     return saved
 
 
-
-
-
-
 # =====================================================
-# READ
+# GET PREDICTION HISTORY
 # =====================================================
-
-
-def get_predictions(
-    limit=50
-):
-
-
+def get_prediction_history(limit=100):
+    """
+    Learning Layer history
+    """
     try:
-
-
         conn = get_db()
         cur = conn.cursor()
-
-
-
         cur.execute(
             """
             SELECT *
@@ -571,115 +142,128 @@ def get_predictions(
             ORDER BY created_at DESC
             LIMIT %s
             """,
-            (
-                limit,
-            )
+            (limit,)
         )
-
-
-
         rows = cur.fetchall()
-
-
         conn.close()
-
-
-
-        return [
-            dict(row)
-            for row in rows
-        ]
-
-
-
+        return rows
     except Exception as e:
-
-
-        logger.error(
-            "get_predictions error: %s",
-            e,
-            exc_info=True
-        )
-
-
+        logger.error("Prediction history error: %s", e, exc_info=True)
         return []
 
 
-
-
-
-
 # =====================================================
-# HISTORY
+# GET PREDICTIONS
+# TELEGRAM HANDLER API
 # =====================================================
-
-
-def get_prediction_history(
-    limit=100
-):
-
-    return get_predictions(
-        limit
-    )
-
-
-
-
-
-# =====================================================
-# SINGLE
-# =====================================================
-
-
-def get_prediction_by_id(
-    prediction_id
-):
-
-
+def get_predictions(limit=20):
+    """
+    Основной API для:
+    
+    app/handlers/faj_predictions.py
+    
+    Возвращает последние прогнозы FAJ
+    """
     try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                id,
+                fixture_id,
+                home_team,
+                away_team,
+                league,
+                season,
+                winner,
+                expected_score,
+                xg_home,
+                xg_away,
+                confidence,
+                model_version,
+                created_at
+            FROM predictions
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (limit,)
+        )
+        rows = cur.fetchall()
+        conn.close()
+
+        result = []
+        for row in rows:
+            try:
+                result.append(dict(row))
+            except Exception:
+                result.append(row)
+        return result
+    except Exception as e:
+        logger.error("get_predictions error: %s", e, exc_info=True)
+        return []
 
 
-        conn=get_db()
-        cur=conn.cursor()
-
-
+# =====================================================
+# GET ONE PREDICTION
+# =====================================================
+def get_prediction_by_id(prediction_id):
+    try:
+        conn = get_db()
+        cur = conn.cursor()
         cur.execute(
             """
             SELECT *
             FROM predictions
             WHERE id=%s
+            LIMIT 1
             """,
-            (
-                prediction_id,
-            )
+            (prediction_id,)
         )
-
-
-        row=cur.fetchone()
-
-
+        row = cur.fetchone()
         conn.close()
 
-
-
         if row:
-
-            return dict(row)
-
-
-
+            try:
+                return dict(row)
+            except Exception:
+                return row
         return None
-
-
-
     except Exception as e:
-
-
-        logger.error(
-            "get_prediction_by_id error: %s",
-            e,
-            exc_info=True
-        )
-
-
+        logger.error("get_prediction_by_id error: %s", e, exc_info=True)
         return None
+
+
+# =====================================================
+# CLEAN DUPLICATES
+# =====================================================
+def delete_duplicate_predictions():
+    """
+    Удаляет повторные генерации тура
+    Оставляет последнюю запись
+    """
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            DELETE FROM predictions p1
+            USING predictions p2
+            WHERE p1.id < p2.id
+            AND p1.fixture_id = p2.fixture_id
+            """
+        )
+        deleted = cur.rowcount
+        conn.commit()
+        conn.close()
+
+        logger.info("Duplicates removed: %s", deleted)
+        return deleted
+    except Exception as e:
+        logger.error("Duplicate cleanup error: %s", e, exc_info=True)
+        return 0
+
+
+# =====================================================
+# END PREDICTION MANAGER
+# =====================================================
