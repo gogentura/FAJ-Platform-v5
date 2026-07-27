@@ -1,8 +1,17 @@
 #!/usr/bin/env python3
 # =====================================================
-# FAJ Platform v6.2
+# FAJ Platform v7.0.1
 # main.py
+#
+# Entry Point
+#
+# PostgreSQL
+# FAJ Core
+# Prediction Pipeline
+# Journal
+# Telegram Bot
 # =====================================================
+
 
 import asyncio
 import logging
@@ -10,21 +19,25 @@ import logging
 from dotenv import load_dotenv
 
 
-from app.bot import run_bot
-
-from app.core.faj_core import FAJCore
-
-from app.journal import Journal
-
-from app.database import init_db
-
-
-
 # =====================================================
 # ENV
 # =====================================================
 
 load_dotenv()
+
+
+
+# =====================================================
+# INTERNAL IMPORTS
+# =====================================================
+
+from app.database import init_db
+
+from app.core.faj_core import FAJCore
+
+from app.journal import Journal
+
+from app.bot import run_bot
 
 
 
@@ -49,6 +62,14 @@ logger = logging.getLogger(
 
 
 # =====================================================
+# VERSION
+# =====================================================
+
+FAJ_VERSION = "7.0.1"
+
+
+
+# =====================================================
 # MAIN
 # =====================================================
 
@@ -57,35 +78,66 @@ async def main():
 
 
     logger.info(
-        "🚀 Запуск FAJ Platform v6.2"
+        "🚀 Starting FAJ Platform %s",
+        FAJ_VERSION
     )
 
 
     try:
 
 
-        # PostgreSQL + migrations
+        # =============================================
+        # DATABASE
+        # =============================================
+
+        logger.info(
+            "🔄 Initializing PostgreSQL..."
+        )
+
 
         init_db()
 
 
         logger.info(
-            "✅ Database initialized"
+            "✅ Database ready"
         )
 
 
+
+        # =============================================
+        # CORE ENGINE
+        # =============================================
 
         core = FAJCore()
 
 
+        logger.info(
+            "✅ FAJ Core loaded: %s",
+            core.VERSION
+        )
+
+
+
+        # =============================================
+        # JOURNAL
+        # =============================================
+
         journal = Journal()
 
 
-
         logger.info(
-            "✅ FAJ Core loaded"
+            "✅ Journal loaded"
         )
 
+
+
+        # =============================================
+        # BOT
+        # =============================================
+
+        logger.info(
+            "🤖 Starting Telegram Bot..."
+        )
 
 
         await run_bot(
@@ -103,7 +155,9 @@ async def main():
 
         logger.exception(
 
-            f"FAJ startup error: {e}"
+            "❌ FAJ startup failed: %s",
+
+            e
 
         )
 
@@ -113,6 +167,9 @@ async def main():
 
 
 # =====================================================
+# ENTRY
+# =====================================================
+
 
 if __name__ == "__main__":
 
