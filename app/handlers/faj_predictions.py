@@ -2,16 +2,15 @@
 # FAJ Platform v6.9.4
 # app/handlers/faj_predictions.py
 #
-# FAJ Match Viewer
+# FAJ Match Analysis Viewer
 #
 # One match = one Telegram message
-# Navigation:
-# Previous / Next
 #
 # Compatible:
 # - prediction_manager v6.9.3
 # - tour_predictor v6.9.3
 # - PostgreSQL
+# - aiogram 3.x
 # =====================================================
 
 
@@ -19,6 +18,7 @@ import logging
 
 
 from aiogram import Router
+
 from aiogram.types import (
     Message,
     CallbackQuery
@@ -49,17 +49,20 @@ router = Router()
 
 
 # =====================================================
-# MEMORY STORAGE
+# CACHE
 # =====================================================
 
-FAJ_CACHE = {}
+
+FAJ_CACHE = {
+    "predictions": []
+}
 
 
 
 
 
 # =====================================================
-# FORMATTERS
+# CONFIDENCE
 # =====================================================
 
 
@@ -69,24 +72,36 @@ def confidence_badge(value):
 
         value = float(value)
 
+
         if value <= 1:
             value *= 100
 
 
+
         if value >= 65:
+
             icon = "🟢"
 
+
         elif value >= 50:
+
             icon = "🟡"
 
+
         elif value >= 35:
+
             icon = "🟠"
 
+
         else:
+
             icon = "🔴"
 
 
+
         return f"{icon} {value:.1f}%"
+
+
 
     except:
 
@@ -96,18 +111,30 @@ def confidence_badge(value):
 
 
 
+
+# =====================================================
+# WINNER FORMAT
+# =====================================================
+
+
 def winner_format(value):
 
     if value == "home":
+
         return "🏠 Хозяева"
 
+
     if value == "away":
+
         return "🚩 Гости"
 
+
     if value == "draw":
+
         return "🤝 Ничья"
 
-    return value or "-"
+
+    return "-"
 
 
 
@@ -115,7 +142,7 @@ def winner_format(value):
 
 
 # =====================================================
-# MESSAGE BUILDER
+# BUILD MESSAGE
 # =====================================================
 
 
@@ -213,19 +240,19 @@ def build_match_message(
 • Calibration
 • Ошибки модели
 • Улучшение Core
-
 """
 
 
 
 
 
+
 # =====================================================
-# SEND MATCH
+# SHOW MATCH
 # =====================================================
 
 
-async def send_match(
+async def show_match(
     message,
     index
 ):
@@ -239,6 +266,7 @@ async def send_match(
 
     if not predictions:
 
+
         await message.answer(
             "⚠️ FAJ прогнозов нет",
             reply_markup=main_keyboard()
@@ -249,11 +277,15 @@ async def send_match(
 
 
     if index < 0:
+
         index = 0
 
 
+
     if index >= len(predictions):
+
         index = len(predictions)-1
+
 
 
 
@@ -262,6 +294,7 @@ async def send_match(
         index,
         len(predictions)
     )
+
 
 
     await message.answer(
@@ -284,7 +317,8 @@ async def send_match(
 
 
 @router.message(
-    lambda message: message.text == "/faj_predictions"
+    lambda message:
+    message.text == "/faj_predictions"
 )
 async def cmd_faj_predictions(
     message: Message
@@ -297,6 +331,7 @@ async def cmd_faj_predictions(
         predictions = get_predictions(
             limit=20
         )
+
 
 
         if not predictions:
@@ -321,11 +356,12 @@ async def cmd_faj_predictions(
 
 
 
+
         FAJ_CACHE["predictions"] = predictions
 
 
 
-        await send_match(
+        await show_match(
             message,
             0
         )
@@ -336,7 +372,7 @@ async def cmd_faj_predictions(
 
 
         logger.exception(
-            "FAJ predictions handler error"
+            "FAJ prediction handler error"
         )
 
 
@@ -357,34 +393,82 @@ async def cmd_faj_predictions(
 
 
 
+
 # =====================================================
-# CALLBACK NEXT
+# NEXT BUTTON
 # =====================================================
 
 
 @router.callback_query(
-    lambda c: c.data.startswith("faj_next:")
+    lambda c:
+    c.data.startswith(
+        "faj_next:"
+    )
 )
 async def faj_next(
     callback: CallbackQuery
 ):
 
 
-    index = int(
-        callback.data.split(":")[1]
-    )
+    try:
 
 
-    await callback.message.delete()
+        index = int(
+            callback.data.split(":")[1]
+        )
 
 
-    await send_match(
-        callback.message,
-        index + 1
-    )
+        predictions = FAJ_CACHE.get(
+            "predictions",
+            []
+        )
 
 
-    await callback.answer()
+        new_index = index + 1
+
+
+
+        if new_index >= len(predictions):
+
+            new_index = len(predictions)-1
+
+
+
+        text = build_match_message(
+            predictions[new_index],
+            new_index,
+            len(predictions)
+        )
+
+
+
+        await callback.message.edit_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=faj_navigation_keyboard(
+                new_index,
+                len(predictions)
+            )
+        )
+
+
+
+        await callback.answer()
+
+
+
+    except Exception as e:
+
+
+        logger.exception(
+            "FAJ next error"
+        )
+
+
+        await callback.answer(
+            "Ошибка"
+        )
+
 
 
 
@@ -392,30 +476,85 @@ async def faj_next(
 
 
 # =====================================================
-# CALLBACK PREVIOUS
+# PREVIOUS BUTTON
 # =====================================================
 
 
 @router.callback_query(
-    lambda c: c.data.startswith("faj_prev:")
+    lambda c:
+    c.data.startswith(
+        "faj_prev:"
+    )
 )
 async def faj_prev(
     callback: CallbackQuery
 ):
 
 
-    index = int(
-        callback.data.split(":")[1]
-    )
+    try:
 
 
-    await callback.message.delete()
+        index = int(
+            callback.data.split(":")[1]
+        )
 
 
-    await send_match(
-        callback.message,
-        index - 1
-    )
+
+        predictions = FAJ_CACHE.get(
+            "predictions",
+            []
+        )
 
 
-    await callback.answer()
+
+        new_index = index - 1
+
+
+
+        if new_index < 0:
+
+            new_index = 0
+
+
+
+
+        text = build_match_message(
+            predictions[new_index],
+            new_index,
+            len(predictions)
+        )
+
+
+
+        await callback.message.edit_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=faj_navigation_keyboard(
+                new_index,
+                len(predictions)
+            )
+        )
+
+
+
+        await callback.answer()
+
+
+
+    except Exception as e:
+
+
+        logger.exception(
+            "FAJ prev error"
+        )
+
+
+        await callback.answer(
+            "Ошибка"
+        )
+
+
+
+# =====================================================
+# END
+# =====================================================
