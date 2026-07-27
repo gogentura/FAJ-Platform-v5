@@ -14,6 +14,7 @@
 # =====================================================
 
 
+import json
 import logging
 
 
@@ -37,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================
-# SAFE VALUE
+# SAFE HELPERS
 # =====================================================
 
 
@@ -50,6 +51,37 @@ def safe_value(
         return default
 
     return value
+
+
+
+
+
+
+def safe_json_load(
+    value,
+    default=None
+):
+
+    if value is None:
+        return default or []
+
+
+    if isinstance(
+        value,
+        (list, dict)
+    ):
+        return value
+
+
+    try:
+
+        return json.loads(
+            value
+        )
+
+    except:
+
+        return default or []
 
 
 
@@ -72,11 +104,11 @@ def confidence_badge(
 
         if value <= 1:
 
-            value*=100
+            value *= 100
 
 
 
-        if value >= 65:
+        if value >=65:
 
             icon="🟢"
 
@@ -108,6 +140,8 @@ def confidence_badge(
 
 
 
+
+
 # =====================================================
 # QUALITY FORMAT
 # =====================================================
@@ -122,17 +156,17 @@ def quality_format(
         value=float(value)
 
 
-        if value <= 1:
+        if value <=1:
 
             value*=100
 
 
 
-        if value >=80:
+        if value>=80:
 
             return f"🟢 {value:.0f}%"
 
-        elif value >=50:
+        elif value>=50:
 
             return f"🟡 {value:.0f}%"
 
@@ -174,8 +208,8 @@ async def cmd_faj_predictions(
 
 
 
+        # защита от None
         if not predictions:
-
 
             await message.answer(
 
@@ -189,13 +223,41 @@ async def cmd_faj_predictions(
 или
 
 /generate_tour
-
 """
 
             )
 
             return
 
+
+
+
+        # удаляем битые записи
+        predictions = [
+            p for p in predictions
+            if isinstance(
+                p,
+                dict
+            )
+        ]
+
+
+
+        if not predictions:
+
+            await message.answer(
+
+"""
+⚠️ В базе нет корректных прогнозов FAJ.
+
+Создайте новый тур:
+
+/generate_tour
+"""
+
+            )
+
+            return
 
 
 
@@ -233,18 +295,18 @@ async def cmd_faj_predictions(
 
 
             winner=p.get(
-                "winner_name",
-                p.get(
-                    "winner",
-                    "-"
-                )
+                "winner",
+                "-"
             )
 
 
 
             score=p.get(
                 "expected_score",
-                "-"
+                p.get(
+                    "score_prediction",
+                    "-"
+                )
             )
 
 
@@ -284,7 +346,7 @@ async def cmd_faj_predictions(
 
             risk=p.get(
                 "risk",
-                "Высокий"
+                "Средний"
             )
 
 
@@ -299,20 +361,29 @@ async def cmd_faj_predictions(
 
 
 
-            factors=p.get(
-                "factors",
+            factors=safe_json_load(
+                p.get(
+                    "factors"
+                ),
                 []
             )
 
 
 
-            quality=p.get(
-                "passport_quality",
-                {
-                    "home":0,
-                    "away":0
-                }
+            quality=safe_json_load(
+                p.get(
+                    "passport_quality"
+                ),
+                {}
             )
+
+
+
+            if not isinstance(
+                quality,
+                dict
+            ):
+                quality={}
 
 
 
@@ -362,13 +433,18 @@ async def cmd_faj_predictions(
 📁 Паспорт:
 
 🏠 {quality_format(
-quality.get("home",0)
+quality.get(
+    "home",
+    0
+)
 )}
 
 🚩 {quality_format(
-quality.get("away",0)
+quality.get(
+    "away",
+    0
+)
 )}
-
 
 """
 
@@ -393,6 +469,7 @@ quality.get("away",0)
 
 
 
+
         await message.answer(
 
             text,
@@ -405,13 +482,13 @@ quality.get("away",0)
 
 
 
+
+
     except Exception as e:
 
 
         logger.exception(
-
             "FAJ predictions handler error"
-
         )
 
 
@@ -420,7 +497,9 @@ quality.get("away",0)
 f"""
 ❌ FAJ ПРОГНОЗ ERROR
 
+
 {type(e).__name__}
+
 
 {str(e)}
 
