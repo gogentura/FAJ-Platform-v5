@@ -1,19 +1,24 @@
 # =====================================================
-# FAJ Platform v6.3
+# FAJ Platform v6.9.6
 # app/core/risk_engine.py
 #
 # FAJ Risk & Confidence Engine
+#
+# Confidence
+# Risk
+# Category
 # =====================================================
 
 
 class RiskEngine:
 
 
-    VERSION = "6.3"
+    VERSION = "6.9.6"
+
 
 
     # =================================================
-    # CONFIDENCE GRADE
+    # CONFIDENCE CATEGORY
     # =================================================
 
     def get_grade(
@@ -21,47 +26,95 @@ class RiskEngine:
         confidence
     ):
 
-        confidence = float(confidence)
+
+        confidence = float(
+            confidence
+        )
 
 
-        if confidence >= 90:
+
+        if confidence >= 75:
+
 
             return {
+
                 "code": "AAA",
-                "name": "Очень сильный прогноз"
+
+                "name":
+                    "Очень сильный прогноз"
+
             }
 
 
-        elif confidence >= 80:
+
+        elif confidence >= 65:
+
 
             return {
+
                 "code": "AA",
-                "name": "Высокая уверенность"
+
+                "name":
+                    "Высокая уверенность"
+
             }
 
 
-        elif confidence >= 70:
+
+        elif confidence >= 55:
+
 
             return {
+
                 "code": "A",
-                "name": "Хороший прогноз"
+
+                "name":
+                    "Хороший прогноз"
+
             }
 
 
-        elif confidence >= 60:
+
+        elif confidence >= 45:
+
 
             return {
+
                 "code": "B",
-                "name": "Рабочий прогноз"
+
+                "name":
+                    "Рабочий прогноз"
+
             }
+
+
+
+        elif confidence >= 35:
+
+
+            return {
+
+                "code": "C",
+
+                "name":
+                    "Осторожный прогноз"
+
+            }
+
 
 
         else:
 
+
             return {
-                "code": "C",
-                "name": "Высокий риск"
+
+                "code": "D",
+
+                "name":
+                    "Высокий риск"
+
             }
+
 
 
 
@@ -88,19 +141,23 @@ class RiskEngine:
 
 
         rating_difference = abs(
-            float(rating_difference)
+            float(
+                rating_difference
+            )
         )
 
 
         xg_difference = abs(
-            float(xg_difference)
+            float(
+                xg_difference
+            )
         )
 
 
 
-        # ===============================
+        # =============================================
         # LOW RISK
-        # ===============================
+        # =============================================
 
         if (
 
@@ -108,41 +165,77 @@ class RiskEngine:
 
             and
 
-            rating_difference >= 12
+            rating_difference >= 10
 
             and
 
-            xg_difference >= 0.6
+            xg_difference >= 0.5
 
         ):
+
 
             return "Низкий"
 
 
 
-        # ===============================
+        # =============================================
         # HIGH RISK
-        # ===============================
+        # =============================================
 
         if (
 
-            winner_probability < 55
+            winner_probability < 45
 
             or
 
-            rating_difference < 5
+            rating_difference < 4
+
+            or
+
+            xg_difference < 0.25
 
         ):
+
 
             return "Высокий"
 
 
 
-        # ===============================
+        # =============================================
         # MEDIUM
-        # ===============================
+        # =============================================
 
         return "Средний"
+
+
+
+
+
+    # =================================================
+    # RISK ICON
+    # =================================================
+
+    def risk_badge(
+        self,
+        risk
+    ):
+
+
+        if risk == "Низкий":
+
+            return "🟢 Низкий"
+
+
+
+        if risk == "Средний":
+
+            return "🟡 Средний"
+
+
+
+        return "🔴 Высокий"
+
+
 
 
 
@@ -169,31 +262,55 @@ class RiskEngine:
     ):
 
 
+        home_rating = float(
+            home_rating
+        )
+
+
+        away_rating = float(
+            away_rating
+        )
+
+
+        xg_home = float(
+            xg_home
+        )
+
+
+        xg_away = float(
+            xg_away
+        )
+
+
+
         rating_difference = (
 
-            float(home_rating)
+            home_rating
 
             -
 
-            float(away_rating)
+            away_rating
 
         )
+
 
 
         xg_difference = (
 
-            float(xg_home)
+            xg_home
 
             -
 
-            float(xg_away)
+            xg_away
 
         )
+
 
 
         grade = self.get_grade(
             confidence
         )
+
 
 
         risk = self.calculate_risk(
@@ -207,6 +324,7 @@ class RiskEngine:
         )
 
 
+
         return {
 
 
@@ -218,9 +336,11 @@ class RiskEngine:
                 ),
 
 
+
             "grade":
 
                 grade["code"],
+
 
 
             "grade_name":
@@ -228,9 +348,19 @@ class RiskEngine:
                 grade["name"],
 
 
+
             "risk":
 
                 risk,
+
+
+
+            "risk_badge":
+
+                self.risk_badge(
+                    risk
+                ),
+
 
 
             "rating_difference":
@@ -241,6 +371,7 @@ class RiskEngine:
                 ),
 
 
+
             "xg_difference":
 
                 round(
@@ -248,8 +379,9 @@ class RiskEngine:
                     2
                 )
 
-
         }
+
+
 
 
 
