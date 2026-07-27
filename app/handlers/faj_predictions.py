@@ -4,19 +4,25 @@
 #
 # FAJ Match Viewer
 #
-# One message = one match
+# One match = one Telegram message
+# Navigation:
+# Previous / Next
 #
 # Compatible:
 # - prediction_manager v6.9.3
+# - tour_predictor v6.9.3
 # - PostgreSQL
-# - Telegram callbacks
 # =====================================================
 
 
 import logging
 
 
-from aiogram.types import Message
+from aiogram import Router
+from aiogram.types import (
+    Message,
+    CallbackQuery
+)
 
 
 from app.managers.prediction_manager import (
@@ -29,8 +35,24 @@ from app.keyboards.main import (
 )
 
 
+from app.keyboards.faj_navigation import (
+    faj_navigation_keyboard
+)
+
+
 
 logger = logging.getLogger(__name__)
+
+
+router = Router()
+
+
+
+# =====================================================
+# MEMORY STORAGE
+# =====================================================
+
+FAJ_CACHE = {}
 
 
 
@@ -68,8 +90,7 @@ def confidence_badge(value):
 
     except:
 
-        return "⚪ -"
-
+        return "⚪ Нет данных"
 
 
 
@@ -77,22 +98,16 @@ def confidence_badge(value):
 
 def winner_format(value):
 
-    mapping = {
+    if value == "home":
+        return "🏠 Хозяева"
 
-        "home": "🏠 Хозяева",
+    if value == "away":
+        return "🚩 Гости"
 
-        "away": "🚩 Гости",
+    if value == "draw":
+        return "🤝 Ничья"
 
-        "draw": "🤝 Ничья"
-
-    }
-
-
-    return mapping.get(
-        value,
-        value or "-"
-    )
-
+    return value or "-"
 
 
 
@@ -100,21 +115,15 @@ def winner_format(value):
 
 
 # =====================================================
-# SINGLE MATCH FORMAT
+# MESSAGE BUILDER
 # =====================================================
 
 
-def format_match(
+def build_match_message(
     prediction,
     index,
     total
 ):
-
-
-    if not prediction:
-
-        return ""
-
 
 
     home = prediction.get(
@@ -129,18 +138,10 @@ def format_match(
     )
 
 
-    winner = winner_format(
-        prediction.get(
-            "winner",
-            "-"
-        )
-    )
-
-
     score = prediction.get(
-        "expected_score",
+        "score_prediction",
         prediction.get(
-            "score_prediction",
+            "expected_score",
             "-"
         )
     )
@@ -164,13 +165,19 @@ def format_match(
     )
 
 
+    winner = prediction.get(
+        "winner",
+        "-"
+    )
+
+
 
     return f"""
 🤖 *FAJ MATCH ANALYSIS*
 
 🧠 FAJ Engine v6.9.4
 
-⚽ Матч {index}/{total}
+⚽ Матч {index + 1}/{total}
 
 ━━━━━━━━━━━━━━
 
@@ -180,7 +187,7 @@ def format_match(
 
 🏆 Победа:
 
-{winner}
+{winner_format(winner)}
 
 
 🎯 Счёт:
@@ -213,14 +220,72 @@ def format_match(
 
 
 
+# =====================================================
+# SEND MATCH
+# =====================================================
+
+
+async def send_match(
+    message,
+    index
+):
+
+
+    predictions = FAJ_CACHE.get(
+        "predictions",
+        []
+    )
+
+
+    if not predictions:
+
+        await message.answer(
+            "⚠️ FAJ прогнозов нет",
+            reply_markup=main_keyboard()
+        )
+
+        return
+
+
+
+    if index < 0:
+        index = 0
+
+
+    if index >= len(predictions):
+        index = len(predictions)-1
+
+
+
+    text = build_match_message(
+        predictions[index],
+        index,
+        len(predictions)
+    )
+
+
+    await message.answer(
+        text,
+        parse_mode="Markdown",
+        reply_markup=faj_navigation_keyboard(
+            index,
+            len(predictions)
+        )
+    )
+
+
+
 
 
 
 # =====================================================
-# MAIN COMMAND
+# COMMAND
 # =====================================================
 
 
+@router.message(
+    lambda message: message.text == "/faj_predictions"
+)
 async def cmd_faj_predictions(
     message: Message
 ):
@@ -230,55 +295,39 @@ async def cmd_faj_predictions(
 
 
         predictions = get_predictions(
-            limit=7
+            limit=20
         )
-
 
 
         if not predictions:
 
 
             await message.answer(
+                """
+⚠️ FAJ прогнозов пока нет.
 
-"""
-⚠️ FAJ прогнозов нет.
+Создайте прогнозы:
 
-Создайте:
+🚀 Создать прогнозы тура
+
+или
 
 /generate_tour
-
-"""
-
+""",
+                reply_markup=main_keyboard()
             )
 
             return
 
 
 
-
-        # Пока показываем первый матч.
-        # Навигацию добавим следующим файлом.
-
-        text = format_match(
-
-            predictions[0],
-
-            1,
-
-            len(predictions)
-
-        )
+        FAJ_CACHE["predictions"] = predictions
 
 
 
-        await message.answer(
-
-            text,
-
-            parse_mode="Markdown",
-
-            reply_markup=main_keyboard()
-
+        await send_match(
+            message,
+            0
         )
 
 
@@ -287,23 +336,86 @@ async def cmd_faj_predictions(
 
 
         logger.exception(
-
-            "FAJ Match Viewer error"
-
+            "FAJ predictions handler error"
         )
 
 
         await message.answer(
-
-f"""
+            f"""
 ❌ FAJ ПРОГНОЗ ERROR
 
 {type(e).__name__}
 
 {str(e)}
-
 """,
+            reply_markup=main_keyboard()
+        )
 
-reply_markup=main_keyboard()
 
+
+
+
+
+
+# =====================================================
+# CALLBACK NEXT
+# =====================================================
+
+
+@router.callback_query(
+    lambda c: c.data.startswith("faj_next:")
 )
+async def faj_next(
+    callback: CallbackQuery
+):
+
+
+    index = int(
+        callback.data.split(":")[1]
+    )
+
+
+    await callback.message.delete()
+
+
+    await send_match(
+        callback.message,
+        index + 1
+    )
+
+
+    await callback.answer()
+
+
+
+
+
+
+# =====================================================
+# CALLBACK PREVIOUS
+# =====================================================
+
+
+@router.callback_query(
+    lambda c: c.data.startswith("faj_prev:")
+)
+async def faj_prev(
+    callback: CallbackQuery
+):
+
+
+    index = int(
+        callback.data.split(":")[1]
+    )
+
+
+    await callback.message.delete()
+
+
+    await send_match(
+        callback.message,
+        index - 1
+    )
+
+
+    await callback.answer()
