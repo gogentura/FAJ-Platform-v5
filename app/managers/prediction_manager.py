@@ -4,270 +4,635 @@
 #
 # Prediction Manager
 #
-# Compatible:
-# FAJCore v6.8+
-# prediction_pipeline v6.9.2
+# Responsibilities:
+#
+# PredictionPipeline
+#        |
+#        v
+# PredictionManager
+#        |
+#        v
 # PostgreSQL
-# generate_tour
-# debug_prediction
+#
+# Compatible:
+# - FAJ Engine v6.9.2
+# - prediction_pipeline.py
+# - tour_predictor.py
+# - Learning Layer
 # =====================================================
-import logging
-import ast
+
+
 import json
-import numpy as np
+import logging
+from datetime import datetime
+
+
 from app.database import get_db
-from app.services.prediction_pipeline import (
-    predict_match_pipeline
-)
-from app.core.faj_core import FAJCore
+
 
 logger = logging.getLogger(__name__)
 
-# =====================================================
-# CLEAN NUMPY
-# =====================================================
-def clean_value(value):
-    if isinstance(value, np.generic):
-        return value.item()
-    return value
 
-def clean_prediction(data):
-    if data is None:
-        return {}
-    if isinstance(data, dict):
-        result = {}
-        for key, value in data.items():
-            if isinstance(value, dict):
-                result[key] = clean_prediction(value)
-            elif isinstance(value, list):
-                result[key] = [
-                    clean_prediction(v)
-                    if isinstance(v, dict)
-                    else clean_value(v)
-                    for v in value
-                ]
-            else:
-                result[key] = clean_value(value)
-        return result
-    return clean_value(data)
+
+
 
 # =====================================================
-# NORMALIZE PIPELINE RESULT
+# SAFE HELPERS
 # =====================================================
-def normalize_prediction(prediction):
-    prediction = clean_prediction(prediction)
+
+
+def safe_float(
+    value,
+    default=0
+):
+
+    try:
+
+        if value is None:
+            return default
+
+        return float(value)
+
+    except Exception:
+
+        return default
+
+
+
+
+
+
+def safe_json(
+    value
+):
+
+    try:
+
+        return json.dumps(
+            value,
+            ensure_ascii=False
+        )
+
+    except Exception:
+
+        return "{}"
+
+
+
+
+
+
+
+# =====================================================
+# NORMALIZE PREDICTION
+# =====================================================
+
+
+def normalize_prediction(
+    fixture,
+    prediction
+):
+
+
     if not prediction:
+
         return {}
+
+
+
     return {
-        "winner": prediction.get("winner", "-"),
-        "winner_name": prediction.get("winner_name", "-"),
-        "home_probability": float(prediction.get("home_probability", 0)),
-        "draw_probability": float(prediction.get("draw_probability", 0)),
-        "away_probability": float(prediction.get("away_probability", 0)),
-        "xg_home": float(prediction.get("xg_home", 0)),
-        "xg_away": float(prediction.get("xg_away", 0)),
-        "expected_score": prediction.get("expected_score", "-"),
-        "top_scores": prediction.get("top_scores", []),
-        "btts": prediction.get("btts", 0),
-        "over25": prediction.get("over25", 0),
-        "under25": prediction.get("under25", 0),
-        "confidence": float(prediction.get("confidence", 0)),
-        "risk": prediction.get("risk", "Высокий"),
-        "grade": prediction.get("grade", "C"),
-        "category": prediction.get("category", "C"),
-        "home_rating": float(prediction.get("home_rating", 0)),
-        "away_rating": float(prediction.get("away_rating", 0)),
-        "factors": prediction.get("factors", []),
-        "season_phase": prediction.get("season_phase", "start"),
-        "passport_quality": prediction.get("passport_quality", {"home": 0, "away": 0})
+
+
+        # MATCH INFO
+
+        "fixture_id":
+            fixture.get(
+                "id"
+            ),
+
+
+        "home_team":
+            fixture.get(
+                "home_team"
+            ),
+
+
+        "away_team":
+            fixture.get(
+                "away_team"
+            ),
+
+
+        "league":
+            fixture.get(
+                "league",
+                "RPL"
+            ),
+
+
+        "season":
+            fixture.get(
+                "season",
+                "2026/27"
+            ),
+
+
+
+        # RESULT
+
+        "winner":
+            prediction.get(
+                "winner",
+                "-"
+            ),
+
+
+        "expected_score":
+            prediction.get(
+                "expected_score",
+                "-"
+            ),
+
+
+
+        # XG
+
+        "xg_home":
+            safe_float(
+                prediction.get(
+                    "xg_home"
+                )
+            ),
+
+
+        "xg_away":
+            safe_float(
+                prediction.get(
+                    "xg_away"
+                )
+            ),
+
+
+
+
+        # RATING
+
+        "home_rating":
+            safe_float(
+                prediction.get(
+                    "home_rating"
+                )
+            ),
+
+
+        "away_rating":
+            safe_float(
+                prediction.get(
+                    "away_rating"
+                )
+            ),
+
+
+
+
+        # PROBABILITY
+
+        "home_probability":
+            safe_float(
+                prediction.get(
+                    "home_probability"
+                )
+            ),
+
+
+        "draw_probability":
+            safe_float(
+                prediction.get(
+                    "draw_probability"
+                )
+            ),
+
+
+        "away_probability":
+            safe_float(
+                prediction.get(
+                    "away_probability"
+                )
+            ),
+
+
+
+
+
+        # AI CONFIDENCE
+
+        "confidence":
+            safe_float(
+                prediction.get(
+                    "confidence"
+                )
+            ),
+
+
+
+        "risk":
+            prediction.get(
+                "risk",
+                "-"
+            ),
+
+
+
+        "category":
+            prediction.get(
+                "category",
+                prediction.get(
+                    "grade",
+                    "C"
+                )
+            ),
+
+
+
+
+
+        # FACTORS
+
+        "factors":
+            safe_json(
+                prediction.get(
+                    "factors",
+                    []
+                )
+            ),
+
+
+
+        # META
+
+        "season_phase":
+            prediction.get(
+                "season_phase",
+                "start"
+            ),
+
+
+        "passport_quality":
+            safe_json(
+                prediction.get(
+                    "data_quality",
+                    {}
+                )
+            ),
+
+
+
+        "created_at":
+            datetime.now()
+
     }
 
+
+
+
+
+
+
+
 # =====================================================
-# SAVE PREDICTION
+# SAVE SINGLE PREDICTION
 # =====================================================
-def save_prediction(fixture, prediction):
-    conn = get_db()
+
+
+def save_prediction(
+
+    fixture,
+
+    prediction
+
+):
+
+
     try:
+
+
+        data = normalize_prediction(
+            fixture,
+            prediction
+        )
+
+
+        if not data:
+
+            logger.warning(
+                "Empty prediction data"
+            )
+
+            return False
+
+
+
+        conn = get_db()
+
         cur = conn.cursor()
+
+
+
         cur.execute(
-        """
-        INSERT INTO predictions
-        (
-            fixture_id,
-            league,
-            season,
-            home_team,
-            away_team,
-            winner_prediction,
-            home_probability,
-            draw_probability,
-            away_probability,
-            xg_home,
-            xg_away,
-            expected_score,
-            top_scores,
-            btts_probability,
-            over25_probability,
-            confidence,
-            risk,
-            grade,
-            category,
-            factors,
-            home_rating,
-            away_rating,
-            season_phase,
-            model_version,
-            created
-        )
-        VALUES
-        (
-            %s,%s,%s,
-            %s,%s,
-            %s,
-            %s,%s,%s,
-            %s,%s,
-            %s,
-            %s,
-            %s,%s,
-            %s,
-            %s,
-            %s,
-            %s,
-            %s,
-            %s,%s,
-            %s,
-            %s,
-            NOW()
-        )
-        ON CONFLICT (fixture_id)
-        DO UPDATE SET
-            winner_prediction = EXCLUDED.winner_prediction,
-            home_probability = EXCLUDED.home_probability,
-            draw_probability = EXCLUDED.draw_probability,
-            away_probability = EXCLUDED.away_probability,
-            xg_home = EXCLUDED.xg_home,
-            xg_away = EXCLUDED.xg_away,
-            expected_score = EXCLUDED.expected_score,
-            confidence = EXCLUDED.confidence,
-            risk = EXCLUDED.risk,
-            grade = EXCLUDED.grade,
-            category = EXCLUDED.category,
-            factors = EXCLUDED.factors,
-            home_rating = EXCLUDED.home_rating,
-            away_rating = EXCLUDED.away_rating,
-            model_version = EXCLUDED.model_version
-        """,
-        (
-            fixture.get("id"),
-            fixture.get("league", "RPL"),
-            fixture.get("season", "2026/27"),
-            fixture.get("home_team"),
-            fixture.get("away_team"),
-            prediction.get("winner"),
-            prediction.get("home_probability", 0),
-            prediction.get("draw_probability", 0),
-            prediction.get("away_probability", 0),
-            prediction.get("xg_home", 0),
-            prediction.get("xg_away", 0),
-            prediction.get("expected_score", "-"),
-            json.dumps(prediction.get("top_scores", []), ensure_ascii=False),
-            prediction.get("btts", 0),
-            prediction.get("over25", 0),
-            prediction.get("confidence", 0),
-            prediction.get("risk", "Высокий"),
-            prediction.get("grade", "C"),
-            prediction.get("category", "C"),
-            json.dumps(prediction.get("factors", []), ensure_ascii=False),
-            prediction.get("home_rating", 0),
-            prediction.get("away_rating", 0),
-            prediction.get("season_phase", "start"),
-            FAJCore.VERSION
-        )
-        )
+"""
+INSERT INTO predictions
+(
+fixture_id,
+home_team,
+away_team,
+league,
+season,
+
+winner,
+expected_score,
+
+xg_home,
+xg_away,
+
+home_rating,
+away_rating,
+
+home_probability,
+draw_probability,
+away_probability,
+
+confidence,
+risk,
+category,
+
+factors,
+
+season_phase,
+passport_quality,
+
+created_at
+
+)
+
+VALUES
+
+(
+%s,%s,%s,%s,%s,
+
+%s,%s,
+
+%s,%s,
+
+%s,%s,
+
+%s,%s,%s,
+
+%s,%s,%s,
+
+%s,
+
+%s,%s,
+
+%s
+
+)
+
+""",
+
+(
+
+data["fixture_id"],
+
+data["home_team"],
+
+data["away_team"],
+
+data["league"],
+
+data["season"],
+
+
+
+data["winner"],
+
+data["expected_score"],
+
+
+
+data["xg_home"],
+
+data["xg_away"],
+
+
+
+data["home_rating"],
+
+data["away_rating"],
+
+
+
+data["home_probability"],
+
+data["draw_probability"],
+
+data["away_probability"],
+
+
+
+data["confidence"],
+
+data["risk"],
+
+data["category"],
+
+
+
+data["factors"],
+
+
+
+data["season_phase"],
+
+data["passport_quality"],
+
+
+
+data["created_at"]
+
+)
+
+)
+
+
+
         conn.commit()
-    except Exception as e:
-        conn.rollback()
-        logger.error("Prediction save error: %s", e, exc_info=True)
-        raise
-    finally:
+
         conn.close()
 
-# =====================================================
-# CREATE SINGLE PREDICTION
-# =====================================================
-def create_prediction(fixture, core=None):
-    try:
-        prediction = predict_match_pipeline(
-            home_team=fixture.get("home_team"),
-            away_team=fixture.get("away_team"),
-            league=fixture.get("league", "RPL"),
-            core=core
+
+
+        logger.info(
+
+            "Prediction saved: %s - %s",
+
+            data["home_team"],
+
+            data["away_team"]
+
         )
-        prediction = normalize_prediction(prediction)
-        save_prediction(fixture, prediction)
-        return prediction
+
+
+        return True
+
+
+
     except Exception as e:
-        logger.error("Create prediction failed: %s", e, exc_info=True)
-        return None
+
+
+        logger.error(
+
+            "Prediction save error: %s",
+
+            e,
+
+            exc_info=True
+
+        )
+
+
+        return False
+
+
+
+
+
+
 
 # =====================================================
-# CREATE TOUR
+# SAVE TOUR
 # =====================================================
-def create_tour_predictions(fixtures, core=None):
-    generated = 0
-    errors = []
-    for fixture in fixtures:
-        try:
-            result = create_prediction(fixture, core)
-            if result:
-                generated += 1
-            else:
-                errors.append({
-                    "match": f"{fixture.get('home_team')} - {fixture.get('away_team')}",
-                    "error": "empty prediction"
-                })
-        except Exception as e:
-            errors.append({
-                "match": f"{fixture.get('home_team')} - {fixture.get('away_team')}",
-                "error": str(e)
-            })
-    return {
-        "generated": generated,
-        "errors": errors
-    }
+
+
+def save_predictions_batch(
+
+    fixtures,
+
+    predictions
+
+):
+
+
+    saved = 0
+
+
+
+    for fixture, prediction in zip(
+
+        fixtures,
+
+        predictions
+
+    ):
+
+
+        if save_prediction(
+
+            fixture,
+
+            prediction
+
+        ):
+
+            saved += 1
+
+
+
+    logger.info(
+
+        "FAJ batch saved: %s/%s",
+
+        saved,
+
+        len(predictions)
+
+    )
+
+
+
+    return saved
+
+
+
+
+
+
 
 # =====================================================
-# GET PREDICTIONS
+# LEARNING LAYER PREPARATION
 # =====================================================
-def get_predictions(league=None, season=None):
-    conn = get_db()
+
+
+def get_prediction_history(
+
+    limit=100
+
+):
+
+
     try:
-        cur = conn.cursor()
-        query = """
-        SELECT *
-        FROM predictions
-        WHERE 1=1
-        """
-        params = []
-        if league:
-            query += " AND league=%s"
-            params.append(league)
-        if season:
-            query += " AND season=%s"
-            params.append(season)
-        query += " ORDER BY created DESC"
-        cur.execute(query, tuple(params))
-        rows = cur.fetchall()
-        result = []
-        for row in rows:
-            item = dict(row)
-            for field in ["top_scores", "factors"]:
-                try:
-                    if item.get(field):
-                        item[field] = json.loads(item[field])
-                except Exception:
-                    item[field] = []
-            result.append(item)
-        return result
-    finally:
+
+
+        conn=get_db()
+
+        cur=conn.cursor()
+
+
+
+        cur.execute(
+"""
+SELECT *
+
+FROM predictions
+
+ORDER BY created_at DESC
+
+LIMIT %s
+""",
+(
+limit,
+)
+
+)
+
+
+
+        rows=cur.fetchall()
+
+
         conn.close()
+
+
+
+        return rows
+
+
+
+    except Exception as e:
+
+
+        logger.error(
+
+            "History load error: %s",
+
+            e
+
+        )
+
+
+        return []
+
+
+
+# =====================================================
+# END
+# =====================================================
