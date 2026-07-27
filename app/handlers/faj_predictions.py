@@ -3,18 +3,10 @@
 # app/handlers/faj_predictions.py
 #
 # FAJ Predictions Viewer
-#
-# Reads:
-# prediction_manager
-#
-# Compatible:
-# - prediction_pipeline v6.9.2
-# - tour_predictor v6.9.2
-# - PostgreSQL
+# Fixed Telegram length limit
 # =====================================================
 
 
-import json
 import logging
 
 
@@ -38,98 +30,34 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================
-# SAFE HELPERS
+# FORMATTERS
 # =====================================================
 
 
-def safe_value(
-    value,
-    default="-"
-):
-
-    if value is None:
-        return default
-
-    return value
-
-
-
-
-
-
-def safe_json_load(
-    value,
-    default=None
-):
-
-    if value is None:
-        return default or []
-
-
-    if isinstance(
-        value,
-        (list, dict)
-    ):
-        return value
-
+def confidence_badge(value):
 
     try:
 
-        return json.loads(
-            value
-        )
-
-    except:
-
-        return default or []
-
-
-
-
-
-
-# =====================================================
-# CONFIDENCE BADGE
-# =====================================================
-
-
-def confidence_badge(
-    value
-):
-
-    try:
-
-        value=float(value)
-
+        value = float(value)
 
         if value <= 1:
-
             value *= 100
 
 
+        if value >= 65:
+            icon = "🟢"
 
-        if value >=65:
+        elif value >= 50:
+            icon = "🟡"
 
-            icon="🟢"
-
-        elif value >=50:
-
-            icon="🟡"
-
-        elif value >=35:
-
-            icon="🟠"
+        elif value >= 35:
+            icon = "🟠"
 
         else:
-
-            icon="🔴"
-
+            icon = "🔴"
 
 
-        return (
-            f"{icon} {value:.1f}%"
-        )
-
+        return f"{icon} {value:.1f}%"
 
     except:
 
@@ -139,47 +67,89 @@ def confidence_badge(
 
 
 
+def safe_json_list(value):
+
+    if isinstance(value, list):
+        return value
+
+    return []
 
 
 
-# =====================================================
-# QUALITY FORMAT
-# =====================================================
 
 
-def quality_format(
-    value
-):
+def quality_format(value):
 
     try:
 
         value=float(value)
 
-
-        if value <=1:
-
+        if value <= 1:
             value*=100
 
 
+        if value >=80:
+            return "🟢"
 
-        if value>=80:
+        elif value >=50:
+            return "🟡"
 
-            return f"🟢 {value:.0f}%"
-
-        elif value>=50:
-
-            return f"🟡 {value:.0f}%"
-
-        else:
-
-            return f"🔴 {value:.0f}%"
-
+        return "🔴"
 
 
     except:
 
-        return "🔴 0%"
+        return "🔴"
 
+
+
+
+
+
+# =====================================================
+# SPLIT TELEGRAM MESSAGE
+# =====================================================
+
+
+async def send_long_message(
+    message,
+    text
+):
+
+    limit = 3800
+
+
+    chunks=[]
+
+
+    while len(text)>limit:
+
+        part=text[:limit]
+
+        index=part.rfind("\n")
+
+
+        if index!=-1:
+            part=text[:index]
+
+
+        chunks.append(part)
+
+        text=text[len(part):]
+
+
+
+    chunks.append(text)
+
+
+
+    for chunk in chunks:
+
+        await message.answer(
+            chunk,
+            parse_mode="Markdown",
+            reply_markup=main_keyboard()
+        )
 
 
 
@@ -203,13 +173,12 @@ async def cmd_faj_predictions(
 
 
         predictions = get_predictions(
-            limit=20
+            limit=10
         )
 
 
-
-        # защита от None
         if not predictions:
+
 
             await message.answer(
 
@@ -223,39 +192,12 @@ async def cmd_faj_predictions(
 или
 
 /generate_tour
-"""
 
-            )
+""",
 
-            return
+reply_markup=main_keyboard()
 
-
-
-
-        # удаляем битые записи
-        predictions = [
-            p for p in predictions
-            if isinstance(
-                p,
-                dict
-            )
-        ]
-
-
-
-        if not predictions:
-
-            await message.answer(
-
-"""
-⚠️ В базе нет корректных прогнозов FAJ.
-
-Создайте новый тур:
-
-/generate_tour
-"""
-
-            )
+)
 
             return
 
@@ -269,6 +211,8 @@ async def cmd_faj_predictions(
 
 🧠 FAJ Engine v6.9.2
 
+🎲 Monte Carlo 10000
+
 ━━━━━━━━━━━━━━
 
 """
@@ -278,6 +222,10 @@ async def cmd_faj_predictions(
 
 
         for p in predictions:
+
+
+            if p is None:
+                continue
 
 
 
@@ -294,17 +242,10 @@ async def cmd_faj_predictions(
 
 
 
-            winner=p.get(
-                "winner",
-                "-"
-            )
-
-
-
             score=p.get(
-                "expected_score",
+                "score_prediction",
                 p.get(
-                    "score_prediction",
+                    "expected_score",
                     "-"
                 )
             )
@@ -324,19 +265,6 @@ async def cmd_faj_predictions(
 
 
 
-            rating_home=p.get(
-                "home_rating",
-                0
-            )
-
-
-            rating_away=p.get(
-                "away_rating",
-                0
-            )
-
-
-
             confidence=p.get(
                 "confidence",
                 0
@@ -344,47 +272,10 @@ async def cmd_faj_predictions(
 
 
 
-            risk=p.get(
-                "risk",
-                "Средний"
+            winner=p.get(
+                "winner",
+                "-"
             )
-
-
-
-            category=p.get(
-                "category",
-                p.get(
-                    "grade",
-                    "C"
-                )
-            )
-
-
-
-            factors=safe_json_load(
-                p.get(
-                    "factors"
-                ),
-                []
-            )
-
-
-
-            quality=safe_json_load(
-                p.get(
-                    "passport_quality"
-                ),
-                {}
-            )
-
-
-
-            if not isinstance(
-                quality,
-                dict
-            ):
-                quality={}
-
 
 
 
@@ -392,95 +283,44 @@ async def cmd_faj_predictions(
 
 ⚽ *{home} — {away}*
 
-
 🏆 Победа:
-
 {winner}
 
 
 🎯 Счёт:
-
 {score}
 
 
 📊 xG:
-
 {xg_home} — {xg_away}
 
 
-🧠 FAJ Rating:
-
-{rating_home} — {rating_away}
-
-
 🔥 Уверенность:
-
-{confidence_badge(
-    confidence
-)}
+{confidence_badge(confidence)}
 
 
-⚠️ Риск:
-
-{risk}
-
-
-🏷 Категория:
-
-{category}
-
-
-📁 Паспорт:
-
-🏠 {quality_format(
-quality.get(
-    "home",
-    0
-)
-)}
-
-🚩 {quality_format(
-quality.get(
-    "away",
-    0
-)
-)}
+━━━━━━━━━━━━━━
 
 """
 
 
 
-            if factors:
+        text += """
 
+📈 FAJ Learning Layer
 
-                text+="\n🧠 Факторы:\n"
+• Calibration
+• Ошибки модели
+• Улучшение Core
 
-
-                for factor in factors:
-
-                    text+=(
-                        f"\n• {factor}"
-                    )
-
-
-
-            text+="\n\n──────────────\n"
+"""
 
 
 
-
-
-        await message.answer(
-
-            text,
-
-            parse_mode="Markdown",
-
-            reply_markup=main_keyboard()
-
+        await send_long_message(
+            message,
+            text
         )
-
-
 
 
 
@@ -497,12 +337,12 @@ quality.get(
 f"""
 ❌ FAJ ПРОГНОЗ ERROR
 
-
 {type(e).__name__}
-
 
 {str(e)}
 
-"""
+""",
 
-        )
+reply_markup=main_keyboard()
+
+)
