@@ -1,9 +1,13 @@
 # =====================================================
-# FAJ Platform v6.9.2
+# FAJ Platform v6.9.3
 # app/handlers/faj_predictions.py
 #
 # FAJ Predictions Viewer
-# Fixed Telegram length limit
+#
+# Compatible:
+# - prediction_manager v6.9.3
+# - tour_predictor v6.9.3
+# - PostgreSQL
 # =====================================================
 
 
@@ -23,6 +27,7 @@ from app.keyboards.main import (
 )
 
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -30,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================
-# FORMATTERS
+# CONFIDENCE
 # =====================================================
 
 
@@ -40,66 +45,38 @@ def confidence_badge(value):
 
         value = float(value)
 
+
         if value <= 1:
+
             value *= 100
 
 
+
         if value >= 65:
+
             icon = "🟢"
 
         elif value >= 50:
+
             icon = "🟡"
 
         elif value >= 35:
+
             icon = "🟠"
 
         else:
+
             icon = "🔴"
+
 
 
         return f"{icon} {value:.1f}%"
 
-    except:
-
-        return "⚪ Нет данных"
-
-
-
-
-
-def safe_json_list(value):
-
-    if isinstance(value, list):
-        return value
-
-    return []
-
-
-
-
-
-def quality_format(value):
-
-    try:
-
-        value=float(value)
-
-        if value <= 1:
-            value*=100
-
-
-        if value >=80:
-            return "🟢"
-
-        elif value >=50:
-            return "🟡"
-
-        return "🔴"
 
 
     except:
 
-        return "🔴"
+        return "⚪ -"
 
 
 
@@ -107,7 +84,39 @@ def quality_format(value):
 
 
 # =====================================================
-# SPLIT TELEGRAM MESSAGE
+# WINNER FORMAT
+# =====================================================
+
+
+def winner_format(
+    value
+):
+
+
+    mapping = {
+
+        "home": "🏠 Хозяева",
+
+        "away": "🚩 Гости",
+
+        "draw": "🤝 Ничья"
+
+    }
+
+
+    return mapping.get(
+        value,
+        value or "-"
+    )
+
+
+
+
+
+
+
+# =====================================================
+# TELEGRAM SPLIT
 # =====================================================
 
 
@@ -116,40 +125,53 @@ async def send_long_message(
     text
 ):
 
+
     limit = 3800
 
 
-    chunks=[]
+    while len(text) > limit:
 
 
-    while len(text)>limit:
-
-        part=text[:limit]
-
-        index=part.rfind("\n")
+        part = text[:limit]
 
 
-        if index!=-1:
-            part=text[:index]
+        cut = part.rfind("\n")
 
 
-        chunks.append(part)
+        if cut > 0:
 
-        text=text[len(part):]
-
-
-
-    chunks.append(text)
+            part = text[:cut]
 
 
-
-    for chunk in chunks:
 
         await message.answer(
-            chunk,
+
+            part,
+
             parse_mode="Markdown",
+
             reply_markup=main_keyboard()
+
         )
+
+
+        text = text[len(part):]
+
+
+
+    if text:
+
+
+        await message.answer(
+
+            text,
+
+            parse_mode="Markdown",
+
+            reply_markup=main_keyboard()
+
+        )
+
 
 
 
@@ -163,9 +185,7 @@ async def send_long_message(
 
 
 async def cmd_faj_predictions(
-
     message: Message
-
 ):
 
 
@@ -173,8 +193,9 @@ async def cmd_faj_predictions(
 
 
         predictions = get_predictions(
-            limit=10
+            limit=7
         )
+
 
 
         if not predictions:
@@ -183,15 +204,11 @@ async def cmd_faj_predictions(
             await message.answer(
 
 """
-⚠️ FAJ прогнозов пока нет.
+⚠️ FAJ прогнозов нет.
 
 Создайте прогнозы:
 
-🚀 Создать прогнозы тура
-
-или
-
-/generate_tour
+🚀 /generate_tour
 
 """,
 
@@ -205,11 +222,11 @@ reply_markup=main_keyboard()
 
 
 
-        text="""
+        text = """
 
 🤖 *FAJ ПРОГНОЗЫ*
 
-🧠 FAJ Engine v6.9.2
+🧠 FAJ Engine v6.9.3
 
 🎲 Monte Carlo 10000
 
@@ -219,95 +236,105 @@ reply_markup=main_keyboard()
 
 
 
+        counter = 1
+
 
 
         for p in predictions:
 
 
-            if p is None:
+            if not p:
+
                 continue
 
 
 
-            home=p.get(
+            home = p.get(
                 "home_team",
                 "?"
             )
 
 
-            away=p.get(
+            away = p.get(
                 "away_team",
                 "?"
             )
 
 
 
-            score=p.get(
-                "score_prediction",
+            winner = winner_format(
+
                 p.get(
-                    "expected_score",
+                    "winner",
                     "-"
                 )
+
             )
 
 
 
-            xg_home=p.get(
+            score = p.get(
+
+                "expected_score",
+
+                p.get(
+                    "score_prediction",
+                    "-"
+                )
+
+            )
+
+
+
+            xg_home = p.get(
                 "xg_home",
                 0
             )
 
 
-            xg_away=p.get(
+            xg_away = p.get(
                 "xg_away",
                 0
             )
 
 
-
-            confidence=p.get(
+            confidence = p.get(
                 "confidence",
                 0
             )
 
 
 
-            winner=p.get(
-                "winner",
-                "-"
-            )
 
+            text += f"""
 
-
-            text+=f"""
-
-⚽ *{home} — {away}*
+{counter}️⃣ ⚽ *{home} — {away}*
 
 🏆 Победа:
 {winner}
 
-
 🎯 Счёт:
 {score}
-
 
 📊 xG:
 {xg_home} — {xg_away}
 
-
 🔥 Уверенность:
 {confidence_badge(confidence)}
-
 
 ━━━━━━━━━━━━━━
 
 """
 
 
+            counter += 1
+
+
+
 
         text += """
 
-📈 FAJ Learning Layer
+📈 *FAJ Learning Layer*
 
 • Calibration
 • Ошибки модели
