@@ -511,11 +511,37 @@ def list_teams(
 
 
 # =====================================================
-# COMPATIBILITY
-# FAJ v6 -> v7
+# COMPATIBILITY LAYER v7
 # =====================================================
+
 def init_default_aliases():
     logger.info(
         "FAJ aliases initialized"
     )
     return TEAM_ALIASES
+
+
+def delete_passport(team):
+    conn = get_db()
+    cur = conn.cursor()
+    real_team = get_team_by_alias(team)
+    cur.execute(
+        """
+        DELETE FROM team_passports
+        WHERE team=%s
+        """,
+        (
+            real_team,
+        )
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    logger.info(
+        "Passport deleted: %s",
+        real_team
+    )
+
+
+def get_all_passports():
+    return load_all_passports()
