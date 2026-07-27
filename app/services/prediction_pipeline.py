@@ -402,3 +402,28 @@ __all__ = [
     "PredictionPipeline",
     "predict_match_pipeline"
 ]
+
+# =====================================================
+# LEGACY COMPATIBILITY OBJECT
+# (для старых импортов tour_predictor.py)
+# =====================================================
+prediction_pipeline = PredictionPipeline()
+
+# =====================================================
+# LEGACY COMPATIBILITY METHOD
+# (для старых вызовов .predict_match)
+# =====================================================
+def predict_match(
+    self,
+    home_team,
+    away_team,
+    league="RPL",
+    season="2026/27"
+):
+    return self.predict_match_pipeline(
+        home_team,
+        away_team,
+        league,
+        season
+    )
+PredictionPipeline.predict_match = predict_match
