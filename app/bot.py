@@ -1,5 +1,5 @@
 # =====================================================
-# FAJ Platform v6.9.4
+# FAJ Platform v7.0.1
 # app/bot.py
 # =====================================================
 import logging
@@ -113,6 +113,8 @@ async def run_bot(
         token=Config.TELEGRAM_TOKEN
     )
     dp = Dispatcher()
+    dp["faj_core"] = core
+    dp["journal"] = journal
 
     # =================================================
     # COMMANDS
@@ -374,7 +376,7 @@ async def run_bot(
     ):
         await message.answer(
             """
-⚙️ Админ панель FAJ v6.9.4
+⚙️ Админ панель FAJ v7.0.1
 
 📥 Загрузить паспорта
 
@@ -433,8 +435,7 @@ async def run_bot(
     ):
         await message.answer(
             """
-⚽ FAJ Platform v6.9.4
-
+⚽ FAJ Platform v7.0.1
 
 📊 Статус        📈 Прогноз
 
@@ -445,7 +446,6 @@ async def run_bot(
 🏆 Турниры       📋 Журнал
 
 ⚙️ Админ         ❤️ Проверка
-
 
 FAJ анализирует:
 
@@ -462,7 +462,7 @@ FAJ анализирует:
         )
 
     logger.info(
-        "FAJ Platform v6.9.4 started"
+        "FAJ Platform v7.0.1 started"
     )
 
     await dp.start_polling(
