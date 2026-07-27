@@ -204,7 +204,7 @@ def init_database():
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS created TIMESTAMP DEFAULT NOW();
         """,
-        # ---------- predictions (новые колонки) ----------
+        # ========== НОВЫЕ МИГРАЦИИ ДЛЯ predictions ==========
         """
         ALTER TABLE predictions
         ADD COLUMN IF NOT EXISTS home_team TEXT;
@@ -212,14 +212,6 @@ def init_database():
         """
         ALTER TABLE predictions
         ADD COLUMN IF NOT EXISTS away_team TEXT;
-        """,
-        """
-        ALTER TABLE predictions
-        ADD COLUMN IF NOT EXISTS league TEXT;
-        """,
-        """
-        ALTER TABLE predictions
-        ADD COLUMN IF NOT EXISTS season TEXT;
         """,
         """
         ALTER TABLE predictions
@@ -231,23 +223,23 @@ def init_database():
         """,
         """
         ALTER TABLE predictions
-        ADD COLUMN IF NOT EXISTS home_rating REAL;
+        ADD COLUMN IF NOT EXISTS home_rating REAL DEFAULT 0;
         """,
         """
         ALTER TABLE predictions
-        ADD COLUMN IF NOT EXISTS away_rating REAL;
+        ADD COLUMN IF NOT EXISTS away_rating REAL DEFAULT 0;
         """,
         """
         ALTER TABLE predictions
-        ADD COLUMN IF NOT EXISTS home_probability REAL;
+        ADD COLUMN IF NOT EXISTS home_probability REAL DEFAULT 0;
         """,
         """
         ALTER TABLE predictions
-        ADD COLUMN IF NOT EXISTS draw_probability REAL;
+        ADD COLUMN IF NOT EXISTS draw_probability REAL DEFAULT 0;
         """,
         """
         ALTER TABLE predictions
-        ADD COLUMN IF NOT EXISTS away_probability REAL;
+        ADD COLUMN IF NOT EXISTS away_probability REAL DEFAULT 0;
         """,
         """
         ALTER TABLE predictions
@@ -268,10 +260,6 @@ def init_database():
         """
         ALTER TABLE predictions
         ADD COLUMN IF NOT EXISTS passport_quality JSONB;
-        """,
-        """
-        ALTER TABLE predictions
-        ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
         """
     ]
 
@@ -401,32 +389,20 @@ def init_database():
         );
     """)
 
-    # ---------- predictions (новая структура) ----------
+    # ---------- predictions ----------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS predictions (
             id SERIAL PRIMARY KEY,
-            fixture_id INTEGER REFERENCES fixtures(id),
-            home_team TEXT,
-            away_team TEXT,
-            league TEXT,
-            season TEXT,
-            winner TEXT,
-            expected_score TEXT,
+            fixture_id INTEGER,
+            home_win REAL,
+            draw REAL,
+            away_win REAL,
             xg_home REAL,
             xg_away REAL,
-            home_rating REAL,
-            away_rating REAL,
-            home_probability REAL,
-            draw_probability REAL,
-            away_probability REAL,
+            score_prediction TEXT,
             confidence REAL,
-            risk TEXT,
-            category TEXT,
-            factors JSONB,
-            season_phase TEXT,
-            passport_quality JSONB,
             model_version TEXT,
-            created_at TIMESTAMP DEFAULT NOW()
+            created TIMESTAMP DEFAULT NOW()
         );
     """)
 
