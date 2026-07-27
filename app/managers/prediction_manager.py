@@ -1,7 +1,25 @@
 # =====================================================
 # FAJ Platform v6.9.3
 # app/managers/prediction_manager.py
+#
+# Prediction Manager
+#
+# Flow:
+#
+# tour_predictor
+#        |
+#        v
+# save_prediction()
+#        |
+#        v
+# PostgreSQL predictions
+#
+# Compatible:
+# - tour_predictor v6.9.3
+# - prediction_pipeline v6.9.3
+# - faj_predictions handler
 # =====================================================
+
 
 import logging
 from datetime import datetime
@@ -12,21 +30,33 @@ from app.database import get_db
 logger = logging.getLogger(__name__)
 
 
+
+
 # =====================================================
-# HELPERS
+# SAFE
 # =====================================================
 
+
 def safe_float(value):
+
     try:
-        return float(value or 0)
-    except:
+
+        if value is None:
+            return 0
+
+        return float(value)
+
+    except Exception:
+
         return 0
+
 
 
 
 # =====================================================
 # CLEAR
 # =====================================================
+
 
 def clear_predictions():
 
@@ -35,18 +65,22 @@ def clear_predictions():
         conn = get_db()
         cur = conn.cursor()
 
+
         cur.execute(
             """
             DELETE FROM predictions
             """
         )
 
+
         conn.commit()
         conn.close()
+
 
         logger.info(
             "FAJ predictions cleared"
         )
+
 
         return True
 
@@ -54,7 +88,7 @@ def clear_predictions():
     except Exception as e:
 
         logger.error(
-            "Clear error: %s",
+            "Clear predictions error: %s",
             e,
             exc_info=True
         )
@@ -64,9 +98,11 @@ def clear_predictions():
 
 
 
+
 # =====================================================
-# SAVE
+# SAVE ONE
 # =====================================================
+
 
 def save_prediction(
     fixture,
@@ -75,25 +111,31 @@ def save_prediction(
 
     try:
 
-        if not fixture or not prediction:
+
+        if not fixture:
+
+            logger.warning(
+                "Empty fixture"
+            )
 
             return False
+
+
+
+        if not prediction:
+
+            logger.warning(
+                "Empty prediction"
+            )
+
+            return False
+
+
 
 
         conn = get_db()
         cur = conn.cursor()
 
-
-        winner = prediction.get(
-            "winner",
-            "-"
-        )
-
-
-        score = prediction.get(
-            "expected_score",
-            "-"
-        )
 
 
         cur.execute(
@@ -101,47 +143,67 @@ def save_prediction(
             INSERT INTO predictions
             (
                 fixture_id,
-                home_win,
-                draw,
-                away_win,
+
+                home_team,
+                away_team,
+
+                winner,
+                expected_score,
+
                 xg_home,
                 xg_away,
-                score_prediction,
+
                 confidence,
+
                 model_version,
-                created
+
+                created_at
             )
 
             VALUES
             (
-                %s,%s,%s,%s,%s,
-                %s,%s,%s,%s,%s
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s
             )
             """,
 
             (
 
-                fixture.get("id"),
-
-                safe_float(
-                    prediction.get(
-                        "home_probability"
-                    )
-                ) / 100,
+                fixture.get(
+                    "id"
+                ),
 
 
-                safe_float(
-                    prediction.get(
-                        "draw_probability"
-                    )
-                ) / 100,
+                fixture.get(
+                    "home_team",
+                    "-"
+                ),
 
 
-                safe_float(
-                    prediction.get(
-                        "away_probability"
-                    )
-                ) / 100,
+                fixture.get(
+                    "away_team",
+                    "-"
+                ),
+
+
+                prediction.get(
+                    "winner",
+                    "-"
+                ),
+
+
+                prediction.get(
+                    "expected_score",
+                    "-"
+                ),
 
 
                 safe_float(
@@ -156,9 +218,6 @@ def save_prediction(
                         "xg_away"
                     )
                 ),
-
-
-                f"{winner}|{score}",
 
 
                 safe_float(
@@ -177,8 +236,21 @@ def save_prediction(
         )
 
 
+
         conn.commit()
         conn.close()
+
+
+
+        logger.info(
+            "Prediction saved: %s - %s",
+            fixture.get(
+                "home_team"
+            ),
+            fixture.get(
+                "away_team"
+            )
+        )
 
 
         return True
@@ -189,19 +261,75 @@ def save_prediction(
 
 
         logger.error(
-            "Save prediction error: %s",
+            "SAVE prediction error: %s",
             e,
             exc_info=True
         )
+
 
         return False
 
 
 
 
+
+
+
 # =====================================================
-# GET PREDICTIONS
+# BATCH
 # =====================================================
+
+
+def save_predictions_batch(
+    fixtures,
+    predictions
+):
+
+
+    saved = 0
+
+
+
+    if not fixtures or not predictions:
+
+        return 0
+
+
+
+    for fixture, prediction in zip(
+        fixtures,
+        predictions
+    ):
+
+
+        if save_prediction(
+            fixture,
+            prediction
+        ):
+
+            saved += 1
+
+
+
+    logger.info(
+        "Batch saved %s/%s",
+        saved,
+        len(predictions)
+    )
+
+
+    return saved
+
+
+
+
+
+
+
+# =====================================================
+# READ FOR TELEGRAM
+# =====================================================
+
 
 def get_predictions(
     limit=20
@@ -210,26 +338,40 @@ def get_predictions(
 
     try:
 
-        conn=get_db()
-        cur=conn.cursor()
+
+        conn = get_db()
+        cur = conn.cursor()
+
 
 
         cur.execute(
             """
             SELECT
-                p.*,
-                f.home_team,
-                f.away_team,
-                f.league,
-                f.season
+                id,
 
-            FROM predictions p
+                fixture_id,
 
-            LEFT JOIN fixtures f
-            ON p.fixture_id=f.id
+                home_team,
+                away_team,
+
+                winner,
+                expected_score,
+
+                xg_home,
+                xg_away,
+
+                confidence,
+
+                model_version,
+
+                created_at
 
 
-            ORDER BY p.created DESC
+            FROM predictions
+
+
+            ORDER BY created_at DESC
+
 
             LIMIT %s
             """,
@@ -237,14 +379,15 @@ def get_predictions(
             (
                 limit,
             )
-
         )
 
 
-        rows=cur.fetchall()
+
+        rows = cur.fetchall()
 
 
         conn.close()
+
 
 
         result=[]
@@ -252,39 +395,24 @@ def get_predictions(
 
         for row in rows:
 
+            try:
 
-            data=dict(row)
+                result.append(
+                    dict(row)
+                )
 
+            except:
 
-            score=data.get(
-                "score_prediction",
-                "-"
-            )
-
-
-            winner="-"
-
-
-            expected="-"
+                result.append(
+                    row
+                )
 
 
-            if "|" in score:
 
-                parts=score.split("|")
-
-                winner=parts[0]
-
-                expected=parts[1]
-
-
-            data["winner"]=winner
-
-            data["expected_score"]=expected
-
-
-            result.append(
-                data
-            )
+        logger.info(
+            "Predictions loaded: %s",
+            len(result)
+        )
 
 
         return result
@@ -295,7 +423,7 @@ def get_predictions(
 
 
         logger.error(
-            "get_predictions error: %s",
+            "GET predictions error: %s",
             e,
             exc_info=True
         )
@@ -306,13 +434,18 @@ def get_predictions(
 
 
 
+
+
+
 # =====================================================
 # HISTORY
 # =====================================================
 
+
 def get_prediction_history(
     limit=100
 ):
+
 
     try:
 
@@ -323,8 +456,11 @@ def get_prediction_history(
         cur.execute(
             """
             SELECT *
+
             FROM predictions
-            ORDER BY created DESC
+
+            ORDER BY created_at DESC
+
             LIMIT %s
             """,
 
@@ -336,19 +472,28 @@ def get_prediction_history(
 
         rows=cur.fetchall()
 
+
         conn.close()
+
 
         return rows
 
 
+
     except Exception as e:
+
 
         logger.error(
             "History error: %s",
-            e
+            e,
+            exc_info=True
         )
 
+
         return []
+
+
+
 
 
 
@@ -357,9 +502,11 @@ def get_prediction_history(
 # ONE
 # =====================================================
 
+
 def get_prediction_by_id(
     prediction_id
 ):
+
 
     try:
 
@@ -370,9 +517,14 @@ def get_prediction_by_id(
         cur.execute(
             """
             SELECT *
+
             FROM predictions
+
             WHERE id=%s
+
+            LIMIT 1
             """,
+
             (
                 prediction_id,
             )
@@ -381,35 +533,122 @@ def get_prediction_by_id(
 
         row=cur.fetchone()
 
+
         conn.close()
 
 
+
         if row:
+
             return dict(row)
 
 
         return None
 
 
+
     except Exception as e:
 
+
         logger.error(
-            "Prediction id error: %s",
-            e
+            "Prediction by id error: %s",
+            e,
+            exc_info=True
         )
+
 
         return None
 
 
 
+
+
+
+
 # =====================================================
-# EXPORT
+# REMOVE DUPLICATES
 # =====================================================
 
-__all__=[
+
+def delete_duplicate_predictions():
+
+    try:
+
+        conn=get_db()
+        cur=conn.cursor()
+
+
+        cur.execute(
+            """
+            DELETE FROM predictions p1
+
+            USING predictions p2
+
+            WHERE p1.id < p2.id
+
+            AND p1.fixture_id=p2.fixture_id
+            """
+        )
+
+
+        deleted=cur.rowcount
+
+
+        conn.commit()
+        conn.close()
+
+
+        logger.info(
+            "Duplicates removed: %s",
+            deleted
+        )
+
+
+        return deleted
+
+
+
+    except Exception as e:
+
+
+        logger.error(
+            "Duplicate error: %s",
+            e,
+            exc_info=True
+        )
+
+
+        return 0
+
+
+
+
+
+# =====================================================
+# EXPORTS
+# =====================================================
+
+
+__all__ = [
+
     "clear_predictions",
+
     "save_prediction",
+
+    "save_predictions_batch",
+
     "get_predictions",
+
     "get_prediction_history",
-    "get_prediction_by_id"
+
+    "get_prediction_by_id",
+
+    "delete_duplicate_predictions"
+
 ]
+
+
+
+# =====================================================
+# END
+# =====================================================
