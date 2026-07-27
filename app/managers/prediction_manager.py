@@ -4,16 +4,20 @@
 #
 # Prediction Manager
 #
-# Compatible:
-# - prediction_pipeline v6.9.x
-# - tour_predictor v6.9.x
-# - Telegram Viewer v6.9.5
+# Flow:
+#
+# prediction_pipeline
+#        |
+#        v
+# save_prediction()
+#        |
+#        v
+# PostgreSQL predictions
 #
 # =====================================================
 
-import logging
-import json
 
+import logging
 from datetime import datetime
 
 from app.database import get_db
@@ -22,49 +26,36 @@ from app.database import get_db
 logger = logging.getLogger(__name__)
 
 
+MODEL_VERSION = "FAJ v6.9.6"
+
+
+
 # =====================================================
 # SAFE
 # =====================================================
+
 
 def safe_float(value):
 
     try:
 
         if value is None:
-            return 0
+            return 0.0
 
         return float(value)
 
     except Exception:
 
-        return 0
+        return 0.0
 
 
-
-def safe_json(value):
-
-    try:
-
-        if value is None:
-            return json.dumps({})
-
-        if isinstance(value, str):
-            return value
-
-        return json.dumps(
-            value,
-            ensure_ascii=False
-        )
-
-    except Exception:
-
-        return json.dumps({})
 
 
 
 # =====================================================
 # CLEAR
 # =====================================================
+
 
 def clear_predictions():
 
@@ -73,18 +64,22 @@ def clear_predictions():
         conn = get_db()
         cur = conn.cursor()
 
+
         cur.execute(
             """
             DELETE FROM predictions
             """
         )
 
+
         conn.commit()
         conn.close()
+
 
         logger.info(
             "FAJ predictions cleared"
         )
+
 
         return True
 
@@ -101,22 +96,22 @@ def clear_predictions():
 
 
 
+
+
 # =====================================================
 # SAVE ONE
 # =====================================================
 
+
 def save_prediction(
-    fixture,
-    prediction
+        fixture,
+        prediction
 ):
 
     try:
 
-        if not fixture:
-            return False
+        if not fixture or not prediction:
 
-
-        if not prediction:
             return False
 
 
@@ -126,7 +121,6 @@ def save_prediction(
 
 
 
-        # Основная совместимая запись
         cur.execute(
             """
             INSERT INTO predictions
@@ -147,6 +141,7 @@ def save_prediction(
                 model_version,
 
                 created_at
+
             )
 
             VALUES
@@ -154,6 +149,7 @@ def save_prediction(
                 %s,%s,%s,%s,%s,
                 %s,%s,%s,%s,%s
             )
+
             """,
 
             (
@@ -182,11 +178,13 @@ def save_prediction(
 
 
                 prediction.get(
-                    "expected_score",
+                    "score_prediction",
+
                     prediction.get(
-                        "score_prediction",
+                        "expected_score",
                         "-"
                     )
+
                 ),
 
 
@@ -211,12 +209,16 @@ def save_prediction(
                 ),
 
 
-                "FAJ v6.9.6",
+                prediction.get(
+                    "model_version",
+                    MODEL_VERSION
+                ),
 
 
                 datetime.now()
 
             )
+
         )
 
 
@@ -226,9 +228,17 @@ def save_prediction(
 
 
         logger.info(
+
             "Prediction saved: %s - %s",
-            fixture.get("home_team"),
-            fixture.get("away_team")
+
+            fixture.get(
+                "home_team"
+            ),
+
+            fixture.get(
+                "away_team"
+            )
+
         )
 
 
@@ -236,13 +246,18 @@ def save_prediction(
 
 
 
+
     except Exception as e:
 
 
         logger.error(
+
             "SAVE prediction error: %s",
+
             e,
+
             exc_info=True
+
         )
 
 
@@ -250,14 +265,19 @@ def save_prediction(
 
 
 
+
+
+
 # =====================================================
 # BATCH
 # =====================================================
 
+
 def save_predictions_batch(
-    fixtures,
-    predictions
+        fixtures,
+        predictions
 ):
+
 
     saved = 0
 
@@ -269,13 +289,14 @@ def save_predictions_batch(
 
 
     for fixture, prediction in zip(
-        fixtures,
-        predictions
+            fixtures,
+            predictions
     ):
 
+
         if save_prediction(
-            fixture,
-            prediction
+                fixture,
+                prediction
         ):
 
             saved += 1
@@ -283,9 +304,13 @@ def save_predictions_batch(
 
 
     logger.info(
+
         "Batch saved %s/%s",
+
         saved,
+
         len(predictions)
+
     )
 
 
@@ -293,13 +318,18 @@ def save_predictions_batch(
 
 
 
+
+
+
 # =====================================================
 # READ
 # =====================================================
 
+
 def get_predictions(
-    limit=20
+        limit=20
 ):
+
 
     try:
 
@@ -308,11 +338,11 @@ def get_predictions(
 
 
         cur.execute(
+
             """
             SELECT
 
                 id,
-
                 fixture_id,
 
                 home_team,
@@ -342,6 +372,7 @@ def get_predictions(
             (
                 limit,
             )
+
         )
 
 
@@ -349,6 +380,7 @@ def get_predictions(
 
 
         conn.close()
+
 
 
         result = []
@@ -369,12 +401,6 @@ def get_predictions(
                 )
 
 
-        logger.info(
-            "Predictions loaded: %s",
-            len(result)
-        )
-
-
         return result
 
 
@@ -383,9 +409,13 @@ def get_predictions(
 
 
         logger.error(
+
             "GET predictions error: %s",
+
             e,
+
             exc_info=True
+
         )
 
 
@@ -393,13 +423,19 @@ def get_predictions(
 
 
 
+
+
+
+
 # =====================================================
 # HISTORY
 # =====================================================
 
+
 def get_prediction_history(
-    limit=100
+        limit=100
 ):
+
 
     try:
 
@@ -408,6 +444,7 @@ def get_prediction_history(
 
 
         cur.execute(
+
             """
             SELECT *
 
@@ -416,11 +453,13 @@ def get_prediction_history(
             ORDER BY created_at DESC
 
             LIMIT %s
+
             """,
 
             (
                 limit,
             )
+
         )
 
 
@@ -433,13 +472,18 @@ def get_prediction_history(
         return rows
 
 
+
     except Exception as e:
 
 
         logger.error(
+
             "History error: %s",
+
             e,
+
             exc_info=True
+
         )
 
 
@@ -447,13 +491,19 @@ def get_prediction_history(
 
 
 
+
+
+
+
 # =====================================================
-# ONE
+# BY ID
 # =====================================================
 
+
 def get_prediction_by_id(
-    prediction_id
+        prediction_id
 ):
+
 
     try:
 
@@ -462,6 +512,7 @@ def get_prediction_by_id(
 
 
         cur.execute(
+
             """
             SELECT *
 
@@ -470,11 +521,13 @@ def get_prediction_by_id(
             WHERE id=%s
 
             LIMIT 1
+
             """,
 
             (
                 prediction_id,
             )
+
         )
 
 
@@ -492,13 +545,18 @@ def get_prediction_by_id(
         return None
 
 
+
     except Exception as e:
 
 
         logger.error(
+
             "Prediction by id error: %s",
+
             e,
+
             exc_info=True
+
         )
 
 
@@ -506,11 +564,16 @@ def get_prediction_by_id(
 
 
 
+
+
+
 # =====================================================
 # DUPLICATES
 # =====================================================
 
+
 def delete_duplicate_predictions():
+
 
     try:
 
@@ -519,6 +582,7 @@ def delete_duplicate_predictions():
 
 
         cur.execute(
+
             """
             DELETE FROM predictions p1
 
@@ -527,7 +591,9 @@ def delete_duplicate_predictions():
             WHERE p1.id < p2.id
 
             AND p1.fixture_id=p2.fixture_id
+
             """
+
         )
 
 
@@ -538,16 +604,30 @@ def delete_duplicate_predictions():
         conn.close()
 
 
+        logger.info(
+
+            "Duplicates removed: %s",
+
+            deleted
+
+        )
+
+
         return deleted
+
 
 
     except Exception as e:
 
 
         logger.error(
+
             "Duplicate error: %s",
+
             e,
+
             exc_info=True
+
         )
 
 
@@ -555,9 +635,13 @@ def delete_duplicate_predictions():
 
 
 
+
+
+
 # =====================================================
 # EXPORTS
 # =====================================================
+
 
 __all__ = [
 
@@ -576,3 +660,9 @@ __all__ = [
     "delete_duplicate_predictions"
 
 ]
+
+
+
+# =====================================================
+# END
+# =====================================================
