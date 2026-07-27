@@ -1,16 +1,24 @@
 # =====================================================
 # FAJ Platform v6.9.5
 # app/handlers/faj_predictions.py
+#
+# Telegram Match Viewer
 # =====================================================
 
+
 import logging
+
 
 from aiogram.types import (
     Message,
     CallbackQuery
 )
 
-from app.managers.prediction_manager import get_predictions
+
+from app.managers.prediction_manager import (
+    get_predictions
+)
+
 
 from app.keyboards.faj_navigation import (
     faj_navigation_keyboard,
@@ -18,11 +26,15 @@ from app.keyboards.faj_navigation import (
 )
 
 
+
 logger = logging.getLogger(__name__)
 
 
+
+
+
 # =====================================================
-# CONFIDENCE
+# CONFIDENCE BADGE
 # =====================================================
 
 def confidence_badge(value):
@@ -31,52 +43,77 @@ def confidence_badge(value):
 
         value = float(value)
 
+
         if value <= 1:
+
             value *= 100
 
 
+
         if value >= 65:
+
             icon = "🟢"
 
         elif value >= 50:
+
             icon = "🟡"
 
         elif value >= 35:
+
             icon = "🟠"
 
         else:
+
             icon = "🔴"
+
 
 
         return f"{icon} {value:.1f}%"
 
-    except:
+
+
+    except Exception:
 
         return "⚪"
 
 
 
+
+
 # =====================================================
-# WINNER
+# WINNER ICON
 # =====================================================
 
 def winner_icon(value):
 
+
     if value == "home":
+
         return "🏠 Хозяева"
 
+
+
     if value == "away":
+
         return "🚩 Гости"
 
+
+
     if value == "draw":
+
         return "🤝 Ничья"
+
+
 
     return "—"
 
 
 
+
+
+
 # =====================================================
-# FORMAT ONE MATCH
+# MATCH CARD
 # =====================================================
 
 def format_match(
@@ -85,8 +122,10 @@ def format_match(
         total
 ):
 
+
     return f"""
 🤖 *FAJ MATCH ANALYSIS*
+
 🧠 FAJ Engine v6.9.5
 
 ⚽ Матч {index+1}/{total}
@@ -95,27 +134,70 @@ def format_match(
 
 ⚽ *{prediction.get('home_team','?')} — {prediction.get('away_team','?')}*
 
-🏆 Победа:
-{winner_icon(prediction.get('winner'))}
+🏆 Прогноз:
 
-🎯 Счёт:
-{prediction.get('score_prediction',
-prediction.get('expected_score','-'))}
+{winner_icon(
+    prediction.get('winner')
+)}
 
-📊 xG:
-{prediction.get('xg_home',0)} — {prediction.get('xg_away',0)}
+🎯 Основной счёт:
 
-🔥 Уверенность:
-{confidence_badge(prediction.get('confidence',0))}
+{prediction.get(
+    'expected_score',
+    '-'
+)}
+
+📊 Ожидаемый xG:
+
+{prediction.get(
+    'xg_home',
+    0
+)}
+ —
+{prediction.get(
+    'xg_away',
+    0
+)}
+
 
 ━━━━━━━━━━━━━━
+
+
+🔥 Уверенность:
+
+{confidence_badge(
+    prediction.get(
+        'confidence',
+        0
+    )
+)}
+
+
+━━━━━━━━━━━━━━
+
+
+⚙️ Model:
+
+FAJ Core
+
+🎲 Simulation:
+
+Monte Carlo 10000
+
+
+━━━━━━━━━━━━━━
+
 
 📈 FAJ Learning Layer
 
 • Calibration
 • Ошибки модели
 • Улучшение Core
+
 """
+
+
+
 
 
 
@@ -123,14 +205,19 @@ prediction.get('expected_score','-'))}
 # SHOW TOUR LIST
 # =====================================================
 
-async def show_predictions_list(target):
+async def show_predictions_list(
+        target
+):
+
 
     predictions = get_predictions(
         limit=100
     )
 
 
+
     if not predictions:
+
 
         text = """
 ⚠️ FAJ прогнозов нет.
@@ -141,16 +228,26 @@ async def show_predictions_list(target):
 """
 
 
-        if isinstance(target, Message):
 
-            await target.answer(text)
+        if isinstance(
+            target,
+            Message
+        ):
+
+            await target.answer(
+                text
+            )
 
         else:
 
-            await target.message.edit_text(text)
+            await target.message.edit_text(
+                text
+            )
 
 
         return
+
+
 
 
 
@@ -165,12 +262,19 @@ async def show_predictions_list(target):
 """
 
 
+
     keyboard = faj_tour_keyboard(
         predictions
     )
 
 
-    if isinstance(target, Message):
+
+
+    if isinstance(
+        target,
+        Message
+    ):
+
 
         await target.answer(
             text,
@@ -178,13 +282,20 @@ async def show_predictions_list(target):
             reply_markup=keyboard
         )
 
+
     else:
+
 
         await target.message.edit_text(
             text,
             parse_mode="Markdown",
             reply_markup=keyboard
         )
+
+
+
+
+
 
 
 
@@ -197,12 +308,15 @@ async def show_prediction(
         index: int
 ):
 
+
     predictions = get_predictions(
         limit=100
     )
 
 
+
     if not predictions:
+
 
         text = """
 ⚠️ FAJ прогнозов нет.
@@ -213,25 +327,42 @@ async def show_prediction(
 """
 
 
-        if isinstance(target, Message):
 
-            await target.answer(text)
+        if isinstance(
+            target,
+            Message
+        ):
+
+
+            await target.answer(
+                text
+            )
+
 
         else:
 
-            await target.message.edit_text(text)
+
+            await target.message.edit_text(
+                text
+            )
 
 
         return
 
 
 
-    total = len(predictions)
+
+
+    total = len(
+        predictions
+    )
+
 
 
     if index < 0:
 
         index = 0
+
 
 
     if index >= total:
@@ -240,7 +371,10 @@ async def show_prediction(
 
 
 
+
+
     prediction = predictions[index]
+
 
 
     text = format_match(
@@ -250,6 +384,7 @@ async def show_prediction(
     )
 
 
+
     keyboard = faj_navigation_keyboard(
         index,
         total
@@ -257,7 +392,12 @@ async def show_prediction(
 
 
 
-    if isinstance(target, Message):
+
+    if isinstance(
+        target,
+        Message
+    ):
+
 
         await target.answer(
             text,
@@ -266,7 +406,9 @@ async def show_prediction(
         )
 
 
+
     else:
+
 
         await target.message.edit_text(
             text,
@@ -276,13 +418,18 @@ async def show_prediction(
 
 
 
+
+
+
+
 # =====================================================
-# FIRST CARD
+# FIRST OPEN
 # =====================================================
 
 async def cmd_faj_predictions(
         message: Message
 ):
+
 
     await show_prediction(
         message,
@@ -291,32 +438,45 @@ async def cmd_faj_predictions(
 
 
 
+
+
+
+
 # =====================================================
-# CALLBACK NAVIGATION
+# CALLBACKS
 # =====================================================
 
 async def faj_match_callback(
         callback: CallbackQuery
 ):
 
+
     try:
+
 
         data = callback.data or ""
 
 
-        if not data.startswith("faj_"):
+
+        if not data.startswith(
+            "faj_"
+        ):
 
             return
 
 
 
+
+
+
         # =============================================
-        # OPEN MATCH FROM TOUR LIST
+        # OPEN MATCH
         # =============================================
 
         if data.startswith(
             "faj_open_"
         ):
+
 
             index = int(
                 data.split("_")[2]
@@ -335,8 +495,11 @@ async def faj_match_callback(
 
 
 
+
+
+
         # =============================================
-        # RETURN TO TOUR LIST
+        # BACK TO TOUR
         # =============================================
 
         if data == "faj_all_matches":
@@ -353,6 +516,9 @@ async def faj_match_callback(
 
 
 
+
+
+
         # =============================================
         # EMPTY BUTTON
         # =============================================
@@ -365,15 +531,21 @@ async def faj_match_callback(
 
 
 
+
+
+
+
         predictions = get_predictions(
             limit=100
         )
 
 
+
         if not predictions:
 
+
             await callback.answer(
-                "Нет прогнозов.",
+                "Нет прогнозов",
                 show_alert=True
             )
 
@@ -381,15 +553,23 @@ async def faj_match_callback(
 
 
 
-        total = len(predictions)
+
+
+        total = len(
+            predictions
+        )
+
 
 
         parts = data.split("_")
 
 
+
         action = parts[1]
 
-        index = int(parts[2])
+        index = int(
+            parts[2]
+        )
 
 
 
@@ -398,9 +578,12 @@ async def faj_match_callback(
             index += 1
 
 
+
         elif action == "prev":
 
             index -= 1
+
+
 
 
 
@@ -409,9 +592,12 @@ async def faj_match_callback(
             index = 0
 
 
+
         if index >= total:
 
             index = total - 1
+
+
 
 
 
@@ -421,7 +607,10 @@ async def faj_match_callback(
         )
 
 
+
         await callback.answer()
+
+
 
 
 
@@ -434,6 +623,12 @@ async def faj_match_callback(
 
 
         await callback.answer(
-            f"{type(e).__name__}",
+            str(e),
             show_alert=True
         )
+
+
+
+# =====================================================
+# END
+# =====================================================
