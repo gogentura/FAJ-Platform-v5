@@ -1,5 +1,5 @@
 # =====================================================
-# FAJ Platform v6.9.2
+# FAJ Platform v6.9.4
 # app/bot.py
 # =====================================================
 
@@ -7,7 +7,7 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery
 
 from app.config import Config
 
@@ -33,7 +33,6 @@ from app.handlers.passport import (
     button_passport
 )
 
-# ===== ЗАМЕНА: используем show_fixtures вместо fixtures =====
 from app.handlers.show_fixtures import cmd_show_fixtures
 
 from app.handlers.load_fixtures import cmd_load_fixtures
@@ -55,14 +54,14 @@ from app.handlers.clear_fixtures import (
 )
 
 from app.handlers.faj_predictions import (
-    cmd_faj_predictions
+    cmd_faj_predictions,
+    faj_match_callback
 )
 
 from app.handlers.expert_predictions import (
     cmd_expert_predictions
 )
 
-# ===== ВАЖНО: импорт генератора прогнозов =====
 from app.handlers.generate_predictions import (
     cmd_generate_predictions
 )
@@ -79,13 +78,10 @@ from app.handlers.debug_soccer365 import (
     cmd_debug_soccer365
 )
 
-# ===== DEBUG RESULTS =====
 from app.handlers.debug_results import cmd_debug_results
 
-# ===== DEBUG FIXTURES (исправлен импорт) =====
 from app.debug_fixtures import debug_fixtures
 
-# ===== DEBUG PREDICTION =====
 from app.debug_prediction import cmd_debug_prediction
 
 
@@ -164,87 +160,70 @@ async def run_bot(
 
         return
 
-
-
     bot = Bot(
         token=Config.TELEGRAM_TOKEN
     )
 
-
     dp = Dispatcher()
-
-
 
     # =================================================
     # COMMANDS
     # =================================================
-
 
     dp.message.register(
         cmd_start,
         Command("start")
     )
 
-
     dp.message.register(
         cmd_status,
         Command("статус")
     )
-
 
     dp.message.register(
         cmd_journal,
         Command("журнал")
     )
 
-
     dp.message.register(
         cmd_health,
         Command("проверка")
     )
-
 
     dp.message.register(
         cmd_dbcheck,
         Command("база")
     )
 
-
     dp.message.register(
         cmd_load_passports,
         Command("загрузить_паспорта")
     )
-
 
     dp.message.register(
         cmd_load_fixtures,
         Command("загрузить_календарь")
     )
 
-
     dp.message.register(
         cmd_fixtures_check,
         Command("fixtures_check")
     )
-
 
     dp.message.register(
         cmd_update_calendar,
         Command("update_calendar")
     )
 
-
     dp.message.register(
         cmd_update_results,
         Command("update_results")
     )
 
-
     dp.message.register(
         cmd_clear_fixtures,
         Command("clear_fixtures")
     )
-
 
     dp.message.register(
         cmd_debug_calendar,
@@ -281,7 +260,7 @@ async def run_bot(
         Command("debug_results")
     )
 
-    # ===== DEBUG FIXTURES (исправлена регистрация) =====
+    # ===== DEBUG FIXTURES =====
     dp.message.register(
         debug_fixtures,
         Command("debug_fixtures")
@@ -335,11 +314,18 @@ async def run_bot(
             message
         )
 
+    # ===== КОМАНДА ДЛЯ ПРОСМОТРА FAJ ПРОГНОЗОВ =====
+    @dp.message(
+        Command("faj")
+    )
+    async def faj_predictions_command(
+        message: Message
+    ):
+        await cmd_faj_predictions(message)
 
     # =================================================
     # MAIN MENU
     # =================================================
-
 
     @dp.message(
         lambda m:
@@ -349,8 +335,6 @@ async def run_bot(
 
         await cmd_status(message)
 
-
-
     @dp.message(
         lambda m:
         m.text == "📋 Журнал"
@@ -358,8 +342,6 @@ async def run_bot(
     async def journal_button(message: Message):
 
         await cmd_journal(message)
-
-
 
     @dp.message(
         lambda m:
@@ -369,8 +351,6 @@ async def run_bot(
 
         await cmd_health(message)
 
-
-
     @dp.message(
         lambda m:
         m.text == "📁 Паспорта"
@@ -379,9 +359,6 @@ async def run_bot(
 
         await button_passport(message)
 
-
-
-    # ===== ЗАМЕНА: теперь используем cmd_show_fixtures =====
     @dp.message(
         lambda m:
         m.text == "📅 Матчи"
@@ -390,12 +367,9 @@ async def run_bot(
 
         await cmd_show_fixtures(message)
 
-
-
     # =================================================
     # FAJ PREDICTIONS
     # =================================================
-
 
     @dp.message(
         lambda m:
@@ -405,8 +379,6 @@ async def run_bot(
 
         await cmd_faj_predictions(message)
 
-
-
     @dp.message(
         lambda m:
         m.text == "🧠 Мои прогнозы"
@@ -415,12 +387,9 @@ async def run_bot(
 
         await cmd_expert_predictions(message)
 
-
-
     # =================================================
     # ADMIN
     # =================================================
-
 
     @dp.message(
         lambda m:
@@ -431,7 +400,7 @@ async def run_bot(
         await message.answer(
 
             """
-⚙️ Админ панель FAJ v6.9.2
+⚙️ Админ панель FAJ v6.9.4
 
 📥 Загрузить паспорта
 
@@ -454,7 +423,6 @@ async def run_bot(
 
         )
 
-
     # ===== ОБРАБОТЧИК КНОПКИ "🚀 Создать прогнозы тура" =====
     @dp.message(
         lambda m:
@@ -467,7 +435,6 @@ async def run_bot(
             message
         )
 
-
     @dp.message(
         lambda m:
         m.text == "🗑 Очистить календарь"
@@ -475,8 +442,6 @@ async def run_bot(
     async def clear_calendar_button(message: Message):
 
         await cmd_clear_fixtures(message)
-
-
 
     @dp.message(
         lambda m:
@@ -486,8 +451,6 @@ async def run_bot(
 
         await cmd_update_calendar(message)
 
-
-
     @dp.message(
         lambda m:
         m.text == "🔄 Обновить результаты"
@@ -495,8 +458,6 @@ async def run_bot(
     async def update_results_button(message: Message):
 
         await cmd_update_results(message)
-
-
 
     @dp.message(
         lambda m:
@@ -506,8 +467,6 @@ async def run_bot(
 
         await cmd_fixtures_check(message)
 
-
-
     @dp.message(
         lambda m:
         m.text == "📥 Загрузить паспорта"
@@ -516,8 +475,6 @@ async def run_bot(
 
         await cmd_load_passports(message)
 
-
-
     @dp.message(
         lambda m:
         m.text == "🗄 Проверка базы"
@@ -525,8 +482,6 @@ async def run_bot(
     async def db_check_button(message: Message):
 
         await cmd_dbcheck(message)
-
-
 
     @dp.message(
         lambda m:
@@ -545,11 +500,9 @@ async def run_bot(
                 "❌ Не удалось очистить журнал."
             )
 
-
     # =================================================
     # PASSPORT TEXT
     # =================================================
-
 
     @dp.message(
         lambda m:
@@ -561,12 +514,9 @@ async def run_bot(
 
         await cmd_passport(message)
 
-
-
     # =================================================
     # MATCH PREDICT
     # =================================================
-
 
     @dp.message(
         lambda m:
@@ -592,12 +542,14 @@ async def run_bot(
             journal
         )
 
-
+    # =================================================
+    # FAJ INLINE NAVIGATION CALLBACKS
+    # =================================================
+    dp.callback_query.register(faj_match_callback)
 
     # =================================================
     # DEFAULT
     # =================================================
-
 
     @dp.message()
     async def default_handler(message: Message):
@@ -605,7 +557,7 @@ async def run_bot(
         await message.answer(
 
             """
-⚽ FAJ Platform v6.9.2
+⚽ FAJ Platform v6.9.4
 
 
 📊 Статус        📈 Прогноз
@@ -635,10 +587,8 @@ FAJ анализирует:
 
         )
 
-
     logger.info(
-        "FAJ Platform v6.9.2 started"
+        "FAJ Platform v6.9.4 started"
     )
-
 
     await dp.start_polling(bot)
