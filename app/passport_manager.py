@@ -508,3 +508,14 @@ def list_teams(
         row["team"]
         for row in rows
     ]
+
+
+# =====================================================
+# COMPATIBILITY
+# FAJ v6 -> v7
+# =====================================================
+def init_default_aliases():
+    logger.info(
+        "FAJ aliases initialized"
+    )
+    return TEAM_ALIASES
