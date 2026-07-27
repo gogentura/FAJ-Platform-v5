@@ -1,13 +1,15 @@
 # =====================================================
-# FAJ Platform v6.9.3
+# FAJ Platform v6.9.4
 # app/handlers/faj_predictions.py
 #
-# FAJ Predictions Viewer
+# FAJ Match Viewer
+#
+# One message = one match
 #
 # Compatible:
 # - prediction_manager v6.9.3
-# - tour_predictor v6.9.3
 # - PostgreSQL
+# - Telegram callbacks
 # =====================================================
 
 
@@ -35,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================
-# CONFIDENCE
+# FORMATTERS
 # =====================================================
 
 
@@ -45,34 +47,24 @@ def confidence_badge(value):
 
         value = float(value)
 
-
         if value <= 1:
-
             value *= 100
 
 
-
         if value >= 65:
-
             icon = "🟢"
 
         elif value >= 50:
-
             icon = "🟡"
 
         elif value >= 35:
-
             icon = "🟠"
 
         else:
-
             icon = "🔴"
 
 
-
         return f"{icon} {value:.1f}%"
-
-
 
     except:
 
@@ -83,15 +75,7 @@ def confidence_badge(value):
 
 
 
-# =====================================================
-# WINNER FORMAT
-# =====================================================
-
-
-def winner_format(
-    value
-):
-
+def winner_format(value):
 
     mapping = {
 
@@ -116,61 +100,114 @@ def winner_format(
 
 
 # =====================================================
-# TELEGRAM SPLIT
+# SINGLE MATCH FORMAT
 # =====================================================
 
 
-async def send_long_message(
-    message,
-    text
+def format_match(
+    prediction,
+    index,
+    total
 ):
 
 
-    limit = 3800
+    if not prediction:
 
-
-    while len(text) > limit:
-
-
-        part = text[:limit]
-
-
-        cut = part.rfind("\n")
-
-
-        if cut > 0:
-
-            part = text[:cut]
+        return ""
 
 
 
-        await message.answer(
+    home = prediction.get(
+        "home_team",
+        "?"
+    )
 
-            part,
 
-            parse_mode="Markdown",
+    away = prediction.get(
+        "away_team",
+        "?"
+    )
 
-            reply_markup=main_keyboard()
 
+    winner = winner_format(
+        prediction.get(
+            "winner",
+            "-"
         )
+    )
 
 
-        text = text[len(part):]
-
-
-
-    if text:
-
-
-        await message.answer(
-
-            text,
-
-            parse_mode="Markdown",
-
-            reply_markup=main_keyboard()
-
+    score = prediction.get(
+        "expected_score",
+        prediction.get(
+            "score_prediction",
+            "-"
         )
+    )
+
+
+    xg_home = prediction.get(
+        "xg_home",
+        0
+    )
+
+
+    xg_away = prediction.get(
+        "xg_away",
+        0
+    )
+
+
+    confidence = prediction.get(
+        "confidence",
+        0
+    )
+
+
+
+    return f"""
+🤖 *FAJ MATCH ANALYSIS*
+
+🧠 FAJ Engine v6.9.4
+
+⚽ Матч {index}/{total}
+
+━━━━━━━━━━━━━━
+
+
+⚽ *{home} — {away}*
+
+
+🏆 Победа:
+
+{winner}
+
+
+🎯 Счёт:
+
+{score}
+
+
+📊 xG:
+
+{xg_home} — {xg_away}
+
+
+🔥 Уверенность:
+
+{confidence_badge(confidence)}
+
+
+━━━━━━━━━━━━━━
+
+
+📈 FAJ Learning Layer
+
+• Calibration
+• Ошибки модели
+• Улучшение Core
+
+"""
 
 
 
@@ -180,7 +217,7 @@ async def send_long_message(
 
 
 # =====================================================
-# MAIN HANDLER
+# MAIN COMMAND
 # =====================================================
 
 
@@ -206,147 +243,42 @@ async def cmd_faj_predictions(
 """
 ⚠️ FAJ прогнозов нет.
 
-Создайте прогнозы:
+Создайте:
 
-🚀 /generate_tour
+/generate_tour
 
-""",
+"""
 
-reply_markup=main_keyboard()
-
-)
+            )
 
             return
 
 
 
 
+        # Пока показываем первый матч.
+        # Навигацию добавим следующим файлом.
 
-        text = """
+        text = format_match(
 
-🤖 *FAJ ПРОГНОЗЫ*
+            predictions[0],
 
-🧠 FAJ Engine v6.9.3
+            1,
 
-🎲 Monte Carlo 10000
+            len(predictions)
 
-━━━━━━━━━━━━━━
-
-"""
-
-
-
-        counter = 1
+        )
 
 
 
-        for p in predictions:
+        await message.answer(
 
+            text,
 
-            if not p:
+            parse_mode="Markdown",
 
-                continue
+            reply_markup=main_keyboard()
 
-
-
-            home = p.get(
-                "home_team",
-                "?"
-            )
-
-
-            away = p.get(
-                "away_team",
-                "?"
-            )
-
-
-
-            winner = winner_format(
-
-                p.get(
-                    "winner",
-                    "-"
-                )
-
-            )
-
-
-
-            score = p.get(
-
-                "expected_score",
-
-                p.get(
-                    "score_prediction",
-                    "-"
-                )
-
-            )
-
-
-
-            xg_home = p.get(
-                "xg_home",
-                0
-            )
-
-
-            xg_away = p.get(
-                "xg_away",
-                0
-            )
-
-
-            confidence = p.get(
-                "confidence",
-                0
-            )
-
-
-
-
-            text += f"""
-
-{counter}️⃣ ⚽ *{home} — {away}*
-
-🏆 Победа:
-{winner}
-
-🎯 Счёт:
-{score}
-
-📊 xG:
-{xg_home} — {xg_away}
-
-🔥 Уверенность:
-{confidence_badge(confidence)}
-
-━━━━━━━━━━━━━━
-
-"""
-
-
-            counter += 1
-
-
-
-
-        text += """
-
-📈 *FAJ Learning Layer*
-
-• Calibration
-• Ошибки модели
-• Улучшение Core
-
-"""
-
-
-
-        await send_long_message(
-            message,
-            text
         )
 
 
@@ -355,7 +287,9 @@ reply_markup=main_keyboard()
 
 
         logger.exception(
-            "FAJ predictions handler error"
+
+            "FAJ Match Viewer error"
+
         )
 
 
