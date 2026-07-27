@@ -5,15 +5,18 @@
 # Tournament Prediction Service
 #
 # Fixtures
-#      ↓
-# Passport Loader
-#      ↓
-# FAJ Prediction Pipeline
-#      ↓
+#       |
+#       v
+# Team Passport Resolver
+#       |
+#       v
+# Prediction Pipeline
+#       |
+#       v
 # Prediction Manager
-#      ↓
-# PostgreSQL
-#
+#       |
+#       v
+# PostgreSQL predictions
 # =====================================================
 
 
@@ -39,70 +42,89 @@ logger = logging.getLogger(__name__)
 
 
 
+# =====================================================
+# TEAM NAME NORMALIZER
+# =====================================================
+
+
+def normalize_team_name(
+    name
+):
+
+    if not name:
+        return ""
+
+
+    name = str(name).lower().strip()
+
+
+    replacements = {
+
+        "фк ": "",
+        "фк.": "",
+
+        "футбольный клуб ": "",
+
+        "москва": "",
+        "м": "м",
+
+        "ростов-на-дону":
+        "ростов",
+
+        "динамо махачкала":
+        "динамо мх",
+
+        "динамо москва":
+        "динамо м",
+
+        "локомотив москва":
+        "локомотив",
+
+        "краснодар фк":
+        "краснодар",
+
+        "зенит санкт-петербург":
+        "зенит",
+
+        "спартак москва":
+        "спартак",
+
+    }
+
+
+    for old, new in replacements.items():
+
+        name = name.replace(
+            old,
+            new
+        )
+
+
+    return (
+        name
+        .replace(
+            " ",
+            ""
+        )
+    )
+
+
+
 
 # =====================================================
-# TEAM ALIASES
-# =====================================================
-
-TEAM_ALIASES = {
-
-    "Ростов": [
-        "Ростов",
-        "ФК Ростов",
-        "Ростов ФК"
-    ],
-
-    "Динамо М": [
-        "Динамо М",
-        "Динамо Москва",
-        "Динамо"
-    ],
-
-    "Динамо Мх": [
-        "Динамо Мх",
-        "Динамо Махачкала",
-        "Динамо Мах."
-    ],
-
-    "Краснодар": [
-        "Краснодар",
-        "ФК Краснодар"
-    ],
-
-    "Зенит": [
-        "Зенит",
-        "Зенит СПб"
-    ],
-
-    "Спартак": [
-        "Спартак",
-        "Спартак Москва"
-    ],
-
-    "ЦСКА": [
-        "ЦСКА",
-        "ЦСКА Москва"
-    ],
-
-}
-
-
-
-
-
-# =====================================================
-# FIXTURES
+# LOAD FIXTURES
 # =====================================================
 
 
 def get_tour_fixtures(
-        league="RPL",
-        season="2026/27"
+    league="RPL",
+    season="2026/27"
 ):
 
     try:
 
         conn = get_db()
+
         cur = conn.cursor()
 
 
@@ -119,7 +141,6 @@ def get_tour_fixtures(
             AND status='scheduled'
 
             ORDER BY match_date, match_time
-
             """,
             (
                 league,
@@ -153,7 +174,7 @@ def get_tour_fixtures(
 
 
         logger.info(
-            "FAJ FIXTURES FOUND: %s",
+            "FAJ fixtures loaded: %s",
             len(fixtures)
         )
 
@@ -166,7 +187,7 @@ def get_tour_fixtures(
 
 
         logger.error(
-            "Fixtures error: %s",
+            "Fixture loading error: %s",
             e,
             exc_info=True
         )
@@ -178,150 +199,72 @@ def get_tour_fixtures(
 
 
 
-
-
 # =====================================================
-# PASSPORT FINDER
+# PASSPORT CHECK
 # =====================================================
 
 
-def get_team_passport(
-        team_name
+def passport_exists(
+    team_name
 ):
 
     try:
 
-
         conn = get_db()
+
         cur = conn.cursor()
 
 
 
-        names = [
+        cur.execute(
+            """
+            SELECT *
 
-            team_name
+            FROM passports
+            """
+        )
 
-        ]
 
-
-
-        if team_name in TEAM_ALIASES:
-
-            names.extend(
-                TEAM_ALIASES[team_name]
-            )
-
-
-
-        columns = [
-
-            "team_name",
-            "name",
-            "team",
-            "club_name",
-            "club"
-
-        ]
-
-
-
-
-        for name in names:
-
-
-
-            for column in columns:
-
-
-
-                try:
-
-
-                    query = f"""
-
-                    SELECT *
-
-                    FROM passports
-
-                    WHERE {column}=%s
-
-                    LIMIT 1
-
-                    """
-
-
-
-                    cur.execute(
-
-                        query,
-
-                        (
-                            name,
-                        )
-
-                    )
-
-
-
-                    row = cur.fetchone()
-
-
-
-                    if row:
-
-
-                        conn.close()
-
-
-
-                        try:
-
-                            passport = dict(row)
-
-                        except:
-
-                            passport = row
-
-
-
-                        logger.info(
-
-                            "PASSPORT FOUND: %s via %s",
-
-                            name,
-
-                            column
-
-                        )
-
-
-
-                        return passport
-
-
-
-                except Exception:
-
-                    continue
-
-
+        rows = cur.fetchall()
 
 
         conn.close()
 
 
 
-        logger.warning(
-
-            "PASSPORT NOT FOUND: %s",
-
+        target = normalize_team_name(
             team_name
-
         )
 
 
-        return None
+        for row in rows:
 
+
+            try:
+
+                passport_team = row["team_name"]
+
+            except:
+
+                passport_team = row[0]
+
+
+
+            if normalize_team_name(
+                passport_team
+            ) == target:
+
+                return True
+
+
+
+        logger.warning(
+            "PASSPORT NOT FOUND: %s",
+            team_name
+        )
+
+
+        return False
 
 
 
@@ -329,21 +272,13 @@ def get_team_passport(
 
 
         logger.error(
-
-            "Passport error %s: %s",
-
-            team_name,
-
+            "Passport check error: %s",
             e,
-
             exc_info=True
-
         )
 
 
-        return None
-
-
+        return False
 
 
 
@@ -355,8 +290,8 @@ def get_team_passport(
 
 
 def enrich_prediction(
-        prediction,
-        fixture
+    prediction,
+    fixture
 ):
 
 
@@ -393,87 +328,82 @@ def enrich_prediction(
     )
 
 
-
     return prediction
 
 
 
 
 
-
-
 # =====================================================
-# MATCH
+# SINGLE MATCH
 # =====================================================
 
 
 def predict_fixture(
-        fixture
+    fixture
 ):
+
+
+    home = fixture.get(
+        "home_team"
+    )
+
+
+    away = fixture.get(
+        "away_team"
+    )
+
+
+    logger.info(
+        "FAJ MATCH: %s - %s",
+        home,
+        away
+    )
+
+
+
+    if not passport_exists(home):
+
+        logger.warning(
+            "MATCH SKIPPED WITHOUT PASSPORT: %s - %s",
+            home,
+            away
+        )
+
+        return None
+
+
+
+    if not passport_exists(away):
+
+        logger.warning(
+            "MATCH SKIPPED WITHOUT PASSPORT: %s - %s",
+            home,
+            away
+        )
+
+        return None
+
+
 
     try:
 
 
-        home = fixture.get(
-            "home_team"
-        )
-
-
-        away = fixture.get(
-            "away_team"
-        )
-
-
-
-        logger.info(
-
-            "FAJ MATCH: %s - %s",
+        prediction = predict_match_pipeline(
 
             home,
 
-            away
+            away,
 
-        )
+            fixture.get(
+                "league",
+                "RPL"
+            ),
 
-
-
-        home_passport = get_team_passport(
-            home
-        )
-
-
-        away_passport = get_team_passport(
-            away
-        )
-
-
-
-        if not home_passport or not away_passport:
-
-
-            logger.warning(
-
-                "MATCH SKIPPED WITHOUT PASSPORT: %s - %s",
-
-                home,
-
-                away
-
+            fixture.get(
+                "season",
+                "2026/27"
             )
-
-
-            return None
-
-
-
-
-        prediction = predict_match_pipeline(
-
-            fixture,
-
-            home_passport,
-
-            away_passport
 
         )
 
@@ -481,29 +411,13 @@ def predict_fixture(
 
         if not prediction:
 
-
-            logger.warning(
-
-                "PIPELINE EMPTY: %s - %s",
-
-                home,
-
-                away
-
-            )
-
-
             return None
 
 
 
-
         return enrich_prediction(
-
             prediction,
-
             fixture
-
         )
 
 
@@ -512,13 +426,11 @@ def predict_fixture(
 
 
         logger.error(
-
-            "Prediction error: %s",
-
+            "Prediction error %s - %s : %s",
+            home,
+            away,
             e,
-
             exc_info=True
-
         )
 
 
@@ -528,19 +440,14 @@ def predict_fixture(
 
 
 
-
-
 # =====================================================
-# TOUR
+# GENERATE TOUR
 # =====================================================
 
 
 def predict_tour(
-
-        league="RPL",
-
-        season="2026/27"
-
+    league="RPL",
+    season="2026/27"
 ):
 
 
@@ -549,32 +456,13 @@ def predict_tour(
     )
 
 
-
-    try:
-
-        clear_predictions()
-
-
-    except Exception as e:
-
-
-        logger.warning(
-
-            "Clear skipped: %s",
-
-            e
-
-        )
-
+    clear_predictions()
 
 
 
     fixtures = get_tour_fixtures(
-
         league,
-
         season
-
     )
 
 
@@ -583,9 +471,7 @@ def predict_tour(
 
 
         logger.warning(
-
-            "NO FIXTURES FOUND"
-
+            "NO FIXTURES"
         )
 
 
@@ -593,91 +479,65 @@ def predict_tour(
 
 
 
-
     results=[]
 
-    missing=[]
 
-
+    skipped=[]
 
 
 
     for fixture in fixtures:
 
 
-
         prediction = predict_fixture(
-
             fixture
-
         )
-
 
 
         if not prediction:
 
 
-            missing.append(
+            skipped.append(
 
                 f"{fixture.get('home_team')} - {fixture.get('away_team')}"
 
             )
 
-
             continue
 
 
 
-
-        saved = save_prediction(
+        if save_prediction(
 
             fixture,
 
             prediction
 
-        )
-
-
-
-        if saved:
+        ):
 
 
             results.append(
-
                 prediction
-
             )
 
 
 
-
-
-    if missing:
-
-
-        logger.warning(
-
-            "MATCHES WITHOUT PREDICTIONS: %s",
-
-            missing
-
-        )
-
-
-
-
     logger.info(
-
         "FAJ TOUR FINISHED: %s predictions",
-
         len(results)
-
     )
 
 
 
-    return results
+    if skipped:
 
+        logger.warning(
+            "MATCHES WITHOUT PREDICTIONS: %s",
+            skipped
+        )
+
+
+    return results
 
 
 
