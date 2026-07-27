@@ -5,34 +5,55 @@
 # Prediction Manager
 #
 # Compatible:
-# - prediction_pipeline.py v6.9.3
-# - tour_predictor.py v6.9.3
-# - generate_predictions.py
+# - tour_predictor v6.9.3
+# - prediction_pipeline v6.9.3
+# - faj_predictions handler
 # - PostgreSQL
 # =====================================================
+import json
 import logging
+from datetime import datetime
 from app.database import get_db
 
 logger = logging.getLogger(__name__)
 
 
 # =====================================================
-# SAFE HELPERS
+# HELPERS
 # =====================================================
-def safe_float(value, default=0):
+def safe_json(value):
+    try:
+        if isinstance(value, str):
+            return value
+        return json.dumps(value or {}, ensure_ascii=False)
+    except Exception:
+        return "{}"
+
+
+def safe_float(value):
     try:
         if value is None:
-            return default
+            return 0
         return float(value)
     except Exception:
-        return default
+        return 0
 
 
-def row_to_dict(row):
+# =====================================================
+# CLEAR OLD PREDICTIONS
+# =====================================================
+def clear_predictions():
     try:
-        return dict(row)
-    except Exception:
-        return row
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM predictions")
+        conn.commit()
+        conn.close()
+        logger.info("FAJ predictions cleared")
+        return True
+    except Exception as e:
+        logger.error("Clear predictions error: %s", e, exc_info=True)
+        return False
 
 
 # =====================================================
@@ -46,7 +67,6 @@ def save_prediction(fixture, prediction):
 
         conn = get_db()
         cur = conn.cursor()
-
         cur.execute(
             """
             INSERT INTO predictions
@@ -59,10 +79,12 @@ def save_prediction(fixture, prediction):
                 xg_away,
                 score_prediction,
                 confidence,
-                model_version
+                model_version,
+                created
             )
             VALUES
             (
+                %s,
                 %s,
                 %s,
                 %s,
@@ -79,26 +101,25 @@ def save_prediction(fixture, prediction):
                 safe_float(prediction.get("home_probability", 0)) / 100,
                 safe_float(prediction.get("draw_probability", 0)) / 100,
                 safe_float(prediction.get("away_probability", 0)) / 100,
-                safe_float(prediction.get("xg_home", 0)),
-                safe_float(prediction.get("xg_away", 0)),
+                safe_float(prediction.get("xg_home")),
+                safe_float(prediction.get("xg_away")),
                 prediction.get("expected_score", "-"),
-                safe_float(prediction.get("confidence", 0)),
-                prediction.get("pipeline_version", "6.9.3")
+                safe_float(prediction.get("confidence")),
+                "FAJ v6.9.3",
+                datetime.now()
             )
         )
-
         conn.commit()
         conn.close()
 
         logger.info(
-            "FAJ Prediction saved %s - %s",
+            "Prediction saved: %s - %s",
             fixture.get("home_team"),
             fixture.get("away_team")
         )
         return True
-
     except Exception as e:
-        logger.error("save_prediction error: %s", e, exc_info=True)
+        logger.error("Save prediction error: %s", e, exc_info=True)
         return False
 
 
@@ -123,33 +144,6 @@ def save_predictions_batch(fixtures, predictions):
 
     logger.info("FAJ predictions saved: %s/%s", saved, len(predictions))
     return saved
-
-
-# =====================================================
-# GET PREDICTION HISTORY
-# =====================================================
-def get_prediction_history(limit=100):
-    """
-    Learning Layer history
-    """
-    try:
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT *
-            FROM predictions
-            ORDER BY created_at DESC
-            LIMIT %s
-            """,
-            (limit,)
-        )
-        rows = cur.fetchall()
-        conn.close()
-        return rows
-    except Exception as e:
-        logger.error("Prediction history error: %s", e, exc_info=True)
-        return []
 
 
 # =====================================================
@@ -201,6 +195,33 @@ def get_predictions(limit=20):
         return result
     except Exception as e:
         logger.error("get_predictions error: %s", e, exc_info=True)
+        return []
+
+
+# =====================================================
+# GET PREDICTION HISTORY
+# =====================================================
+def get_prediction_history(limit=100):
+    """
+    Learning Layer history
+    """
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT *
+            FROM predictions
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (limit,)
+        )
+        rows = cur.fetchall()
+        conn.close()
+        return rows
+    except Exception as e:
+        logger.error("Prediction history error: %s", e, exc_info=True)
         return []
 
 
@@ -262,6 +283,20 @@ def delete_duplicate_predictions():
     except Exception as e:
         logger.error("Duplicate cleanup error: %s", e, exc_info=True)
         return 0
+
+
+# =====================================================
+# EXPORTS
+# =====================================================
+__all__ = [
+    'clear_predictions',
+    'save_prediction',
+    'save_predictions_batch',
+    'get_predictions',
+    'get_prediction_history',
+    'get_prediction_by_id',
+    'delete_duplicate_predictions'
+]
 
 
 # =====================================================
