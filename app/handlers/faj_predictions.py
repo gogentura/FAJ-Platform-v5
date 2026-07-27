@@ -1,16 +1,23 @@
 # =====================================================
-# FAJ Platform v6.5
+# FAJ Platform v6.9.2
 # app/handlers/faj_predictions.py
 #
 # FAJ Predictions Viewer
-# PostgreSQL version
+#
+# Reads:
+# prediction_manager
+#
+# Compatible:
+# - prediction_pipeline v6.9.2
+# - tour_predictor v6.9.2
+# - PostgreSQL
 # =====================================================
 
 
 import logging
 
 
-from aiogram import types
+from aiogram.types import Message
 
 
 from app.managers.prediction_manager import (
@@ -18,15 +25,9 @@ from app.managers.prediction_manager import (
 )
 
 
-from app.managers.passport_analysis import (
-    format_passport_block
-)
-
-
 from app.keyboards.main import (
     main_keyboard
 )
-
 
 
 logger = logging.getLogger(__name__)
@@ -36,64 +37,69 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================
-# FORMAT %
+# SAFE VALUE
 # =====================================================
 
 
-def format_probability(value):
+def safe_value(
+    value,
+    default="-"
+):
+
+    if value is None:
+        return default
+
+    return value
+
+
+
+
+
+
+# =====================================================
+# CONFIDENCE BADGE
+# =====================================================
+
+
+def confidence_badge(
+    value
+):
 
     try:
 
-        value = float(value)
+        value=float(value)
 
 
         if value <= 1:
 
-            value *= 100
-
-
-        return round(
-            value,
-            1
-        )
-
-
-    except Exception:
-
-        return 0
+            value*=100
 
 
 
+        if value >= 65:
 
+            icon="🟢"
 
-# =====================================================
-# CONFIDENCE
-# =====================================================
+        elif value >=50:
 
+            icon="🟡"
 
-def confidence_label(value):
+        elif value >=35:
 
-    try:
-
-        value = float(value)
-
-
-        if value >= 75:
-
-            return "🟢 Высокая"
-
-
-        elif value >= 60:
-
-            return "🟡 Средняя"
-
+            icon="🟠"
 
         else:
 
-            return "🔴 Низкая"
+            icon="🔴"
 
 
-    except Exception:
+
+        return (
+            f"{icon} {value:.1f}%"
+        )
+
+
+    except:
 
         return "⚪ Нет данных"
 
@@ -103,47 +109,58 @@ def confidence_label(value):
 
 
 # =====================================================
-# SAFE GET
+# QUALITY FORMAT
 # =====================================================
 
 
-def safe_get(
-
-    item,
-
-    key,
-
-    default="-"
-
+def quality_format(
+    value
 ):
 
+    try:
 
-    value = item.get(
-
-        key
-
-    )
+        value=float(value)
 
 
-    if value is None:
+        if value <= 1:
 
-        return default
+            value*=100
 
 
-    return value
+
+        if value >=80:
+
+            return f"🟢 {value:.0f}%"
+
+        elif value >=50:
+
+            return f"🟡 {value:.0f}%"
+
+        else:
+
+            return f"🔴 {value:.0f}%"
+
+
+
+    except:
+
+        return "🔴 0%"
+
+
+
 
 
 
 
 
 # =====================================================
-# FAJ PREDICTIONS
+# MAIN HANDLER
 # =====================================================
 
 
 async def cmd_faj_predictions(
 
-    message: types.Message
+    message: Message
 
 ):
 
@@ -151,13 +168,8 @@ async def cmd_faj_predictions(
     try:
 
 
-
         predictions = get_predictions(
-
-            league="RPL",
-
-            season="2026/27"
-
+            limit=20
         )
 
 
@@ -167,42 +179,20 @@ async def cmd_faj_predictions(
 
             await message.answer(
 
-                """
-🤖 FAJ ПРОГНОЗЫ
+"""
+⚠️ FAJ прогнозов пока нет.
 
-
-Прогнозы пока отсутствуют.
-
-
-Запусти:
-
-⚙️ Админ панель
-
-↓
+Создайте прогнозы:
 
 🚀 Создать прогнозы тура
 
+или
 
-После этого появятся:
+/generate_tour
 
-• xG анализ
-
-• FAJ Rating
-
-• вероятности
-
-• точный счёт
-
-• риск
-
-• категория
-
-""",
-
-                reply_markup=main_keyboard()
+"""
 
             )
-
 
             return
 
@@ -210,15 +200,12 @@ async def cmd_faj_predictions(
 
 
 
-        text = """
 
-🏆 *FAJ ПРОГНОЗЫ РПЛ*
+        text="""
 
-🧠 FAJ Engine v6.5
+🤖 *FAJ ПРОГНОЗЫ*
 
-🎲 Monte Carlo: 10000
-
-📊 xG + Team Passport
+🧠 FAJ Engine v6.9.2
 
 ━━━━━━━━━━━━━━
 
@@ -226,157 +213,183 @@ async def cmd_faj_predictions(
 
 
 
-        for item in predictions[:10]:
 
 
-            home = safe_get(
+        for p in predictions:
 
-                item,
 
-                "home_team"
 
+            home=p.get(
+                "home_team",
+                "?"
             )
 
 
-            away = safe_get(
-
-                item,
-
-                "away_team"
-
+            away=p.get(
+                "away_team",
+                "?"
             )
 
 
 
-            text += f"""
+            winner=p.get(
+                "winner_name",
+                p.get(
+                    "winner",
+                    "-"
+                )
+            )
+
+
+
+            score=p.get(
+                "expected_score",
+                "-"
+            )
+
+
+
+            xg_home=p.get(
+                "xg_home",
+                0
+            )
+
+
+            xg_away=p.get(
+                "xg_away",
+                0
+            )
+
+
+
+            rating_home=p.get(
+                "home_rating",
+                0
+            )
+
+
+            rating_away=p.get(
+                "away_rating",
+                0
+            )
+
+
+
+            confidence=p.get(
+                "confidence",
+                0
+            )
+
+
+
+            risk=p.get(
+                "risk",
+                "Высокий"
+            )
+
+
+
+            category=p.get(
+                "category",
+                p.get(
+                    "grade",
+                    "C"
+                )
+            )
+
+
+
+            factors=p.get(
+                "factors",
+                []
+            )
+
+
+
+            quality=p.get(
+                "passport_quality",
+                {
+                    "home":0,
+                    "away":0
+                }
+            )
+
+
+
+
+            text+=f"""
 
 ⚽ *{home} — {away}*
 
-"""
+
+🏆 Победа:
+
+{winner}
 
 
+🎯 Счёт:
 
-            # паспорт
-
-            try:
-
-
-                text += format_passport_block(
-
-                    home,
-
-                    away
-
-                )
+{score}
 
 
-                text += "\n"
+📊 xG:
+
+{xg_home} — {xg_away}
 
 
-            except Exception:
+🧠 FAJ Rating:
 
-
-                pass
-
-
-
-
-            text += f"""
-
-📊 Вероятности:
-
-
-🏠 П1:
-{format_probability(
-    safe_get(item,"home_probability",0)
-)}%
-
-
-🤝 X:
-{format_probability(
-    safe_get(item,"draw_probability",0)
-)}%
-
-
-🚩 П2:
-{format_probability(
-    safe_get(item,"away_probability",0)
-)}%
-
-
-
-📈 xG:
-
-{safe_get(item,"xg_home")} -
-{safe_get(item,"xg_away")}
-
-
-
-🎯 Ожидаемый счёт:
-
-*{safe_get(
-    item,
-    "expected_score"
-)}*
-
+{rating_home} — {rating_away}
 
 
 🔥 Уверенность:
 
-{format_probability(
-    safe_get(item,"confidence",0)
-)}%
-
-{confidence_label(
-    safe_get(item,"confidence",0)
+{confidence_badge(
+    confidence
 )}
-
 
 
 ⚠️ Риск:
 
-{safe_get(
-    item,
-    "risk",
-    "Нет данных"
-)}
-
+{risk}
 
 
 🏷 Категория:
 
-{safe_get(
-    item,
-    "grade",
-    "C"
+{category}
+
+
+📁 Паспорт:
+
+🏠 {quality_format(
+quality.get("home",0)
+)}
+
+🚩 {quality_format(
+quality.get("away",0)
 )}
 
 
-
-━━━━━━━━━━━━━━
-
 """
 
 
 
+            if factors:
 
 
-        text += """
-
-✅ FAJ Journal обновлён
+                text+="\n🧠 Факторы:\n"
 
 
-После завершения матчей система сможет:
+                for factor in factors:
+
+                    text+=(
+                        f"\n• {factor}"
+                    )
 
 
-📊 сравнить прогноз и факт
 
-🧠 найти ошибки
+            text+="\n\n──────────────\n"
 
-📈 откалибровать FAJ Core
-
-
-"""
 
 
 
@@ -392,10 +405,7 @@ async def cmd_faj_predictions(
 
 
 
-
-
     except Exception as e:
-
 
 
         logger.exception(
@@ -407,21 +417,13 @@ async def cmd_faj_predictions(
 
         await message.answer(
 
-            f"""
-❌ Ошибка FAJ прогнозов
-
-
-Тип:
+f"""
+❌ FAJ ПРОГНОЗ ERROR
 
 {type(e).__name__}
 
-
-Ошибка:
-
 {str(e)}
 
-""",
-
-            reply_markup=main_keyboard()
+"""
 
         )
