@@ -2,11 +2,11 @@
 # FAJ Platform v6.9.4
 # app/keyboards/faj_navigation.py
 #
-# FAJ Prediction Navigation Keyboard
+# FAJ Match Navigation Keyboard
 #
-# Buttons:
-# - Previous match
-# - Next match
+# Compatible:
+# - faj_predictions.py v6.9.4
+# - aiogram 3.x
 # =====================================================
 
 
@@ -17,7 +17,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 
 # =====================================================
-# MAIN NAVIGATION
+# NAVIGATION KEYBOARD
 # =====================================================
 
 
@@ -26,13 +26,14 @@ def faj_navigation_keyboard(
     total
 ):
 
+
     buttons = []
 
 
 
-    # ===============================
+    # =============================================
     # PREVIOUS
-    # ===============================
+    # =============================================
 
     if index > 0:
 
@@ -40,7 +41,7 @@ def faj_navigation_keyboard(
 
             InlineKeyboardButton(
 
-                text="⬅️ Назад",
+                text="⬅️ Предыдущий матч",
 
                 callback_data=f"faj_prev:{index}"
 
@@ -50,9 +51,9 @@ def faj_navigation_keyboard(
 
 
 
-    # ===============================
+    # =============================================
     # NEXT
-    # ===============================
+    # =============================================
 
     if index < total - 1:
 
@@ -60,7 +61,7 @@ def faj_navigation_keyboard(
 
             InlineKeyboardButton(
 
-                text="Следующий ➡️",
+                text="Следующий матч ➡️",
 
                 callback_data=f"faj_next:{index}"
 
@@ -70,12 +71,9 @@ def faj_navigation_keyboard(
 
 
 
-    # ===============================
-    # ROWS
-    # ===============================
-
 
     keyboard = []
+
 
 
     if buttons:
@@ -86,6 +84,41 @@ def faj_navigation_keyboard(
 
 
 
-    return InlineKeyboardMarkup(
-        inline_keyboard=keyboard
+
+    # =============================================
+    # COUNTER
+    # =============================================
+
+
+    keyboard.append(
+
+        [
+
+            InlineKeyboardButton(
+
+                text=f"⚽ {index+1}/{total}",
+
+                callback_data="faj_noop"
+
+            )
+
+        ]
+
     )
+
+
+
+    return InlineKeyboardMarkup(
+
+        inline_keyboard=keyboard
+
+    )
+
+
+
+
+
+
+# =====================================================
+# END
+# =====================================================
