@@ -141,21 +141,19 @@ def normalize_prediction(
 # =====================================================
 # SAVE SINGLE PREDICTION
 # =====================================================
-
-
 def save_prediction(
     fixture,
     prediction
 ):
-
     try:
         data = normalize_prediction(
             fixture,
             prediction
         )
-
         if not data:
-            logger.warning("Empty prediction data")
+            logger.warning(
+                "Empty prediction data"
+            )
             return False
 
         conn = get_db()
@@ -170,88 +168,78 @@ home_team,
 away_team,
 league,
 season,
-
 winner,
 expected_score,
-
 xg_home,
 xg_away,
-
 home_rating,
 away_rating,
-
 home_probability,
 draw_probability,
 away_probability,
-
 confidence,
 risk,
 category,
-
 factors,
-
 season_phase,
 passport_quality,
-
 created_at
-
 )
-
 VALUES
-
 (
 %s,%s,%s,%s,%s,
-
 %s,%s,
-
 %s,%s,
-
 %s,%s,
-
 %s,%s,%s,
-
 %s,%s,%s,
-
 %s,
-
 %s,%s,
-
 %s
-
 )
 """,
 (
-    data["fixture_id"],
-    data["home_team"],
-    data["away_team"],
-    data["league"],
-    data["season"],
-    data["winner"],
-    data["expected_score"],
-    data["xg_home"],
-    data["xg_away"],
-    data["home_rating"],
-    data["away_rating"],
-    data["home_probability"],
-    data["draw_probability"],
-    data["away_probability"],
-    data["confidence"],
-    data["risk"],
-    data["category"],
-    data["factors"],
-    data["season_phase"],
-    data["passport_quality"],
-    data["created_at"]
+data["fixture_id"],
+data["home_team"],
+data["away_team"],
+data["league"],
+data["season"],
+data["winner"],
+data["expected_score"],
+data["xg_home"],
+data["xg_away"],
+data["home_rating"],
+data["away_rating"],
+data["home_probability"],
+data["draw_probability"],
+data["away_probability"],
+data["confidence"],
+data["risk"],
+data["category"],
+data["factors"],
+data["season_phase"],
+data["passport_quality"],
+data["created_at"]
 )
 )
 
         conn.commit()
+
+        # ================================
+        # VERIFY SAVE
+        # ================================
+        cur.execute(
+"""
+SELECT COUNT(*)
+FROM predictions
+"""
+        )
+        count = cur.fetchone()[0]
         conn.close()
 
         logger.info(
-            "Prediction saved: %s - %s",
-            data["home_team"],
-            data["away_team"]
+            "FAJ predictions saved: %s",
+            count
         )
         return True
 
