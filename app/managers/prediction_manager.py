@@ -1,27 +1,20 @@
 # =====================================================
-# FAJ Platform v6.9.3
+# FAJ Platform v6.9.6
 # app/managers/prediction_manager.py
 #
 # Prediction Manager
 #
-# Flow:
+# Upgrade:
+# + probabilities
+# + risk
+# + factors
 #
-# tour_predictor
-#        |
-#        v
-# save_prediction()
-#        |
-#        v
-# PostgreSQL predictions
-#
-# Compatible:
-# - tour_predictor v6.9.3
-# - prediction_pipeline v6.9.3
-# - faj_predictions handler
 # =====================================================
 
 
 import logging
+import json
+
 from datetime import datetime
 
 from app.database import get_db
@@ -30,12 +23,9 @@ from app.database import get_db
 logger = logging.getLogger(__name__)
 
 
-
-
 # =====================================================
 # SAFE
 # =====================================================
-
 
 def safe_float(value):
 
@@ -52,11 +42,30 @@ def safe_float(value):
 
 
 
+def safe_json(value):
+
+    try:
+
+        if value is None:
+            return json.dumps({})
+
+        if isinstance(value, str):
+            return value
+
+        return json.dumps(
+            value,
+            ensure_ascii=False
+        )
+
+    except Exception:
+
+        return json.dumps({})
+
+
 
 # =====================================================
 # CLEAR
 # =====================================================
-
 
 def clear_predictions():
 
@@ -87,6 +96,7 @@ def clear_predictions():
 
     except Exception as e:
 
+
         logger.error(
             "Clear predictions error: %s",
             e,
@@ -97,12 +107,9 @@ def clear_predictions():
 
 
 
-
-
 # =====================================================
 # SAVE ONE
 # =====================================================
-
 
 def save_prediction(
     fixture,
@@ -112,24 +119,9 @@ def save_prediction(
     try:
 
 
-        if not fixture:
-
-            logger.warning(
-                "Empty fixture"
-            )
+        if not fixture or not prediction:
 
             return False
-
-
-
-        if not prediction:
-
-            logger.warning(
-                "Empty prediction"
-            )
-
-            return False
-
 
 
 
@@ -142,6 +134,7 @@ def save_prediction(
             """
             INSERT INTO predictions
             (
+
                 fixture_id,
 
                 home_team,
@@ -155,13 +148,24 @@ def save_prediction(
 
                 confidence,
 
+                probabilities,
+
+                risk,
+
+                factors,
+
                 model_version,
 
                 created_at
+
             )
 
             VALUES
             (
+
+                %s,
+                %s,
+                %s,
                 %s,
                 %s,
                 %s,
@@ -172,6 +176,7 @@ def save_prediction(
                 %s,
                 %s,
                 %s
+
             )
             """,
 
@@ -227,7 +232,27 @@ def save_prediction(
                 ),
 
 
-                "FAJ v6.9.3",
+                safe_json(
+                    prediction.get(
+                        "probabilities"
+                    )
+                ),
+
+
+                prediction.get(
+                    "risk",
+                    "unknown"
+                ),
+
+
+                safe_json(
+                    prediction.get(
+                        "factors"
+                    )
+                ),
+
+
+                "FAJ v6.9.6",
 
 
                 datetime.now()
@@ -236,20 +261,14 @@ def save_prediction(
         )
 
 
-
         conn.commit()
         conn.close()
 
 
-
         logger.info(
             "Prediction saved: %s - %s",
-            fixture.get(
-                "home_team"
-            ),
-            fixture.get(
-                "away_team"
-            )
+            fixture.get("home_team"),
+            fixture.get("away_team")
         )
 
 
@@ -272,22 +291,16 @@ def save_prediction(
 
 
 
-
-
-
 # =====================================================
 # BATCH
 # =====================================================
-
 
 def save_predictions_batch(
     fixtures,
     predictions
 ):
 
-
     saved = 0
-
 
 
     if not fixtures or not predictions:
@@ -322,19 +335,13 @@ def save_predictions_batch(
 
 
 
-
-
-
-
 # =====================================================
-# READ FOR TELEGRAM
+# READ TELEGRAM
 # =====================================================
-
 
 def get_predictions(
     limit=20
 ):
-
 
     try:
 
@@ -343,10 +350,10 @@ def get_predictions(
         cur = conn.cursor()
 
 
-
         cur.execute(
             """
             SELECT
+
                 id,
 
                 fixture_id,
@@ -362,6 +369,12 @@ def get_predictions(
 
                 confidence,
 
+                probabilities,
+
+                risk,
+
+                factors,
+
                 model_version,
 
                 created_at
@@ -374,6 +387,7 @@ def get_predictions(
 
 
             LIMIT %s
+
             """,
 
             (
@@ -382,30 +396,56 @@ def get_predictions(
         )
 
 
-
         rows = cur.fetchall()
 
 
         conn.close()
 
 
-
-        result=[]
+        result = []
 
 
         for row in rows:
 
-            try:
 
-                result.append(
-                    dict(row)
-                )
+            item = dict(row)
 
-            except:
 
-                result.append(
-                    row
-                )
+            if item.get(
+                "probabilities"
+            ):
+
+                try:
+
+                    item["probabilities"] = json.loads(
+                        item["probabilities"]
+                    )
+
+                except:
+
+                    pass
+
+
+
+            if item.get(
+                "factors"
+            ):
+
+                try:
+
+                    item["factors"] = json.loads(
+                        item["factors"]
+                    )
+
+                except:
+
+                    pass
+
+
+
+            result.append(
+                item
+            )
 
 
 
@@ -433,24 +473,18 @@ def get_predictions(
 
 
 
-
-
-
-
 # =====================================================
 # HISTORY
 # =====================================================
-
 
 def get_prediction_history(
     limit=100
 ):
 
-
     try:
 
-        conn=get_db()
-        cur=conn.cursor()
+        conn = get_db()
+        cur = conn.cursor()
 
 
         cur.execute(
@@ -470,7 +504,7 @@ def get_prediction_history(
         )
 
 
-        rows=cur.fetchall()
+        rows = cur.fetchall()
 
 
         conn.close()
@@ -494,24 +528,18 @@ def get_prediction_history(
 
 
 
-
-
-
-
 # =====================================================
 # ONE
 # =====================================================
-
 
 def get_prediction_by_id(
     prediction_id
 ):
 
-
     try:
 
-        conn=get_db()
-        cur=conn.cursor()
+        conn = get_db()
+        cur = conn.cursor()
 
 
         cur.execute(
@@ -531,11 +559,10 @@ def get_prediction_by_id(
         )
 
 
-        row=cur.fetchone()
+        row = cur.fetchone()
 
 
         conn.close()
-
 
 
         if row:
@@ -561,21 +588,16 @@ def get_prediction_by_id(
 
 
 
-
-
-
-
 # =====================================================
-# REMOVE DUPLICATES
+# DUPLICATES
 # =====================================================
-
 
 def delete_duplicate_predictions():
 
     try:
 
-        conn=get_db()
-        cur=conn.cursor()
+        conn = get_db()
+        cur = conn.cursor()
 
 
         cur.execute(
@@ -587,11 +609,12 @@ def delete_duplicate_predictions():
             WHERE p1.id < p2.id
 
             AND p1.fixture_id=p2.fixture_id
+
             """
         )
 
 
-        deleted=cur.rowcount
+        deleted = cur.rowcount
 
 
         conn.commit()
@@ -622,12 +645,9 @@ def delete_duplicate_predictions():
 
 
 
-
-
 # =====================================================
 # EXPORTS
 # =====================================================
-
 
 __all__ = [
 
@@ -646,9 +666,3 @@ __all__ = [
     "delete_duplicate_predictions"
 
 ]
-
-
-
-# =====================================================
-# END
-# =====================================================
