@@ -19,7 +19,7 @@ from app.handlers.journal import cmd_journal
 from app.handlers.status import cmd_status
 from app.handlers.health import cmd_health
 from app.handlers.load_passports import cmd_load_passports
-from app.handlers.database_check import cmd_dbcheck
+from app.handlers.database_check import database_check
 from app.handlers.passport import (
     cmd_passport,
     button_passport
@@ -138,11 +138,11 @@ async def run_bot(
     # DATABASE CHECK
     # ===============================
     dp.message.register(
-        cmd_dbcheck,
+        database_check,
         Command("база")
     )
     dp.message.register(
-        cmd_dbcheck,
+        database_check,
         Command("database_check")
     )
 
@@ -413,7 +413,7 @@ async def run_bot(
     async def db_check_button(
         message: Message
     ):
-        await cmd_dbcheck(
+        await database_check(
             message
         )
 
