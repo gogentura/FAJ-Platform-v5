@@ -1,10 +1,12 @@
 # =====================================================
-# FAJ Platform v6.9.3
+# FAJ Platform v6.9.6
 # app/services/tour_predictor.py
 #
 # Tournament Prediction Service
 #
 # Fixtures
+#      ↓
+# Team Passports
 #      ↓
 # Prediction Pipeline
 #      ↓
@@ -12,11 +14,6 @@
 #      ↓
 # PostgreSQL
 #
-# Compatible:
-# - prediction_pipeline v6.9.3
-# - FAJCore v6.8+
-# - generate_predictions.py
-# - FAJ predictions handler
 # =====================================================
 
 
@@ -44,13 +41,13 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================
-# LOAD TOUR FIXTURES
+# LOAD FIXTURES
 # =====================================================
 
 
 def get_tour_fixtures(
-    league="RPL",
-    season="2026/27"
+        league="RPL",
+        season="2026/27"
 ):
 
     try:
@@ -62,11 +59,17 @@ def get_tour_fixtures(
         cur.execute(
             """
             SELECT *
+
             FROM fixtures
+
             WHERE league=%s
+
             AND season=%s
+
             AND status='scheduled'
+
             ORDER BY match_date, match_time
+
             """,
             (
                 league,
@@ -87,6 +90,7 @@ def get_tour_fixtures(
         for row in rows:
 
             try:
+
                 fixtures.append(
                     dict(row)
                 )
@@ -99,7 +103,7 @@ def get_tour_fixtures(
 
 
         logger.info(
-            "FAJ fixtures loaded: %s",
+            "Fixtures loaded: %s",
             len(fixtures)
         )
 
@@ -107,13 +111,16 @@ def get_tour_fixtures(
         return fixtures
 
 
+
     except Exception as e:
 
+
         logger.error(
-            "Fixture loading error: %s",
+            "Fixtures loading error: %s",
             e,
             exc_info=True
         )
+
 
         return []
 
@@ -124,18 +131,101 @@ def get_tour_fixtures(
 
 
 # =====================================================
-# ENRICH PREDICTION
+# LOAD TEAM PASSPORT
+# =====================================================
+
+
+def get_team_passport(
+        team_name
+):
+
+    try:
+
+        conn = get_db()
+        cur = conn.cursor()
+
+
+        cur.execute(
+
+            """
+            SELECT *
+
+            FROM passports
+
+            WHERE team_name=%s
+
+            LIMIT 1
+
+            """,
+
+            (
+                team_name,
+            )
+
+        )
+
+
+        row = cur.fetchone()
+
+
+        conn.close()
+
+
+
+        if row:
+
+            try:
+
+                return dict(row)
+
+            except:
+
+                return row
+
+
+
+        logger.warning(
+            "Passport not found: %s",
+            team_name
+        )
+
+
+        return None
+
+
+
+    except Exception as e:
+
+
+        logger.error(
+            "Passport loading error: %s",
+            e,
+            exc_info=True
+        )
+
+
+        return None
+
+
+
+
+
+
+
+# =====================================================
+# ENRICH
 # =====================================================
 
 
 def enrich_prediction(
-    prediction,
-    fixture
+        prediction,
+        fixture
 ):
 
     if not prediction:
 
         return None
+
 
 
     prediction["fixture_id"] = fixture.get(
@@ -165,14 +255,6 @@ def enrich_prediction(
     )
 
 
-    if "passport_quality" not in prediction:
-
-        prediction["passport_quality"] = {
-            "home": 1,
-            "away": 1
-        }
-
-
     return prediction
 
 
@@ -187,75 +269,115 @@ def enrich_prediction(
 
 
 def predict_fixture(
-    fixture
+        fixture
 ):
 
     try:
 
+
         home = fixture.get(
             "home_team"
         )
+
 
         away = fixture.get(
             "away_team"
         )
 
 
-        league = fixture.get(
-            "league",
-            "RPL"
-        )
-
-
-        season = fixture.get(
-            "season",
-            "2026/27"
-        )
-
 
         logger.info(
-            "FAJ predicting: %s - %s",
+            "Predicting: %s - %s",
             home,
             away
         )
 
 
 
+        home_passport = get_team_passport(
+            home
+        )
+
+
+        away_passport = get_team_passport(
+            away
+        )
+
+
+
+        if not home_passport or not away_passport:
+
+
+            logger.warning(
+
+                "Missing passport: %s - %s",
+
+                home,
+
+                away
+
+            )
+
+
+            return None
+
+
+
+
         prediction = predict_match_pipeline(
-            home,
-            away,
-            league,
-            season
+
+            fixture,
+
+            home_passport,
+
+            away_passport
+
         )
 
 
 
         if not prediction:
 
+
             logger.warning(
-                "Empty prediction: %s - %s",
+
+                "Pipeline returned empty: %s - %s",
+
                 home,
+
                 away
+
             )
+
 
             return None
 
 
 
         return enrich_prediction(
+
             prediction,
+
             fixture
+
         )
+
 
 
 
     except Exception as e:
 
+
         logger.error(
-            "Match prediction error: %s",
+
+            "Prediction fixture error: %s",
+
             e,
+
             exc_info=True
+
         )
+
 
         return None
 
@@ -271,8 +393,8 @@ def predict_fixture(
 
 
 def predict_tour(
-    league="RPL",
-    season="2026/27"
+        league="RPL",
+        season="2026/27"
 ):
 
 
@@ -282,43 +404,27 @@ def predict_tour(
 
 
 
-    # =============================================
-    # REMOVE OLD PREDICTIONS
-    # =============================================
-
-
-    try:
-
-        clear_predictions()
-
-
-        logger.info(
-            "Old predictions cleared"
-        )
-
-
-    except Exception as e:
-
-        logger.warning(
-            "Prediction cleanup skipped: %s",
-            e
-        )
-
+    clear_predictions()
 
 
 
     fixtures = get_tour_fixtures(
+
         league,
+
         season
+
     )
 
 
 
     if not fixtures:
 
+
         logger.warning(
-            "No scheduled fixtures"
+            "No fixtures found"
         )
+
 
         return []
 
@@ -332,8 +438,11 @@ def predict_tour(
     for fixture in fixtures:
 
 
+
         prediction = predict_fixture(
+
             fixture
+
         )
 
 
@@ -344,39 +453,43 @@ def predict_tour(
 
 
 
-        try:
+        saved = save_prediction(
+
+            fixture,
+
+            prediction
+
+        )
 
 
-            saved = save_prediction(
-                fixture,
+
+        if saved:
+
+
+            results.append(
+
                 prediction
+
             )
-
-
-            if saved:
-
-                results.append(
-                    prediction
-                )
-
-
-
-        except Exception as e:
-
-
-            logger.error(
-                "Save prediction error: %s",
-                e,
-                exc_info=True
-            )
-
 
 
 
     logger.info(
-        "FAJ tour finished: %s predictions",
+
+        "FAJ tour completed: %s",
+
         len(results)
+
     )
 
 
+
     return results
+
+
+
+
+
+# =====================================================
+# END
+# =====================================================
