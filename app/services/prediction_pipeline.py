@@ -24,7 +24,7 @@
 # Risk Engine
 #    |
 #    v
-# Prediction Object
+# Prediction
 #
 # =====================================================
 
@@ -44,7 +44,7 @@ MODEL_VERSION = "FAJ v6.9.6"
 
 
 # =====================================================
-# CORE INSTANCE
+# CORE
 # =====================================================
 
 faj_core = FAJCore()
@@ -61,35 +61,26 @@ def safe_float(value):
         return float(value)
 
     except Exception:
-
         return 0.0
 
 
 
-
 # =====================================================
-# MAIN PIPELINE FUNCTION
+# MAIN PIPELINE
 # =====================================================
 
 def predict_match_pipeline(
-
         fixture,
-
         home_passport,
-
         away_passport
-
 ):
 
-
     try:
-
 
         home_team = fixture.get(
             "home_team",
             "-"
         )
-
 
         away_team = fixture.get(
             "away_team",
@@ -98,23 +89,19 @@ def predict_match_pipeline(
 
 
         logger.info(
-            "FAJ prediction: %s - %s",
+            "FAJ prediction start: %s - %s",
             home_team,
             away_team
         )
-
 
 
         # =============================================
         # FAJ CORE
         # =============================================
 
-
         prediction = faj_core.predict_match(
 
-            home_team,
-
-            away_team,
+            fixture,
 
             home_passport,
 
@@ -123,8 +110,11 @@ def predict_match_pipeline(
         )
 
 
-
         if not prediction:
+
+            logger.warning(
+                "FAJ Core returned empty prediction"
+            )
 
             return None
 
@@ -134,36 +124,28 @@ def predict_match_pipeline(
         # DATA
         # =============================================
 
-
         confidence = safe_float(
-
             prediction.get(
                 "confidence",
                 0
             )
-
         )
 
 
         xg_home = safe_float(
-
             prediction.get(
                 "xg_home",
                 0
             )
-
         )
 
 
         xg_away = safe_float(
-
             prediction.get(
                 "xg_away",
                 0
             )
-
         )
-
 
 
         home_rating = safe_float(
@@ -188,7 +170,7 @@ def predict_match_pipeline(
 
                 "faj_rating",
 
-                home_passport.get(
+                away_passport.get(
                     "rating",
                     0
                 )
@@ -213,87 +195,84 @@ def predict_match_pipeline(
 
 
 
-
         # =============================================
         # RISK ENGINE
         # =============================================
 
+        try:
 
-        risk = risk_engine.analyze(
+            risk = risk_engine.analyze(
 
-            confidence,
+                confidence,
 
-            home_rating,
+                home_rating,
 
-            away_rating,
+                away_rating,
 
-            winner_probability,
+                winner_probability,
 
-            xg_home,
+                xg_home,
 
-            xg_away
+                xg_away
 
-        )
+            )
 
+        except Exception as e:
+
+            logger.warning(
+                "Risk engine skipped: %s",
+                e
+            )
+
+            risk = {}
 
 
 
         # =============================================
-        # ENRICH
+        # ENRICH RESULT
         # =============================================
-
 
         prediction.update(
 
             {
 
+                "model_version":
+                    MODEL_VERSION,
+
+
                 "risk":
                     risk.get(
-                        "risk"
-                    ),
-
-
-                "risk_badge":
-                    risk.get(
-                        "risk_badge"
+                        "risk",
+                        "Не определён"
                     ),
 
 
                 "grade":
                     risk.get(
-                        "grade"
+                        "grade",
+                        "C"
                     ),
 
 
                 "grade_name":
                     risk.get(
-                        "grade_name"
-                    ),
-
-
-                "rating_difference":
-                    risk.get(
-                        "rating_difference"
-                    ),
-
-
-                "xg_difference":
-                    risk.get(
-                        "xg_difference"
-                    ),
-
-
-                "model_version":
-                    MODEL_VERSION
+                        "grade_name",
+                        "Высокий риск"
+                    )
 
             }
 
         )
 
 
+        logger.info(
+            "FAJ prediction completed: %s - %s",
+            home_team,
+            away_team
+        )
+
 
         return prediction
-
 
 
 
@@ -301,11 +280,8 @@ def predict_match_pipeline(
 
 
         logger.exception(
-
-            "FAJ Pipeline error: %s",
-
+            "FAJ pipeline error: %s",
             e
-
         )
 
 
@@ -315,19 +291,14 @@ def predict_match_pipeline(
 
 
 
-
 # =====================================================
-# FUNCTION ALIAS
+# COMPATIBILITY FUNCTION
 # =====================================================
 
 def predict_match(
-
         fixture,
-
         home_passport,
-
         away_passport
-
 ):
 
     return predict_match_pipeline(
@@ -346,22 +317,17 @@ def predict_match(
 
 
 # =====================================================
-# CLASS COMPATIBILITY
+# COMPATIBILITY CLASS
 # =====================================================
 
 class PredictionPipeline:
 
 
     def predict_match(
-
             self,
-
             fixture,
-
             home_passport,
-
             away_passport
-
     ):
 
         return predict_match_pipeline(
@@ -382,12 +348,10 @@ class PredictionPipeline:
 #
 # from app.services.prediction_pipeline import prediction_pipeline
 #
-# теперь снова работает.
+# работает.
 
 
 prediction_pipeline = PredictionPipeline()
-
-
 
 
 
