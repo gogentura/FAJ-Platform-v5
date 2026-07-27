@@ -1,5 +1,5 @@
 # =====================================================
-# FAJ Platform v6.3.3
+# FAJ Platform v6.9.2
 # app/database.py
 #
 # PostgreSQL Database Layer
@@ -203,6 +203,75 @@ def init_database():
         """
         ALTER TABLE journal
         ADD COLUMN IF NOT EXISTS created TIMESTAMP DEFAULT NOW();
+        """,
+        # ---------- predictions (новые колонки) ----------
+        """
+        ALTER TABLE predictions
+        ADD COLUMN IF NOT EXISTS home_team TEXT;
+        """,
+        """
+        ALTER TABLE predictions
+        ADD COLUMN IF NOT EXISTS away_team TEXT;
+        """,
+        """
+        ALTER TABLE predictions
+        ADD COLUMN IF NOT EXISTS league TEXT;
+        """,
+        """
+        ALTER TABLE predictions
+        ADD COLUMN IF NOT EXISTS season TEXT;
+        """,
+        """
+        ALTER TABLE predictions
+        ADD COLUMN IF NOT EXISTS winner TEXT;
+        """,
+        """
+        ALTER TABLE predictions
+        ADD COLUMN IF NOT EXISTS expected_score TEXT;
+        """,
+        """
+        ALTER TABLE predictions
+        ADD COLUMN IF NOT EXISTS home_rating REAL;
+        """,
+        """
+        ALTER TABLE predictions
+        ADD COLUMN IF NOT EXISTS away_rating REAL;
+        """,
+        """
+        ALTER TABLE predictions
+        ADD COLUMN IF NOT EXISTS home_probability REAL;
+        """,
+        """
+        ALTER TABLE predictions
+        ADD COLUMN IF NOT EXISTS draw_probability REAL;
+        """,
+        """
+        ALTER TABLE predictions
+        ADD COLUMN IF NOT EXISTS away_probability REAL;
+        """,
+        """
+        ALTER TABLE predictions
+        ADD COLUMN IF NOT EXISTS risk TEXT;
+        """,
+        """
+        ALTER TABLE predictions
+        ADD COLUMN IF NOT EXISTS category TEXT;
+        """,
+        """
+        ALTER TABLE predictions
+        ADD COLUMN IF NOT EXISTS factors JSONB;
+        """,
+        """
+        ALTER TABLE predictions
+        ADD COLUMN IF NOT EXISTS season_phase TEXT;
+        """,
+        """
+        ALTER TABLE predictions
+        ADD COLUMN IF NOT EXISTS passport_quality JSONB;
+        """,
+        """
+        ALTER TABLE predictions
+        ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
         """
     ]
 
@@ -332,20 +401,32 @@ def init_database():
         );
     """)
 
-    # ---------- predictions ----------
+    # ---------- predictions (новая структура) ----------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS predictions (
             id SERIAL PRIMARY KEY,
             fixture_id INTEGER REFERENCES fixtures(id),
-            home_win REAL,
-            draw REAL,
-            away_win REAL,
+            home_team TEXT,
+            away_team TEXT,
+            league TEXT,
+            season TEXT,
+            winner TEXT,
+            expected_score TEXT,
             xg_home REAL,
             xg_away REAL,
-            score_prediction TEXT,
+            home_rating REAL,
+            away_rating REAL,
+            home_probability REAL,
+            draw_probability REAL,
+            away_probability REAL,
             confidence REAL,
+            risk TEXT,
+            category TEXT,
+            factors JSONB,
+            season_phase TEXT,
+            passport_quality JSONB,
             model_version TEXT,
-            created TIMESTAMP DEFAULT NOW()
+            created_at TIMESTAMP DEFAULT NOW()
         );
     """)
 
@@ -362,7 +443,7 @@ def init_database():
         );
     """)
 
-    # ---------- calibration_log (НОВАЯ ТАБЛИЦА) ----------
+    # ---------- calibration_log ----------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS calibration_log (
             id SERIAL PRIMARY KEY,
@@ -386,7 +467,7 @@ def init_database():
     cur.close()
     conn.close()
 
-    logger.info("FAJ PostgreSQL database v6.3.3 initialized")
+    logger.info("FAJ PostgreSQL database v6.9.2 initialized")
 
 
 # =====================================================
