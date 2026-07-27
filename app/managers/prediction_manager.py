@@ -335,12 +335,11 @@ LIMIT %s
 # BACKWARD COMPATIBILITY API
 # FAJ v6.9.2
 # =====================================================
+
+
 def get_predictions(
     limit=50
 ):
-    """
-    Старый API для handlers
-    """
     try:
         conn = get_db()
         cur = conn.cursor()
@@ -351,7 +350,9 @@ def get_predictions(
             ORDER BY created_at DESC
             LIMIT %s
             """,
-            (limit,)
+            (
+                limit,
+            )
         )
         rows = cur.fetchall()
         conn.close()
@@ -361,7 +362,7 @@ def get_predictions(
         ]
     except Exception as e:
         logger.error(
-            "get_predictions error: %s",
+            "FAJ get_predictions error: %s",
             e,
             exc_info=True
         )
