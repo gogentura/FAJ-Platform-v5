@@ -238,8 +238,10 @@ FROM predictions
         conn.close()
 
         logger.info(
-            "FAJ predictions saved: %s",
-            count
+            "FAJ Prediction saved to DB: %s - %s | fixture=%s",
+            data["home_team"],
+            data["away_team"],
+            data["fixture_id"]
         )
         return True
 
@@ -343,11 +345,18 @@ def get_predictions(
             )
         )
         rows = cur.fetchall()
+        logger.info(
+            "FAJ DB READ predictions count=%s",
+            len(rows)
+        )
         conn.close()
-        return [
-            dict(row)
-            for row in rows
-        ]
+        result=[]
+        for row in rows:
+            try:
+                result.append(dict(row))
+            except Exception:
+                result.append(row)
+        return result
     except Exception as e:
         logger.error(
             "FAJ get_predictions error: %s",
