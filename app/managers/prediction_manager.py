@@ -4,13 +4,12 @@
 #
 # Prediction Manager
 #
-# Upgrade:
-# + probabilities
-# + risk
-# + factors
+# Compatible:
+# - prediction_pipeline v6.9.x
+# - tour_predictor v6.9.x
+# - Telegram Viewer v6.9.5
 #
 # =====================================================
-
 
 import logging
 import json
@@ -74,28 +73,23 @@ def clear_predictions():
         conn = get_db()
         cur = conn.cursor()
 
-
         cur.execute(
             """
             DELETE FROM predictions
             """
         )
 
-
         conn.commit()
         conn.close()
-
 
         logger.info(
             "FAJ predictions cleared"
         )
 
-
         return True
 
 
     except Exception as e:
-
 
         logger.error(
             "Clear predictions error: %s",
@@ -118,9 +112,11 @@ def save_prediction(
 
     try:
 
+        if not fixture:
+            return False
 
-        if not fixture or not prediction:
 
+        if not prediction:
             return False
 
 
@@ -130,11 +126,11 @@ def save_prediction(
 
 
 
+        # Основная совместимая запись
         cur.execute(
             """
             INSERT INTO predictions
             (
-
                 fixture_id,
 
                 home_team,
@@ -148,35 +144,15 @@ def save_prediction(
 
                 confidence,
 
-                probabilities,
-
-                risk,
-
-                factors,
-
                 model_version,
 
                 created_at
-
             )
 
             VALUES
             (
-
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s
-
+                %s,%s,%s,%s,%s,
+                %s,%s,%s,%s,%s
             )
             """,
 
@@ -207,7 +183,10 @@ def save_prediction(
 
                 prediction.get(
                     "expected_score",
-                    "-"
+                    prediction.get(
+                        "score_prediction",
+                        "-"
+                    )
                 ),
 
 
@@ -232,26 +211,6 @@ def save_prediction(
                 ),
 
 
-                safe_json(
-                    prediction.get(
-                        "probabilities"
-                    )
-                ),
-
-
-                prediction.get(
-                    "risk",
-                    "unknown"
-                ),
-
-
-                safe_json(
-                    prediction.get(
-                        "factors"
-                    )
-                ),
-
-
                 "FAJ v6.9.6",
 
 
@@ -263,6 +222,7 @@ def save_prediction(
 
         conn.commit()
         conn.close()
+
 
 
         logger.info(
@@ -290,7 +250,6 @@ def save_prediction(
 
 
 
-
 # =====================================================
 # BATCH
 # =====================================================
@@ -314,7 +273,6 @@ def save_predictions_batch(
         predictions
     ):
 
-
         if save_prediction(
             fixture,
             prediction
@@ -336,7 +294,7 @@ def save_predictions_batch(
 
 
 # =====================================================
-# READ TELEGRAM
+# READ
 # =====================================================
 
 def get_predictions(
@@ -344,7 +302,6 @@ def get_predictions(
 ):
 
     try:
-
 
         conn = get_db()
         cur = conn.cursor()
@@ -369,12 +326,6 @@ def get_predictions(
 
                 confidence,
 
-                probabilities,
-
-                risk,
-
-                factors,
-
                 model_version,
 
                 created_at
@@ -382,9 +333,7 @@ def get_predictions(
 
             FROM predictions
 
-
             ORDER BY created_at DESC
-
 
             LIMIT %s
 
@@ -407,46 +356,17 @@ def get_predictions(
 
         for row in rows:
 
+            try:
 
-            item = dict(row)
+                result.append(
+                    dict(row)
+                )
 
+            except:
 
-            if item.get(
-                "probabilities"
-            ):
-
-                try:
-
-                    item["probabilities"] = json.loads(
-                        item["probabilities"]
-                    )
-
-                except:
-
-                    pass
-
-
-
-            if item.get(
-                "factors"
-            ):
-
-                try:
-
-                    item["factors"] = json.loads(
-                        item["factors"]
-                    )
-
-                except:
-
-                    pass
-
-
-
-            result.append(
-                item
-            )
-
+                result.append(
+                    row
+                )
 
 
         logger.info(
@@ -513,7 +433,6 @@ def get_prediction_history(
         return rows
 
 
-
     except Exception as e:
 
 
@@ -573,7 +492,6 @@ def get_prediction_by_id(
         return None
 
 
-
     except Exception as e:
 
 
@@ -609,7 +527,6 @@ def delete_duplicate_predictions():
             WHERE p1.id < p2.id
 
             AND p1.fixture_id=p2.fixture_id
-
             """
         )
 
@@ -621,14 +538,7 @@ def delete_duplicate_predictions():
         conn.close()
 
 
-        logger.info(
-            "Duplicates removed: %s",
-            deleted
-        )
-
-
         return deleted
-
 
 
     except Exception as e:
