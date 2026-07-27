@@ -1,487 +1,577 @@
 # =====================================================
-# FAJ Platform v6.9.2
+# FAJ Platform v7.0
 # app/database.py
 #
 # PostgreSQL Database Layer
+#
+# Single source of truth:
+# - team_passports
+# - fixtures
+# - predictions
+# - journal
+# - calibration_log
 # =====================================================
+
 
 import os
 import logging
-from datetime import datetime
 
 import psycopg2
+
 from psycopg2.extras import RealDictCursor
+
 
 logger = logging.getLogger(__name__)
 
-
-# =====================================================
-# CONNECTION WRAPPER
-# =====================================================
-
-class FAJConnection:
-    def __init__(self, connection):
-        self.connection = connection
-
-    def cursor(self):
-        return self.connection.cursor(cursor_factory=RealDictCursor)
-
-    def execute(self, query, params=None):
-        cur = self.cursor()
-        cur.execute(query, params or ())
-        return cur
-
-    def commit(self):
-        self.connection.commit()
-
-    def close(self):
-        self.connection.close()
 
 
 # =====================================================
 # CONNECTION
 # =====================================================
 
+
+class FAJConnection:
+
+
+    def __init__(self, connection):
+
+        self.connection = connection
+
+
+
+    def cursor(self):
+
+        return self.connection.cursor(
+            cursor_factory=RealDictCursor
+        )
+
+
+
+    def commit(self):
+
+        self.connection.commit()
+
+
+
+    def close(self):
+
+        self.connection.close()
+
+
+
+
+
 def get_connection():
-    url = os.getenv("DATABASE_URL")
+
+
+    url = os.getenv(
+        "DATABASE_URL"
+    )
+
+
     if not url:
-        raise RuntimeError("DATABASE_URL missing")
-    conn = psycopg2.connect(url)
-    return FAJConnection(conn)
+
+        raise RuntimeError(
+            "DATABASE_URL missing"
+        )
+
+
+    conn = psycopg2.connect(
+        url
+    )
+
+
+    return FAJConnection(
+        conn
+    )
+
+
+
+
 
 def get_db():
+
     return get_connection()
+
+
+
 
 
 # =====================================================
 # INIT DATABASE
 # =====================================================
 
+
 def init_database():
+
+
     conn = get_connection()
+
     cur = conn.cursor()
 
-    # =================================================
-    # MIGRATIONS
-    # =================================================
 
-    migrations = [
-        # ---------- team_passports ----------
-        """
-        ALTER TABLE team_passports
-        ADD COLUMN IF NOT EXISTS faj_rating REAL DEFAULT 0;
-        """,
-        # ---------- journal ----------
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS fixture_id INTEGER;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS home_team TEXT;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS away_team TEXT;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS league TEXT;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS winner TEXT;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS winner_probability REAL;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS home_probability REAL;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS draw_probability REAL;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS away_probability REAL;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS home_rating REAL;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS away_rating REAL;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS risk TEXT;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS grade TEXT;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS grade_name TEXT;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS actual_score TEXT;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS winner_correct BOOLEAN;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS score_exact BOOLEAN;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS accuracy REAL;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS date TIMESTAMP;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS match TEXT;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS prediction TEXT;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS xg_home REAL;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS xg_away REAL;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS expected_score TEXT;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS top_scores JSONB;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS btts REAL;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS over25 REAL;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS confidence REAL;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS actual_winner TEXT;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS faj_rating JSONB;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS model_version TEXT;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS data_version TEXT;
-        """,
-        """
-        ALTER TABLE journal
-        ADD COLUMN IF NOT EXISTS created TIMESTAMP DEFAULT NOW();
-        """,
-        # ========== НОВЫЕ МИГРАЦИИ ДЛЯ predictions ==========
-        """
-        ALTER TABLE predictions
-        ADD COLUMN IF NOT EXISTS home_team TEXT;
-        """,
-        """
-        ALTER TABLE predictions
-        ADD COLUMN IF NOT EXISTS away_team TEXT;
-        """,
-        """
-        ALTER TABLE predictions
-        ADD COLUMN IF NOT EXISTS winner TEXT;
-        """,
-        """
-        ALTER TABLE predictions
-        ADD COLUMN IF NOT EXISTS expected_score TEXT;
-        """,
-        """
-        ALTER TABLE predictions
-        ADD COLUMN IF NOT EXISTS home_rating REAL DEFAULT 0;
-        """,
-        """
-        ALTER TABLE predictions
-        ADD COLUMN IF NOT EXISTS away_rating REAL DEFAULT 0;
-        """,
-        """
-        ALTER TABLE predictions
-        ADD COLUMN IF NOT EXISTS home_probability REAL DEFAULT 0;
-        """,
-        """
-        ALTER TABLE predictions
-        ADD COLUMN IF NOT EXISTS draw_probability REAL DEFAULT 0;
-        """,
-        """
-        ALTER TABLE predictions
-        ADD COLUMN IF NOT EXISTS away_probability REAL DEFAULT 0;
-        """,
-        """
-        ALTER TABLE predictions
-        ADD COLUMN IF NOT EXISTS risk TEXT;
-        """,
-        """
-        ALTER TABLE predictions
-        ADD COLUMN IF NOT EXISTS category TEXT;
-        """,
-        """
-        ALTER TABLE predictions
-        ADD COLUMN IF NOT EXISTS factors JSONB;
-        """,
-        """
-        ALTER TABLE predictions
-        ADD COLUMN IF NOT EXISTS season_phase TEXT;
-        """,
-        """
-        ALTER TABLE predictions
-        ADD COLUMN IF NOT EXISTS passport_quality JSONB;
-        """
-    ]
-
-    for migration in migrations:
-        try:
-            cur.execute(migration)
-            conn.commit()
-        except Exception as e:
-            logger.warning(f"Migration skipped: {e}")
-            conn.connection.rollback()
 
     # =================================================
-    # CREATE TABLES
+    # TEAM PASSPORTS
     # =================================================
 
-    # ---------- team_passports ----------
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS team_passports (
-            id SERIAL PRIMARY KEY,
-            team TEXT NOT NULL,
-            league TEXT NOT NULL,
-            season TEXT NOT NULL,
-            attack REAL DEFAULT 70,
-            defense REAL DEFAULT 70,
-            control REAL DEFAULT 70,
-            efficiency REAL DEFAULT 70,
-            mentality REAL DEFAULT 70,
-            discipline REAL DEFAULT 70,
-            fitness REAL DEFAULT 70,
-            predictability REAL DEFAULT 70,
-            form REAL DEFAULT 70,
-            xg_for REAL DEFAULT 1.30,
-            xg_against REAL DEFAULT 1.30,
-            transfer_index REAL DEFAULT 0,
-            injury_index REAL DEFAULT 0,
-            fatigue_index REAL DEFAULT 0,
-            faj_rating REAL DEFAULT 0,
-            updated TIMESTAMP DEFAULT NOW(),
-            UNIQUE(team, league, season)
-        );
-    """)
 
-    # ---------- fixtures ----------
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS fixtures (
-            id SERIAL PRIMARY KEY,
-            league TEXT NOT NULL,
-            season TEXT NOT NULL,
-            round INTEGER,
-            match_date DATE,
-            match_time TEXT,
-            home_team TEXT NOT NULL,
-            away_team TEXT NOT NULL,
-            status TEXT DEFAULT 'scheduled',
-            home_score INTEGER,
-            away_score INTEGER,
-            result TEXT,
-            winner TEXT,
-            source TEXT,
-            match_url TEXT,
-            created TIMESTAMP DEFAULT NOW(),
-            updated TIMESTAMP DEFAULT NOW()
-        );
-    """)
+    cur.execute(
+    """
 
-    # ---------- journal ----------
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS journal (
-            id SERIAL PRIMARY KEY,
-            fixture_id INTEGER,
-            date TIMESTAMP,
-            match TEXT,
-            home_team TEXT,
-            away_team TEXT,
-            league TEXT,
-            prediction TEXT,
-            winner TEXT,
-            winner_probability REAL,
-            home_probability REAL,
-            draw_probability REAL,
-            away_probability REAL,
-            xg_home REAL,
-            xg_away REAL,
-            expected_score TEXT,
-            top_scores JSONB,
-            btts REAL,
-            over25 REAL,
-            actual_score TEXT,
-            actual_winner TEXT,
-            confidence REAL,
-            risk TEXT,
-            grade TEXT,
-            grade_name TEXT,
-            home_rating REAL,
-            away_rating REAL,
-            faj_rating JSONB,
-            model_version TEXT,
-            data_version TEXT,
-            accuracy REAL,
-            winner_correct BOOLEAN,
-            score_exact BOOLEAN,
-            error_type TEXT,
-            notes TEXT,
-            created TIMESTAMP DEFAULT NOW()
-        );
-    """)
+    CREATE TABLE IF NOT EXISTS team_passports (
 
-    # ---------- match_statistics ----------
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS match_statistics (
-            id SERIAL PRIMARY KEY,
-            fixture_id INTEGER REFERENCES fixtures(id),
-            xg_home REAL,
-            xg_away REAL,
-            shots_home INTEGER,
-            shots_away INTEGER,
-            shots_target_home INTEGER,
-            shots_target_away INTEGER,
-            possession_home REAL,
-            possession_away REAL,
-            corners_home INTEGER,
-            corners_away INTEGER,
-            cards_home INTEGER,
-            cards_away INTEGER,
-            source TEXT,
-            updated TIMESTAMP DEFAULT NOW()
-        );
-    """)
+        id SERIAL PRIMARY KEY,
 
-    # ---------- predictions ----------
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS predictions (
-            id SERIAL PRIMARY KEY,
-            fixture_id INTEGER,
-            home_win REAL,
-            draw REAL,
-            away_win REAL,
-            xg_home REAL,
-            xg_away REAL,
-            score_prediction TEXT,
-            confidence REAL,
-            model_version TEXT,
-            created TIMESTAMP DEFAULT NOW()
-        );
-    """)
 
-    # ---------- sources_monitor ----------
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS sources_monitor (
-            id SERIAL PRIMARY KEY,
-            source TEXT UNIQUE,
-            url TEXT,
-            status TEXT,
-            last_check TIMESTAMP,
-            last_update TIMESTAMP,
-            errors TEXT
-        );
-    """)
+        team TEXT NOT NULL,
 
-    # ---------- calibration_log ----------
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS calibration_log (
-            id SERIAL PRIMARY KEY,
-            fixture_id INTEGER,
-            faj_score TEXT,
-            fact_score TEXT,
-            faj_winner TEXT,
-            fact_winner TEXT,
-            expert_score TEXT,
-            expert_winner TEXT,
-            error_type TEXT,
-            rating_gap_error FLOAT DEFAULT 0,
-            xg_error FLOAT DEFAULT 0,
-            confidence_error FLOAT DEFAULT 0,
-            conclusion TEXT,
-            created TIMESTAMP DEFAULT NOW()
-        );
-    """)
+        league TEXT NOT NULL,
+
+        season TEXT NOT NULL,
+
+
+        attack REAL DEFAULT 70,
+
+        defense REAL DEFAULT 70,
+
+        control REAL DEFAULT 70,
+
+        efficiency REAL DEFAULT 70,
+
+
+        form REAL DEFAULT 70,
+
+
+        mentality REAL DEFAULT 70,
+
+        discipline REAL DEFAULT 70,
+
+        fitness REAL DEFAULT 70,
+
+
+        predictability REAL DEFAULT 70,
+
+
+        xg_for REAL DEFAULT 1.30,
+
+        xg_against REAL DEFAULT 1.30,
+
+
+        transfer_index REAL DEFAULT 0,
+
+        injury_index REAL DEFAULT 0,
+
+        fatigue_index REAL DEFAULT 0,
+
+
+        faj_rating REAL DEFAULT 0,
+
+
+        updated TIMESTAMP DEFAULT NOW(),
+
+
+        UNIQUE(
+            team,
+            league,
+            season
+        )
+
+    );
+
+    """
+    )
+
+
+
+
+
+    # =================================================
+    # FIXTURES
+    # =================================================
+
+
+    cur.execute(
+    """
+
+    CREATE TABLE IF NOT EXISTS fixtures (
+
+
+        id SERIAL PRIMARY KEY,
+
+
+        league TEXT NOT NULL,
+
+        season TEXT NOT NULL,
+
+
+        round INTEGER,
+
+
+        match_date DATE,
+
+        match_time TEXT,
+
+
+        home_team TEXT NOT NULL,
+
+        away_team TEXT NOT NULL,
+
+
+        status TEXT DEFAULT 'scheduled',
+
+
+
+        home_score INTEGER,
+
+        away_score INTEGER,
+
+
+        winner TEXT,
+
+
+        source TEXT,
+
+
+        created TIMESTAMP DEFAULT NOW(),
+
+        updated TIMESTAMP DEFAULT NOW()
+
+
+    );
+
+    """
+    )
+
+
+
+
+
+    # =================================================
+    # PREDICTIONS
+    # =================================================
+
+
+    cur.execute(
+    """
+
+    CREATE TABLE IF NOT EXISTS predictions (
+
+
+        id SERIAL PRIMARY KEY,
+
+
+        fixture_id INTEGER,
+
+
+        home_team TEXT,
+
+        away_team TEXT,
+
+
+        winner TEXT,
+
+
+        expected_score TEXT,
+
+
+        home_probability REAL,
+
+        draw_probability REAL,
+
+        away_probability REAL,
+
+
+        winner_probability REAL,
+
+
+        home_rating REAL,
+
+        away_rating REAL,
+
+
+        xg_home REAL,
+
+        xg_away REAL,
+
+
+        confidence REAL,
+
+
+        risk TEXT,
+
+
+        grade TEXT,
+
+
+        grade_name TEXT,
+
+
+        passport_quality JSONB,
+
+
+        season_phase TEXT,
+
+
+        volatility REAL,
+
+
+        top_scores JSONB,
+
+
+        model_version TEXT,
+
+
+        created TIMESTAMP DEFAULT NOW()
+
+
+    );
+
+    """
+    )
+
+
+
+
+
+    # =================================================
+    # JOURNAL
+    # =================================================
+
+
+    cur.execute(
+    """
+
+    CREATE TABLE IF NOT EXISTS journal (
+
+
+        id SERIAL PRIMARY KEY,
+
+
+        fixture_id INTEGER,
+
+
+        home_team TEXT,
+
+        away_team TEXT,
+
+
+        prediction TEXT,
+
+
+        expected_score TEXT,
+
+
+        actual_score TEXT,
+
+
+        winner TEXT,
+
+
+        actual_winner TEXT,
+
+
+        winner_correct BOOLEAN DEFAULT FALSE,
+
+
+        score_exact BOOLEAN DEFAULT FALSE,
+
+
+        confidence REAL,
+
+
+        risk TEXT,
+
+
+        grade TEXT,
+
+
+        xg_home REAL,
+
+        xg_away REAL,
+
+
+        xg_error REAL DEFAULT 0,
+
+
+        confidence_error REAL DEFAULT 0,
+
+
+        rating_error REAL DEFAULT 0,
+
+
+        conclusion TEXT,
+
+
+        model_version TEXT,
+
+
+        created TIMESTAMP DEFAULT NOW()
+
+
+    );
+
+    """
+    )
+
+
+
+
+
+    # =================================================
+    # CALIBRATION LOG
+    # =================================================
+
+
+    cur.execute(
+    """
+
+    CREATE TABLE IF NOT EXISTS calibration_log (
+
+
+        id SERIAL PRIMARY KEY,
+
+
+        fixture_id INTEGER,
+
+
+        faj_score TEXT,
+
+
+        fact_score TEXT,
+
+
+        faj_winner TEXT,
+
+
+        fact_winner TEXT,
+
+
+        error_type TEXT,
+
+
+        xg_error REAL DEFAULT 0,
+
+
+        confidence_error REAL DEFAULT 0,
+
+
+        conclusion TEXT,
+
+
+        created TIMESTAMP DEFAULT NOW()
+
+
+    );
+
+    """
+    )
+
+
+
+
 
     conn.commit()
+
+
     cur.close()
+
     conn.close()
 
-    logger.info("FAJ PostgreSQL database v6.9.2 initialized")
 
 
-# =====================================================
-# DATABASE CLASS
-# =====================================================
+    logger.info(
+        "FAJ Database v7.0 initialized"
+    )
 
-class Database:
-    def get_fixture(self, league, season, home_team, away_team):
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT *
-            FROM fixtures
-            WHERE league=%s
-              AND season=%s
-              AND home_team=%s
-              AND away_team=%s
-            LIMIT 1
-            """,
-            (league, season, home_team, away_team)
-        )
-        row = cur.fetchone()
-        conn.close()
-        return row
+
+
 
 
 # =====================================================
 # COMPATIBILITY
 # =====================================================
 
+
 def init_db():
+
     return init_database()
+
+
+
+
+
+# =====================================================
+# DATABASE SERVICE
+# =====================================================
+
+
+class Database:
+
+
+    def get_fixture(
+        self,
+        league,
+        season,
+        home_team,
+        away_team
+    ):
+
+
+        conn = get_db()
+
+        cur = conn.cursor()
+
+
+
+        cur.execute(
+        """
+
+        SELECT *
+
+        FROM fixtures
+
+
+        WHERE league=%s
+
+        AND season=%s
+
+        AND home_team=%s
+
+        AND away_team=%s
+
+
+        LIMIT 1
+
+        """,
+
+        (
+            league,
+            season,
+            home_team,
+            away_team
+        )
+
+        )
+
+
+        row = cur.fetchone()
+
+
+        conn.close()
+
+
+        return row
+
+
+
 
 
 # =====================================================
 # AUTO START
 # =====================================================
 
+
 if __name__ == "__main__":
+
     init_database()
