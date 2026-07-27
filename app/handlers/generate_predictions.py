@@ -1,8 +1,14 @@
 # =====================================================
-# FAJ Platform v6.8
+# FAJ Platform v6.9.2
 # app/handlers/generate_predictions.py
 #
 # Generate Tour Predictions Handler
+#
+# Compatible:
+# - FAJCore v6.8+
+# - prediction_pipeline v6.9.2
+# - tour_predictor v6.9.2
+# - PostgreSQL
 # =====================================================
 
 
@@ -35,12 +41,17 @@ logger = logging.getLogger(__name__)
 
 
 def safe_value(
+
     value,
+
     default="-"
+
 ):
 
     if value is None:
+
         return default
+
 
     return value
 
@@ -48,17 +59,21 @@ def safe_value(
 
 
 
-
 # =====================================================
-# CONFIDENCE FORMAT
+# CONFIDENCE BADGE
 # =====================================================
 
 
-def confidence_badge(value):
+def confidence_badge(
+
+    value
+
+):
 
     try:
 
         value = float(value)
+
 
 
         if value <= 1:
@@ -67,17 +82,17 @@ def confidence_badge(value):
 
 
 
-        if value >= 65:
+        if value >= 70:
 
             icon = "🟢"
 
 
-        elif value >=45:
+        elif value >= 50:
 
             icon = "🟡"
 
 
-        elif value >=30:
+        elif value >= 35:
 
             icon = "🟠"
 
@@ -89,14 +104,17 @@ def confidence_badge(value):
 
 
         return (
+
             f"{icon} {value:.1f}%"
+
         )
+
 
 
     except Exception:
 
-        return "⚪ Нет данных"
 
+        return "⚪ Нет данных"
 
 
 
@@ -109,24 +127,36 @@ def confidence_badge(value):
 # =====================================================
 
 
-def quality_format(value):
+def quality_format(
 
+    value
+
+):
 
     try:
 
         value=float(value)
 
 
-        percent=value*100
+
+        # если уже проценты
+
+        if value > 1:
+
+            percent=value
+
+        else:
+
+            percent=value*100
 
 
 
-        if percent>=80:
+        if percent >= 80:
 
             return f"🟢 {percent:.0f}%"
 
 
-        elif percent>=50:
+        elif percent >= 50:
 
             return f"🟡 {percent:.0f}%"
 
@@ -137,9 +167,72 @@ def quality_format(value):
 
 
 
-    except:
+    except Exception:
 
-        return "Нет данных"
+        return "🔴 0%"
+
+
+
+
+
+
+
+# =====================================================
+# WINNER NORMALIZER
+# =====================================================
+
+
+def normalize_winner(
+
+    prediction
+
+):
+
+
+    winner = prediction.get(
+
+        "winner_name"
+
+    )
+
+
+
+    if winner:
+
+        return winner
+
+
+
+    code = prediction.get(
+
+        "winner",
+
+        "-"
+
+    )
+
+
+
+    if code == "home":
+
+        return "Хозяева"
+
+
+
+    if code == "away":
+
+        return "Гости"
+
+
+
+    if code == "draw":
+
+        return "Ничья"
+
+
+
+    return "-"
+
 
 
 
@@ -173,7 +266,7 @@ async def cmd_generate_predictions(
 
 📊 xG Engine
 
-🧠 FAJ Core v6.7.1
+🧠 FAJ Core v6.9.2
 
 🎲 Monte Carlo 10000
 
@@ -192,6 +285,7 @@ reply_markup=main_keyboard()
     try:
 
 
+
         predictions = predict_tour(
 
             league="RPL",
@@ -208,15 +302,19 @@ reply_markup=main_keyboard()
             await message.answer(
 
 """
-⚠️ FAJ не получил прогнозы.
+⚠️ Нет прогнозов
 
 
 Проверить:
 
 • fixtures
+
 • сезон
-• паспорта
-• статус scheduled
+
+• паспорта команд
+
+• статус матчей
+
 
 /debug_fixtures
 
@@ -228,18 +326,20 @@ reply_markup=main_keyboard()
 
 )
 
+
             return
 
 
 
 
 
-        text=f"""
+        text = """
+
 🏆 *FAJ ПРОГНОЗЫ ТУРА*
 
 🏟 RPL
 
-🧠 FAJ Engine v6.8
+🧠 FAJ Engine v6.9.2
 
 🎲 Monte Carlo: 10000
 
@@ -250,106 +350,154 @@ reply_markup=main_keyboard()
 
 
 
-        for p in predictions:
+
+        for prediction in predictions:
 
 
 
-            home=p.get(
+            home = prediction.get(
+
                 "home_team",
+
                 "?"
+
             )
 
 
-            away=p.get(
+
+            away = prediction.get(
+
                 "away_team",
+
                 "?"
-            )
 
-
-            decision=p.get(
-                "decision",
-                {}
             )
 
 
 
-            winner=decision.get(
-                "winner_name",
-                "-"
+            winner = normalize_winner(
+
+                prediction
+
             )
 
 
-            score=decision.get(
+
+            score = prediction.get(
+
                 "expected_score",
-                "-"
+
+                prediction.get(
+
+                    "score",
+
+                    "-"
+
+                )
+
             )
 
 
 
-            confidence=decision.get(
+            confidence = prediction.get(
+
                 "confidence",
-                p.get(
-                    "confidence",
-                    0
-                )
+
+                0
+
             )
 
 
 
-            rating_home=p.get(
+            rating_home = prediction.get(
+
                 "home_rating",
-                decision.get(
-                    "home_rating",
-                    "-"
-                )
+
+                0
+
             )
 
 
-            rating_away=p.get(
+            rating_away = prediction.get(
+
                 "away_rating",
-                decision.get(
-                    "away_rating",
-                    "-"
-                )
+
+                0
+
             )
 
 
 
-            xg_home=p.get(
+            xg_home = prediction.get(
+
                 "xg_home",
-                "-"
+
+                0
+
             )
 
 
-            xg_away=p.get(
+            xg_away = prediction.get(
+
                 "xg_away",
-                "-"
+
+                0
+
             )
 
 
 
-            phase=p.get(
-                "season_phase",
-                "-"
-            )
+            quality = prediction.get(
 
-
-
-            quality=p.get(
                 "passport_quality",
-                {}
+
+                prediction.get(
+
+                    "data_quality",
+
+                    {
+
+                        "home":0,
+
+                        "away":0
+
+                    }
+
+                )
+
             )
 
 
 
-            factors=p.get(
+            factors = prediction.get(
+
                 "factors",
+
                 []
+
             )
 
 
 
-            text+=f"""
+            category = prediction.get(
+
+                "grade",
+
+                prediction.get(
+
+                    "category",
+
+                    "C"
+
+                )
+
+            )
+
+
+
+
+
+            text += f"""
 
 ⚽ *{home} — {away}*
 
@@ -381,34 +529,41 @@ reply_markup=main_keyboard()
 
 📅 Фаза сезона:
 
-{phase}
+{prediction.get(
+    "season_phase",
+    "start"
+)}
 
 
 📁 Качество данных:
 
 🏠 {quality_format(
-quality.get("home",0)
+    quality.get(
+        "home",
+        0
+    )
 )}
 
 🚩 {quality_format(
-quality.get("away",0)
+    quality.get(
+        "away",
+        0
+    )
 )}
 
 
 ⚠️ Риск:
 
-{p.get(
-"risk",
-"Средний"
+{prediction.get(
+    "risk",
+    "Высокий"
 )}
 
 
 🏷 Категория:
 
-{p.get(
-"grade",
-"C"
-)}
+{category}
+
 
 
 """
@@ -418,22 +573,33 @@ quality.get("away",0)
             if factors:
 
 
-                text+="\n🧠 Факторы:\n"
+                text += "\n🧠 Факторы:\n"
 
 
-                for f in factors:
-
-                    text+=f"\n• {f}"
+                for factor in factors:
 
 
+                    text += (
 
-            text+="\n\n──────────────\n"
+                        f"\n• {factor}"
+
+                    )
+
+
+
+            text += (
+
+                "\n\n──────────────\n"
+
+            )
 
 
 
 
 
-        text+="""
+
+
+        text += """
 
 ✅ Прогнозы сохранены
 
@@ -465,12 +631,13 @@ FAJ Learning Layer:
 
 
 
+
     except Exception as e:
 
 
         logger.exception(
 
-            "Generate tour error"
+            "Generate predictions error"
 
         )
 
@@ -481,8 +648,12 @@ f"""
 ❌ Ошибка FAJ генерации
 
 
+Тип:
+
 {type(e).__name__}
 
+
+Ошибка:
 
 {str(e)}
 
