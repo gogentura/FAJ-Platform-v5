@@ -6,7 +6,7 @@
 #
 # Fixtures
 #      ↓
-# Team Passports
+# Team Passport Loader
 #      ↓
 # Prediction Pipeline
 #      ↓
@@ -34,14 +34,17 @@ from app.managers.prediction_manager import (
 )
 
 
+
 logger = logging.getLogger(__name__)
 
 
 
 
+
 # =====================================================
-# LOAD FIXTURES
+# FIXTURES
 # =====================================================
+
 
 def get_tour_fixtures(
         league="RPL",
@@ -82,7 +85,7 @@ def get_tour_fixtures(
         conn.close()
 
 
-        fixtures = []
+        fixtures=[]
 
 
         for row in rows:
@@ -113,7 +116,7 @@ def get_tour_fixtures(
 
 
         logger.error(
-            "Fixture loading error: %s",
+            "Fixtures error: %s",
             e,
             exc_info=True
         )
@@ -125,9 +128,12 @@ def get_tour_fixtures(
 
 
 
+
+
 # =====================================================
-# LOAD PASSPORT
+# PASSPORT SEARCH
 # =====================================================
+
 
 def get_team_passport(
         team_name
@@ -139,60 +145,116 @@ def get_team_passport(
         cur = conn.cursor()
 
 
-        cur.execute(
-            """
-            SELECT *
 
-            FROM passports
+        columns = [
 
-            WHERE team_name=%s
+            "team_name",
 
-            LIMIT 1
+            "name",
 
-            """,
-            (
-                team_name,
-            )
-        )
+            "team",
+
+            "club_name",
+
+            "club"
+
+        ]
 
 
-        row = cur.fetchone()
+
+        for column in columns:
+
+
+            try:
+
+
+                query = f"""
+
+                SELECT *
+
+                FROM passports
+
+                WHERE {column}=%s
+
+                LIMIT 1
+
+                """
+
+
+
+                cur.execute(
+
+                    query,
+
+                    (
+                        team_name,
+                    )
+
+                )
+
+
+
+                row = cur.fetchone()
+
+
+
+                if row:
+
+
+                    conn.close()
+
+
+
+                    try:
+
+                        passport = dict(row)
+
+                    except:
+
+                        passport = row
+
+
+
+                    logger.info(
+
+                        "PASSPORT FOUND: %s via %s",
+
+                        team_name,
+
+                        column
+
+                    )
+
+
+
+                    return passport
+
+
+
+            except Exception:
+
+
+                continue
+
+
 
 
         conn.close()
 
 
 
-        if row:
-
-
-            try:
-
-                passport = dict(row)
-
-            except:
-
-                passport = row
-
-
-
-            logger.info(
-                "PASSPORT FOUND: %s",
-                team_name
-            )
-
-
-            return passport
-
-
-
         logger.warning(
+
             "PASSPORT NOT FOUND: %s",
+
             team_name
+
         )
 
 
+
         return None
+
 
 
 
@@ -200,14 +262,20 @@ def get_team_passport(
 
 
         logger.error(
-            "Passport loading error %s: %s",
+
+            "Passport loader error %s: %s",
+
             team_name,
+
             e,
+
             exc_info=True
+
         )
 
 
         return None
+
 
 
 
@@ -218,10 +286,12 @@ def get_team_passport(
 # ENRICH
 # =====================================================
 
+
 def enrich_prediction(
         prediction,
         fixture
 ):
+
 
     if not prediction:
 
@@ -256,7 +326,9 @@ def enrich_prediction(
     )
 
 
+
     return prediction
+
 
 
 
@@ -266,6 +338,7 @@ def enrich_prediction(
 # =====================================================
 # SINGLE MATCH
 # =====================================================
+
 
 def predict_fixture(
         fixture
@@ -284,31 +357,45 @@ def predict_fixture(
         )
 
 
+
         logger.info(
+
             "FAJ MATCH: %s - %s",
+
             home,
+
             away
+
         )
 
 
 
         home_passport = get_team_passport(
+
             home
+
         )
 
 
         away_passport = get_team_passport(
+
             away
+
         )
 
 
 
         if not home_passport:
 
+
             logger.warning(
-                "NO HOME PASSPORT: %s",
+
+                "HOME PASSPORT MISSING: %s",
+
                 home
+
             )
+
 
             return None
 
@@ -316,12 +403,19 @@ def predict_fixture(
 
         if not away_passport:
 
+
             logger.warning(
-                "NO AWAY PASSPORT: %s",
+
+                "AWAY PASSPORT MISSING: %s",
+
                 away
+
             )
 
+
             return None
+
+
 
 
 
@@ -342,14 +436,17 @@ def predict_fixture(
 
 
             logger.warning(
+
                 "PIPELINE EMPTY: %s - %s",
+
                 home,
+
                 away
+
             )
 
 
             return None
-
 
 
 
@@ -363,13 +460,18 @@ def predict_fixture(
 
 
 
+
     except Exception as e:
 
 
         logger.error(
-            "Prediction fixture error: %s",
+
+            "Predict fixture error: %s",
+
             e,
+
             exc_info=True
+
         )
 
 
@@ -380,9 +482,11 @@ def predict_fixture(
 
 
 
+
 # =====================================================
-# GENERATE TOUR
+# TOUR
 # =====================================================
+
 
 def predict_tour(
         league="RPL",
@@ -391,7 +495,9 @@ def predict_tour(
 
 
     logger.info(
+
         "FAJ TOUR START"
+
     )
 
 
@@ -400,12 +506,19 @@ def predict_tour(
 
         clear_predictions()
 
+
     except Exception as e:
 
+
         logger.warning(
+
             "Clear predictions skipped: %s",
+
             e
+
         )
+
+
 
 
 
@@ -423,7 +536,9 @@ def predict_tour(
 
 
         logger.warning(
-            "NO SCHEDULED FIXTURES"
+
+            "NO FIXTURES"
+
         )
 
 
@@ -431,7 +546,10 @@ def predict_tour(
 
 
 
-    results = []
+
+
+    results=[]
+
 
 
 
@@ -449,6 +567,7 @@ def predict_tour(
 
         if not prediction:
 
+
             continue
 
 
@@ -465,10 +584,14 @@ def predict_tour(
             )
 
 
+
             if saved:
 
+
                 results.append(
+
                     prediction
+
                 )
 
 
@@ -477,22 +600,31 @@ def predict_tour(
 
 
             logger.error(
-                "SAVE ERROR: %s",
+
+                "Save prediction error: %s",
+
                 e,
+
                 exc_info=True
+
             )
 
 
 
 
+
+
     logger.info(
-        "FAJ TOUR FINISHED: %s predictions",
+
+        "FAJ TOUR FINISHED: %s",
+
         len(results)
+
     )
 
 
-    return results
 
+    return results
 
 
 
