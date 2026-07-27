@@ -12,7 +12,9 @@
 #    ↓
 # Prediction Manager
 #    ↓
-# Journal / Learning Layer
+# PostgreSQL
+#    ↓
+# Learning Layer
 #
 # Compatible:
 # - prediction_pipeline v6.9.3
@@ -35,7 +37,8 @@ from app.services.prediction_pipeline import (
 
 
 from app.managers.prediction_manager import (
-    save_prediction
+    save_prediction,
+    clear_predictions
 )
 
 
@@ -59,18 +62,14 @@ def get_tour_fixtures(
 
 ):
 
-
     try:
-
 
         conn = get_db()
 
         cursor = conn.cursor()
 
 
-
         cursor.execute(
-
             """
             SELECT *
 
@@ -84,61 +83,41 @@ def get_tour_fixtures(
 
             ORDER BY match_date, match_time
             """,
-
             (
-
                 league,
-
                 season
-
             )
-
         )
-
 
 
         rows = cursor.fetchall()
 
 
-
         conn.close()
-
 
 
         fixtures=[]
 
 
-
         for row in rows:
-
 
             try:
 
                 fixtures.append(
-
                     dict(row)
-
                 )
 
-            except Exception:
-
+            except:
 
                 fixtures.append(
-
                     row
-
                 )
-
 
 
         logger.info(
-
             "FAJ fixtures loaded: %s",
-
             len(fixtures)
-
         )
-
 
 
         return fixtures
@@ -149,13 +128,9 @@ def get_tour_fixtures(
 
 
         logger.error(
-
             "Fixture loading error: %s",
-
             e,
-
             exc_info=True
-
         )
 
 
@@ -167,10 +142,8 @@ def get_tour_fixtures(
 
 
 
-
-
 # =====================================================
-# NORMALIZE TOUR RESULT
+# NORMALIZE RESULT
 # =====================================================
 
 
@@ -215,30 +188,22 @@ def enrich_prediction(
 
 
 
-    # compatibility fields
-
-
     if "grade" not in prediction:
 
-
         prediction["grade"] = prediction.get(
-
             "category",
-
             "C"
-
         )
 
 
 
     if "passport_quality" not in prediction:
 
-
         prediction["passport_quality"] = {
 
-            "home":1,
+            "home": 1,
 
-            "away":1
+            "away": 1
 
         }
 
@@ -253,7 +218,7 @@ def enrich_prediction(
 
 
 # =====================================================
-# SINGLE FIXTURE PREDICTION
+# SINGLE MATCH
 # =====================================================
 
 
@@ -268,46 +233,32 @@ def predict_fixture(
 
 
         home = fixture.get(
-
             "home_team"
-
         )
 
 
         away = fixture.get(
-
             "away_team"
-
         )
 
 
         league = fixture.get(
-
             "league",
-
             "RPL"
-
         )
 
 
         season = fixture.get(
-
             "season",
-
             "2026/27"
-
         )
 
 
 
         logger.info(
-
             "FAJ predicting %s - %s",
-
             home,
-
             away
-
         )
 
 
@@ -330,17 +281,14 @@ def predict_fixture(
 
 
             logger.warning(
-
                 "Empty prediction %s-%s",
-
                 home,
-
                 away
-
             )
 
 
             return None
+
 
 
 
@@ -358,17 +306,9 @@ def predict_fixture(
 
 
         logger.error(
-
-            "Prediction error %s-%s: %s",
-
-            fixture.get("home_team"),
-
-            fixture.get("away_team"),
-
+            "Prediction error: %s",
             e,
-
             exc_info=True
-
         )
 
 
@@ -394,6 +334,35 @@ def predict_tour(
 ):
 
 
+    logger.info(
+        "FAJ tour generation started"
+    )
+
+
+
+    # =============================================
+    # REMOVE OLD PREDICTIONS
+    # =============================================
+
+
+    try:
+
+        clear_predictions()
+
+
+    except Exception as e:
+
+
+        logger.error(
+            "Prediction cleanup error: %s",
+            e,
+            exc_info=True
+        )
+
+
+
+
+
     fixtures = get_tour_fixtures(
 
         league,
@@ -408,13 +377,13 @@ def predict_tour(
 
 
         logger.warning(
-
             "No scheduled fixtures"
-
         )
 
 
         return []
+
+
 
 
 
@@ -423,12 +392,10 @@ def predict_tour(
 
 
     logger.info(
-
-        "FAJ tour generation started: %s matches",
-
+        "FAJ matches: %s",
         len(fixtures)
-
     )
+
 
 
 
@@ -451,8 +418,6 @@ def predict_tour(
 
 
 
-        # save journal
-
 
         try:
 
@@ -470,14 +435,11 @@ def predict_tour(
 
 
             logger.error(
-
                 "Prediction save error: %s",
-
                 e,
-
                 exc_info=True
-
             )
+
 
 
 
@@ -489,12 +451,10 @@ def predict_tour(
 
 
 
+
     logger.info(
-
         "FAJ tour completed: %s predictions",
-
         len(results)
-
     )
 
 
