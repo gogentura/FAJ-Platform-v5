@@ -1,5 +1,5 @@
 # =====================================================
-# FAJ Platform v6.9.4
+# FAJ Platform v6.9.5
 # app/keyboards/faj_navigation.py
 # =====================================================
 
@@ -15,7 +15,7 @@ def faj_navigation_keyboard(index: int, total: int):
 
     buttons = []
 
-    # Предыдущий
+    # Предыдущий матч
     if index > 0:
         buttons.append(
             InlineKeyboardButton(
@@ -24,7 +24,7 @@ def faj_navigation_keyboard(index: int, total: int):
             )
         )
 
-    # Следующий
+    # Следующий матч
     if index < total - 1:
         buttons.append(
             InlineKeyboardButton(
@@ -36,11 +36,22 @@ def faj_navigation_keyboard(index: int, total: int):
     if buttons:
         keyboard.append(buttons)
 
+    # Индикатор матча
     keyboard.append(
         [
             InlineKeyboardButton(
                 text=f"⚽ {index + 1}/{total}",
                 callback_data="faj_noop"
+            )
+        ]
+    )
+
+    # Вернуться к списку матчей
+    keyboard.append(
+        [
+            InlineKeyboardButton(
+                text="📋 Весь тур",
+                callback_data="faj_all_matches"
             )
         ]
     )
