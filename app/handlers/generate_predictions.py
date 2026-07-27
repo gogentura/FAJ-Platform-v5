@@ -2,633 +2,182 @@
 # FAJ Platform v6.9.2
 # app/handlers/generate_predictions.py
 #
-# Generate Tour Predictions Handler
-#
-# Compatible:
-# - FAJCore v6.8+
-# - prediction_pipeline v6.9.2
-# - tour_predictor v6.9.2
-# - PostgreSQL
+# Generate Tour Predictions
 # =====================================================
-
 
 import logging
 
-
 from aiogram.types import Message
 
+from app.managers.prediction_manager import (
+    save_predictions_batch,
+    get_predictions
+)
 
 from app.services.tour_predictor import (
-    predict_tour
+    TourPredictor
 )
 
-
-from app.keyboards.main import (
-    main_keyboard
-)
-
+from app.database import get_db
 
 
 logger = logging.getLogger(__name__)
 
 
-
-
-
 # =====================================================
-# SAFE VALUE
+# CLEAR OLD PREDICTIONS
 # =====================================================
 
-
-def safe_value(
-
-    value,
-
-    default="-"
-
-):
-
-    if value is None:
-
-        return default
-
-
-    return value
-
-
-
-
-
-# =====================================================
-# CONFIDENCE BADGE
-# =====================================================
-
-
-def confidence_badge(
-
-    value
-
-):
+def clear_predictions():
 
     try:
 
-        value = float(value)
+        conn = get_db()
+        cur = conn.cursor()
 
-
-
-        if value <= 1:
-
-            value *= 100
-
-
-
-        if value >= 70:
-
-            icon = "🟢"
-
-
-        elif value >= 50:
-
-            icon = "🟡"
-
-
-        elif value >= 35:
-
-            icon = "🟠"
-
-
-        else:
-
-            icon = "🔴"
-
-
-
-        return (
-
-            f"{icon} {value:.1f}%"
-
+        cur.execute(
+            """
+            DELETE FROM predictions
+            """
         )
 
+        conn.commit()
+        conn.close()
 
+        logger.info(
+            "Old predictions cleared"
+        )
 
-    except Exception:
+        return True
 
+    except Exception as e:
 
-        return "⚪ Нет данных"
+        logger.error(
+            "Clear predictions error: %s",
+            e,
+            exc_info=True
+        )
 
-
-
-
-
-
-
-# =====================================================
-# QUALITY FORMAT
-# =====================================================
-
-
-def quality_format(
-
-    value
-
-):
-
-    try:
-
-        value=float(value)
-
-
-
-        # если уже проценты
-
-        if value > 1:
-
-            percent=value
-
-        else:
-
-            percent=value*100
-
-
-
-        if percent >= 80:
-
-            return f"🟢 {percent:.0f}%"
-
-
-        elif percent >= 50:
-
-            return f"🟡 {percent:.0f}%"
-
-
-        else:
-
-            return f"🔴 {percent:.0f}%"
-
-
-
-    except Exception:
-
-        return "🔴 0%"
-
-
-
-
+        return False
 
 
 
 # =====================================================
-# WINNER NORMALIZER
+# GENERATE TOUR
 # =====================================================
-
-
-def normalize_winner(
-
-    prediction
-
-):
-
-
-    winner = prediction.get(
-
-        "winner_name"
-
-    )
-
-
-
-    if winner:
-
-        return winner
-
-
-
-    code = prediction.get(
-
-        "winner",
-
-        "-"
-
-    )
-
-
-
-    if code == "home":
-
-        return "Хозяева"
-
-
-
-    if code == "away":
-
-        return "Гости"
-
-
-
-    if code == "draw":
-
-        return "Ничья"
-
-
-
-    return "-"
-
-
-
-
-
-
-
-
-# =====================================================
-# MAIN COMMAND
-# =====================================================
-
 
 async def cmd_generate_predictions(
-
     message: Message
-
 ):
-
-
-    await message.answer(
-
-"""
-🚀 FAJ создаёт прогнозы тура...
-
-
-Проверяем:
-
-📅 Fixtures
-
-📁 Team Passport
-
-📊 xG Engine
-
-🧠 FAJ Core v6.9.2
-
-🎲 Monte Carlo 10000
-
-⚠️ Risk Engine
-
-
-Подождите...
-""",
-
-reply_markup=main_keyboard()
-
-)
-
-
 
     try:
 
+        await message.answer(
+            """
+🚀 FAJ генерация прогноза тура...
 
-
-        predictions = predict_tour(
-
-            league="RPL",
-
-            season="2026/27"
-
+🧠 Engine v6.9.2
+🎲 Monte Carlo 10000
+"""
         )
 
 
+        # 1. очищаем старый тур
 
-        if not predictions:
+        clear_predictions()
+
+
+
+        # 2. создаём predictor
+
+        predictor = TourPredictor()
+
+
+
+        # 3. получаем прогнозы
+
+        result = predictor.generate_tour()
+
+
+
+        if not result:
 
 
             await message.answer(
+                """
+❌ FAJ не получил прогнозы.
 
+Проверьте календарь матчей.
 """
-⚠️ Нет прогнозов
-
-
-Проверить:
-
-• fixtures
-
-• сезон
-
-• паспорта команд
-
-• статус матчей
-
-
-/debug_fixtures
-
-/debug_prediction команда1 команда2
-
-""",
-
-reply_markup=main_keyboard()
-
-)
-
+            )
 
             return
 
 
 
-
-
-        text = """
-
-🏆 *FAJ ПРОГНОЗЫ ТУРА*
-
-🏟 RPL
-
-🧠 FAJ Engine v6.9.2
-
-🎲 Monte Carlo: 10000
-
-━━━━━━━━━━━━━━
-
-"""
-
-
-
-
-
-        for prediction in predictions:
-
-
-
-            home = prediction.get(
-
-                "home_team",
-
-                "?"
-
-            )
-
-
-
-            away = prediction.get(
-
-                "away_team",
-
-                "?"
-
-            )
-
-
-
-            winner = normalize_winner(
-
-                prediction
-
-            )
-
-
-
-            score = prediction.get(
-
-                "expected_score",
-
-                prediction.get(
-
-                    "score",
-
-                    "-"
-
-                )
-
-            )
-
-
-
-            confidence = prediction.get(
-
-                "confidence",
-
-                0
-
-            )
-
-
-
-            rating_home = prediction.get(
-
-                "home_rating",
-
-                0
-
-            )
-
-
-            rating_away = prediction.get(
-
-                "away_rating",
-
-                0
-
-            )
-
-
-
-            xg_home = prediction.get(
-
-                "xg_home",
-
-                0
-
-            )
-
-
-            xg_away = prediction.get(
-
-                "xg_away",
-
-                0
-
-            )
-
-
-
-            quality = prediction.get(
-
-                "passport_quality",
-
-                prediction.get(
-
-                    "data_quality",
-
-                    {
-
-                        "home":0,
-
-                        "away":0
-
-                    }
-
-                )
-
-            )
-
-
-
-            factors = prediction.get(
-
-                "factors",
-
-                []
-
-            )
-
-
-
-            category = prediction.get(
-
-                "grade",
-
-                prediction.get(
-
-                    "category",
-
-                    "C"
-
-                )
-
-            )
-
-
-
-
-
-            text += f"""
-
-⚽ *{home} — {away}*
-
-
-🏆 Победа:
-
-{winner}
-
-
-🎯 Счёт:
-
-{score}
-
-
-📊 xG:
-
-{xg_home} — {xg_away}
-
-
-🎯 Уверенность:
-
-{confidence_badge(confidence)}
-
-
-🧠 FAJ Rating:
-
-{rating_home} — {rating_away}
-
-
-📅 Фаза сезона:
-
-{prediction.get(
-    "season_phase",
-    "start"
-)}
-
-
-📁 Качество данных:
-
-🏠 {quality_format(
-    quality.get(
-        "home",
-        0
-    )
-)}
-
-🚩 {quality_format(
-    quality.get(
-        "away",
-        0
-    )
-)}
-
-
-⚠️ Риск:
-
-{prediction.get(
-    "risk",
-    "Высокий"
-)}
-
-
-🏷 Категория:
-
-{category}
-
-
-
-"""
-
-
-
-            if factors:
-
-
-                text += "\n🧠 Факторы:\n"
-
-
-                for factor in factors:
-
-
-                    text += (
-
-                        f"\n• {factor}"
-
-                    )
-
-
-
-            text += (
-
-                "\n\n──────────────\n"
-
-            )
-
-
-
-
-
-
-
-        text += """
-
-✅ Прогнозы сохранены
-
-
-FAJ Learning Layer:
-
-📊 сравнение факт/прогноз
-
-🧠 поиск ошибок
-
-📈 Calibration Layer
-
-🚀 улучшение FAJ Core
-
-"""
-
-
-
-        await message.answer(
-
-            text,
-
-            parse_mode="Markdown",
-
-            reply_markup=main_keyboard()
-
+        fixtures = result.get(
+            "fixtures",
+            []
         )
 
 
+        predictions = result.get(
+            "predictions",
+            []
+        )
+
+
+
+        if not fixtures or not predictions:
+
+
+            await message.answer(
+                """
+❌ Пустой результат прогнозирования.
+"""
+            )
+
+            return
+
+
+
+        # 4. сохраняем
+
+        saved = save_predictions_batch(
+            fixtures,
+            predictions
+        )
+
+
+
+        logger.info(
+            "Saved predictions: %s",
+            saved
+        )
+
+
+
+        # 5. ответ
+
+        await message.answer(
+
+f"""
+✅ FAJ прогнозы тура созданы
+
+⚽ Матчей:
+{len(predictions)}
+
+💾 Сохранено:
+{saved}
+
+🤖 FAJ Engine v6.9.2
+
+Открыть:
+
+🤖 FAJ прогнозы
+"""
+
+        )
 
 
 
@@ -636,29 +185,18 @@ FAJ Learning Layer:
 
 
         logger.exception(
-
             "Generate predictions error"
-
         )
 
 
         await message.answer(
 
 f"""
-❌ Ошибка FAJ генерации
-
-
-Тип:
+❌ FAJ ПРОГНОЗ ERROR
 
 {type(e).__name__}
 
-
-Ошибка:
-
 {str(e)}
 
-""",
-
-reply_markup=main_keyboard()
-
-)
+"""
+        )
