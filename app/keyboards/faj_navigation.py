@@ -20,7 +20,7 @@ def faj_navigation_keyboard(index: int, total: int):
         buttons.append(
             InlineKeyboardButton(
                 text="⬅️ Предыдущий матч",
-                callback_data=f"faj_prev:{index}"
+                callback_data=f"faj_prev_{index}"
             )
         )
 
@@ -29,7 +29,7 @@ def faj_navigation_keyboard(index: int, total: int):
         buttons.append(
             InlineKeyboardButton(
                 text="Следующий матч ➡️",
-                callback_data=f"faj_next:{index}"
+                callback_data=f"faj_next_{index}"
             )
         )
 
