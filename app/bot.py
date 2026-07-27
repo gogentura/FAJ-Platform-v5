@@ -1,5 +1,5 @@
 # =====================================================
-# FAJ Platform v6.3
+# FAJ Platform v6.9.2
 # app/bot.py
 # =====================================================
 
@@ -324,6 +324,17 @@ async def run_bot(
             message
         )
 
+    # ===== АЛИЯС ДЛЯ GENERATE PREDICTIONS =====
+    @dp.message(
+        Command("generate_predictions")
+    )
+    async def generate_predictions_command(
+        message: Message
+    ):
+        await cmd_generate_predictions(
+            message
+        )
+
 
     # =================================================
     # MAIN MENU
@@ -420,7 +431,7 @@ async def run_bot(
         await message.answer(
 
             """
-⚙️ Админ панель FAJ v6.3
+⚙️ Админ панель FAJ v6.9.2
 
 📥 Загрузить паспорта
 
@@ -594,7 +605,7 @@ async def run_bot(
         await message.answer(
 
             """
-⚽ FAJ Platform v6.3
+⚽ FAJ Platform v6.9.2
 
 
 📊 Статус        📈 Прогноз
@@ -626,7 +637,7 @@ FAJ анализирует:
 
 
     logger.info(
-        "FAJ Platform v6.3 started"
+        "FAJ Platform v6.9.2 started"
     )
 
 
