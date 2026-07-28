@@ -1,9 +1,11 @@
 # =====================================================
-# FAJ Platform v7.0.1
+# FAJ Platform v7.0.3
 # app/handlers/passport.py
 #
 # Team Passport Viewer
+#
 # PostgreSQL compatible
+#
 # =====================================================
 
 
@@ -16,21 +18,44 @@ from app.passport_manager import (
     get_team_by_alias
 )
 
-from app.keyboards.main import (
-    main_keyboard
-)
+from app.keyboards.main import main_keyboard
 
 
 logger = logging.getLogger(__name__)
+
+
+
+# =====================================================
+# SAFE VALUE
+# =====================================================
+
+def val(
+    passport,
+    key,
+    default=0
+):
+
+    value = passport.get(
+        key,
+        default
+    )
+
+    if value is None:
+        return default
+
+    return value
+
 
 
 # =====================================================
 # PASSPORT COMMAND
 # =====================================================
 
+
 async def cmd_passport(
     message: types.Message
 ):
+
 
     text = (
         message.text
@@ -38,19 +63,32 @@ async def cmd_passport(
     ).strip()
 
 
+
     parts = text.split(
         maxsplit=1
     )
 
 
+
     if len(parts) < 2:
 
+
         await message.answer(
-            "📁 Паспорт команды\n\n"
-            "Пример:\n"
-            "Паспорт Зенит",
+
+            """
+📁 Паспорт команды FAJ
+
+Пример:
+
+Паспорт Зенит
+
+Доступны команды РПЛ.
+""",
+
             reply_markup=main_keyboard()
+
         )
+
 
         return
 
@@ -59,9 +97,17 @@ async def cmd_passport(
     team_input = parts[1].strip()
 
 
+
     team = get_team_by_alias(
         team_input
     )
+
+
+
+    if not team:
+
+        team = team_input
+
 
 
     passport = load_passport(
@@ -69,108 +115,205 @@ async def cmd_passport(
     )
 
 
+
     if not passport:
+
 
         await message.answer(
 
-            f"❌ Паспорт {team_input} не найден.\n\n"
-            "Проверь загрузку паспортов.",
+            f"""
+❌ Паспорт не найден
+
+Команда:
+{team_input}
+
+Проверьте название.
+""",
 
             reply_markup=main_keyboard()
 
         )
 
+
         return
 
 
 
-    def val(
-        key,
-        default=0
-    ):
+    # =================================================
+    # DATA
+    # =================================================
 
-        return passport.get(
-            key,
-            default
+
+    form = val(
+
+        passport,
+
+        "form_index",
+
+        val(
+            passport,
+            "form",
+            0
         )
+
+    )
+
+
+    xg_for = val(
+
+        passport,
+
+        "historical_xg_value",
+
+        val(
+            passport,
+            "xg_for",
+            0
+        )
+
+    )
+
+
+    xg_against = val(
+
+        passport,
+
+        "historical_xg_against_value",
+
+        val(
+            passport,
+            "xg_against",
+            0
+        )
+
+    )
+
+
+    possession = val(
+
+        passport,
+
+        "avg_possession_value",
+
+        0
+
+    )
+
+
+    coach = val(
+
+        passport,
+
+        "coach_factor",
+
+        0
+
+    )
+
+
+
+    rating = val(
+
+        passport,
+
+        "faj_rating",
+
+        0
+
+    )
+
 
 
     answer = f"""
-⚽ *Паспорт: {val('team','')}*
+⚽ *Паспорт: {val(passport,'team','')}*
 
 🏆 Лига:
-{val('league','')}
+{val(passport,'league','')}
 
 📅 Сезон:
-{val('season','')}
+{val(passport,'season','')}
+
 
 ━━━━━━━━━━━━━━
 
 📊 *FAJ Team Profile*
 
 ⚔️ Атака:
-{val('attack')}
+{val(passport,'attack')}
 
 🛡 Защита:
-{val('defense')}
+{val(passport,'defense')}
 
 🎯 Контроль:
-{val('control')}
+{val(passport,'control')}
 
 📈 Форма:
-{val('form')}
+{form}
 
 
 ━━━━━━━━━━━━━━
 
-📊 *xG показатели*
+📊 *Advanced Metrics*
 
-Создано:
-{val('xg_for')}
+⚽ xG создано:
+{xg_for}
 
-Пропущено:
-{val('xg_against')}
+🛡 xG пропущено:
+{xg_against}
+
+🔵 Владение:
+{possession}
 
 
 ━━━━━━━━━━━━━━
 
 🧠 *Командные индексы*
 
-Эффективность:
-{val('efficiency')}
+⚙️ Эффективность:
+{val(passport,'efficiency')}
 
-Ментальность:
-{val('mentality')}
+🔥 Ментальность:
+{val(passport,'mentality')}
 
-Дисциплина:
-{val('discipline')}
+📋 Дисциплина:
+{val(passport,'discipline')}
 
-Физика:
-{val('fitness')}
+🏃 Физика:
+{val(passport,'fitness')}
 
-Предсказуемость:
-{val('predictability')}
+🔮 Предсказуемость:
+{val(passport,'predictability')}
+
+
+━━━━━━━━━━━━━━
+
+👔 Тренерский фактор:
+{coach}
 
 
 ━━━━━━━━━━━━━━
 
 🔄 Трансферы:
-{val('transfer_index')}
+{val(passport,'transfer_index')}
 
 🏥 Травмы:
-{val('injury_index')}
+{val(passport,'injury_index')}
 
 😴 Усталость:
-{val('fatigue_index')}
+{val(passport,'fatigue_index')}
 
 
 ━━━━━━━━━━━━━━
 
-🤖 FAJ Rating:
-{val('faj_rating')}
+🤖 *FAJ Rating*
+
+{rating}
+
+
+━━━━━━━━━━━━━━
 
 Версия:
-FAJ v7.0.1
+{val(passport,'version','FAJ v7.0.3')}
 """
 
 
@@ -185,42 +328,31 @@ FAJ v7.0.1
     )
 
 
+
 # =====================================================
 # BUTTON
 # =====================================================
+
 
 async def button_passport(
     message: types.Message
 ):
 
+
     await message.answer(
 
-        "📁 Раздел паспортов\n\n"
-        "Введите:\n\n"
-        "Паспорт Зенит\n\n"
-        "Доступны команды РПЛ.",
+        """
+📁 Раздел паспортов FAJ
+
+
+Введите:
+
+Паспорт Зенит
+
+
+Доступны паспорта команд РПЛ.
+""",
 
         reply_markup=main_keyboard()
 
     )
-
-
-# =====================================================
-# TEXT ROUTER
-# =====================================================
-
-async def passport_text_handler(
-    message: types.Message
-):
-
-    if not message.text:
-        return
-
-
-    if message.text.lower().startswith(
-        "паспорт"
-    ):
-
-        await cmd_passport(
-            message
-        )
