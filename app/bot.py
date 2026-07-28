@@ -65,15 +65,12 @@ from app.handlers.expert_predictions import (
 from app.handlers.generate_predictions import (
     cmd_generate_predictions
 )
-from app.handlers.debug_prediction import (
-    cmd_debug_prediction
-)
-from app.handlers.debug_calendar import (
-    cmd_debug_calendar
-)
-from app.handlers.debug_results import (
-    cmd_debug_results
-)
+# =====================================================
+# DEBUG - Прямые импорты из корня app
+# =====================================================
+from app.debug_prediction import cmd_debug_prediction
+from app.debug_calendar import cmd_debug_calendar
+from app.debug_results import cmd_debug_results
 
 # =====================================================
 # KEYBOARDS
