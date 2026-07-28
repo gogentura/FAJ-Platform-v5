@@ -226,19 +226,22 @@ async def run_bot(
         faj_match_callback
     )
     # =================================================
-    # TEXT HANDLERS (ВАЖНЫЙ ПОРЯДОК!)
+    # TEXT HANDLERS (ВАЖНЫЙ ПОРЯДОК С ФИЛЬТРАМИ!)
     # =================================================
-    # 1. Сначала проверяем прогнозы (2+ слова, не "паспорт")
+    # 1. Паспорта - только если начинается с "паспорт"
+    dp.message.register(
+        passport_text_handler,
+        lambda m:
+            m.text
+            and m.text.lower().startswith("паспорт")
+    )
+    # 2. Прогнозы - 2+ слова, не начинается с "паспорт"
     dp.message.register(
         handle_predict,
         lambda m:
-        m.text
-        and not m.text.lower().startswith("паспорт")
-        and len(m.text.split()) >= 2
-    )
-    # 2. Затем паспорта (начинается с "паспорт")
-    dp.message.register(
-        passport_text_handler
+            m.text
+            and not m.text.lower().startswith("паспорт")
+            and len(m.text.split()) >= 2
     )
     # =================================================
     # BUTTONS
