@@ -4,20 +4,21 @@
 #
 # Single Match Prediction Handler
 #
-# Input:
-#   Зенит Спартак
-#
 # Flow:
-#   Passport Manager
-#        |
-#        v
-#   Prediction Pipeline
-#        |
-#        v
-#   FAJ Core
-#        |
-#        v
-#   Journal
+#
+# Telegram
+#    |
+#    v
+# Passport Manager
+#    |
+#    v
+# Prediction Pipeline
+#    |
+#    v
+# FAJ Core
+#    |
+#    v
+# Journal
 #
 # =====================================================
 
@@ -45,9 +46,8 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================
-# FORMAT %
+# FORMAT PERCENT
 # =====================================================
-
 
 def format_percent(value):
 
@@ -56,13 +56,9 @@ def format_percent(value):
         value = float(value)
 
         if value <= 1:
-
             value *= 100
 
-
         return f"{value:.1f}%"
-
-
 
     except Exception:
 
@@ -72,11 +68,34 @@ def format_percent(value):
 
 
 
+# =====================================================
+# WINNER FORMAT
+# =====================================================
+
+def format_winner(
+        winner,
+        home_team,
+        away_team
+):
+
+    if winner == "home":
+        return home_team
+
+    if winner == "away":
+        return away_team
+
+    if winner == "draw":
+        return "Ничья"
+
+    return winner or "-"
+
+
+
+
 
 # =====================================================
-# MAIN HANDLER
+# HANDLE PREDICT
 # =====================================================
-
 
 async def handle_predict(
 
@@ -90,8 +109,11 @@ async def handle_predict(
 
 
     logger.info(
-        "PREDICT HANDLER RECEIVED: %s",
+
+        "PREDICT RECEIVED: %s",
+
         message.text
+
     )
 
 
@@ -110,32 +132,26 @@ async def handle_predict(
 
         if not text:
 
-
             return
 
 
 
 
-
-        # убираем слово прогноз
-
         text = (
 
             text.replace(
-                "прогноз",
+                "Прогноз",
                 ""
             )
 
             .replace(
-                "Прогноз",
+                "прогноз",
                 ""
             )
 
             .strip()
 
         )
-
-
 
 
 
@@ -151,11 +167,9 @@ async def handle_predict(
                 """
 ⚽ FAJ Прогноз
 
-
 Введите:
 
 Зенит Спартак
-
 
 или:
 
@@ -194,7 +208,7 @@ async def handle_predict(
 
 📁 Team Passport
 
-📊 xG модель
+📊 xG Engine
 
 🤖 FAJ Rating
 
@@ -213,9 +227,8 @@ async def handle_predict(
 
 
 
-
         # =================================================
-        # LOAD PASSPORTS
+        # PASSPORTS
         # =================================================
 
 
@@ -230,19 +243,16 @@ async def handle_predict(
 
 
 
-
-
         if not home_passport:
 
 
             await message.answer(
 
-                f"❌ Не найден паспорт {home_team}"
+                f"❌ Паспорт {home_team} не найден"
 
             )
 
             return
-
 
 
 
@@ -252,7 +262,7 @@ async def handle_predict(
 
             await message.answer(
 
-                f"❌ Не найден паспорт {away_team}"
+                f"❌ Паспорт {away_team} не найден"
 
             )
 
@@ -294,7 +304,6 @@ async def handle_predict(
 
 
 
-
         # =================================================
         # PIPELINE
         # =================================================
@@ -309,8 +318,6 @@ async def handle_predict(
             away_passport
 
         )
-
-
 
 
 
@@ -331,17 +338,15 @@ async def handle_predict(
 
 
 
-
         logger.info(
 
-            "Prediction completed: %s - %s",
+            "FAJ prediction completed %s - %s",
 
             home_team,
 
             away_team
 
         )
-
 
 
 
@@ -358,9 +363,7 @@ async def handle_predict(
 
             try:
 
-                journal.save(
-
-                    fixture,
+                journal.add_prediction(
 
                     result
 
@@ -372,13 +375,68 @@ async def handle_predict(
 
                 logger.warning(
 
-                    "Journal save skipped",
+                    "Journal skipped",
 
                     exc_info=True
 
                 )
 
 
+
+
+
+
+
+        # =================================================
+        # DATA
+        # =================================================
+
+
+        winner = format_winner(
+
+            result.get(
+                "winner",
+                result.get(
+                    "winner_prediction",
+                    "-"
+                )
+            ),
+
+            home_team,
+
+            away_team
+
+        )
+
+
+
+        expected_score = result.get(
+
+            "expected_score",
+
+            "-"
+
+        )
+
+
+
+        xg_home = result.get(
+
+            "xg_home",
+
+            0
+
+        )
+
+
+
+        xg_away = result.get(
+
+            "xg_away",
+
+            0
+
+        )
 
 
 
@@ -404,19 +462,13 @@ async def handle_predict(
 
 🏆 Победитель:
 
-{result.get(
-    'winner',
-    '-'
-)}
+{winner}
 
 
 
 🎯 Ожидаемый счёт:
 
-{result.get(
-    'expected_score',
-    '-'
-)}
+{expected_score}
 
 
 
@@ -428,18 +480,12 @@ async def handle_predict(
 
 {home_team}:
 
-{result.get(
-    'xg_home',
-    0
-)}
+{xg_home}
 
 
 {away_team}:
 
-{result.get(
-    'xg_away',
-    0
-)}
+{xg_away}
 
 
 
@@ -452,16 +498,16 @@ async def handle_predict(
 {home_team}:
 
 {home_passport.get(
-    'faj_rating',
-    '-'
+    "faj_rating",
+    "-"
 )}
 
 
 {away_team}:
 
 {away_passport.get(
-    'faj_rating',
-    '-'
+    "faj_rating",
+    "-"
 )}
 
 
@@ -473,7 +519,7 @@ async def handle_predict(
 
 {format_percent(
     result.get(
-        'confidence',
+        "confidence",
         0
     )
 )}
@@ -483,8 +529,8 @@ async def handle_predict(
 ⚠️ Риск:
 
 {result.get(
-    'risk',
-    '-'
+    "risk",
+    "Средний"
 )}
 
 
@@ -492,11 +538,84 @@ async def handle_predict(
 🏷 Категория:
 
 {result.get(
-    'grade',
-    '-'
+    "grade",
+    "C"
 )}
 
 
+
+"""
+
+
+
+
+        top_scores = result.get(
+            "top_scores"
+        )
+
+
+        if top_scores:
+
+
+            answer += """
+
+━━━━━━━━━━━━━━
+
+🎲 Вероятные счета:
+
+"""
+
+
+            answer += str(
+                top_scores
+            )
+
+
+
+
+
+        btts = result.get(
+            "btts_probability"
+        )
+
+
+        if btts is not None:
+
+
+            answer += f"""
+
+━━━━━━━━━━━━━━
+
+⚽ ОЗ:
+
+{format_percent(btts)}
+
+"""
+
+
+
+
+        over25 = result.get(
+            "over25_probability"
+        )
+
+
+        if over25 is not None:
+
+
+            answer += f"""
+
+📈 ТБ 2.5:
+
+{format_percent(over25)}
+
+"""
+
+
+
+
+
+        answer += """
 
 ━━━━━━━━━━━━━━
 
@@ -506,6 +625,7 @@ async def handle_predict(
 🎲 Monte Carlo Simulation
 
 """
+
 
 
 
@@ -525,7 +645,7 @@ async def handle_predict(
 
         logger.exception(
 
-            "Prediction handler error"
+            "Prediction handler failed"
 
         )
 
