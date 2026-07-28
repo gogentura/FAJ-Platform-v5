@@ -6,6 +6,10 @@
 #
 # PostgreSQL compatible
 #
+# Compatible:
+# - bot.py
+# - passport_manager.py
+# - PostgreSQL passports table
 # =====================================================
 
 
@@ -13,12 +17,16 @@ import logging
 
 from aiogram import types
 
+
 from app.passport_manager import (
     load_passport,
     get_team_by_alias
 )
 
-from app.keyboards.main import main_keyboard
+
+from app.keyboards.main import (
+    main_keyboard
+)
 
 
 logger = logging.getLogger(__name__)
@@ -29,7 +37,8 @@ logger = logging.getLogger(__name__)
 # SAFE VALUE
 # =====================================================
 
-def val(
+
+def get_value(
     passport,
     key,
     default=0
@@ -40,15 +49,21 @@ def val(
         default
     )
 
+
     if value is None:
+
         return default
+
 
     return value
 
 
 
 # =====================================================
-# PASSPORT COMMAND
+# COMMAND:
+#
+# Паспорт Зенит
+#
 # =====================================================
 
 
@@ -140,17 +155,17 @@ async def cmd_passport(
 
 
     # =================================================
-    # DATA
+    # COMPATIBILITY FIELDS
     # =================================================
 
 
-    form = val(
+    form = get_value(
 
         passport,
 
         "form_index",
 
-        val(
+        get_value(
             passport,
             "form",
             0
@@ -159,13 +174,14 @@ async def cmd_passport(
     )
 
 
-    xg_for = val(
+
+    xg_for = get_value(
 
         passport,
 
         "historical_xg_value",
 
-        val(
+        get_value(
             passport,
             "xg_for",
             0
@@ -174,13 +190,14 @@ async def cmd_passport(
     )
 
 
-    xg_against = val(
+
+    xg_against = get_value(
 
         passport,
 
         "historical_xg_against_value",
 
-        val(
+        get_value(
             passport,
             "xg_against",
             0
@@ -189,7 +206,8 @@ async def cmd_passport(
     )
 
 
-    possession = val(
+
+    possession = get_value(
 
         passport,
 
@@ -200,7 +218,8 @@ async def cmd_passport(
     )
 
 
-    coach = val(
+
+    coach = get_value(
 
         passport,
 
@@ -212,7 +231,7 @@ async def cmd_passport(
 
 
 
-    rating = val(
+    rating = get_value(
 
         passport,
 
@@ -224,97 +243,133 @@ async def cmd_passport(
 
 
 
+    # =================================================
+    # MESSAGE
+    # =================================================
+
+
     answer = f"""
-⚽ *Паспорт: {val(passport,'team','')}*
+⚽ *Паспорт: {get_value(passport,'team','')}*
+
 
 🏆 Лига:
-{val(passport,'league','')}
+{get_value(passport,'league','')}
+
 
 📅 Сезон:
-{val(passport,'season','')}
+{get_value(passport,'season','')}
 
 
 ━━━━━━━━━━━━━━
 
+
 📊 *FAJ Team Profile*
 
+
 ⚔️ Атака:
-{val(passport,'attack')}
+{get_value(passport,'attack')}
+
 
 🛡 Защита:
-{val(passport,'defense')}
+{get_value(passport,'defense')}
+
 
 🎯 Контроль:
-{val(passport,'control')}
+{get_value(passport,'control')}
+
 
 📈 Форма:
 {form}
 
 
+
 ━━━━━━━━━━━━━━
 
+
 📊 *Advanced Metrics*
+
 
 ⚽ xG создано:
 {xg_for}
 
+
 🛡 xG пропущено:
 {xg_against}
+
 
 🔵 Владение:
 {possession}
 
 
+
 ━━━━━━━━━━━━━━
+
 
 🧠 *Командные индексы*
 
+
 ⚙️ Эффективность:
-{val(passport,'efficiency')}
+{get_value(passport,'efficiency')}
+
 
 🔥 Ментальность:
-{val(passport,'mentality')}
+{get_value(passport,'mentality')}
+
 
 📋 Дисциплина:
-{val(passport,'discipline')}
+{get_value(passport,'discipline')}
+
 
 🏃 Физика:
-{val(passport,'fitness')}
+{get_value(passport,'fitness')}
+
 
 🔮 Предсказуемость:
-{val(passport,'predictability')}
+{get_value(passport,'predictability')}
+
 
 
 ━━━━━━━━━━━━━━
+
 
 👔 Тренерский фактор:
 {coach}
 
 
+
 ━━━━━━━━━━━━━━
+
 
 🔄 Трансферы:
-{val(passport,'transfer_index')}
+{get_value(passport,'transfer_index')}
+
 
 🏥 Травмы:
-{val(passport,'injury_index')}
+{get_value(passport,'injury_index')}
+
 
 😴 Усталость:
-{val(passport,'fatigue_index')}
+{get_value(passport,'fatigue_index')}
+
 
 
 ━━━━━━━━━━━━━━
+
 
 🤖 *FAJ Rating*
 
 {rating}
 
 
+
 ━━━━━━━━━━━━━━
 
+
 Версия:
-{val(passport,'version','FAJ v7.0.3')}
+
+{get_value(passport,'version','FAJ v7.0.3')}
 """
+
 
 
     await message.answer(
@@ -356,3 +411,60 @@ async def button_passport(
         reply_markup=main_keyboard()
 
     )
+
+
+
+# =====================================================
+# TEXT COMPATIBILITY
+# =====================================================
+#
+# Старые версии bot.py используют:
+#
+# passport_text_handler
+#
+# =====================================================
+
+
+async def passport_text_handler(
+    message: types.Message
+):
+
+
+    text = (
+
+        message.text
+
+        or ""
+
+    ).strip()
+
+
+
+    if not text.lower().startswith(
+        "паспорт"
+    ):
+
+        return
+
+
+
+    await cmd_passport(
+        message
+    )
+
+
+
+# =====================================================
+# EXPORTS
+# =====================================================
+
+
+__all__ = [
+
+    "cmd_passport",
+
+    "button_passport",
+
+    "passport_text_handler"
+
+]
