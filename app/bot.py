@@ -65,12 +65,6 @@ from app.handlers.expert_predictions import (
 from app.handlers.generate_predictions import (
     cmd_generate_predictions
 )
-# =====================================================
-# DEBUG - Прямые импорты из корня app
-# =====================================================
-from app.debug_prediction import cmd_debug_prediction
-from app.debug_calendar import cmd_debug_calendar
-from app.debug_results import cmd_debug_results
 
 # =====================================================
 # KEYBOARDS
@@ -203,27 +197,6 @@ async def run_bot(
         await cmd_generate_predictions(
             message
         )
-    # =================================================
-    # DEBUG
-    # =================================================
-    @dp.message(
-        Command("debug_prediction")
-    )
-    async def debug_prediction(
-        message: Message
-    ):
-        await cmd_debug_prediction(
-            message,
-            core
-        )
-    dp.message.register(
-        cmd_debug_calendar,
-        Command("debug_calendar")
-    )
-    dp.message.register(
-        cmd_debug_results,
-        Command("debug_results")
-    )
     # =================================================
     # CLEAR JOURNAL
     # =================================================
