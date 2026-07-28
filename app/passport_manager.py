@@ -1,26 +1,23 @@
 # =====================================================
-# FAJ Platform v7.0.3
+# FAJ Platform v7.0.4
 # app/passport_manager.py
 #
 # PostgreSQL Passport Manager
 #
 # Compatible:
 # - FAJCore
-# - load_passports handler
-# - passport handler
-# - PostgreSQL passports table
+# - Prediction Pipeline
+# - Passport Handler
+# - Load Passports
 # =====================================================
 
 
 import logging
 
-from datetime import datetime
-
 from app.database import get_db
 
 
 logger = logging.getLogger(__name__)
-
 
 
 # =====================================================
@@ -52,7 +49,6 @@ TEAM_ALIASES = {
     "ростов": "Ростов",
     "Ростов": "Ростов",
 
-    "рубін": "Рубин",
     "рубин": "Рубин",
     "Рубин": "Рубин",
 
@@ -72,7 +68,6 @@ TEAM_ALIASES = {
     "Факел": "Факел",
 
     "крылья": "Крылья Советов",
-    "Крылья": "Крылья Советов",
     "Крылья Советов": "Крылья Советов",
 
     "динамо мх": "Динамо Мх",
@@ -80,12 +75,13 @@ TEAM_ALIASES = {
 
     "родина": "Родина",
     "Родина": "Родина"
+
 }
 
 
 
 # =====================================================
-# NORMALIZE
+# ALIAS
 # =====================================================
 
 
@@ -109,8 +105,8 @@ def get_team_by_alias(team):
 
 
 def safe_float(
-    value,
-    default=0
+        value,
+        default=0
 ):
 
     try:
@@ -120,9 +116,117 @@ def safe_float(
 
         return float(value)
 
-    except:
+    except Exception:
 
         return default
+
+
+
+# =====================================================
+# NORMALIZATION
+# =====================================================
+
+
+def normalize_passport(
+        passport
+):
+
+    if not passport:
+        return None
+
+
+    passport = dict(passport)
+
+
+
+    # FORM
+
+    passport["form"] = safe_float(
+
+        passport.get(
+            "form",
+            passport.get(
+                "form_index",
+                70
+            )
+        ),
+
+        70
+
+    )
+
+
+
+    # XG FOR
+
+    passport["xg_for"] = safe_float(
+
+        passport.get(
+            "xg_for",
+            passport.get(
+                "historical_xg_value",
+                passport.get(
+                    "avg_goals_value",
+                    1.3
+                )
+            )
+        ),
+
+        1.3
+
+    )
+
+
+
+    # XG AGAINST
+
+    passport["xg_against"] = safe_float(
+
+        passport.get(
+            "xg_against",
+            passport.get(
+                "avg_goals_conceded_value",
+                1.3
+            )
+        ),
+
+        1.3
+
+    )
+
+
+
+    # DEFAULTS
+
+    passport["attack"] = safe_float(
+        passport.get(
+            "attack",
+            70
+        ),
+        70
+    )
+
+
+    passport["defense"] = safe_float(
+        passport.get(
+            "defense",
+            70
+        ),
+        70
+    )
+
+
+    passport["control"] = safe_float(
+        passport.get(
+            "control",
+            70
+        ),
+        70
+    )
+
+
+
+    return passport
 
 
 
@@ -132,11 +236,12 @@ def safe_float(
 
 
 def calculate_faj_rating(
-    passport
+        passport
 ):
 
     if not passport:
         return 0
+
 
 
     rating = (
@@ -183,11 +288,8 @@ def calculate_faj_rating(
 
         safe_float(
             passport.get(
-                "form_index",
-                passport.get(
-                    "form",
-                    70
-                )
+                "form",
+                70
             )
         ) * 0.15
 
@@ -202,22 +304,26 @@ def calculate_faj_rating(
 
 
 # =====================================================
-# SAVE PASSPORT
+# SAVE
 # =====================================================
 
 
 def save_passport(
-    team,
-    passport
+        team,
+        passport
 ):
 
     conn = get_db()
-
     cur = conn.cursor()
 
 
     real_team = get_team_by_alias(
         team
+    )
+
+
+    passport = normalize_passport(
+        passport
     )
 
 
@@ -262,7 +368,6 @@ def save_passport(
 
         )
 
-
         VALUES
 
         (
@@ -288,7 +393,12 @@ def save_passport(
         )
 
 
-        ON CONFLICT (team)
+        ON CONFLICT
+        (
+            team,
+            league,
+            season
+        )
 
         DO UPDATE SET
 
@@ -336,104 +446,80 @@ def save_passport(
 
             real_team,
 
-
             passport.get(
                 "league",
                 "RPL"
             ),
-
 
             passport.get(
                 "season",
                 "2026/27"
             ),
 
-
             passport.get(
-                "attack",
-                70
+                "attack"
             ),
 
             passport.get(
-                "defense",
-                70
+                "defense"
             ),
 
             passport.get(
-                "control",
-                70
+                "control"
             ),
-
 
             passport.get(
                 "efficiency",
                 70
             ),
 
-
             passport.get(
                 "mentality",
                 70
             ),
-
 
             passport.get(
                 "discipline",
                 70
             ),
 
-
             passport.get(
                 "fitness",
                 70
             ),
-
 
             passport.get(
                 "predictability",
                 70
             ),
 
-
             passport.get(
                 "injury_index",
                 0
             ),
-
 
             passport.get(
                 "fatigue_index",
                 0
             ),
 
-
             passport.get(
                 "transfer_index",
                 0
             ),
 
-
             passport.get(
-                "historical_xg_value",
+                "xg_for",
                 1.3
             ),
 
+            rating,
 
-            passport.get(
-                "home_rating",
-                rating
-            ),
-
-
-            passport.get(
-                "away_rating",
-                rating
-            ),
-
+            rating,
 
             passport.get(
                 "version",
-                "FAJ v7.0"
+                "FAJ v7.0.4"
             )
 
         )
@@ -446,6 +532,7 @@ def save_passport(
     cur.close()
 
     conn.close()
+
 
 
     logger.info(
@@ -461,9 +548,8 @@ def save_passport(
 
 
 def load_passport(
-    team
+        team
 ):
-
 
     real_team = get_team_by_alias(
         team
@@ -483,6 +569,8 @@ def load_passport(
         FROM passports
 
         WHERE team=%s
+
+        AND season='2026/27'
 
         LIMIT 1
 
@@ -508,7 +596,9 @@ def load_passport(
 
 
 
-    passport = dict(row)
+    passport = normalize_passport(
+        row
+    )
 
 
     passport["faj_rating"] = calculate_faj_rating(
@@ -526,9 +616,8 @@ def load_passport(
 
 
 def load_all_passports(
-    league="RPL"
+        league="RPL"
 ):
-
 
     conn = get_db()
 
@@ -563,7 +652,7 @@ def load_all_passports(
 
     return [
 
-        dict(row)
+        normalize_passport(row)
 
         for row in rows
 
@@ -583,8 +672,8 @@ def get_passport(team):
 
 
 def update_passport(
-    team,
-    passport
+        team,
+        passport
 ):
 
     return save_passport(
@@ -594,28 +683,23 @@ def update_passport(
 
 
 
-def passport_exists(
-    team
-):
+def passport_exists(team):
 
     return load_passport(team) is not None
 
 
 
 def list_teams(
-    league="RPL"
+        league="RPL"
 ):
-
-    passports = load_all_passports(
-        league
-    )
-
 
     return [
 
         p["team"]
 
-        for p in passports
+        for p in load_all_passports(
+            league
+        )
 
     ]
 
