@@ -3,7 +3,26 @@
 # app/handlers/predict.py
 #
 # Single Match Prediction Handler
-# Passport -> Pipeline -> Journal
+#
+# Flow:
+#
+# Telegram
+#    |
+#    v
+# Team names
+#    |
+#    v
+# Passport Manager
+#    |
+#    v
+# Prediction Pipeline
+#    |
+#    v
+# FAJ Core
+#    |
+#    v
+# Journal
+#
 # =====================================================
 
 
@@ -19,26 +38,20 @@ from app.services.prediction_pipeline import (
 
 
 from app.passport_manager import (
-    load_passport,
-    get_team_by_alias
+    load_passport
 )
-
-
-from app.journal import Journal
-
 
 
 logger = logging.getLogger(__name__)
 
 
 
-journal_service = Journal()
-
 
 
 # =====================================================
 # FORMAT %
 # =====================================================
+
 
 def format_percent(value):
 
@@ -47,13 +60,20 @@ def format_percent(value):
         value = float(value)
 
         if value <= 1:
+
             value *= 100
+
 
         return f"{value:.1f}%"
 
-    except:
 
-        return "0%"
+
+    except Exception:
+
+        return "Нет данных"
+
+
+
 
 
 
@@ -61,40 +81,44 @@ def format_percent(value):
 # HANDLE PREDICT
 # =====================================================
 
+
 async def handle_predict(
-    message: Message,
-    core=None,
-    journal=None
+
+        message: Message,
+
+        core=None,
+
+        journal=None
+
 ):
+
 
     try:
 
 
         text = (
+
             message.text
+
             or ""
+
         )
 
 
         text = (
-            text
-            .replace(
+
+            text.replace(
                 "прогноз",
                 ""
             )
+
             .replace(
                 "Прогноз",
                 ""
             )
-            .replace(
-                "—",
-                " "
-            )
-            .replace(
-                "-",
-                " "
-            )
+
             .strip()
+
         )
 
 
@@ -115,7 +139,7 @@ async def handle_predict(
 
 Зенит Спартак
 
-или
+или:
 
 Прогноз Зенит Спартак
 """
@@ -127,40 +151,40 @@ async def handle_predict(
 
 
 
-        home_input = parts[0]
 
 
-        away_input = " ".join(
+        home = parts[0]
+
+
+        away = " ".join(
             parts[1:]
         )
 
 
 
-        home = get_team_by_alias(
-            home_input
-        )
-
-
-        away = get_team_by_alias(
-            away_input
-        )
-
 
 
         await message.answer(
 
-f"""
+            f"""
 🧠 FAJ анализ матча
 
+
 ⚽ {home} — {away}
+
 
 Проверяю:
 
 📁 Team Passport
+
 📊 xG модель
-🤖 FAJ Rating
+
+🧠 FAJ Rating
+
 🎲 Monte Carlo
+
 ⚠️ Risk Engine
+
 
 Подождите...
 """
@@ -169,9 +193,13 @@ f"""
 
 
 
-        # =============================================
+
+
+
+
+        # =================================================
         # LOAD PASSPORTS
-        # =============================================
+        # =================================================
 
 
         home_passport = load_passport(
@@ -189,10 +217,13 @@ f"""
 
 
             await message.answer(
-                f"❌ Нет паспорта {home}"
+
+                f"❌ Паспорт {home} не найден"
+
             )
 
             return
+
 
 
 
@@ -200,7 +231,9 @@ f"""
 
 
             await message.answer(
-                f"❌ Нет паспорта {away}"
+
+                f"❌ Паспорт {away} не найден"
+
             )
 
             return
@@ -208,20 +241,31 @@ f"""
 
 
 
-        # =============================================
-        # FIXTURE OBJECT
-        # =============================================
+
+
+
+        # =================================================
+        # FIXTURE
+        # =================================================
 
 
         fixture = {
 
-            "home_team": home,
 
-            "away_team": away,
+            "home_team":
+                home,
 
-            "league": "RPL",
 
-            "season": "2026/27"
+            "away_team":
+                away,
+
+
+            "league":
+                "RPL",
+
+
+            "season":
+                "2026/27"
 
         }
 
@@ -229,9 +273,11 @@ f"""
 
 
 
-        # =============================================
+
+
+        # =================================================
         # PIPELINE
-        # =============================================
+        # =================================================
 
 
         result = prediction_pipeline.predict_match(
@@ -243,6 +289,9 @@ f"""
             away_passport
 
         )
+
+
+
 
 
 
@@ -260,47 +309,137 @@ f"""
 
 
 
-        # =============================================
+
+
+
+        # =================================================
         # JOURNAL
-        # =============================================
+        # =================================================
 
 
-        try:
-
-            journal_service.save(
-
-                fixture,
-
-                result,
-
-                fixture_id=None
-
-            )
+        if journal:
 
 
-        except Exception:
+            try:
 
 
-            logger.warning(
+                fixture_id = (
 
-                "Journal save skipped",
+                    fixture.get(
+                        "fixture_id",
+                        None
+                    )
 
-                exc_info=True
-
-            )
-
-
-
+                )
 
 
-        # =============================================
-        # OUTPUT
-        # =============================================
+                journal.save(
+
+                    fixture,
+
+                    result,
+
+                    fixture_id
+
+                )
 
 
-        answer=f"""
+            except Exception:
 
-🤖 FAJ PREDICTION v7.0.3
+
+                logger.warning(
+
+                    "Journal save skipped",
+
+                    exc_info=True
+
+                )
+
+
+
+
+
+
+
+
+
+        # =================================================
+        # OUTPUT DATA
+        # =================================================
+
+
+        winner = result.get(
+
+            "winner",
+
+            "-"
+
+        )
+
+
+        expected_score = result.get(
+
+            "expected_score",
+
+            "-"
+
+        )
+
+
+        xg_home = result.get(
+
+            "xg_home",
+
+            0
+
+        )
+
+
+        xg_away = result.get(
+
+            "xg_away",
+
+            0
+
+        )
+
+
+
+        confidence = result.get(
+
+            "confidence",
+
+            0
+
+        )
+
+
+
+        risk = result.get(
+
+            "risk",
+
+            "Средний"
+
+        )
+
+
+
+        grade = result.get(
+
+            "grade",
+
+            "C"
+
+        )
+
+
+
+
+
+        answer = f"""
+
+✅ FAJ PIPELINE OK
 
 
 ⚽ {home} — {away}
@@ -311,55 +450,49 @@ f"""
 
 🏆 Победитель:
 
-{result.get(
-    "winner",
-    "-"
-)}
+{winner}
 
 
-🎯 Счёт:
 
-{result.get(
-    "expected_score",
-    "-"
-)}
+🎯 Ожидаемый счёт:
+
+{expected_score}
+
 
 
 ━━━━━━━━━━━━━━
 
 
-📊 xG
+📊 xG:
 
-{result.get(
-    "xg_home",
-    0
-)}
+
+{home}
+
+{xg_home}
+
 
 -
 
-{result.get(
-    "xg_away",
-    0
-)}
+{away}
+
+{xg_away}
 
 
 
-🤖 FAJ Rating
+━━━━━━━━━━━━━━
+
+
+🧠 FAJ Rating:
+
 
 {home}:
 
-{home_passport.get(
-    "faj_rating",
-    "-"
-)}
+{home_passport.get('faj_rating', '-')}
 
 
 {away}:
 
-{away_passport.get(
-    "faj_rating",
-    "-"
-)}
+{away_passport.get('faj_rating', '-')}
 
 
 
@@ -369,44 +502,47 @@ f"""
 🔥 Уверенность:
 
 {format_percent(
-    result.get(
-        "confidence",
-        0
-    )
+    confidence
 )}
+
 
 
 ⚠️ Риск:
 
-{result.get(
-    "risk",
-    "-"
-)}
+{risk}
 
 
 
 🏷 Категория:
 
-{result.get(
-    "grade",
-    "-"
-)}
+{grade}
+
 
 
 ━━━━━━━━━━━━━━
 
 
-🧠 Model:
+🤖 Модель:
 
 FAJ v7.0.3
+
+🎲 Simulation:
+
+Monte Carlo
+
 
 """
 
 
 
         await message.answer(
+
             answer
+
         )
+
+
+
 
 
 
@@ -415,14 +551,17 @@ FAJ v7.0.3
 
 
         logger.exception(
+
             "Prediction handler error"
+
         )
 
 
         await message.answer(
 
-f"""
+            f"""
 ❌ FAJ ERROR
+
 
 Тип:
 
@@ -435,3 +574,9 @@ f"""
 """
 
         )
+
+
+
+# =====================================================
+# END
+# =====================================================
