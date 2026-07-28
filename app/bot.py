@@ -66,6 +66,9 @@ from app.handlers.expert_predictions import (
 from app.handlers.generate_predictions import (
     cmd_generate_predictions
 )
+from app.handlers.predict import (
+    handle_predict
+)
 
 # =====================================================
 # KEYBOARDS
@@ -227,6 +230,12 @@ async def run_bot(
     # =================================================
     dp.message.register(
         passport_text_handler
+    )
+    dp.message.register(
+        handle_predict,
+        lambda m:
+        m.text
+        and len(m.text.split()) >= 2
     )
     # =================================================
     # BUTTONS
