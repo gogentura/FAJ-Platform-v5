@@ -1,8 +1,9 @@
 # =====================================================
-# FAJ Platform v6.7
+# FAJ Platform v7.0.3
 # app/handlers/predict.py
 #
 # Single Match Prediction Handler
+# Passport -> Pipeline -> Journal
 # =====================================================
 
 
@@ -17,19 +18,27 @@ from app.services.prediction_pipeline import (
 )
 
 
+from app.passport_manager import (
+    load_passport,
+    get_team_by_alias
+)
+
+
 from app.journal import Journal
+
 
 
 logger = logging.getLogger(__name__)
 
 
 
+journal_service = Journal()
+
 
 
 # =====================================================
 # FORMAT %
 # =====================================================
-
 
 def format_percent(value):
 
@@ -42,12 +51,9 @@ def format_percent(value):
 
         return f"{value:.1f}%"
 
-    except Exception:
+    except:
 
-        return "Нет данных"
-
-
-
+        return "0%"
 
 
 
@@ -55,37 +61,40 @@ def format_percent(value):
 # HANDLE PREDICT
 # =====================================================
 
-
 async def handle_predict(
-
     message: Message,
-
     core=None,
-
     journal=None
-
 ):
-
 
     try:
 
 
         text = (
-
             message.text
+            or ""
+        )
 
+
+        text = (
+            text
             .replace(
                 "прогноз",
                 ""
             )
-
             .replace(
                 "Прогноз",
                 ""
             )
-
+            .replace(
+                "—",
+                " "
+            )
+            .replace(
+                "-",
+                " "
+            )
             .strip()
-
         )
 
 
@@ -104,11 +113,11 @@ async def handle_predict(
 
 Формат:
 
-Акрон Зенит
+Зенит Спартак
 
-или:
+или
 
-прогноз Акрон Зенит
+Прогноз Зенит Спартак
 """
 
             )
@@ -118,16 +127,29 @@ async def handle_predict(
 
 
 
+        home_input = parts[0]
 
-        home = parts[0]
 
-        away = " ".join(parts[1:])
+        away_input = " ".join(
+            parts[1:]
+        )
+
+
+
+        home = get_team_by_alias(
+            home_input
+        )
+
+
+        away = get_team_by_alias(
+            away_input
+        )
 
 
 
         await message.answer(
 
-            f"""
+f"""
 🧠 FAJ анализ матча
 
 ⚽ {home} — {away}
@@ -136,8 +158,8 @@ async def handle_predict(
 
 📁 Team Passport
 📊 xG модель
-🧠 FAJ Rating
-🎲 Monte Carlo 10000
+🤖 FAJ Rating
+🎲 Monte Carlo
 ⚠️ Risk Engine
 
 Подождите...
@@ -147,22 +169,78 @@ async def handle_predict(
 
 
 
+        # =============================================
+        # LOAD PASSPORTS
+        # =============================================
 
 
-        # =================================================
+        home_passport = load_passport(
+            home
+        )
+
+
+        away_passport = load_passport(
+            away
+        )
+
+
+
+        if not home_passport:
+
+
+            await message.answer(
+                f"❌ Нет паспорта {home}"
+            )
+
+            return
+
+
+
+        if not away_passport:
+
+
+            await message.answer(
+                f"❌ Нет паспорта {away}"
+            )
+
+            return
+
+
+
+
+        # =============================================
+        # FIXTURE OBJECT
+        # =============================================
+
+
+        fixture = {
+
+            "home_team": home,
+
+            "away_team": away,
+
+            "league": "RPL",
+
+            "season": "2026/27"
+
+        }
+
+
+
+
+
+        # =============================================
         # PIPELINE
-        # =================================================
+        # =============================================
 
 
         result = prediction_pipeline.predict_match(
 
-            home,
+            fixture,
 
-            away,
+            home_passport,
 
-            "RPL",
-
-            "2026/27"
+            away_passport
 
         )
 
@@ -182,87 +260,47 @@ async def handle_predict(
 
 
 
-
-        decision = result.get(
-
-            "decision",
-
-            {}
-
-        )
-
-
-
-        xg = result.get(
-
-            "xg",
-
-            {}
-
-        ).get(
-
-            "predicted",
-
-            {}
-
-        )
-
-
-
-        simulation = result.get(
-
-            "simulation",
-
-            {}
-
-        )
-
-
-
-
-
-        # =================================================
+        # =============================================
         # JOURNAL
-        # =================================================
+        # =============================================
 
 
-        if journal:
+        try:
+
+            journal_service.save(
+
+                fixture,
+
+                result,
+
+                fixture_id=None
+
+            )
 
 
-            try:
-
-                journal.add_prediction(
-
-                    result
-
-                )
+        except Exception:
 
 
-            except Exception:
+            logger.warning(
 
+                "Journal save skipped",
 
-                logger.warning(
+                exc_info=True
 
-                    "Journal save skipped",
-
-                    exc_info=True
-
-                )
-
-
-
-
+            )
 
 
 
-        # =================================================
+
+
+        # =============================================
         # OUTPUT
-        # =================================================
+        # =============================================
 
 
-        answer = f"""
+        answer=f"""
 
-✅ FAJ PIPELINE OK
+🤖 FAJ PREDICTION v7.0.3
 
 
 ⚽ {home} — {away}
@@ -273,34 +311,55 @@ async def handle_predict(
 
 🏆 Победитель:
 
-{decision.get('winner_name','Нет данных')}
+{result.get(
+    "winner",
+    "-"
+)}
 
 
 🎯 Счёт:
 
-{decision.get('expected_score','-')}
+{result.get(
+    "expected_score",
+    "-"
+)}
 
 
 ━━━━━━━━━━━━━━
 
 
-📊 xG:
+📊 xG
 
-{xg.get('home',0)}
-
--
-
-{xg.get('away',0)}
-
-
-
-🧠 FAJ Rating:
-
-{decision.get('home_rating','-')}
+{result.get(
+    "xg_home",
+    0
+)}
 
 -
 
-{decision.get('away_rating','-')}
+{result.get(
+    "xg_away",
+    0
+)}
+
+
+
+🤖 FAJ Rating
+
+{home}:
+
+{home_passport.get(
+    "faj_rating",
+    "-"
+)}
+
+
+{away}:
+
+{away_passport.get(
+    "faj_rating",
+    "-"
+)}
 
 
 
@@ -310,81 +369,44 @@ async def handle_predict(
 🔥 Уверенность:
 
 {format_percent(
-
-    decision.get(
-        'confidence',
+    result.get(
+        "confidence",
         0
     )
-
 )}
 
 
 ⚠️ Риск:
 
-{decision.get(
-
-    'risk',
-
-    'Средний'
-
+{result.get(
+    "risk",
+    "-"
 )}
+
 
 
 🏷 Категория:
 
-{decision.get(
-
-    'grade',
-
-    'C'
-
+{result.get(
+    "grade",
+    "-"
 )}
-
 
 
 ━━━━━━━━━━━━━━
 
 
-🧠 Факторы:
+🧠 Model:
+
+FAJ v7.0.3
 
 """
 
 
 
-        factors = decision.get(
-
-            "factors",
-
-            []
-
-        )
-
-
-
-        if factors:
-
-
-            for factor in factors:
-
-                answer += f"\n• {factor}"
-
-
-        else:
-
-
-            answer += "\n• Анализ факторов доступен в FAJ Core"
-
-
-
-
-
         await message.answer(
-
             answer
-
         )
-
-
 
 
 
@@ -392,20 +414,15 @@ async def handle_predict(
     except Exception as e:
 
 
-        logger.error(
-
-            "Prediction handler error",
-
-            exc_info=True
-
+        logger.exception(
+            "Prediction handler error"
         )
 
 
         await message.answer(
 
-            f"""
+f"""
 ❌ FAJ ERROR
-
 
 Тип:
 
