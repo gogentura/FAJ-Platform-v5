@@ -100,7 +100,7 @@ async def run_bot(
         "FAJ Bot initializing..."
     )
     # =================================================
-    # COMMANDS
+    # COMMANDS (ВЫСШИЙ ПРИОРИТЕТ)
     # =================================================
     dp.message.register(
         cmd_start,
@@ -130,16 +130,10 @@ async def run_bot(
         cmd_passport,
         Command("паспорт")
     )
-    # =================================================
-    # PASSPORT LOADING
-    # =================================================
     dp.message.register(
         cmd_load_passports,
         Command("загрузить_паспорта")
     )
-    # =================================================
-    # FIXTURES
-    # =================================================
     dp.message.register(
         cmd_load_fixtures,
         Command("загрузить_календарь")
@@ -156,9 +150,6 @@ async def run_bot(
         cmd_fixtures_check,
         Command("fixtures_check")
     )
-    # =================================================
-    # CALENDAR UPDATE
-    # =================================================
     dp.message.register(
         cmd_update_calendar,
         Command("update_calendar")
@@ -172,7 +163,7 @@ async def run_bot(
         Command("clear_fixtures")
     )
     # =================================================
-    # FAJ PREDICTIONS
+    # FAJ COMMANDS
     # =================================================
     @dp.message(
         Command("faj")
@@ -201,9 +192,6 @@ async def run_bot(
         await cmd_generate_predictions(
             message
         )
-    # =================================================
-    # CLEAR JOURNAL
-    # =================================================
     @dp.message(
         Command("clear_journal")
     )
@@ -226,67 +214,7 @@ async def run_bot(
         faj_match_callback
     )
     # =================================================
-    # TEXT HANDLERS
-    # =================================================
-    # ===============================
-    # PASSPORT TEXT
-    # ===============================
-    dp.message.register(
-        passport_text_handler
-    )
-    # ===============================
-    # MATCH PREDICTION TEXT
-    # ===============================
-    def is_match_prediction(
-        message: Message
-    ):
-        if not message.text:
-            return False
-        text = message.text.strip()
-        # команды
-        if text.startswith("/"):
-            return False
-        # кнопки FAJ
-        blocked = [
-            "📁 Паспорта",
-            "📊 Статус",
-            "📋 Журнал",
-            "❤️ Проверка",
-            "📅 Матчи",
-            "🤖 FAJ прогнозы",
-            "🧠 Мои прогнозы",
-            "⚙️ Админ"
-        ]
-        if text in blocked:
-            return False
-        # админские кнопки
-        if text.startswith(
-            "📥"
-        ):
-            return False
-        if text.startswith(
-            "🔄"
-        ):
-            return False
-        if text.startswith(
-            "🔍"
-        ):
-            return False
-        if text.startswith(
-            "🗑"
-        ):
-            return False
-        words = text.split()
-        # прогноз только от двух слов
-        if len(words) < 2:
-            return False
-        return True
-    dp.message.register(
-        handle_predict,
-        is_match_prediction
-    )
-    # =================================================
-    # BUTTONS
+    # BUTTONS (СРЕДНИЙ ПРИОРИТЕТ)
     # =================================================
     @dp.message(
         lambda m:
@@ -359,7 +287,7 @@ async def run_bot(
             message
         )
     # =================================================
-    # ADMIN BUTTON
+    # ADMIN BUTTON (СРЕДНИЙ ПРИОРИТЕТ)
     # =================================================
     @dp.message(
         lambda m:
@@ -454,7 +382,56 @@ async def run_bot(
             message
         )
     # =================================================
-    # DEFAULT HANDLER
+    # MATCH PREDICTION (НИЗКИЙ ПРИОРИТЕТ)
+    # =================================================
+    def is_match_prediction(
+        message: Message
+    ):
+        if not message.text:
+            return False
+        text = message.text.strip()
+        # команды
+        if text.startswith("/"):
+            return False
+        # кнопки FAJ
+        blocked = [
+            "📁 Паспорта",
+            "📊 Статус",
+            "📋 Журнал",
+            "❤️ Проверка",
+            "📅 Матчи",
+            "🤖 FAJ прогнозы",
+            "🧠 Мои прогнозы",
+            "⚙️ Админ"
+        ]
+        if text in blocked:
+            return False
+        # админские кнопки
+        if text.startswith("📥"):
+            return False
+        if text.startswith("🔄"):
+            return False
+        if text.startswith("🔍"):
+            return False
+        if text.startswith("🗑"):
+            return False
+        words = text.split()
+        # прогноз только от двух слов
+        if len(words) < 2:
+            return False
+        return True
+    dp.message.register(
+        handle_predict,
+        is_match_prediction
+    )
+    # =================================================
+    # PASSPORT TEXT (САМЫЙ НИЗКИЙ ПРИОРИТЕТ)
+    # =================================================
+    dp.message.register(
+        passport_text_handler
+    )
+    # =================================================
+    # DEFAULT HANDLER (ПОСЛЕДНИЙ)
     # =================================================
     @dp.message()
     async def default_handler(
