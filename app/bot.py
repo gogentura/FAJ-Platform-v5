@@ -226,22 +226,64 @@ async def run_bot(
         faj_match_callback
     )
     # =================================================
-    # TEXT HANDLERS (ВАЖНЫЙ ПОРЯДОК С ФИЛЬТРАМИ!)
+    # TEXT HANDLERS
     # =================================================
-    # 1. Паспорта - только если начинается с "паспорт"
+    # ===============================
+    # PASSPORT TEXT
+    # ===============================
     dp.message.register(
-        passport_text_handler,
-        lambda m:
-            m.text
-            and m.text.lower().startswith("паспорт")
+        passport_text_handler
     )
-    # 2. Прогнозы - 2+ слова, не начинается с "паспорт"
+    # ===============================
+    # MATCH PREDICTION TEXT
+    # ===============================
+    def is_match_prediction(
+        message: Message
+    ):
+        if not message.text:
+            return False
+        text = message.text.strip()
+        # команды
+        if text.startswith("/"):
+            return False
+        # кнопки FAJ
+        blocked = [
+            "📁 Паспорта",
+            "📊 Статус",
+            "📋 Журнал",
+            "❤️ Проверка",
+            "📅 Матчи",
+            "🤖 FAJ прогнозы",
+            "🧠 Мои прогнозы",
+            "⚙️ Админ"
+        ]
+        if text in blocked:
+            return False
+        # админские кнопки
+        if text.startswith(
+            "📥"
+        ):
+            return False
+        if text.startswith(
+            "🔄"
+        ):
+            return False
+        if text.startswith(
+            "🔍"
+        ):
+            return False
+        if text.startswith(
+            "🗑"
+        ):
+            return False
+        words = text.split()
+        # прогноз только от двух слов
+        if len(words) < 2:
+            return False
+        return True
     dp.message.register(
         handle_predict,
-        lambda m:
-            m.text
-            and not m.text.lower().startswith("паспорт")
-            and len(m.text.split()) >= 2
+        is_match_prediction
     )
     # =================================================
     # BUTTONS
