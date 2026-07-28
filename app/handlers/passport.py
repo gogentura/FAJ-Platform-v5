@@ -1,6 +1,6 @@
 # =====================================================
-# FAJ Platform v6.3
-# app/handlers/passports.py
+# FAJ Platform v7.0.1
+# app/handlers/passport.py
 #
 # Team Passport Viewer
 # PostgreSQL compatible
@@ -16,13 +16,12 @@ from app.passport_manager import (
     get_team_by_alias
 )
 
-from app.handlers.keyboard import (
-    get_main_keyboard
+from app.keyboards.main import (
+    main_keyboard
 )
 
 
 logger = logging.getLogger(__name__)
-
 
 
 # =====================================================
@@ -47,13 +46,10 @@ async def cmd_passport(
     if len(parts) < 2:
 
         await message.answer(
-
             "📁 Паспорт команды\n\n"
             "Пример:\n"
             "Паспорт Зенит",
-
-            reply_markup=get_main_keyboard()
-
+            reply_markup=main_keyboard()
         )
 
         return
@@ -63,51 +59,30 @@ async def cmd_passport(
     team_input = parts[1].strip()
 
 
-
-    # -----------------------------
-    # ALIAS
-    # -----------------------------
-
     team = get_team_by_alias(
         team_input
     )
 
-
-    if not team:
-
-        team = team_input
-
-
-
-    # -----------------------------
-    # LOAD
-    # -----------------------------
 
     passport = load_passport(
         team
     )
 
 
-
     if not passport:
-
 
         await message.answer(
 
             f"❌ Паспорт {team_input} не найден.\n\n"
-            "Доступные команды: РПЛ",
+            "Проверь загрузку паспортов.",
 
-            reply_markup=get_main_keyboard()
+            reply_markup=main_keyboard()
 
         )
 
         return
 
 
-
-    # -----------------------------
-    # SAFE VALUES
-    # -----------------------------
 
     def val(
         key,
@@ -118,7 +93,6 @@ async def cmd_passport(
             key,
             default
         )
-
 
 
     answer = f"""
@@ -132,7 +106,7 @@ async def cmd_passport(
 
 ━━━━━━━━━━━━━━
 
-📊 *Командная модель FAJ*
+📊 *FAJ Team Profile*
 
 ⚔️ Атака:
 {val('attack')}
@@ -143,14 +117,13 @@ async def cmd_passport(
 🎯 Контроль:
 {val('control')}
 
-
 📈 Форма:
 {val('form')}
 
 
 ━━━━━━━━━━━━━━
 
-📊 *xG модель*
+📊 *xG показатели*
 
 Создано:
 {val('xg_for')}
@@ -161,7 +134,7 @@ async def cmd_passport(
 
 ━━━━━━━━━━━━━━
 
-🧠 *Индексы*
+🧠 *Командные индексы*
 
 Эффективность:
 {val('efficiency')}
@@ -193,8 +166,11 @@ async def cmd_passport(
 
 ━━━━━━━━━━━━━━
 
-Версия FAJ:
-v6.3
+🤖 FAJ Rating:
+{val('faj_rating')}
+
+Версия:
+FAJ v7.0.1
 """
 
 
@@ -204,11 +180,9 @@ v6.3
 
         parse_mode="Markdown",
 
-        reply_markup=get_main_keyboard()
+        reply_markup=main_keyboard()
 
     )
-
-
 
 
 # =====================================================
@@ -222,10 +196,31 @@ async def button_passport(
     await message.answer(
 
         "📁 Раздел паспортов\n\n"
-        "Пример:\n\n"
+        "Введите:\n\n"
         "Паспорт Зенит\n\n"
-        "Доступны паспорта команд РПЛ.",
+        "Доступны команды РПЛ.",
 
-        reply_markup=get_main_keyboard()
+        reply_markup=main_keyboard()
 
     )
+
+
+# =====================================================
+# TEXT ROUTER
+# =====================================================
+
+async def passport_text_handler(
+    message: types.Message
+):
+
+    if not message.text:
+        return
+
+
+    if message.text.lower().startswith(
+        "паспорт"
+    ):
+
+        await cmd_passport(
+            message
+        )
