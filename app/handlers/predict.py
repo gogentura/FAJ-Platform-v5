@@ -4,24 +4,20 @@
 #
 # Single Match Prediction Handler
 #
-# Flow:
+# Input:
+#   Зенит Спартак
 #
-# Telegram
-#    |
-#    v
-# Team names
-#    |
-#    v
-# Passport Manager
-#    |
-#    v
-# Prediction Pipeline
-#    |
-#    v
-# FAJ Core
-#    |
-#    v
-# Journal
+# Flow:
+#   Passport Manager
+#        |
+#        v
+#   Prediction Pipeline
+#        |
+#        v
+#   FAJ Core
+#        |
+#        v
+#   Journal
 #
 # =====================================================
 
@@ -32,18 +28,18 @@ import logging
 from aiogram.types import Message
 
 
-from app.services.prediction_pipeline import (
-    prediction_pipeline
-)
-
-
 from app.passport_manager import (
     load_passport
 )
 
 
-logger = logging.getLogger(__name__)
+from app.services.prediction_pipeline import (
+    prediction_pipeline
+)
 
+
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -70,7 +66,7 @@ def format_percent(value):
 
     except Exception:
 
-        return "Нет данных"
+        return "0%"
 
 
 
@@ -78,7 +74,7 @@ def format_percent(value):
 
 
 # =====================================================
-# HANDLE PREDICT
+# MAIN HANDLER
 # =====================================================
 
 
@@ -93,6 +89,12 @@ async def handle_predict(
 ):
 
 
+    logger.info(
+        "PREDICT HANDLER RECEIVED: %s",
+        message.text
+    )
+
+
     try:
 
 
@@ -102,8 +104,20 @@ async def handle_predict(
 
             or ""
 
-        )
+        ).strip()
 
+
+
+        if not text:
+
+
+            return
+
+
+
+
+
+        # убираем слово прогноз
 
         text = (
 
@@ -123,6 +137,8 @@ async def handle_predict(
 
 
 
+
+
         parts = text.split()
 
 
@@ -135,9 +151,11 @@ async def handle_predict(
                 """
 ⚽ FAJ Прогноз
 
-Формат:
+
+Введите:
 
 Зенит Спартак
+
 
 или:
 
@@ -152,11 +170,10 @@ async def handle_predict(
 
 
 
+        home_team = parts[0]
 
-        home = parts[0]
 
-
-        away = " ".join(
+        away_team = " ".join(
             parts[1:]
         )
 
@@ -170,7 +187,7 @@ async def handle_predict(
 🧠 FAJ анализ матча
 
 
-⚽ {home} — {away}
+⚽ {home_team} — {away_team}
 
 
 Проверяю:
@@ -179,7 +196,7 @@ async def handle_predict(
 
 📊 xG модель
 
-🧠 FAJ Rating
+🤖 FAJ Rating
 
 🎲 Monte Carlo
 
@@ -203,13 +220,15 @@ async def handle_predict(
 
 
         home_passport = load_passport(
-            home
+            home_team
         )
 
 
         away_passport = load_passport(
-            away
+            away_team
         )
+
+
 
 
 
@@ -218,11 +237,12 @@ async def handle_predict(
 
             await message.answer(
 
-                f"❌ Паспорт {home} не найден"
+                f"❌ Не найден паспорт {home_team}"
 
             )
 
             return
+
 
 
 
@@ -232,7 +252,7 @@ async def handle_predict(
 
             await message.answer(
 
-                f"❌ Паспорт {away} не найден"
+                f"❌ Не найден паспорт {away_team}"
 
             )
 
@@ -253,11 +273,11 @@ async def handle_predict(
 
 
             "home_team":
-                home,
+                home_team,
 
 
             "away_team":
-                away,
+                away_team,
 
 
             "league":
@@ -312,6 +332,22 @@ async def handle_predict(
 
 
 
+        logger.info(
+
+            "Prediction completed: %s - %s",
+
+            home_team,
+
+            away_team
+
+        )
+
+
+
+
+
+
+
         # =================================================
         # JOURNAL
         # =================================================
@@ -322,24 +358,11 @@ async def handle_predict(
 
             try:
 
-
-                fixture_id = (
-
-                    fixture.get(
-                        "fixture_id",
-                        None
-                    )
-
-                )
-
-
                 journal.save(
 
                     fixture,
 
-                    result,
-
-                    fixture_id
+                    result
 
                 )
 
@@ -364,85 +387,16 @@ async def handle_predict(
 
 
         # =================================================
-        # OUTPUT DATA
+        # OUTPUT
         # =================================================
-
-
-        winner = result.get(
-
-            "winner",
-
-            "-"
-
-        )
-
-
-        expected_score = result.get(
-
-            "expected_score",
-
-            "-"
-
-        )
-
-
-        xg_home = result.get(
-
-            "xg_home",
-
-            0
-
-        )
-
-
-        xg_away = result.get(
-
-            "xg_away",
-
-            0
-
-        )
-
-
-
-        confidence = result.get(
-
-            "confidence",
-
-            0
-
-        )
-
-
-
-        risk = result.get(
-
-            "risk",
-
-            "Средний"
-
-        )
-
-
-
-        grade = result.get(
-
-            "grade",
-
-            "C"
-
-        )
-
-
-
 
 
         answer = f"""
 
-✅ FAJ PIPELINE OK
+✅ FAJ PREDICTION READY
 
 
-⚽ {home} — {away}
+⚽ {home_team} — {away_team}
 
 
 ━━━━━━━━━━━━━━
@@ -450,49 +404,65 @@ async def handle_predict(
 
 🏆 Победитель:
 
-{winner}
+{result.get(
+    'winner',
+    '-'
+)}
 
 
 
 🎯 Ожидаемый счёт:
 
-{expected_score}
+{result.get(
+    'expected_score',
+    '-'
+)}
 
 
 
 ━━━━━━━━━━━━━━
 
 
-📊 xG:
+📊 xG
 
 
-{home}
+{home_team}:
 
-{xg_home}
+{result.get(
+    'xg_home',
+    0
+)}
 
 
--
+{away_team}:
 
-{away}
-
-{xg_away}
+{result.get(
+    'xg_away',
+    0
+)}
 
 
 
 ━━━━━━━━━━━━━━
 
 
-🧠 FAJ Rating:
+🤖 FAJ Rating
 
 
-{home}:
+{home_team}:
 
-{home_passport.get('faj_rating', '-')}
+{home_passport.get(
+    'faj_rating',
+    '-'
+)}
 
 
-{away}:
+{away_team}:
 
-{away_passport.get('faj_rating', '-')}
+{away_passport.get(
+    'faj_rating',
+    '-'
+)}
 
 
 
@@ -502,34 +472,38 @@ async def handle_predict(
 🔥 Уверенность:
 
 {format_percent(
-    confidence
+    result.get(
+        'confidence',
+        0
+    )
 )}
 
 
 
 ⚠️ Риск:
 
-{risk}
+{result.get(
+    'risk',
+    '-'
+)}
 
 
 
 🏷 Категория:
 
-{grade}
+{result.get(
+    'grade',
+    '-'
+)}
 
 
 
 ━━━━━━━━━━━━━━
 
 
-🤖 Модель:
+🧠 FAJ Engine v7.0.3
 
-FAJ v7.0.3
-
-🎲 Simulation:
-
-Monte Carlo
-
+🎲 Monte Carlo Simulation
 
 """
 
@@ -540,7 +514,6 @@ Monte Carlo
             answer
 
         )
-
 
 
 
