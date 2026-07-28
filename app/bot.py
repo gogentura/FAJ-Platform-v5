@@ -1,14 +1,13 @@
 # =====================================================
-# FAJ Platform v7.0.1
+# FAJ Platform v7.0.3
 # app/bot.py
 #
 # Telegram Bot Core
 #
-# Compatible:
-# - FAJCore v7
-# - PostgreSQL Database
-# - Journal v7
-# - Passport Manager v7
+# Stable aiogram 3 routing
+# PostgreSQL
+# Passport Manager
+# FAJ Prediction Engine
 # =====================================================
 import logging
 from aiogram import Bot, Dispatcher
@@ -21,41 +20,25 @@ from app.journal import Journal, clear_journal
 logger = logging.getLogger(__name__)
 
 # =====================================================
-# HANDLERS
+# HANDLERS IMPORTS
 # =====================================================
 from app.handlers.start import cmd_start
 from app.handlers.status import cmd_status
 from app.handlers.health import cmd_health
 from app.handlers.journal import cmd_journal
-from app.handlers.database_check import (
-    database_check
-)
-from app.handlers.load_passports import (
-    cmd_load_passports
-)
+from app.handlers.database_check import database_check
+from app.handlers.load_passports import cmd_load_passports
 from app.handlers.passport import (
     cmd_passport,
     button_passport,
     passport_text_handler
 )
-from app.handlers.show_fixtures import (
-    cmd_show_fixtures
-)
-from app.handlers.load_fixtures import (
-    cmd_load_fixtures
-)
-from app.handlers.fixtures_check import (
-    cmd_fixtures_check
-)
-from app.handlers.update_calendar import (
-    cmd_update_calendar
-)
-from app.handlers.update_results import (
-    cmd_update_results
-)
-from app.handlers.clear_fixtures import (
-    cmd_clear_fixtures
-)
+from app.handlers.show_fixtures import cmd_show_fixtures
+from app.handlers.load_fixtures import cmd_load_fixtures
+from app.handlers.fixtures_check import cmd_fixtures_check
+from app.handlers.update_calendar import cmd_update_calendar
+from app.handlers.update_results import cmd_update_results
+from app.handlers.clear_fixtures import cmd_clear_fixtures
 from app.handlers.faj_predictions import (
     cmd_faj_predictions,
     faj_match_callback
@@ -73,15 +56,11 @@ from app.handlers.predict import (
 # =====================================================
 # KEYBOARDS
 # =====================================================
-from app.keyboards.main import (
-    main_keyboard
-)
-from app.keyboards.admin import (
-    admin_keyboard
-)
+from app.keyboards.main import main_keyboard
+from app.keyboards.admin import admin_keyboard
 
 # =====================================================
-# RUN BOT
+# BOT START
 # =====================================================
 async def run_bot(
     core: FAJCore,
@@ -99,8 +78,9 @@ async def run_bot(
     logger.info(
         "FAJ Bot initializing..."
     )
+
     # =================================================
-    # COMMANDS (ВЫСШИЙ ПРИОРИТЕТ)
+    # COMMANDS
     # =================================================
     dp.message.register(
         cmd_start,
@@ -162,6 +142,7 @@ async def run_bot(
         cmd_clear_fixtures,
         Command("clear_fixtures")
     )
+
     # =================================================
     # FAJ COMMANDS
     # =================================================
@@ -174,6 +155,7 @@ async def run_bot(
         await cmd_faj_predictions(
             message
         )
+
     @dp.message(
         Command("generate_tour")
     )
@@ -183,6 +165,7 @@ async def run_bot(
         await cmd_generate_predictions(
             message
         )
+
     @dp.message(
         Command("generate_predictions")
     )
@@ -192,6 +175,7 @@ async def run_bot(
         await cmd_generate_predictions(
             message
         )
+
     @dp.message(
         Command("clear_journal")
     )
@@ -207,18 +191,19 @@ async def run_bot(
             await message.answer(
                 "❌ Ошибка очистки журнала."
             )
+
     # =================================================
-    # INLINE CALLBACKS
+    # CALLBACKS
     # =================================================
     dp.callback_query.register(
         faj_match_callback
     )
+
     # =================================================
-    # BUTTONS (СРЕДНИЙ ПРИОРИТЕТ)
+    # MAIN USER BUTTONS
     # =================================================
     @dp.message(
-        lambda m:
-        m.text == "📁 Паспорта"
+        lambda m: m.text == "📁 Паспорта"
     )
     async def passports_button(
         message: Message
@@ -226,9 +211,9 @@ async def run_bot(
         await button_passport(
             message
         )
+
     @dp.message(
-        lambda m:
-        m.text == "📊 Статус"
+        lambda m: m.text == "📊 Статус"
     )
     async def status_button(
         message: Message
@@ -236,9 +221,9 @@ async def run_bot(
         await cmd_status(
             message
         )
+
     @dp.message(
-        lambda m:
-        m.text == "📋 Журнал"
+        lambda m: m.text == "📋 Журнал"
     )
     async def journal_button(
         message: Message
@@ -246,9 +231,9 @@ async def run_bot(
         await cmd_journal(
             message
         )
+
     @dp.message(
-        lambda m:
-        m.text == "❤️ Проверка"
+        lambda m: m.text == "❤️ Проверка"
     )
     async def health_button(
         message: Message
@@ -256,9 +241,9 @@ async def run_bot(
         await cmd_health(
             message
         )
+
     @dp.message(
-        lambda m:
-        m.text == "📅 Матчи"
+        lambda m: m.text == "📅 Матчи"
     )
     async def matches_button(
         message: Message
@@ -266,9 +251,9 @@ async def run_bot(
         await cmd_show_fixtures(
             message
         )
+
     @dp.message(
-        lambda m:
-        m.text == "🤖 FAJ прогнозы"
+        lambda m: m.text == "🤖 FAJ прогнозы"
     )
     async def faj_button(
         message: Message
@@ -276,9 +261,9 @@ async def run_bot(
         await cmd_faj_predictions(
             message
         )
+
     @dp.message(
-        lambda m:
-        m.text == "🧠 Мои прогнозы"
+        lambda m: m.text == "🧠 Мои прогнозы"
     )
     async def expert_button(
         message: Message
@@ -286,19 +271,22 @@ async def run_bot(
         await cmd_expert_predictions(
             message
         )
+
     # =================================================
-    # ADMIN BUTTON (СРЕДНИЙ ПРИОРИТЕТ)
+    # ADMIN BUTTONS
     # =================================================
     @dp.message(
-        lambda m:
-        m.text == "⚙️ Админ"
+        lambda m: m.text == "⚙️ Админ"
     )
     async def admin_button(
         message: Message
     ):
+        logger.info(
+            "ADMIN BUTTON PRESSED"
+        )
         await message.answer(
-            """
-⚙️ FAJ Platform v7.0.1
+"""
+⚙️ FAJ Platform v7.0.3
 Админ панель:
 📥 Загрузить паспорта
 🔄 Синхронизировать календарь
@@ -311,9 +299,9 @@ async def run_bot(
 """,
             reply_markup=admin_keyboard()
         )
+
     @dp.message(
-        lambda m:
-        m.text == "📥 Загрузить паспорта"
+        lambda m: m.text == "📥 Загрузить паспорта"
     )
     async def load_passports_button(
         message: Message
@@ -321,9 +309,9 @@ async def run_bot(
         await cmd_load_passports(
             message
         )
+
     @dp.message(
-        lambda m:
-        m.text == "🔄 Синхронизировать календарь"
+        lambda m: m.text == "🔄 Синхронизировать календарь"
     )
     async def update_calendar_button(
         message: Message
@@ -331,9 +319,9 @@ async def run_bot(
         await cmd_update_calendar(
             message
         )
+
     @dp.message(
-        lambda m:
-        m.text == "🔄 Обновить результаты"
+        lambda m: m.text == "🔄 Обновить результаты"
     )
     async def update_results_button(
         message: Message
@@ -341,9 +329,9 @@ async def run_bot(
         await cmd_update_results(
             message
         )
+
     @dp.message(
-        lambda m:
-        m.text == "🔍 Проверить календарь"
+        lambda m: m.text == "🔍 Проверить календарь"
     )
     async def fixtures_check_button(
         message: Message
@@ -351,9 +339,9 @@ async def run_bot(
         await cmd_fixtures_check(
             message
         )
+
     @dp.message(
-        lambda m:
-        m.text == "🗄 Проверка базы"
+        lambda m: m.text == "🗄 Проверка базы"
     )
     async def database_button(
         message: Message
@@ -361,9 +349,9 @@ async def run_bot(
         await database_check(
             message
         )
+
     @dp.message(
-        lambda m:
-        m.text == "🚀 Создать прогнозы тура"
+        lambda m: m.text == "🚀 Создать прогнозы тура"
     )
     async def create_predictions_button(
         message: Message
@@ -371,9 +359,9 @@ async def run_bot(
         await cmd_generate_predictions(
             message
         )
+
     @dp.message(
-        lambda m:
-        m.text == "🗑 Очистить календарь"
+        lambda m: m.text == "🗑 Очистить календарь"
     )
     async def clear_calendar_button(
         message: Message
@@ -381,8 +369,9 @@ async def run_bot(
         await cmd_clear_fixtures(
             message
         )
+
     # =================================================
-    # MATCH PREDICTION (НИЗКИЙ ПРИОРИТЕТ)
+    # MATCH PREDICTION FILTER
     # =================================================
     def is_match_prediction(
         message: Message
@@ -390,11 +379,52 @@ async def run_bot(
         if not message.text:
             return False
         text = message.text.strip()
-        # команды
         if text.startswith("/"):
             return False
-        # кнопки FAJ
         blocked = [
+            "📁 Паспорта",
+            "📊 Статус",
+            "📋 Журнал",
+            "❤️ Проверка",
+            "📅 Матчи",
+            "🤖 FAJ прогнозы",
+            "🧠 Мои прогнозы",
+            "⚙️ Админ",
+            "📥 Загрузить паспорта",
+            "🔄 Синхронизировать календарь",
+            "🔄 Обновить результаты",
+            "🔍 Проверить календарь",
+            "🗄 Проверка базы",
+            "🚀 Создать прогнозы тура",
+            "🗑 Очистить календарь"
+        ]
+        if text in blocked:
+            return False
+        words = text.split()
+        # прогноз только две команды
+        if len(words) < 2:
+            return False
+        return True
+
+    dp.message.register(
+        handle_predict,
+        is_match_prediction
+    )
+
+    # =================================================
+    # PASSPORT TEXT
+    # ТОЛЬКО ОДНО СЛОВО
+    # =================================================
+    def is_passport_text(
+        message: Message
+    ):
+        if not message.text:
+            return False
+        text = message.text.strip()
+        if text.startswith("/"):
+            return False
+        # кнопки не трогаем
+        buttons = [
             "📁 Паспорта",
             "📊 Статус",
             "📋 Журнал",
@@ -404,64 +434,57 @@ async def run_bot(
             "🧠 Мои прогнозы",
             "⚙️ Админ"
         ]
-        if text in blocked:
+        if text in buttons:
             return False
-        # админские кнопки
-        if text.startswith("📥"):
-            return False
-        if text.startswith("🔄"):
-            return False
-        if text.startswith("🔍"):
-            return False
-        if text.startswith("🗑"):
-            return False
-        words = text.split()
-        # прогноз только от двух слов
-        if len(words) < 2:
+        # паспорт команды = одно слово
+        if len(text.split()) != 1:
             return False
         return True
+
     dp.message.register(
-        handle_predict,
-        is_match_prediction
+        passport_text_handler,
+        is_passport_text
     )
+
     # =================================================
-    # PASSPORT TEXT (САМЫЙ НИЗКИЙ ПРИОРИТЕТ)
-    # =================================================
-    dp.message.register(
-        passport_text_handler
-    )
-    # =================================================
-    # DEFAULT HANDLER (ПОСЛЕДНИЙ)
+    # DEFAULT HANDLER
     # =================================================
     @dp.message()
     async def default_handler(
         message: Message
     ):
+        logger.info(
+            "DEFAULT HANDLER: %s",
+            message.text
+        )
         await message.answer(
-            """
-⚽ FAJ Platform v7.0.1
-📊 Статус        📈 Прогноз
-📁 Паспорта      📅 Матчи
-🤖 FAJ прогнозы  🧠 Мои прогнозы
-🏆 Турниры       📋 Журнал
-⚙️ Админ         ❤️ Проверка
-FAJ анализирует:
+"""
+⚽ FAJ Platform v7.0.3
+📊 Статус
+📁 Паспорта
+📅 Матчи
+🤖 FAJ прогнозы
+🧠 Мои прогнозы
+⚙️ Админ
+FAJ Engine:
 • Team Passport
 • FAJ Rating
 • xG Engine
 • Monte Carlo
-• вероятности
-• точные счета
-• риск
-• журнал обучения
+• Risk Engine
+• Journal Learning
 """,
             reply_markup=main_keyboard()
         )
+
     # =================================================
     # START
     # =================================================
     logger.info(
-        "🚀 FAJ Platform v7.0.1 started"
+        "Handlers registered successfully"
+    )
+    logger.info(
+        "🚀 FAJ Platform v7.0.3 started"
     )
     await dp.start_polling(
         bot
