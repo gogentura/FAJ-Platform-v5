@@ -35,7 +35,8 @@ from app.handlers.load_passports import (
 )
 from app.handlers.passport import (
     cmd_passport,
-    button_passport
+    button_passport,
+    passport_text_handler
 )
 from app.handlers.show_fixtures import (
     cmd_show_fixtures
@@ -220,6 +221,12 @@ async def run_bot(
     # =================================================
     dp.callback_query.register(
         faj_match_callback
+    )
+    # =================================================
+    # TEXT HANDLERS
+    # =================================================
+    dp.message.register(
+        passport_text_handler
     )
     # =================================================
     # BUTTONS
