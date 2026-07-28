@@ -1,14 +1,14 @@
 # =====================================================
-# FAJ Platform v7.0.4
+# FAJ Platform v7.0.3
 # app/passport_manager.py
 #
 # PostgreSQL Passport Manager
 #
 # Compatible:
 # - FAJCore
-# - Prediction Pipeline
-# - Passport Handler
-# - Load Passports
+# - passport.py
+# - load_passports.py
+# - PostgreSQL passports table
 # =====================================================
 
 
@@ -18,6 +18,11 @@ from app.database import get_db
 
 
 logger = logging.getLogger(__name__)
+
+
+
+MODEL_VERSION = "FAJ v7.0.3"
+
 
 
 # =====================================================
@@ -81,7 +86,7 @@ TEAM_ALIASES = {
 
 
 # =====================================================
-# ALIAS
+# NORMALIZE TEAM
 # =====================================================
 
 
@@ -90,7 +95,9 @@ def get_team_by_alias(team):
     if not team:
         return None
 
+
     clean = team.strip()
+
 
     return TEAM_ALIASES.get(
         clean,
@@ -116,117 +123,9 @@ def safe_float(
 
         return float(value)
 
-    except Exception:
+    except:
 
         return default
-
-
-
-# =====================================================
-# NORMALIZATION
-# =====================================================
-
-
-def normalize_passport(
-        passport
-):
-
-    if not passport:
-        return None
-
-
-    passport = dict(passport)
-
-
-
-    # FORM
-
-    passport["form"] = safe_float(
-
-        passport.get(
-            "form",
-            passport.get(
-                "form_index",
-                70
-            )
-        ),
-
-        70
-
-    )
-
-
-
-    # XG FOR
-
-    passport["xg_for"] = safe_float(
-
-        passport.get(
-            "xg_for",
-            passport.get(
-                "historical_xg_value",
-                passport.get(
-                    "avg_goals_value",
-                    1.3
-                )
-            )
-        ),
-
-        1.3
-
-    )
-
-
-
-    # XG AGAINST
-
-    passport["xg_against"] = safe_float(
-
-        passport.get(
-            "xg_against",
-            passport.get(
-                "avg_goals_conceded_value",
-                1.3
-            )
-        ),
-
-        1.3
-
-    )
-
-
-
-    # DEFAULTS
-
-    passport["attack"] = safe_float(
-        passport.get(
-            "attack",
-            70
-        ),
-        70
-    )
-
-
-    passport["defense"] = safe_float(
-        passport.get(
-            "defense",
-            70
-        ),
-        70
-    )
-
-
-    passport["control"] = safe_float(
-        passport.get(
-            "control",
-            70
-        ),
-        70
-    )
-
-
-
-    return passport
 
 
 
@@ -240,6 +139,7 @@ def calculate_faj_rating(
 ):
 
     if not passport:
+
         return 0
 
 
@@ -288,8 +188,11 @@ def calculate_faj_rating(
 
         safe_float(
             passport.get(
-                "form",
-                70
+                "form_index",
+                passport.get(
+                    "form",
+                    70
+                )
             )
         ) * 0.15
 
@@ -304,7 +207,7 @@ def calculate_faj_rating(
 
 
 # =====================================================
-# SAVE
+# SAVE PASSPORT
 # =====================================================
 
 
@@ -313,7 +216,9 @@ def save_passport(
         passport
 ):
 
+
     conn = get_db()
+
     cur = conn.cursor()
 
 
@@ -322,14 +227,13 @@ def save_passport(
     )
 
 
-    passport = normalize_passport(
-        passport
-    )
+    passport["team"] = real_team
 
 
     rating = calculate_faj_rating(
         passport
     )
+
 
 
     cur.execute(
@@ -393,12 +297,7 @@ def save_passport(
         )
 
 
-        ON CONFLICT
-        (
-            team,
-            league,
-            season
-        )
+        ON CONFLICT (team)
 
         DO UPDATE SET
 
@@ -456,22 +355,28 @@ def save_passport(
                 "2026/27"
             ),
 
+
             passport.get(
-                "attack"
+                "attack",
+                70
             ),
 
             passport.get(
-                "defense"
+                "defense",
+                70
             ),
 
             passport.get(
-                "control"
+                "control",
+                70
             ),
+
 
             passport.get(
                 "efficiency",
                 70
             ),
+
 
             passport.get(
                 "mentality",
@@ -493,6 +398,7 @@ def save_passport(
                 70
             ),
 
+
             passport.get(
                 "injury_index",
                 0
@@ -508,19 +414,19 @@ def save_passport(
                 0
             ),
 
+
             passport.get(
-                "xg_for",
+                "historical_xg_value",
                 1.3
             ),
 
-            rating,
 
             rating,
 
-            passport.get(
-                "version",
-                "FAJ v7.0.4"
-            )
+            rating,
+
+
+            MODEL_VERSION
 
         )
 
@@ -551,6 +457,7 @@ def load_passport(
         team
 ):
 
+
     real_team = get_team_by_alias(
         team
     )
@@ -569,8 +476,6 @@ def load_passport(
         FROM passports
 
         WHERE team=%s
-
-        AND season='2026/27'
 
         LIMIT 1
 
@@ -596,14 +501,30 @@ def load_passport(
 
 
 
-    passport = normalize_passport(
-        row
-    )
+    passport = dict(row)
+
+
+
+    # FIX VERSION
+
+    if (
+
+        not passport.get("version")
+
+        or str(
+            passport.get("version")
+        ).isdigit()
+
+    ):
+
+        passport["version"] = MODEL_VERSION
+
 
 
     passport["faj_rating"] = calculate_faj_rating(
         passport
     )
+
 
 
     return passport
@@ -618,6 +539,7 @@ def load_passport(
 def load_all_passports(
         league="RPL"
 ):
+
 
     conn = get_db()
 
@@ -650,9 +572,10 @@ def load_all_passports(
     conn.close()
 
 
+
     return [
 
-        normalize_passport(row)
+        dict(row)
 
         for row in rows
 
@@ -667,7 +590,9 @@ def load_all_passports(
 
 def get_passport(team):
 
-    return load_passport(team)
+    return load_passport(
+        team
+    )
 
 
 
@@ -683,9 +608,13 @@ def update_passport(
 
 
 
-def passport_exists(team):
+def passport_exists(
+        team
+):
 
-    return load_passport(team) is not None
+    return load_passport(
+        team
+    ) is not None
 
 
 
@@ -693,13 +622,16 @@ def list_teams(
         league="RPL"
 ):
 
+    passports = load_all_passports(
+        league
+    )
+
+
     return [
 
         p["team"]
 
-        for p in load_all_passports(
-            league
-        )
+        for p in passports
 
     ]
 
