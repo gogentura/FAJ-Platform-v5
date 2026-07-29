@@ -1,0 +1,9 @@
+id,cycle_id,date,module,parameter,old_value,new_value,change_type,reason,source
+1,001,2026-07-29,FORM_ENGINE,form_weight,0.60,0.75,INCREASE,Форма команд сильнее повлияла на результаты первого тура,FAJ_JOURNAL
+2,001,2026-07-29,HOME_ADVANTAGE,home_factor,1.15,1.08,DECREASE,Домашнее преимущество оказалось завышенным,FAJ_JOURNAL
+3,001,2026-07-29,EVENT_ENGINE,red_card_xg,-, -0.30,ADD,Добавлен учет игры в меньшинстве после удалений,FAJ_JOURNAL
+4,001,2026-07-29,UNCERTAINTY_ENGINE,uncertainty_threshold,-,30,ADD,Команды с высокой неопределенностью требуют снижения доверия к паспорту,FAJ_JOURNAL
+5,001,2026-07-29,GOAL_ENGINE,fast_goal_factor,-,ENABLED,ADD,Добавлена реакция команды после раннего гола,FAJ_JOURNAL
+6,001,2026-07-29,DRAW_ENGINE,draw_weight,HIGH,LOW,DECREASE,Модель переоценила количество ничьих в первом туре,FAJ_JOURNAL
+7,001,2026-07-29,SCORE_ENGINE,high_margin_factor,LOW,HIGH,INCREASE,Недооценены крупные победы Зенита и Спартака,FAJ_JOURNAL
+8,001,2026-07-29,DISCIPLINE_ENGINE,match_events,DISABLED,ENABLED,ADD,Удаления существенно изменили сценарии матчей,FAJ_JOURNAL
