@@ -1,0 +1,25 @@
+id,module,parameter,value,unit,version,date,description
+1,CORE,league_mean_xg,1.35,xG,FAJ_9.0,2026-07-29,Среднее значение голов в лиге
+2,CORE,max_goals,8,goals,FAJ_9.0,2026-07-29,Максимум голов для модели Пуассона
+3,CORE,simulation_count,10000,iterations,FAJ_9.0,2026-07-29,Количество симуляций Monte Carlo
+4,TEAM,attack_weight,0.18,weight,FAJ_9.0,2026-07-29,Вес атакующей силы
+5,TEAM,defense_weight,0.18,weight,FAJ_9.0,2026-07-29,Вес обороны
+6,TEAM,control_weight,0.15,weight,FAJ_9.0,2026-07-29,Вес контроля мяча
+7,TEAM,efficiency_weight,0.12,weight,FAJ_9.0,2026-07-29,Вес реализации моментов
+8,TEAM,mentality_weight,0.10,weight,FAJ_9.0,2026-07-29,Вес психологии и характера
+9,TEAM,tempo_weight,0.05,weight,FAJ_9.0,2026-07-29,Вес темпа игры
+10,TEAM,press_weight,0.05,weight,FAJ_9.0,2026-07-29,Вес прессинга
+11,TEAM,transition_weight,0.05,weight,FAJ_9.0,2026-07-29,Вес переходных фаз
+12,TEAM,coach_weight,0.04,weight,FAJ_9.0,2026-07-29,Вес тренера
+13,TEAM,form_weight,0.75,weight,FAJ_9.0,2026-07-29,Обновлённый вес формы после 1 тура
+14,PLAYER,player_weight,0.20,weight,FAJ_9.0,2026-07-29,Вес влияния состава
+15,PLAYER,team_weight,0.80,weight,FAJ_9.0,2026-07-29,Вес командной структуры
+16,MATCH,home_advantage,1.08,multiplier,FAJ_9.0,2026-07-29,Сниженное домашнее преимущество после калибровки
+17,EVENT,red_card_xg,-0.30,xG,FAJ_9.0,2026-07-29,Штраф за игру в меньшинстве
+18,EVENT,fast_goal_factor,1.10,multiplier,FAJ_9.0,2026-07-29,Влияние раннего гола
+19,UNCERTAINTY,threshold,30,index,FAJ_9.0,2026-07-29,Порог высокой неопределённости
+20,UNCERTAINTY,penalty,0.10,multiplier,FAJ_9.0,2026-07-29,Снижение доверия к нестабильным командам
+21,DRAW,draw_weight,0.85,multiplier,FAJ_9.0,2026-07-29,Снижение склонности модели к ничьим
+22,SCORE,high_margin_factor,1.15,multiplier,FAJ_9.0,2026-07-29,Усиление вероятности крупных побед фаворитов
+23,EXPERT,expert_layer_weight,0.20,weight,FAJ_9.0,2026-07-29,Вес экспертного мнения
+24,MODEL,version,9.0,text,FAJ_9.0,2026-07-29,Текущая версия аналитического движка
