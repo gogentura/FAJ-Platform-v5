@@ -1,0 +1,11 @@
+id,table_name,purpose,key_fields,update_frequency,version
+1,team_passports_v40,Постоянный профиль команды,team_attack_defense_control_mentality,Перед сезоном и трансферами,FAJ_9.0
+2,team_form_rpl_v9,Текущая форма команд,team_round_form_change,После каждого тура,FAJ_9.0
+3,rpl_round1_predictions,История прогнозов,match_model_forecast_result,Перед матчем,FAJ_9.0
+4,rpl_round1_results,Фактические результаты матчей,match_score_result_events,После матча,FAJ_9.0
+5,rpl_round1_match_stats,Статистика игры,xG_shots_possession_cards,После получения протокола,FAJ_9.0
+6,faj_learning_cycle_001,Циклы обучения,cycle_error_analysis,После каждого тура,FAJ_9.0
+7,faj_calibration_v9,Настройки после ошибок,module_parameter_change,После анализа ошибок,FAJ_9.0
+8,faj_model_config_v9,Текущие веса модели,parameter_value_weight,При обновлении модели,FAJ_9.0
+9,faj_expert_layer_v9,Мнение аналитика,expert_factor_impact,Перед матчем,FAJ_9.0
+10,faj_journal_v9,История решений машины,decision_error_solution,Постоянно,FAJ_9.0
