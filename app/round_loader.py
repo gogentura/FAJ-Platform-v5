@@ -3,15 +3,9 @@
 """
 FAJ Platform 9.0
 
-Round Loader
+Smart Round Loader
 
-Загрузчик данных тура.
-
-Объединяет:
-- прогнозы FAJ
-- реальные результаты
-- статистику матчей
-
+Адаптивный загрузчик туров.
 """
 
 from pathlib import Path
@@ -20,6 +14,7 @@ import pandas as pd
 
 class RoundLoader:
 
+
     def __init__(self):
 
         self.data_path = Path(
@@ -27,130 +22,201 @@ class RoundLoader:
         )
 
 
-    # -------------------------------------
+    # ---------------------------------
 
     def load_csv(self, filename):
 
         file = self.data_path / filename
 
+
         if not file.exists():
 
             raise FileNotFoundError(
-                f"Файл не найден: {file}"
+                f"Нет файла: {file}"
             )
 
+
         return pd.read_csv(
-            file
+            file,
+            encoding="utf-8-sig"
         )
 
 
-    # -------------------------------------
+    # ---------------------------------
+
+    def find_column(
+        self,
+        df,
+        variants
+    ):
+
+        for col in variants:
+
+            if col in df.columns:
+
+                return col
+
+
+        return None
+
+
+    # ---------------------------------
+
+    def normalize_team(
+        self,
+        name
+    ):
+
+        if pd.isna(name):
+
+            return None
+
+
+        name = str(name).strip()
+
+
+        replacements = {
+
+            "ПФК ЦСКА":
+                "ЦСКА",
+
+            "ЦСКА Москва":
+                "ЦСКА",
+
+            "Зенит Санкт-Петербург":
+                "Зенит",
+
+            "ФК Краснодар":
+                "Краснодар",
+
+            "Краснодар ФК":
+                "Краснодар",
+
+            "Динамо Москва":
+                "Динамо М",
+
+            "Ахмат Грозный":
+                "Ахмат",
+
+            "Крылья Советов Самара":
+                "Крылья Советов",
+
+        }
+
+
+        return replacements.get(
+            name,
+            name
+        )
+
+
+    # ---------------------------------
 
     def load_round(
         self,
         round_number=1
     ):
 
-        results_file = (
-            f"rpl_round{round_number}_results.csv"
-        )
-
-        predictions_file = (
-            f"rpl_round{round_number}_predictions.csv"
-        )
-
-        stats_file = (
-            f"rpl_round{round_number}_match_stats.csv"
-        )
-
 
         results = self.load_csv(
-            results_file
+            f"rpl_round{round_number}_results.csv"
         )
 
 
         predictions = self.load_csv(
-            predictions_file
+            f"rpl_round{round_number}_predictions.csv"
         )
 
 
         try:
 
             stats = self.load_csv(
-                stats_file
+                f"rpl_round{round_number}_match_stats.csv"
             )
 
-        except FileNotFoundError:
+        except:
+
 
             stats = pd.DataFrame()
 
 
 
+        # ищем колонки
+
+
+        home_col = self.find_column(
+            results,
+            [
+                "home_team",
+                "home",
+                "Хозяева",
+                "Домашняя команда"
+            ]
+        )
+
+
+        away_col = self.find_column(
+            results,
+            [
+                "away_team",
+                "away",
+                "Гости",
+                "Гостевая команда"
+            ]
+        )
+
+
+        result_col = self.find_column(
+            results,
+            [
+                "result",
+                "winner",
+                "Исход"
+            ]
+        )
+
+
+        home_score_col = self.find_column(
+            results,
+            [
+                "home_score",
+                "score_home",
+                "Хозяева голы"
+            ]
+        )
+
+
+        away_score_col = self.find_column(
+            results,
+            [
+                "away_score",
+                "score_away",
+                "Гости голы"
+            ]
+        )
+
+
+        if not home_col or not away_col:
+
+            raise Exception(
+                f"Не найдены команды. Колонки: {list(results.columns)}"
+            )
+
+
         matches = []
 
 
-        for _, result in results.iterrows():
+        for _, row in results.iterrows():
 
 
-            home = result.get(
-                "home_team"
-            )
-
-            away = result.get(
-                "away_team"
+            home = self.normalize_team(
+                row[home_col]
             )
 
 
-            prediction_row = predictions[
-
-                (
-                    predictions["home_team"]
-                    == home
-                )
-                &
-                (
-                    predictions["away_team"]
-                    == away
-                )
-
-            ]
-
-
-            prediction = None
-
-
-            if len(prediction_row) > 0:
-
-                prediction = prediction_row.iloc[0]
-
-
-            match_stats = None
-
-
-            if not stats.empty:
-
-
-                stats_row = stats[
-
-                    (
-                        stats["home_team"]
-                        == home
-                    )
-                    &
-                    (
-                        stats["away_team"]
-                        == away
-                    )
-
-                ]
-
-
-                if len(stats_row) > 0:
-
-                    match_stats = (
-                        stats_row.iloc[0]
-                    )
-
+            away = self.normalize_team(
+                row[away_col]
+            )
 
 
             matches.append(
@@ -161,39 +227,34 @@ class RoundLoader:
 
                     "away": away,
 
-                    "result": result.get(
-                        "result"
-                    ),
+                    "result":
+                        row[result_col]
+                        if result_col
+                        else None,
 
-                    "home_score": result.get(
-                        "home_score"
-                    ),
 
-                    "away_score": result.get(
-                        "away_score"
-                    ),
+                    "home_score":
+                        row[home_score_col]
+                        if home_score_col
+                        else None,
 
-                    "prediction": (
-                        prediction.get(
-                            "prediction"
-                        )
-                        if prediction is not None
-                        else None
-                    ),
 
-                    "predicted_score": (
-                        prediction.get(
-                            "score_prediction"
-                        )
-                        if prediction is not None
-                        else None
-                    ),
+                    "away_score":
+                        row[away_score_col]
+                        if away_score_col
+                        else None,
 
-                    "stats": (
-                        match_stats.to_dict()
-                        if match_stats is not None
-                        else {}
-                    )
+
+                    "prediction":
+                        None,
+
+
+                    "predicted_score":
+                        None,
+
+
+                    "stats":
+                        {}
 
                 }
 
@@ -204,29 +265,25 @@ class RoundLoader:
 
 
 
-# -------------------------------------
-
 if __name__ == "__main__":
 
 
     loader = RoundLoader()
 
 
-    data = loader.load_round(
-        1
-    )
+    matches = loader.load_round(1)
 
 
     print(
-        f"Загружено матчей: {len(data)}"
+        "Матчей:",
+        len(matches)
     )
 
 
-    for match in data:
+    for m in matches:
 
         print(
-            match["home"],
+            m["home"],
             "-",
-            match["away"],
-            match["result"]
+            m["away"]
         )
