@@ -2,11 +2,11 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ Platform v9.0
+FAJ Platform v9.3
 
-FAJ Core v9.2
+FAJ Core
 
-Главный управляющий модуль.
+Главный управляющий модуль обучения.
 
 Цикл:
 
@@ -18,13 +18,11 @@ RoundAnalyzer
  ↓
 Memory Engine
  ↓
-Passport History
+Passport Update
  ↓
-Калибровка FAJ
-
+History
 
 """
-
 
 from datetime import datetime
 
@@ -40,7 +38,7 @@ class FAJCore:
 
     def __init__(self):
 
-        self.version = "9.2"
+        self.version = "9.3"
 
 
         self.memory = MemoryEngine()
@@ -49,11 +47,12 @@ class FAJCore:
         self.passport = PassportUpdater()
 
 
-        self.round_analyzer = RoundAnalyzer()
+        self.analyzer = RoundAnalyzer()
 
 
 
-    # ==================================================
+    # =====================================
+
 
     def process_round(
         self,
@@ -65,172 +64,118 @@ class FAJCore:
         print()
 
         print("==============================")
-        print(" FAJ ROUND PROCESSING ")
+
+        print(" FAJ CORE ROUND PROCESSING ")
+
         print("==============================")
 
         print()
 
 
         print(
-            f"Обработка тура: {round_number}"
+            f"Тур: {round_number}"
         )
 
 
         print(
-            f"Матчей получено: {len(results)}"
+            f"Матчей: {len(results)}"
         )
 
 
-        # 1. Анализ тура
 
-        report = self.round_analyzer.analyze_round(
-            round_number,
+        # 1.
+        # Анализ тура
+
+
+        analysis = self.analyzer.analyze_round(
             results
         )
 
 
-        print()
-
 
         print(
-            "FAJ ROUND REPORT"
-        )
-
-
-        print(
-            f"Правильные исходы: "
-            f"{report['correct_results']}"
-        )
-
-
-        print(
-            f"Ошибки: "
-            f"{report['wrong_results']}"
-        )
-
-
-        print(
-            f"Ошибки счёта: "
-            f"{report['score_errors']}"
-        )
-
-
-        print()
-
-
-
-        # 2. Запись памяти
-
-        self.save_round_memory(
-            report
+            f"Создано записей памяти: {len(analysis)}"
         )
 
 
 
-        # 3. Новая версия
+        # 2.
+        # Запись памяти
 
 
-        new_version = self.create_version(
+        self.save_memory(
+            analysis
+        )
+
+
+
+        # 3.
+        # История паспортов
+
+
+        version = self.create_version(
             round_number
         )
 
 
-
-        # 4. История паспортов
-
-
         self.passport.save_history(
 
-            new_version,
+            version,
 
-            f"После обработки тура {round_number}"
+            f"После анализа тура {round_number}"
 
         )
 
 
 
         print()
+
 
         print(
-            f"FAJ обновлён до версии {new_version}"
+            f"FAJ обновлен: {version}"
         )
+
 
         print()
 
 
 
-        return report
+    # =====================================
 
 
-
-    # ==================================================
-
-    def save_round_memory(
+    def save_memory(
         self,
-        report
+        records
     ):
 
 
-        for match in report["matches"]:
+        for item in records:
 
 
             self.memory.add_memory(
 
-
                 version=self.version,
 
+                object_type=item["type"],
 
-                object_type="MATCH",
+                object_name=item["object"],
 
+                category=item["category"],
 
-                object_name=(
+                observation=item["observation"],
 
-                    f"{match['home']} - "
-                    f"{match['away']}"
+                conclusion=item["conclusion"],
 
-                ),
+                action=item["action"],
 
-
-                category=match["error_type"],
-
-
-
-                observation=(
-
-                    f"FAJ: {match['prediction']} | "
-
-                    f"Факт: {match['fact']} | "
-
-                    f"Счёт FAJ: "
-                    f"{match['predicted_score']} | "
-
-                    f"Факт: "
-                    f"{match['fact_score']}"
-
-                ),
-
-
-
-                conclusion=match["conclusion"],
-
-
-
-                action=(
-
-                    "Использовать данные "
-                    "для будущей калибровки"
-
-                ),
-
-
-
-                confidence=0.8
+                confidence=0.9
 
             )
 
 
 
-    # ==================================================
+    # =====================================
+
 
     def create_version(
         self,
@@ -245,14 +190,14 @@ class FAJCore:
 
         return (
 
-            f"FAJ_9.{round_number}_"
-            f"{date}"
+            f"FAJ_{round_number}.{date}"
 
         )
 
 
 
-    # ==================================================
+    # =====================================
+
 
     def status(self):
 
@@ -265,23 +210,20 @@ class FAJCore:
 
 
         print(
-            f"Версия: {self.version}"
+            "Версия:",
+            self.version
         )
 
 
         print(
-            "Память:",
-            len(
-                self.memory.memory
-            )
+            "Memory:",
+            len(self.memory.memory)
         )
 
 
         print(
-            "Команд:",
-            len(
-                self.passport.passports
-            )
+            "Teams:",
+            len(self.passport.passports)
         )
 
 
@@ -293,7 +235,7 @@ class FAJCore:
 
 
 
-# ==================================================
+# =====================================
 
 
 if __name__ == "__main__":
@@ -306,7 +248,7 @@ if __name__ == "__main__":
 
 
 
-    test_results = [
+    test = [
 
         {
 
@@ -319,17 +261,14 @@ if __name__ == "__main__":
             "prediction":
             "X",
 
-            "result":
+            "fact_result":
             "P1",
 
-            "predicted_score":
-            "1:1",
+            "fact_score":
+            "2:1",
 
-            "home_score":
-            2,
-
-            "away_score":
-            1
+            "notes":
+            "ЦСКА победил"
 
         }
 
@@ -339,5 +278,5 @@ if __name__ == "__main__":
 
     faj.process_round(
         1,
-        test_results
+        test
     )
