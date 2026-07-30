@@ -6,21 +6,22 @@ FAJ Platform v9.2
 
 Memory Engine
 
-Назначение:
+Adaptive Learning Core
+
+Функции:
 
 - хранение опыта FAJ
 - защита от дублей
-- поиск повторяющихся ошибок
-- подготовка Learning Cycle
-
+- группировка ошибок
+- анализ повторяемости
+- подготовка данных для Calibration Engine
 
 """
 
 
 from pathlib import Path
-import pandas as pd
 from datetime import datetime
-import hashlib
+import pandas as pd
 
 
 
@@ -38,107 +39,39 @@ class MemoryEngine:
         self.columns = [
 
             "id",
-
             "date",
-
             "version",
-
+            "cycle",
             "object_type",
-
             "object_name",
-
             "category",
-
             "observation",
-
             "conclusion",
-
             "action",
-
             "status",
-
             "confidence"
 
         ]
 
 
-
         if self.memory_file.exists():
 
-
             self.memory = pd.read_csv(
-
                 self.memory_file,
-
                 encoding="utf-8-sig"
-
             )
-
-
-            # восстановление старых файлов
-
-
-            for col in self.columns:
-
-
-                if col not in self.memory.columns:
-
-                    self.memory[col] = ""
-
 
 
         else:
 
 
             self.memory = pd.DataFrame(
-
                 columns=self.columns
-
             )
 
 
 
-        self.memory = self.cleanup_duplicates()
-
-
-
-    # =====================================
-
-
-    def generate_id(
-        self,
-        row
-    ):
-
-
-        text = (
-
-            str(row["object_type"])
-
-            +
-
-            str(row["object_name"])
-
-            +
-
-            str(row["category"])
-
-            +
-
-            str(row["observation"])
-
-        )
-
-
-        return hashlib.md5(
-
-            text.encode("utf-8")
-
-        ).hexdigest()
-
-
-
-    # =====================================
+    # =================================
 
 
     def save(self):
@@ -156,7 +89,34 @@ class MemoryEngine:
 
 
 
-    # =====================================
+    # =================================
+
+
+    def exists(
+        self,
+        observation
+    ):
+
+
+        if len(self.memory)==0:
+
+            return False
+
+
+        result = self.memory[
+
+            self.memory["observation"]
+            ==
+            observation
+
+        ]
+
+
+        return len(result) > 0
+
+
+
+    # =================================
 
 
     def add_memory(
@@ -177,102 +137,85 @@ class MemoryEngine:
 
         action,
 
-        confidence=1.0
+        confidence=0.8,
+
+        cycle="LEARNING"
 
     ):
+
+
+        # защита от дублей
+
+
+        if self.exists(
+            observation
+        ):
+
+            return False
+
+
+
+        new_id = (
+
+            len(self.memory)
+
+        )
+
 
 
         row = {
 
 
-            "date":
+            "id":
+            new_id,
 
-                datetime.now().strftime(
-                    "%Y-%m-%d"
-                ),
+
+            "date":
+            datetime.now().strftime(
+                "%Y-%m-%d"
+            ),
 
 
             "version":
+            version,
 
-                version,
+
+            "cycle":
+            cycle,
 
 
             "object_type":
-
-                object_type,
+            object_type,
 
 
             "object_name":
-
-                object_name,
+            object_name,
 
 
             "category":
-
-                category,
+            category,
 
 
             "observation":
-
-                observation,
+            observation,
 
 
             "conclusion":
-
-                conclusion,
+            conclusion,
 
 
             "action":
-
-                action,
+            action,
 
 
             "status":
-
-                "OPEN",
+            "OPEN",
 
 
             "confidence":
-
-                confidence
+            confidence
 
         }
-
-
-
-        row["id"] = self.generate_id(
-            row
-        )
-
-
-
-        # ===========================
-        # антидубликат
-
-
-        exists = self.memory[
-
-            self.memory["id"]
-
-            ==
-
-            row["id"]
-
-        ]
-
-
-
-        if len(exists) > 0:
-
-
-            print(
-
-                "FAJ MEMORY: duplicate skipped"
-
-            )
-
-
-            return False
 
 
 
@@ -293,7 +236,6 @@ class MemoryEngine:
         )
 
 
-
         self.save()
 
 
@@ -301,78 +243,7 @@ class MemoryEngine:
 
 
 
-    # =====================================
-
-
-    def cleanup_duplicates(self):
-
-
-        if len(self.memory) == 0:
-
-
-            return self.memory
-
-
-
-        before = len(
-            self.memory
-        )
-
-
-
-        if "id" not in self.memory.columns:
-
-
-            self.memory["id"] = ""
-
-
-
-        self.memory["id"] = self.memory.apply(
-
-            self.generate_id,
-
-            axis=1
-
-        )
-
-
-
-        self.memory = self.memory.drop_duplicates(
-
-            subset=["id"],
-
-            keep="first"
-
-        )
-
-
-
-        after = len(
-            self.memory
-        )
-
-
-
-        if before != after:
-
-
-            print(
-
-                f"FAJ MEMORY CLEANUP: "
-                f"{before-after} duplicates removed"
-
-            )
-
-
-            self.save()
-
-
-
-        return self.memory
-
-
-
-    # =====================================
+    # =================================
 
 
     def get_open_memories(self):
@@ -381,16 +252,32 @@ class MemoryEngine:
         return self.memory[
 
             self.memory["status"]
-
             ==
-
             "OPEN"
 
         ]
 
 
 
-    # =====================================
+    # =================================
+
+
+    def get_model_errors(self):
+
+
+        return self.memory[
+
+            self.memory["category"]
+            .astype(str)
+            .str.contains(
+                "Error"
+            )
+
+        ]
+
+
+
+    # =================================
 
 
     def get_team_memory(
@@ -402,52 +289,56 @@ class MemoryEngine:
         return self.memory[
 
             self.memory["object_name"]
-
             ==
-
             team
 
         ]
 
 
 
-    # =====================================
+    # =================================
 
 
-    def get_model_memory(self):
+    def get_learning_summary(self):
 
 
-        return self.memory[
+        if len(self.memory)==0:
 
-            self.memory["object_type"]
-
-            ==
-
-            "MODEL"
-
-        ]
+            return {}
 
 
 
-    # =====================================
+        summary = {
 
 
-    def get_system_memory(self):
+            "total":
+
+            len(
+                self.memory
+            ),
 
 
-        return self.memory[
+            "open":
 
-            self.memory["object_type"]
-
-            ==
-
-            "SYSTEM"
-
-        ]
+            len(
+                self.get_open_memories()
+            ),
 
 
+            "model_errors":
 
-    # =====================================
+            len(
+                self.get_model_errors()
+            )
+
+        }
+
+
+        return summary
+
+
+
+    # =================================
 
 
     def apply_memory(
@@ -470,71 +361,77 @@ class MemoryEngine:
 
 
 
-    # =====================================
+    # =================================
+
+
+    def clear_old_duplicates(self):
+
+
+        if len(self.memory)==0:
+
+            return
+
+
+
+        self.memory = self.memory.drop_duplicates(
+
+            subset=[
+
+                "observation"
+
+            ]
+
+        )
+
+
+
+        self.save()
+
+
+
+    # =================================
 
 
     def summary(self):
 
 
+        data = self.get_learning_summary()
+
+
         print()
 
         print(
-            "========== FAJ MEMORY =========="
+            "========== FAJ MEMORY v9.2 =========="
         )
 
 
         print(
-            "Всего записей:",
-            len(self.memory)
-        )
-
-
-        print(
-            "MODEL:",
-            len(
-                self.get_model_memory()
+            "Всего:",
+            data.get(
+                "total"
             )
         )
 
 
         print(
-            "TEAM:",
-            len(
-
-                self.memory[
-
-                    self.memory["object_type"]
-
-                    ==
-
-                    "TEAM"
-
-                ]
-
+            "Открытых:",
+            data.get(
+                "open"
             )
         )
 
 
         print(
-            "SYSTEM:",
-            len(
-                self.get_system_memory()
+            "Ошибок модели:",
+            data.get(
+                "model_errors"
             )
         )
 
 
         print(
-            "OPEN:",
-            len(
-                self.get_open_memories()
-            )
+            "====================================="
         )
-
-
-        print(
-            "==============================="
-        )
-
 
         print()
 
@@ -544,6 +441,5 @@ if __name__ == "__main__":
 
 
     memory = MemoryEngine()
-
 
     memory.summary()
