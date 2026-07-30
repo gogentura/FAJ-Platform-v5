@@ -2,15 +2,13 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ Platform v9.0
+FAJ Platform v9.1
 
 Passport Updater
 
-Обновляет паспорта команд
-после каждого сыгранного тура.
+Работает с:
+team_passports_v40.csv
 
-Автор:
-FAJ Platform
 """
 
 from pathlib import Path
@@ -18,6 +16,7 @@ import pandas as pd
 
 
 class PassportUpdater:
+
 
     def __init__(self):
 
@@ -29,28 +28,53 @@ class PassportUpdater:
             "data/team_passports_history.csv"
         )
 
+
         self.passports = pd.read_csv(
-            self.passports_file
+            self.passports_file,
+            encoding="utf-8-sig"
         )
 
-        self.history = pd.read_csv(
-            self.history_file
-        )
 
-    # ------------------------------------------------
+        if self.history_file.exists():
 
-    def get_team(self, team):
+            self.history = pd.read_csv(
+                self.history_file,
+                encoding="utf-8-sig"
+            )
+
+        else:
+
+            self.history = pd.DataFrame()
+
+
+
+    # ---------------------------------
+
+    def get_team(
+        self,
+        team
+    ):
+
 
         row = self.passports[
-            self.passports["Команда"] == team
+
+            self.passports["team"]
+            ==
+            team
+
         ]
 
+
         if len(row) == 0:
+
             return None
+
 
         return row.iloc[0]
 
-    # ------------------------------------------------
+
+
+    # ---------------------------------
 
     def update_form(
         self,
@@ -58,18 +82,34 @@ class PassportUpdater:
         delta
     ):
 
+
         index = self.passports[
-            self.passports["Команда"] == team
+
+            self.passports["team"]
+            ==
+            team
+
         ].index
 
+
         if len(index) == 0:
+
             return
+
 
         idx = index[0]
 
-        current = self.passports.loc[idx, "Форм"]
 
-        new_value = max(
+        current = self.passports.loc[
+            idx,
+            "form"
+        ]
+
+
+        self.passports.loc[
+            idx,
+            "form"
+        ] = max(
             50,
             min(
                 99,
@@ -77,9 +117,9 @@ class PassportUpdater:
             )
         )
 
-        self.passports.loc[idx, "Форм"] = new_value
 
-    # ------------------------------------------------
+
+    # ---------------------------------
 
     def update_attack(
         self,
@@ -87,21 +127,46 @@ class PassportUpdater:
         delta
     ):
 
+
         idx = self.passports[
-            self.passports["Команда"] == team
-        ].index[0]
 
-        value = self.passports.loc[idx, "Атк"]
+            self.passports["team"]
+            ==
+            team
 
-        self.passports.loc[idx, "Атк"] = max(
+        ].index
+
+
+        if len(idx) == 0:
+
+            return
+
+
+        idx = idx[0]
+
+
+        self.passports.loc[
+            idx,
+            "attack"
+        ] = max(
+
             50,
+
             min(
                 99,
-                value + delta
+                self.passports.loc[
+                    idx,
+                    "attack"
+                ]
+                +
+                delta
             )
+
         )
 
-    # ------------------------------------------------
+
+
+    # ---------------------------------
 
     def update_defense(
         self,
@@ -109,21 +174,46 @@ class PassportUpdater:
         delta
     ):
 
+
         idx = self.passports[
-            self.passports["Команда"] == team
-        ].index[0]
 
-        value = self.passports.loc[idx, "Защ"]
+            self.passports["team"]
+            ==
+            team
 
-        self.passports.loc[idx, "Защ"] = max(
+        ].index
+
+
+        if len(idx) == 0:
+
+            return
+
+
+        idx = idx[0]
+
+
+        self.passports.loc[
+            idx,
+            "defense"
+        ] = max(
+
             50,
+
             min(
                 99,
-                value + delta
+                self.passports.loc[
+                    idx,
+                    "defense"
+                ]
+                +
+                delta
             )
+
         )
 
-    # ------------------------------------------------
+
+
+    # ---------------------------------
 
     def reduce_uncertainty(
         self,
@@ -131,28 +221,60 @@ class PassportUpdater:
         delta=2
     ):
 
+
         idx = self.passports[
-            self.passports["Команда"] == team
-        ].index[0]
 
-        value = self.passports.loc[idx, "Неопр"]
+            self.passports["team"]
+            ==
+            team
 
-        self.passports.loc[idx, "Неопр"] = max(
+        ].index
+
+
+        if len(idx) == 0:
+
+            return
+
+
+        idx = idx[0]
+
+
+        self.passports.loc[
+            idx,
+            "uncertainty"
+        ] = max(
+
             0,
-            value - delta
+
+            self.passports.loc[
+                idx,
+                "uncertainty"
+            ]
+            -
+            delta
+
         )
 
-    # ------------------------------------------------
+
+
+    # ---------------------------------
 
     def save(self):
 
+
         self.passports.to_csv(
+
             self.passports_file,
+
             index=False,
+
             encoding="utf-8-sig"
+
         )
 
-    # ------------------------------------------------
+
+
+    # ---------------------------------
 
     def save_history(
         self,
@@ -160,13 +282,17 @@ class PassportUpdater:
         reason
     ):
 
+
         today = pd.Timestamp.today().strftime(
             "%Y-%m-%d"
         )
 
+
         rows = []
 
+
         for _, row in self.passports.iterrows():
+
 
             rows.append({
 
@@ -174,77 +300,64 @@ class PassportUpdater:
 
                 "version": version,
 
-                "team": row["Команда"],
+                "team": row["team"],
 
-                "attack": row["Атк"],
+                "attack": row["attack"],
 
-                "defense": row["Защ"],
+                "defense": row["defense"],
 
-                "control": row["Конт"],
+                "control": row["control"],
 
-                "efficiency": row["Эфф"],
+                "efficiency": row["efficiency"],
 
-                "mentality": row["Мент"],
+                "mentality": row["mentality"],
 
-                "tempo": row["Тмп"],
+                "tempo": row["tempo"],
 
-                "press": row["Прс"],
+                "press": row["press"],
 
-                "transition": row["Пдп"],
+                "predictability": row["predictability"],
 
-                "tactical": row["Гиб"],
+                "flexibility": row["flexibility"],
 
-                "home_strength": row["Дом"],
+                "home_power": row["home_power"],
 
-                "tournament_dna": row["Трн"],
+                "coach": row["coach"],
 
-                "form": row["Форм"],
+                "form": row["form"],
 
-                "uncertainty": row["Неопр"],
+                "uncertainty": row["uncertainty"],
 
-                "coach_rating": row["Coach"],
+                "transfer_index": row["transfer_index"],
 
-                "transfer_rating": row["Transfer"],
-
-                "squad_depth": row["Depth"],
+                "depth": row["depth"],
 
                 "reason": reason
 
             })
 
-        history = pd.concat(
+
+        new_history = pd.concat(
+
             [
+
                 self.history,
+
                 pd.DataFrame(rows)
+
             ],
+
             ignore_index=True
+
         )
 
-        history.to_csv(
+
+        new_history.to_csv(
+
             self.history_file,
+
             index=False,
+
             encoding="utf-8-sig"
+
         )
-
-
-if __name__ == "__main__":
-
-    updater = PassportUpdater()
-
-    updater.update_form(
-        "Зенит",
-        2
-    )
-
-    updater.reduce_uncertainty(
-        "Зенит"
-    )
-
-    updater.save()
-
-    updater.save_history(
-        "9.1",
-        "После первого тура"
-    )
-
-    print("Паспорта обновлены.")
