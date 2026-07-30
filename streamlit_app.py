@@ -5,16 +5,29 @@ FAJ Platform 9.0
 
 Football Analytics Journal
 
-Streamlit Interface
+Главный интерфейс Streamlit
+
+Модули:
+- FAJ Database
+- Prediction Engine
+- FAJ Core
+- Round Loader
 """
 
 import streamlit as st
+
 
 from app.database import FAJDatabase
 from app.faj_engine import FAJEngine
 from app.prediction_engine import PredictionEngine
 from app.faj_core import FAJCore
+from app.round_loader import RoundLoader
 
+
+
+# ==================================================
+# CONFIG
+# ==================================================
 
 st.set_page_config(
     page_title="FAJ Platform 9.0",
@@ -23,27 +36,58 @@ st.set_page_config(
 )
 
 
+
+# ==================================================
+# LOAD SYSTEM
+# ==================================================
+
 @st.cache_resource
-def load_engine():
+def load_system():
 
     db = FAJDatabase()
+
     db.load_all()
 
-    engine = FAJEngine(db)
+
+    engine = FAJEngine(
+        db
+    )
+
 
     predictor = PredictionEngine(
         engine
     )
 
+
     faj_core = FAJCore()
 
-    return db, engine, predictor, faj_core
+
+    loader = RoundLoader()
 
 
-db, engine, predictor, faj_core = load_engine()
+    return (
+        db,
+        engine,
+        predictor,
+        faj_core,
+        loader
+    )
 
 
-st.title("⚽ FAJ Platform 9.0")
+
+db, engine, predictor, faj_core, loader = load_system()
+
+
+
+# ==================================================
+# HEADER
+# ==================================================
+
+st.title(
+    "⚽ FAJ Platform 9.0"
+)
+
+
 st.caption(
     "Football Analytics Journal — Adaptive Football Intelligence"
 )
@@ -52,15 +96,19 @@ st.caption(
 st.divider()
 
 
-# ================================
-# Состояние модели
-# ================================
+
+# ==================================================
+# SYSTEM STATUS
+# ==================================================
 
 with st.expander(
-    "🧠 Состояние FAJ"
+    "🧠 Состояние организма FAJ",
+    expanded=True
 ):
 
-    c1, c2, c3 = st.columns(3)
+
+    c1, c2, c3, c4 = st.columns(4)
+
 
     with c1:
 
@@ -69,43 +117,65 @@ with st.expander(
             faj_core.version
         )
 
+
     with c2:
 
         st.metric(
-            "Команд в базе",
+            "Команд",
             len(db.passports)
         )
+
 
     with c3:
 
         st.metric(
-            "Записей памяти",
+            "Память",
             len(
                 faj_core.memory.memory
             )
         )
 
 
+    with c4:
+
+        st.metric(
+            "История",
+            len(
+                faj_core.passport.history
+            )
+        )
+
+
+
 st.divider()
 
 
-# ================================
-# Вкладка анализа матча
-# ================================
 
-tab1, tab2 = st.tabs(
+# ==================================================
+# TABS
+# ==================================================
+
+tab1, tab2, tab3 = st.tabs(
     [
         "⚽ Анализ матча",
-        "🧬 Обновление FAJ"
+        "🧬 Обновление FAJ",
+        "📚 Память модели"
     ]
 )
 
 
-# --------------------------------
-# Анализ матча
-# --------------------------------
+
+# ==================================================
+# TAB 1
+# MATCH ANALYSIS
+# ==================================================
 
 with tab1:
+
+
+    st.subheader(
+        "Анализ матча"
+    )
 
 
     teams = sorted(
@@ -119,12 +189,14 @@ with tab1:
     col1, col2 = st.columns(2)
 
 
+
     with col1:
 
         home_team = st.selectbox(
             "Домашняя команда",
             teams
         )
+
 
 
     with col2:
@@ -136,8 +208,9 @@ with tab1:
         )
 
 
+
     if st.button(
-        "Анализировать матч",
+        "🔮 Анализировать матч",
         use_container_width=True
     ):
 
@@ -148,7 +221,9 @@ with tab1:
         )
 
 
+
         if prediction is None:
+
 
             st.error(
                 "Команды не найдены"
@@ -157,14 +232,18 @@ with tab1:
 
         else:
 
+
             st.divider()
+
 
             st.subheader(
                 "Результат анализа"
             )
 
 
+
             c1, c2, c3 = st.columns(3)
+
 
 
             with c1:
@@ -175,6 +254,7 @@ with tab1:
                 )
 
 
+
             with c2:
 
                 st.metric(
@@ -183,12 +263,14 @@ with tab1:
                 )
 
 
+
             with c3:
 
                 st.metric(
                     "Исход",
                     prediction["result"]
                 )
+
 
 
             st.success(
@@ -203,9 +285,10 @@ with tab1:
 
 
 
-# --------------------------------
-# Обновление модели
-# --------------------------------
+# ==================================================
+# TAB 2
+# MODEL UPDATE
+# ==================================================
 
 with tab2:
 
@@ -217,41 +300,103 @@ with tab2:
 
     st.write(
         """
-        После загрузки результатов тура FAJ выполняет:
+FAJ выполняет цикл:
 
-        1. Анализ ошибок прогнозов
-        2. Запись опыта в память
-        3. Корректировку паспортов
-        4. Создание новой версии модели
+1. Загружает результаты тура
+2. Сравнивает прогноз и факт
+3. Записывает ошибки в память
+4. Обновляет знания
+5. Создаёт новую историю паспортов
         """
     )
 
 
+
+    round_number = st.number_input(
+        "Номер тура",
+        min_value=1,
+        value=1
+    )
+
+
+
     if st.button(
-        "🚀 Запустить обработку тура",
+        "🚀 Обработать тур",
         use_container_width=True
     ):
 
 
-        test_results = []
+        try:
 
 
-        if len(test_results) == 0:
+            with st.spinner(
+                "FAJ анализирует тур..."
+            ):
 
 
-            st.warning(
-                "Данные тура пока не загружены."
-            )
+                round_data = loader.load_round(
+                    int(round_number)
+                )
 
 
-        else:
+                faj_core.process_round(
+                    int(round_number),
+                    round_data
+                )
 
-            faj_core.process_round(
-                1,
-                test_results
-            )
 
 
             st.success(
-                "FAJ обновлён"
+                f"Тур {round_number} успешно обработан"
             )
+
+
+
+            st.info(
+                f"Матчей обработано: {len(round_data)}"
+            )
+
+
+
+        except Exception as e:
+
+
+            st.error(
+                f"Ошибка FAJ: {e}"
+            )
+
+
+
+# ==================================================
+# TAB 3
+# MEMORY
+# ==================================================
+
+with tab3:
+
+
+    st.subheader(
+        "🧠 Память FAJ"
+    )
+
+
+
+    memory = faj_core.memory.memory
+
+
+
+    if len(memory) == 0:
+
+
+        st.warning(
+            "Память пока пустая"
+        )
+
+
+    else:
+
+
+        st.dataframe(
+            memory,
+            use_container_width=True
+        )
