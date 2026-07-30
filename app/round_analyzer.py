@@ -8,31 +8,14 @@ Round Analyzer
 
 Анализ сыгранного тура.
 
-Функции:
+Создает структурированную память:
 
-- сравнение FAJ прогноз / факт
-- анализ ошибок модели
-- анализ команд
-- выявление факторов
-- подготовка памяти FAJ
-
-
-Цикл:
-
-RoundLoader
-      |
-      ↓
-RoundAnalyzer
-      |
-      ├── MODEL MEMORY
-      ├── TEAM MEMORY
-      └── SYSTEM MEMORY
+MATCH
+TEAM
+MODEL
+SYSTEM
 
 """
-
-
-from datetime import datetime
-
 
 
 class RoundAnalyzer:
@@ -44,455 +27,195 @@ class RoundAnalyzer:
 
 
 
-    # =================================================
+    # =====================================
+
 
     def analyze_round(
         self,
-        round_number,
         matches
     ):
 
 
-        report = {
+        memory = []
 
 
-            "round":
-                round_number,
-
-
-            "date":
-                datetime.now().strftime(
-                    "%Y-%m-%d"
-                ),
-
-
-            "version":
-                self.version,
-
-
-            "total_matches":
-                len(matches),
-
-
-            "correct":
-                0,
-
-
-            "errors":
-                0,
-
-
-            "model_memory":
-                [],
-
-
-            "team_memory":
-                [],
-
-
-            "system_memory":
-                []
-
-        }
-
+        correct = 0
+        total = len(matches)
 
 
         for match in matches:
 
 
-            analysis = self.analyze_match(
-                match
+            prediction = match.get(
+                "prediction"
+            )
+
+            fact = match.get(
+                "fact_result"
+            )
+
+            if fact is None:
+
+                fact = match.get(
+                    "result"
+                )
+
+
+            score = match.get(
+                "fact_score"
             )
 
 
-            # =========================
-            # MODEL
-            # =========================
+            home = match.get(
+                "home"
+            )
+
+            away = match.get(
+                "away"
+            )
 
 
-            if analysis["result_correct"]:
+            # -------------------------
+            # MATCH MEMORY
+            # -------------------------
 
 
-                report["correct"] += 1
+            if prediction == fact:
+
+                correct += 1
+
+
+                memory.append({
+
+                    "type":
+                    "MATCH",
+
+                    "object":
+                    f"{home}-{away}",
+
+                    "category":
+                    "Prediction Success",
+
+                    "observation":
+                    f"FAJ {prediction}, факт {fact}, счёт {score}",
+
+                    "conclusion":
+                    "Модель правильно оценила исход",
+
+                    "action":
+                    "Сохранить параметры"
+
+                })
 
 
             else:
 
 
-                report["errors"] += 1
+                memory.append({
 
+                    "type":
+                    "MATCH",
 
-                report["model_memory"].append(
+                    "object":
+                    f"{home}-{away}",
 
-                    self.create_model_memory(
-                        analysis
+                    "category":
+                    "Prediction Error",
+
+                    "observation":
+                    (
+                        f"FAJ {prediction}, "
+                        f"факт {fact}, "
+                        f"счёт {score}"
+                    ),
+
+                    "conclusion":
+                    match.get(
+                        "notes"
                     )
+                    or
+                    "Требуется анализ ошибки",
 
-                )
+                    "action":
+                    "Проверить параметры модели"
 
-
-
-            # =========================
-            # TEAM
-            # =========================
-
-
-            report["team_memory"].extend(
-
-                self.create_team_memory(
-                    analysis
-                )
-
-            )
+                })
 
 
 
-        # =========================
-        # SYSTEM EVENT
-        # =========================
+        # -------------------------
+        # MODEL MEMORY
+        # -------------------------
 
 
-        report["system_memory"].append(
-
-            {
-
-                "object_type":
-                    "SYSTEM",
-
-                "object_name":
-                    "Learning",
-
-                "category":
-                    "Cycle",
-
-                "observation":
-                    (
-                        f"Тур {round_number} "
-                        f"проанализирован"
-                    ),
-
-                "conclusion":
-                    (
-                        "FAJ обновляет "
-                        "опыт после матча"
-                    ),
-
-                "action":
-                    (
-                        "Использовать "
-                        "данные для калибровки"
-                    ),
-
-                "confidence":
-                    1.0
-
-            }
-
+        accuracy = round(
+            correct / total * 100,
+            2
         )
 
 
-        return report
+        memory.append({
 
+            "type":
+            "MODEL",
 
-
-    # =================================================
-
-
-    def analyze_match(
-        self,
-        match
-    ):
-
-
-        prediction = match.get(
-            "prediction"
-        )
-
-
-        fact = match.get(
-            "result"
-        )
-
-
-        score = (
-
-            str(
-                match.get(
-                    "home_score"
-                )
-            )
-            +
-            ":"
-            +
-            str(
-                match.get(
-                    "away_score"
-                )
-            )
-
-        )
-
-
-        predicted_score = match.get(
-            "predicted_score"
-        )
-
-
-        return {
-
-
-            "home":
-                match.get(
-                    "home"
-                ),
-
-
-            "away":
-                match.get(
-                    "away"
-                ),
-
-
-            "prediction":
-                prediction,
-
-
-            "fact":
-                fact,
-
-
-            "score":
-                score,
-
-
-            "predicted_score":
-                predicted_score,
-
-
-            "notes":
-                match.get(
-                    "notes"
-                ),
-
-
-            "result_correct":
-                prediction == fact
-
-        }
-
-
-
-    # =================================================
-
-    def create_model_memory(
-        self,
-        match
-    ):
-
-
-        return {
-
-
-            "object_type":
-                "MODEL",
-
-
-            "object_name":
-                "FAJ",
-
+            "object":
+            "FAJ",
 
             "category":
-                "Prediction Error",
-
+            "Round Accuracy",
 
             "observation":
-                (
-
-                    f"{match['home']} - "
-                    f"{match['away']} | "
-
-                    f"FAJ: {match['prediction']} | "
-
-                    f"Факт: {match['fact']} | "
-
-                    f"Счёт: {match['score']}"
-
-                ),
-
+            (
+                f"Точность тура "
+                f"{correct}/{total}"
+            ),
 
             "conclusion":
-                (
-
-                    match["notes"]
-                    or
-                    "Требуется анализ факторов"
-
-                ),
-
+            (
+                "Требуется калибровка"
+                if accuracy < 50
+                else
+                "Модель стабильна"
+            ),
 
             "action":
-                (
-                    "Проверить "
-                    "веса модели"
-                ),
+            "Проверить веса"
 
+        })
 
-            "confidence":
-                0.85
 
-        }
 
+        # -------------------------
+        # SYSTEM MEMORY
+        # -------------------------
 
 
-    # =================================================
+        memory.append({
 
-    def create_team_memory(
-        self,
-        match
-    ):
+            "type":
+            "SYSTEM",
 
+            "object":
+            "Learning",
 
-        memories = []
+            "category":
+            "Cycle",
 
+            "observation":
+            "Первый цикл анализа завершён",
 
+            "conclusion":
+            "FAJ получил новый опыт",
 
-        # победитель
+            "action":
+            "Обновить версию модели"
 
+        })
 
-        if match["fact"] == "P1":
 
 
-            memories.append(
-
-                {
-
-                    "object_type":
-                        "TEAM",
-
-                    "object_name":
-                        match["home"],
-
-                    "category":
-                        "Strength",
-
-                    "observation":
-                        (
-                            "Домашняя команда "
-                            "одержала победу"
-                        ),
-
-                    "conclusion":
-                        (
-                            "Проверить "
-                            "рост формы"
-                        ),
-
-                    "action":
-                        (
-                            "Обновить паспорт"
-                        ),
-
-                    "confidence":
-                        0.75
-
-                }
-
-            )
-
-
-
-        elif match["fact"] == "P2":
-
-
-            memories.append(
-
-                {
-
-                    "object_type":
-                        "TEAM",
-
-                    "object_name":
-                        match["away"],
-
-                    "category":
-                        "Strength",
-
-                    "observation":
-                        (
-                            "Гостевая команда "
-                            "превысила ожидания"
-                        ),
-
-                    "conclusion":
-                        (
-                            "Рассмотреть "
-                            "рост рейтинга"
-                        ),
-
-                    "action":
-                        (
-                            "Обновить паспорт"
-                        ),
-
-                    "confidence":
-                        0.75
-
-                }
-
-            )
-
-
-
-        return memories
-
-
-
-    # =================================================
-
-
-    def summary(
-        self,
-        report
-    ):
-
-
-        print()
-
-        print(
-            "====== FAJ ROUND ANALYSIS ======"
-        )
-
-
-        print(
-            f"Матчей: {report['total_matches']}"
-        )
-
-
-        print(
-            f"Правильно: {report['correct']}"
-        )
-
-
-        print(
-            f"Ошибки: {report['errors']}"
-        )
-
-
-        print(
-            f"Ошибки модели: "
-            f"{len(report['model_memory'])}"
-        )
-
-
-        print(
-            f"Командных записей: "
-            f"{len(report['team_memory'])}"
-        )
-
-
-        print(
-            "==============================="
-        )
+        return memory
 
 
 
@@ -507,37 +230,25 @@ if __name__ == "__main__":
         {
 
             "home":
-                "ЦСКА",
+            "ЦСКА",
 
             "away":
-                "Балтика",
+            "Балтика",
 
             "prediction":
-                "X",
+            "X",
 
-            "result":
-                "P1",
+            "fact_result":
+            "P1",
 
-            "home_score":
-                2,
-
-            "away_score":
-                1,
-
-            "notes":
-                "ЦСКА победил"
+            "fact_score":
+            "2:1"
 
         }
 
     ]
 
 
-    report = analyzer.analyze_round(
-        1,
-        test
-    )
-
-
-    analyzer.summary(
-        report
+    print(
+        analyzer.analyze_round(test)
     )
