@@ -3,13 +3,22 @@
 """
 FAJ Platform 9.0
 
-Smart Round Loader
+Round Loader v9.1
 
-Адаптивный загрузчик туров.
+Загрузчик туров.
+
+Объединяет:
+- прогноз FAJ
+- фактический результат
+- статистику матча
+- данные для обучения модели
+
 """
+
 
 from pathlib import Path
 import pandas as pd
+
 
 
 class RoundLoader:
@@ -22,9 +31,14 @@ class RoundLoader:
         )
 
 
-    # ---------------------------------
 
-    def load_csv(self, filename):
+    # =====================================
+
+    def load_csv(
+        self,
+        filename
+    ):
+
 
         file = self.data_path / filename
 
@@ -32,7 +46,7 @@ class RoundLoader:
         if not file.exists():
 
             raise FileNotFoundError(
-                f"Нет файла: {file}"
+                f"Файл не найден: {file}"
             )
 
 
@@ -42,75 +56,154 @@ class RoundLoader:
         )
 
 
-    # ---------------------------------
 
-    def find_column(
-        self,
-        df,
-        variants
-    ):
-
-        for col in variants:
-
-            if col in df.columns:
-
-                return col
-
-
-        return None
-
-
-    # ---------------------------------
+    # =====================================
 
     def normalize_team(
         self,
-        name
+        team
     ):
 
-        if pd.isna(name):
+
+        if pd.isna(team):
 
             return None
 
 
-        name = str(name).strip()
+        team = str(team).strip()
 
 
-        replacements = {
+
+        aliases = {
+
 
             "ПФК ЦСКА":
                 "ЦСКА",
 
+
             "ЦСКА Москва":
                 "ЦСКА",
+
 
             "Зенит Санкт-Петербург":
                 "Зенит",
 
+
             "ФК Краснодар":
                 "Краснодар",
+
 
             "Краснодар ФК":
                 "Краснодар",
 
+
             "Динамо Москва":
                 "Динамо М",
+
+
+            "Динамо Махачкала":
+                "Динамо Мх",
+
 
             "Ахмат Грозный":
                 "Ахмат",
 
+
             "Крылья Советов Самара":
-                "Крылья Советов",
+                "Крылья Советов"
+
 
         }
 
 
-        return replacements.get(
-            name,
-            name
+        return aliases.get(
+            team,
+            team
         )
 
 
-    # ---------------------------------
+
+    # =====================================
+
+    def load_predictions(
+        self,
+        round_number
+    ):
+
+
+        file = (
+            f"rpl_round{round_number}_predictions.csv"
+        )
+
+
+        try:
+
+            return self.load_csv(
+                file
+            )
+
+        except FileNotFoundError:
+
+
+            return pd.DataFrame()
+
+
+
+    # =====================================
+
+    def find_prediction(
+        self,
+        predictions,
+        home,
+        away
+    ):
+
+
+        if predictions.empty:
+
+            return None
+
+
+
+        if (
+            "home_team" not in predictions.columns
+            or
+            "away_team" not in predictions.columns
+        ):
+
+            return None
+
+
+
+        row = predictions[
+
+            (
+                predictions["home_team"]
+                == home
+            )
+
+            &
+
+            (
+                predictions["away_team"]
+                == away
+            )
+
+        ]
+
+
+
+        if len(row) == 0:
+
+            return None
+
+
+
+        return row.iloc[0]
+
+
+
+    # =====================================
 
     def load_round(
         self,
@@ -118,152 +211,173 @@ class RoundLoader:
     ):
 
 
-        results = self.load_csv(
+
+        results_file = (
+
             f"rpl_round{round_number}_results.csv"
+
         )
 
 
-        predictions = self.load_csv(
-            f"rpl_round{round_number}_predictions.csv"
+        results = self.load_csv(
+            results_file
         )
 
 
-        try:
-
-            stats = self.load_csv(
-                f"rpl_round{round_number}_match_stats.csv"
-            )
-
-        except:
-
-
-            stats = pd.DataFrame()
-
-
-
-        # ищем колонки
-
-
-        home_col = self.find_column(
-            results,
-            [
-                "home_team",
-                "home",
-                "Хозяева",
-                "Домашняя команда"
-            ]
+        predictions = self.load_predictions(
+            round_number
         )
 
-
-        away_col = self.find_column(
-            results,
-            [
-                "away_team",
-                "away",
-                "Гости",
-                "Гостевая команда"
-            ]
-        )
-
-
-        result_col = self.find_column(
-            results,
-            [
-                "result",
-                "winner",
-                "Исход"
-            ]
-        )
-
-
-        home_score_col = self.find_column(
-            results,
-            [
-                "home_score",
-                "score_home",
-                "Хозяева голы"
-            ]
-        )
-
-
-        away_score_col = self.find_column(
-            results,
-            [
-                "away_score",
-                "score_away",
-                "Гости голы"
-            ]
-        )
-
-
-        if not home_col or not away_col:
-
-            raise Exception(
-                f"Не найдены команды. Колонки: {list(results.columns)}"
-            )
 
 
         matches = []
 
 
+
         for _, row in results.iterrows():
 
 
+
             home = self.normalize_team(
-                row[home_col]
+
+                row["home_team"]
+
             )
+
 
 
             away = self.normalize_team(
-                row[away_col]
+
+                row["away_team"]
+
             )
+
+
+
+            prediction = self.find_prediction(
+
+                predictions,
+
+                home,
+
+                away
+
+            )
+
+
+
+            match = {
+
+
+                "match_id":
+                    row.get(
+                        "match_id"
+                    ),
+
+
+
+                "round":
+                    row.get(
+                        "round"
+                    ),
+
+
+
+                "home":
+                    home,
+
+
+
+                "away":
+                    away,
+
+
+
+                # факт
+
+                "fact_score":
+                    row.get(
+                        "fact_score"
+                    ),
+
+
+
+                "fact_result":
+                    row.get(
+                        "fact_result"
+                    ),
+
+
+
+                "red_cards":
+                    row.get(
+                        "red_cards"
+                    ),
+
+
+
+                "notes":
+                    row.get(
+                        "notes"
+                    ),
+
+
+
+                "date":
+                    row.get(
+                        "date"
+                    ),
+
+
+
+                "version":
+                    row.get(
+                        "version"
+                    ),
+
+
+
+                # прогноз FAJ
+
+
+                "prediction":
+
+                    prediction.get(
+                        "prediction"
+                    )
+                    if prediction is not None
+                    else None,
+
+
+
+                "predicted_score":
+
+                    prediction.get(
+                        "score_prediction"
+                    )
+                    if prediction is not None
+                    else None,
+
+
+
+                "stats": {}
+
+            }
+
 
 
             matches.append(
-
-                {
-
-                    "home": home,
-
-                    "away": away,
-
-                    "result":
-                        row[result_col]
-                        if result_col
-                        else None,
-
-
-                    "home_score":
-                        row[home_score_col]
-                        if home_score_col
-                        else None,
-
-
-                    "away_score":
-                        row[away_score_col]
-                        if away_score_col
-                        else None,
-
-
-                    "prediction":
-                        None,
-
-
-                    "predicted_score":
-                        None,
-
-
-                    "stats":
-                        {}
-
-                }
-
+                match
             )
+
 
 
         return matches
 
 
+
+
+# =====================================
 
 if __name__ == "__main__":
 
@@ -271,19 +385,32 @@ if __name__ == "__main__":
     loader = RoundLoader()
 
 
-    matches = loader.load_round(1)
+    matches = loader.load_round(
+        1
+    )
+
 
 
     print(
-        "Матчей:",
+        "Загружено матчей:",
         len(matches)
     )
 
 
-    for m in matches:
+
+    for match in matches:
+
 
         print(
-            m["home"],
+
+            match["home"],
+
             "-",
-            m["away"]
+
+            match["away"],
+
+            "|",
+
+            match["fact_score"]
+
         )
