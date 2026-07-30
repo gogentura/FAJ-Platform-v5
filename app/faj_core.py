@@ -2,27 +2,26 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ Platform v9.3
+FAJ Platform v9.2
 
 FAJ Core
 
-Главный управляющий модуль обучения.
+Главный управляющий модуль.
 
 Цикл:
 
-Матч
+Match
  ↓
-RoundLoader
+Round Analyzer
  ↓
-RoundAnalyzer
+FAJ Core
  ↓
 Memory Engine
  ↓
-Passport Update
- ↓
-History
+Passport History
 
 """
+
 
 from datetime import datetime
 
@@ -38,7 +37,8 @@ class FAJCore:
 
     def __init__(self):
 
-        self.version = "9.3"
+
+        self.version = "9.2"
 
 
         self.memory = MemoryEngine()
@@ -65,9 +65,12 @@ class FAJCore:
 
         print("==============================")
 
-        print(" FAJ CORE ROUND PROCESSING ")
+        print(
+            " FAJ ROUND PROCESSING v9.2 "
+        )
 
         print("==============================")
+
 
         print()
 
@@ -83,8 +86,7 @@ class FAJCore:
 
 
 
-        # 1.
-        # Анализ тура
+        # 1. Анализ тура
 
 
         analysis = self.analyzer.analyze_round(
@@ -93,24 +95,40 @@ class FAJCore:
 
 
 
+        stats = analysis[
+            "round_stats"
+        ]
+
+
+
+        print()
+
         print(
-            f"Создано записей памяти: {len(analysis)}"
+            "Точность:",
+            stats["accuracy"]
         )
 
 
 
-        # 2.
-        # Запись памяти
+        # 2. Записываем системные выводы
 
 
-        self.save_memory(
+        self.save_model_memory(
             analysis
         )
 
 
 
-        # 3.
-        # История паспортов
+        # 3. Командные наблюдения
+
+
+        self.save_team_memory(
+            analysis
+        )
+
+
+
+        # 4. История паспортов
 
 
         version = self.create_version(
@@ -119,20 +137,16 @@ class FAJCore:
 
 
         self.passport.save_history(
-
             version,
-
-            f"После анализа тура {round_number}"
-
+            f"После тура {round_number}"
         )
 
 
 
         print()
 
-
         print(
-            f"FAJ обновлен: {version}"
+            f"FAJ обновлён: {version}"
         )
 
 
@@ -143,32 +157,94 @@ class FAJCore:
     # =====================================
 
 
-    def save_memory(
+    def save_model_memory(
         self,
-        records
+        analysis
     ):
 
 
-        for item in records:
+        for item in analysis[
+            "model_errors"
+        ]:
+
 
 
             self.memory.add_memory(
 
                 version=self.version,
 
-                object_type=item["type"],
+                object_type="MODEL",
 
-                object_name=item["object"],
+                object_name="FAJ",
 
-                category=item["category"],
+                category=item[
+                    "category"
+                ],
 
-                observation=item["observation"],
 
-                conclusion=item["conclusion"],
+                observation=item[
+                    "observation"
+                ],
 
-                action=item["action"],
+
+                conclusion=item[
+                    "conclusion"
+                ],
+
+
+                action=item[
+                    "action"
+                ],
+
 
                 confidence=0.9
+
+            )
+
+
+
+    # =====================================
+
+
+    def save_team_memory(
+        self,
+        analysis
+    ):
+
+
+        for item in analysis[
+            "team_observations"
+        ]:
+
+
+            self.memory.add_memory(
+
+                version=self.version,
+
+                object_type="TEAM",
+
+                object_name=item[
+                    "team"
+                ],
+
+
+                category="Round Analysis",
+
+
+                observation=item[
+                    "observation"
+                ],
+
+
+                conclusion="Командный фактор обновляется",
+
+
+                action=item[
+                    "action"
+                ],
+
+
+                confidence=0.85
 
             )
 
@@ -190,7 +266,8 @@ class FAJCore:
 
         return (
 
-            f"FAJ_{round_number}.{date}"
+            f"9.{round_number}."
+            f"{date}"
 
         )
 
@@ -216,22 +293,24 @@ class FAJCore:
 
 
         print(
-            "Memory:",
-            len(self.memory.memory)
+            "Память:",
+            len(
+                self.memory.memory
+            )
         )
 
 
         print(
-            "Teams:",
-            len(self.passport.passports)
+            "Команд:",
+            len(
+                self.passport.passports
+            )
         )
 
 
         print(
             "=============================="
         )
-
-        print()
 
 
 
@@ -245,38 +324,3 @@ if __name__ == "__main__":
 
 
     faj.status()
-
-
-
-    test = [
-
-        {
-
-            "home":
-            "ЦСКА",
-
-            "away":
-            "Балтика",
-
-            "prediction":
-            "X",
-
-            "fact_result":
-            "P1",
-
-            "fact_score":
-            "2:1",
-
-            "notes":
-            "ЦСКА победил"
-
-        }
-
-    ]
-
-
-
-    faj.process_round(
-        1,
-        test
-    )
