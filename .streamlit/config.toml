@@ -5,4 +5,4 @@ headless = true
 showErrorDetails = true
 
 [theme]
-base = "dark"
+base = "light"
