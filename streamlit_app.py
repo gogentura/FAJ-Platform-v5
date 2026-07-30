@@ -2,46 +2,87 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ Platform v9.2
+FAJ Platform v9.3 RU Edition
 
+Главная панель FAJ
 Football Analytics Journal
 Adaptive Football Intelligence
-
-Streamlit Interface
-
 """
-
 
 import streamlit as st
 import pandas as pd
-import os
+from datetime import datetime
 
 
+from app.memory_engine import MemoryEngine
+from app.passport_updater import PassportUpdater
 
-from app.faj_core import FAJCore
-from app.round_analyzer import RoundAnalyzer
 
+# ==========================
+# CONFIG
+# ==========================
+
+VERSION = "9.3"
 
 
 st.set_page_config(
-
-    page_title="FAJ Platform",
-
+    page_title="FAJ Platform 9.3",
     page_icon="⚽",
-
     layout="wide"
+)
 
+
+# ==========================
+# LIGHT THEME
+# ==========================
+
+st.markdown(
+"""
+<style>
+
+.stApp {
+    background-color:#ffffff;
+    color:#111111;
+}
+
+h1,h2,h3 {
+    color:#0f172a;
+}
+
+.metric-card {
+
+    background:#f8fafc;
+    padding:20px;
+    border-radius:15px;
+    border:1px solid #e2e8f0;
+
+}
+
+</style>
+""",
+unsafe_allow_html=True
 )
 
 
 
-# ==========================================
+# ==========================
+# LOAD ENGINES
+# ==========================
+
+
+memory = MemoryEngine()
+
+passport = PassportUpdater()
+
+
+
+# ==========================
 # HEADER
-# ==========================================
+# ==========================
 
 
 st.title(
-    "⚽ FAJ Platform 9.2"
+    "⚽ FAJ Platform 9.3"
 )
 
 
@@ -50,85 +91,60 @@ st.subheader(
 )
 
 
-
 st.divider()
 
 
 
-# ==========================================
-# INIT
-# ==========================================
-
-
-@st.cache_resource
-
-def load_engine():
-
-
-    return FAJCore()
-
-
-
-faj = load_engine()
-
-
-
-# ==========================================
+# ==========================
 # STATUS
-# ==========================================
+# ==========================
 
 
-col1, col2, col3, col4 = st.columns(4)
+st.header(
+    "📌 Статус системы"
+)
 
 
+c1,c2,c3,c4 = st.columns(4)
 
-with col1:
 
+with c1:
     st.metric(
-
-        "Версия",
-
-        faj.version
-
+        "Версия модели",
+        VERSION
     )
 
 
-with col2:
-
+with c2:
     st.metric(
-
         "Команды",
-
-        len(
-            faj.passport.passports
-        )
-
+        len(passport.passports)
     )
 
 
-with col3:
+with c3:
+
+    try:
+        memory_count = len(
+            memory.memory
+        )
+
+    except:
+
+        memory_count = 0
+
 
     st.metric(
-
         "Память",
-
-        len(
-            faj.memory.memory
-        )
-
+        memory_count
     )
 
 
-with col4:
+with c4:
 
     st.metric(
-
         "Паспорта",
-
-        len(
-            faj.passport.passports
-        )
-
+        len(passport.passports)
     )
 
 
@@ -137,299 +153,164 @@ st.divider()
 
 
 
-# ==========================================
-# MENU
-# ==========================================
+# ==========================
+# LEARNING CYCLE
+# ==========================
 
 
-tab1, tab2, tab3, tab4 = st.tabs(
+st.header(
+    "🧠 Цикл обучения FAJ"
+)
 
-    [
 
-        "⚽ Анализ тура",
+st.info(
+"""
+Матч
 
-        "🧠 Learning Memory",
+⬇
 
-        "🛡 Паспорта",
+Прогноз FAJ
 
-        "📈 Calibration"
+⬇
 
-    ]
+Фактический результат
 
+⬇
+
+Анализ ошибки
+
+⬇
+
+Память модели
+
+⬇
+
+Калибровка
+
+⬇
+
+Обновление паспорта команды
+"""
 )
 
 
 
-# ==========================================
-# ROUND ANALYSIS
-# ==========================================
-
-
-with tab1:
-
-
-    st.header(
-        "Анализ тура"
-    )
-
-
-
-    if st.button(
-        "▶ Обработать тур 1"
-    ):
-
-
-        predictions_path = (
-
-            "data/rpl_round1_predictions.csv"
-
-        )
-
-
-        if os.path.exists(
-            predictions_path
-        ):
-
-
-            df = pd.read_csv(
-                predictions_path
-            )
-
-
-            matches = df.to_dict(
-                "records"
-            )
-
-
-
-            analyzer = RoundAnalyzer()
-
-
-
-            result = analyzer.analyze_round(
-
-                1,
-
-                matches
-
-            )
-
-
-
-            st.success(
-
-                "Тур 1 успешно обработан"
-
-            )
-
-
-
-            st.write(
-
-                f"Матчей: {result['total_matches']}"
-
-            )
-
-
-            st.write(
-
-                f"Точность FAJ: {result['accuracy']}%"
-
-            )
-
-
-
-            st.session_state["round"] = result
-
-
-
-        else:
-
-
-            st.error(
-
-                "Файл прогнозов не найден"
-
-            )
-
-
-
-
-    if "round" in st.session_state:
-
-
-        data = st.session_state["round"]
-
-
-
-        st.subheader(
-            "Ошибки модели"
-        )
-
-
-        errors = pd.DataFrame(
-
-            data["errors_list"]
-
-        )
-
-
-        if not errors.empty:
-
-
-            st.dataframe(
-
-                errors,
-
-                use_container_width=True
-
-            )
-
-
-
-# ==========================================
+# ==========================
 # MEMORY
-# ==========================================
+# ==========================
 
 
-with tab2:
+st.header(
+    "🧠 Последние выводы FAJ"
+)
 
 
-    st.header(
-        "🧠 Learning Memory"
+try:
+
+    df_memory = pd.DataFrame(
+        memory.memory
     )
 
 
+    if not df_memory.empty:
 
-    memory = faj.memory.memory
-
-
-
-    if memory:
-
-
-        df_memory = pd.DataFrame(
-            memory
-        )
-
-
-
-        # FIX ARROW ERROR
 
         if "version" in df_memory.columns:
 
             df_memory["version"] = (
-
                 df_memory["version"]
                 .astype(str)
-
             )
 
 
-
         st.dataframe(
-
-            df_memory,
-
+            df_memory.tail(10),
             use_container_width=True
-
         )
 
 
     else:
 
-
-        st.info(
-
-            "Память пуста"
-
+        st.warning(
+            "Память FAJ пока пустая"
         )
 
 
+except Exception as e:
 
-# ==========================================
+    st.error(e)
+
+
+
+# ==========================
 # PASSPORTS
-# ==========================================
+# ==========================
 
 
-with tab3:
+st.header(
+    "⚽ Паспорта команд"
+)
 
 
-    st.header(
-        "🛡 Team Passports"
+try:
+
+    st.success(
+        f"""
+Активно паспортов:
+
+{len(passport.passports)}
+
+Последнее обновление:
+
+{datetime.now().strftime("%d.%m.%Y")}
+"""
     )
 
 
-    passports = pd.DataFrame(
+except:
 
-        faj.passport.passports
-
-    )
-
-
-    if not passports.empty:
-
-
-        st.dataframe(
-
-            passports,
-
-            use_container_width=True
-
-        )
-
-
-
-# ==========================================
-# CALIBRATION
-# ==========================================
-
-
-with tab4:
-
-
-    st.header(
-
-        "📈 Calibration Queue"
-
-    )
-
-
-    st.info(
-
-        "Ошибки FAJ передаются сюда для будущей калибровки"
-
+    st.warning(
+        "Нет данных паспортов"
     )
 
 
 
-    memory_df = pd.DataFrame(
-
-        faj.memory.memory
-
-    )
+# ==========================
+# MODULES
+# ==========================
 
 
-
-    if not memory_df.empty:
-
-
-        calibration = memory_df[
-
-            memory_df["category"]
-            .astype(str)
-            .str.contains(
-                "Error"
-            )
-
-        ]
+st.sidebar.title(
+    "Модули FAJ"
+)
 
 
+menu = st.sidebar.radio(
+    "",
+    [
+        "🏠 Главная",
+        "📊 Анализ тура",
+        "🧠 Память модели",
+        "⚽ Паспорта команд",
+        "🔄 Калибровка",
+        "📈 Статистика модели"
+    ]
+)
 
-        st.dataframe(
 
-            calibration,
 
-            use_container_width=True
+# ==========================
+# FOOTER
+# ==========================
 
-        )
+
+st.divider()
+
+
+st.caption(
+"""
+FAJ Platform 9.3  
+Adaptive Learning Engine  
+Football Analytics Journal
+"""
+)
