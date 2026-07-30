@@ -4,21 +4,24 @@
 """
 FAJ Platform v9.0
 
-FAJ Core v9.1
+FAJ Core v9.2
 
-Главный управляющий модуль платформы.
+Главный управляющий модуль.
 
 Цикл:
 
 Матч
  ↓
-Сравнение прогноза и факта
+RoundLoader
+ ↓
+RoundAnalyzer
  ↓
 Memory Engine
  ↓
-Calibration
- ↓
 Passport History
+ ↓
+Калибровка FAJ
+
 
 """
 
@@ -28,6 +31,7 @@ from datetime import datetime
 
 from app.memory_engine import MemoryEngine
 from app.passport_updater import PassportUpdater
+from app.round_analyzer import RoundAnalyzer
 
 
 
@@ -36,16 +40,20 @@ class FAJCore:
 
     def __init__(self):
 
-        self.version = "9.1"
+        self.version = "9.2"
+
 
         self.memory = MemoryEngine()
+
 
         self.passport = PassportUpdater()
 
 
+        self.round_analyzer = RoundAnalyzer()
 
-    # =====================================
 
+
+    # ==================================================
 
     def process_round(
         self,
@@ -55,9 +63,11 @@ class FAJCore:
 
 
         print()
+
         print("==============================")
         print(" FAJ ROUND PROCESSING ")
         print("==============================")
+
         print()
 
 
@@ -71,9 +81,53 @@ class FAJCore:
         )
 
 
-        self.analyze_results(
+        # 1. Анализ тура
+
+        report = self.round_analyzer.analyze_round(
+            round_number,
             results
         )
+
+
+        print()
+
+
+        print(
+            "FAJ ROUND REPORT"
+        )
+
+
+        print(
+            f"Правильные исходы: "
+            f"{report['correct_results']}"
+        )
+
+
+        print(
+            f"Ошибки: "
+            f"{report['wrong_results']}"
+        )
+
+
+        print(
+            f"Ошибки счёта: "
+            f"{report['score_errors']}"
+        )
+
+
+        print()
+
+
+
+        # 2. Запись памяти
+
+        self.save_round_memory(
+            report
+        )
+
+
+
+        # 3. Новая версия
 
 
         new_version = self.create_version(
@@ -81,10 +135,18 @@ class FAJCore:
         )
 
 
+
+        # 4. История паспортов
+
+
         self.passport.save_history(
+
             new_version,
+
             f"После обработки тура {round_number}"
+
         )
+
 
 
         print()
@@ -97,115 +159,78 @@ class FAJCore:
 
 
 
-    # =====================================
+        return report
 
 
-    def analyze_results(
+
+    # ==================================================
+
+    def save_round_memory(
         self,
-        results
+        report
     ):
 
 
-        errors = 0
+        for match in report["matches"]:
 
 
-        for match in results:
+            self.memory.add_memory(
 
 
-            prediction = match.get(
-                "prediction"
+                version=self.version,
+
+
+                object_type="MATCH",
+
+
+                object_name=(
+
+                    f"{match['home']} - "
+                    f"{match['away']}"
+
+                ),
+
+
+                category=match["error_type"],
+
+
+
+                observation=(
+
+                    f"FAJ: {match['prediction']} | "
+
+                    f"Факт: {match['fact']} | "
+
+                    f"Счёт FAJ: "
+                    f"{match['predicted_score']} | "
+
+                    f"Факт: "
+                    f"{match['fact_score']}"
+
+                ),
+
+
+
+                conclusion=match["conclusion"],
+
+
+
+                action=(
+
+                    "Использовать данные "
+                    "для будущей калибровки"
+
+                ),
+
+
+
+                confidence=0.8
+
             )
 
 
-            # новый формат FAJ 9.0
 
-            fact = match.get(
-                "fact_result"
-            )
-
-
-            if fact is None:
-
-
-                fact = match.get(
-                    "result"
-                )
-
-
-
-            if prediction != fact:
-
-
-                errors += 1
-
-
-
-                self.memory.add_memory(
-
-                    version=self.version,
-
-
-                    object_type="MODEL",
-
-
-                    object_name="FAJ",
-
-
-                    category="Prediction Error",
-
-
-
-                    observation=(
-
-                        f"{match.get('home')} - "
-                        f"{match.get('away')} | "
-
-                        f"FAJ: {prediction} | "
-
-                        f"Факт: {fact} | "
-
-                        f"Счёт: "
-                        f"{match.get('fact_score')}"
-
-                    ),
-
-
-
-                    conclusion=(
-
-                        match.get(
-                            "notes"
-                        )
-                        or
-                        "Необходимо анализировать ошибку"
-
-                    ),
-
-
-
-                    action=(
-
-                        "Проверить веса модели "
-                        "и параметры матча"
-
-                    ),
-
-
-
-                    confidence=0.8
-
-                )
-
-
-
-        print(
-            f"Ошибок прогноза: {errors}"
-        )
-
-
-
-    # =====================================
-
+    # ==================================================
 
     def create_version(
         self,
@@ -220,15 +245,14 @@ class FAJCore:
 
         return (
 
-            f"9.{round_number}-"
+            f"FAJ_9.{round_number}_"
             f"{date}"
 
         )
 
 
 
-    # =====================================
-
+    # ==================================================
 
     def status(self):
 
@@ -254,7 +278,7 @@ class FAJCore:
 
 
         print(
-            "Команды:",
+            "Команд:",
             len(
                 self.passport.passports
             )
@@ -265,9 +289,11 @@ class FAJCore:
             "=============================="
         )
 
-
         print()
 
+
+
+# ==================================================
 
 
 if __name__ == "__main__":
@@ -293,14 +319,17 @@ if __name__ == "__main__":
             "prediction":
             "X",
 
-            "fact_result":
+            "result":
             "P1",
 
-            "fact_score":
-            "2:1",
+            "predicted_score":
+            "1:1",
 
-            "notes":
-            "ЦСКА победил"
+            "home_score":
+            2,
+
+            "away_score":
+            1
 
         }
 
