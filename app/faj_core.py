@@ -2,24 +2,25 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ Platform v9.2
+FAJ Platform v9.3
 
 FAJ Core
 
-Главный управляющий модуль.
+Главное ядро адаптивной системы.
 
 Цикл:
 
-Матч
- ↓
+Match Results
+      ↓
 Round Analyzer
- ↓
+      ↓
 Memory Engine
- ↓
-Calibration
- ↓
-Passport History
-
+      ↓
+Passport Updater
+      ↓
+Learning Cycle
+      ↓
+New FAJ Version
 
 """
 
@@ -29,7 +30,6 @@ from datetime import datetime
 
 from app.memory_engine import MemoryEngine
 from app.passport_updater import PassportUpdater
-from app.round_analyzer import RoundAnalyzer
 
 
 
@@ -38,19 +38,22 @@ class FAJCore:
 
     def __init__(self):
 
-        self.version = "9.2"
+
+        self.version = "9.3"
+
 
         self.memory = MemoryEngine()
 
+
         self.passport = PassportUpdater()
 
-        self.analyzer = RoundAnalyzer()
-
-        self.processed_rounds = []
 
 
+        self.learning_cycle = 0
 
-    # ======================================
+
+
+    # =================================================
 
 
     def process_round(
@@ -64,9 +67,13 @@ class FAJCore:
 
         print("==============================")
 
-        print(" FAJ ROUND PROCESSING ")
+        print(
+            " FAJ CORE v9.3 ROUND "
+        )
 
         print("==============================")
+
+        print()
 
 
 
@@ -81,52 +88,43 @@ class FAJCore:
 
 
 
-        # защита от дублей
+        errors = 0
 
 
-        if round_number in self.processed_rounds:
+
+        for match in results:
 
 
-            print(
-                "Тур уже обработан"
+            result = self.process_match(
+                match
             )
 
 
-            return
+            if result == "ERROR":
+
+                errors += 1
 
 
 
-        # ================================
-
-        # Анализ тура
-
-
-        analysis = self.analyzer.analyze_round(
-            results
-        )
+            self.passport.update_after_match(
+                match
+            )
 
 
 
-        self.save_analysis(
-            round_number,
-            analysis
-        )
+        self.learning_cycle += 1
 
 
 
-        # ================================
-
-        # История паспортов
-
-
-        new_version = self.create_version(
+        version = self.create_version(
             round_number
         )
 
 
+
         self.passport.save_history(
 
-            new_version,
+            version,
 
             f"После тура {round_number}"
 
@@ -134,158 +132,122 @@ class FAJCore:
 
 
 
-        self.processed_rounds.append(
-            round_number
-        )
-
-
-
         print()
+
 
         print(
-            f"FAJ обновлён {new_version}"
+            "Ошибок модели:",
+            errors
         )
+
+
+        print(
+            "Learning Cycle:",
+            self.learning_cycle
+        )
+
+
+        print(
+            "FAJ Version:",
+            version
+        )
+
 
         print()
 
 
 
-    # ======================================
+        return version
 
 
-    def save_analysis(
+
+    # =================================================
+
+
+    def process_match(
         self,
-        round_number,
-        analysis
+        match
     ):
 
 
-        stats = analysis[
-            "round_stats"
-        ]
+        prediction = match.get(
+            "prediction"
+        )
 
 
-
-        # --------------------------
-
-        # MODEL MEMORY
-
-
-        self.memory.add_memory(
-
-            version=self.version,
-
-            object_type="MODEL",
-
-            object_name="FAJ",
-
-            category="Round Analysis",
-
-            observation=(
-
-                f"Тур {round_number}: "
-
-                f"{stats['correct']} из "
-
-                f"{stats['matches']}"
-
-            ),
-
-            conclusion=(
-
-                f"Точность модели "
-                f"{stats['accuracy']}"
-
-            ),
-
-            action=(
-
-                "Запустить калибровку"
-
-            ),
-
-            confidence=0.95
-
+        fact = match.get(
+            "fact_result"
         )
 
 
 
-        # --------------------------
+        if fact is None:
 
-        # Ошибки модели
-
-
-        for error in analysis[
-            "model_errors"
-        ]:
-
-
-            self.memory.add_memory(
-
-                version=self.version,
-
-                object_type="MODEL",
-
-                object_name="FAJ",
-
-                category=error[
-                    "category"
-                ],
-
-                observation=error[
-                    "observation"
-                ],
-
-                conclusion=error[
-                    "conclusion"
-                ],
-
-                action=error[
-                    "action"
-                ],
-
-                confidence=0.8
-
+            fact = match.get(
+                "result"
             )
 
 
 
-        # --------------------------
-
-        # Командные наблюдения
-
-
-        for team in analysis[
-            "team_observations"
-        ]:
+        if prediction != fact:
 
 
             self.memory.add_memory(
 
+
                 version=self.version,
 
-                object_type="TEAM",
 
-                object_name=team[
-                    "team"
-                ],
+                object_type="MODEL",
 
-                category="Round Performance",
 
-                observation=team[
-                    "observation"
-                ],
+                object_name="FAJ",
 
-                conclusion=(
 
-                    "Командный показатель "
-                    "требует проверки"
+                category="Prediction Error",
+
+
+
+                observation=(
+
+                    f"{match.get('home')} - "
+
+                    f"{match.get('away')} | "
+
+                    f"FAJ: {prediction} | "
+
+                    f"Факт: {fact} | "
+
+                    f"Счёт: "
+
+                    f"{match.get('fact_score')}"
 
                 ),
 
-                action=team[
-                    "action"
-                ],
+
+
+                conclusion=(
+
+                    match.get(
+                        "notes"
+                    )
+
+                    or
+
+                    "Требуется анализ"
+
+                ),
+
+
+
+                action=(
+
+                    "Передать ошибку "
+                    "в Calibration Engine"
+
+                ),
+
+
 
                 confidence=0.85
 
@@ -293,47 +255,68 @@ class FAJCore:
 
 
 
-        # --------------------------
-
-        # SYSTEM
-
-
-        self.memory.add_memory(
-
-            version=self.version,
-
-            object_type="SYSTEM",
-
-            object_name="Learning",
-
-            category="Cycle",
-
-            observation=(
-
-                f"Тур {round_number} "
-                "завершён"
-
-            ),
-
-            conclusion=(
-
-                "FAJ накопил новые данные"
-
-            ),
-
-            action=(
-
-                "Перейти к следующему циклу"
-
-            ),
-
-            confidence=1.0
-
-        )
+            return "ERROR"
 
 
 
-    # ======================================
+        else:
+
+
+
+            self.memory.add_memory(
+
+
+                version=self.version,
+
+
+                object_type="MODEL",
+
+
+                object_name="FAJ",
+
+
+                category="Prediction Success",
+
+
+
+                observation=(
+
+                    f"{match.get('home')} - "
+
+                    f"{match.get('away')} | "
+
+                    f"FAJ: {prediction} | "
+
+                    f"Факт: {fact}"
+
+                ),
+
+
+
+                conclusion=
+
+                "Прогноз подтверждён",
+
+
+
+                action=
+
+                "Сохранить параметры",
+
+
+
+                confidence=0.9
+
+
+            )
+
+
+
+            return "SUCCESS"
+
+
+
+    # =================================================
 
 
     def create_version(
@@ -343,23 +326,30 @@ class FAJCore:
 
 
         date = datetime.now().strftime(
+
             "%Y%m%d"
+
         )
 
 
         return (
 
             f"9.{round_number}-"
+
             f"{date}"
 
         )
 
 
 
-    # ======================================
+    # =================================================
 
 
     def status(self):
+
+
+        stats = self.memory.statistics()
+
 
 
         print()
@@ -370,20 +360,13 @@ class FAJCore:
 
 
         print(
-            f"Версия: {self.version}"
+            "Version:",
+            self.version
         )
 
 
         print(
-            "Память:",
-            len(
-                self.memory.memory
-            )
-        )
-
-
-        print(
-            "Паспорта:",
+            "Teams:",
             len(
                 self.passport.passports
             )
@@ -391,12 +374,44 @@ class FAJCore:
 
 
         print(
-            "=============================="
+            "Memory:",
+            stats["total"]
         )
 
 
+        print(
+            "Model Events:",
+            stats["model"]
+        )
 
-# ======================================
+
+        print(
+            "Team Events:",
+            stats["team"]
+        )
+
+
+        print(
+            "System Events:",
+            stats["system"]
+        )
+
+
+        print(
+            "Learning Cycle:",
+            self.learning_cycle
+        )
+
+
+        print(
+            "=============================="
+        )
+
+        print()
+
+
+
+# =================================================
 
 
 if __name__ == "__main__":
@@ -406,3 +421,43 @@ if __name__ == "__main__":
 
 
     faj.status()
+
+
+    test = [
+
+
+        {
+
+            "home":
+            "ЦСКА",
+
+
+            "away":
+            "Балтика",
+
+
+            "prediction":
+            "X",
+
+
+            "fact_result":
+            "P1",
+
+
+            "fact_score":
+            "2:1"
+
+
+        }
+
+    ]
+
+
+
+    faj.process_round(
+
+        1,
+
+        test
+
+    )
