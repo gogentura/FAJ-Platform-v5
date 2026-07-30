@@ -2,68 +2,83 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ Platform v9.1
+FAJ Platform v9.2
 
 Round Analyzer
 
-Назначение:
-
-Анализ одного тура.
+Анализ футбольного тура.
 
 Задачи:
 
 - сравнение прогноза и факта
+- расчёт точности
 - поиск ошибок модели
-- поиск сильных/слабых сторон команд
-- подготовка структурированной памяти FAJ
+- подготовка Learning Memory
+- подготовка Passport Update
 
-Цикл:
-
-Round Result
-      |
-      v
-Round Analyzer
-      |
-      +--> Model Errors
-      |
-      +--> Team Observations
-      |
-      v
-FAJ Core
 
 """
+
+
+from datetime import datetime
+
 
 
 class RoundAnalyzer:
 
 
+
     def __init__(self):
 
-        self.version = "9.1"
+        self.version = "9.2"
 
 
+        self.round_data = {}
 
-    # =====================================
+
+    # =================================================
 
 
     def analyze_round(
+
         self,
-        results
+
+        round_number,
+
+        matches
+
     ):
 
 
-        model_errors = []
+        print()
 
-        team_observations = []
+        print("==============================")
+
+        print(
+            " FAJ ROUND ANALYZER v9.2 "
+        )
+
+        print("==============================")
+
+        print()
+
 
 
         correct = 0
 
-        total = len(results)
+        errors = 0
+
+
+        error_list = []
+
+        success_list = []
+
+        team_events = []
 
 
 
-        for match in results:
+        for match in matches:
+
 
 
             prediction = match.get(
@@ -84,126 +99,86 @@ class RoundAnalyzer:
 
 
 
-            home = match.get(
-                "home",
-                "Unknown"
-            )
-
-
-            away = match.get(
-                "away",
-                "Unknown"
-            )
-
-
-            score = match.get(
-                "fact_score",
-                ""
-            )
-
-
-
-            # -----------------------------
-
-            # Проверка исхода
-
-
             if prediction == fact:
 
 
                 correct += 1
 
 
+                success_list.append({
+
+                    "match":
+
+                    f"{match.get('home')} - {match.get('away')}",
+
+
+                    "prediction":
+
+                    prediction,
+
+
+                    "fact":
+
+                    fact
+
+
+                })
+
+
+
             else:
 
 
-                model_errors.append({
-
-                    "category":
-                    "Prediction Error",
+                errors += 1
 
 
-                    "observation":
 
-                    (
-                        f"{home} - {away} | "
-                        f"FAJ: {prediction} | "
-                        f"Факт: {fact} | "
-                        f"Счёт: {score}"
+                error_list.append({
+
+                    "match":
+
+                    f"{match.get('home')} - {match.get('away')}",
+
+
+                    "prediction":
+
+                    prediction,
+
+
+                    "fact":
+
+                    fact,
+
+
+                    "score":
+
+                    match.get(
+                        "fact_score"
                     ),
 
 
-                    "conclusion":
+                    "lesson":
 
-                    self.error_reason(
+                    self.detect_lesson(
                         match
-                    ),
+                    )
 
-
-                    "action":
-
-                    "Проверить параметры модели"
 
                 })
 
 
 
-            # -----------------------------
+            team_events.extend(
 
-            # Анализ команд
+                self.detect_team_event(
+                    match
+                )
 
-
-            if fact in [
-                "P1",
-                "1"
-            ]:
-
-
-                team_observations.append({
-
-                    "team": home,
-
-
-                    "observation":
-
-                    (
-                        f"Победа над {away} "
-                        f"со счётом {score}"
-                    ),
-
-
-                    "action":
-
-                    "Проверить форму и атаку"
-
-                })
+            )
 
 
 
-            elif fact in [
-                "P2",
-                "2"
-            ]:
-
-
-                team_observations.append({
-
-                    "team": away,
-
-
-                    "observation":
-
-                    (
-                        f"Победа над {home} "
-                        f"со счётом {score}"
-                    ),
-
-
-                    "action":
-
-                    "Проверить силу команды"
-
-                })
+        total = len(matches)
 
 
 
@@ -213,77 +188,158 @@ class RoundAnalyzer:
         if total > 0:
 
             accuracy = round(
-                correct / total,
+
+                correct / total * 100,
+
                 2
+
             )
 
 
 
-        return {
+        self.round_data = {
 
 
-            "round_stats":
+            "round":
 
-            {
-
-                "matches":
-
-                total,
+            round_number,
 
 
-                "correct":
+            "date":
 
-                correct,
-
-
-                "errors":
-
-                total - correct,
+            datetime.now()
+            .strftime(
+                "%Y-%m-%d"
+            ),
 
 
-                "accuracy":
+            "version":
 
-                accuracy
-
-            },
+            self.version,
 
 
-            "model_errors":
+            "total_matches":
 
-            model_errors,
+            total,
 
 
-            "team_observations":
+            "correct":
 
-            team_observations
+            correct,
+
+
+            "errors":
+
+            errors,
+
+
+            "accuracy":
+
+            accuracy,
+
+
+            "success":
+
+            success_list,
+
+
+            "errors_list":
+
+            error_list,
+
+
+            "team_events":
+
+            team_events
+
 
         }
 
 
 
-    # =====================================
+        print(
+            f"Точность FAJ: {correct}/{total} ({accuracy}%)"
+        )
 
 
-    def error_reason(
+        print(
+            f"Ошибок: {errors}"
+        )
+
+
+        return self.round_data
+
+
+
+    # =================================================
+
+
+    def detect_lesson(
+
         self,
+
         match
+
     ):
 
 
-        notes = match.get(
-            "notes"
+        notes = (
+
+            match.get("notes")
+
+            or ""
+
+        ).lower()
+
+
+
+        if "удал" in notes:
+
+
+            return (
+
+                "Добавить влияние "
+                "красной карточки"
+
+            )
+
+
+
+        if "нич" in notes:
+
+
+            return (
+
+                "Проверить склонность "
+                "FAJ к ничьим"
+
+            )
+
+
+
+        return (
+
+            "Проверить веса модели "
+            "и параметры команды"
+
         )
 
 
-        if notes:
 
-            return notes
-
+    # =================================================
 
 
-        prediction = match.get(
-            "prediction"
-        )
+    def detect_team_event(
+
+        self,
+
+        match
+
+    ):
+
+
+        events = []
+
 
 
         fact = match.get(
@@ -291,28 +347,101 @@ class RoundAnalyzer:
         )
 
 
-        if prediction == "X":
 
-            return (
-                "FAJ переоценил вероятность ничьей"
+        if fact == "P1":
+
+
+            events.append({
+
+                "team":
+
+                match.get(
+                    "home"
+                ),
+
+
+                "impact":
+
+                "POSITIVE",
+
+
+                "reason":
+
+                "Победа дома"
+
+            })
+
+
+
+        elif fact == "P2":
+
+
+            events.append({
+
+                "team":
+
+                match.get(
+                    "away"
+                ),
+
+
+                "impact":
+
+                "POSITIVE",
+
+
+                "reason":
+
+                "Победа в гостях"
+
+            })
+
+
+
+        return events
+
+
+
+    # =================================================
+
+
+    def summary(self):
+
+
+        return {
+
+
+            "version":
+
+            self.version,
+
+
+            "round":
+
+            self.round_data.get(
+                "round"
+            ),
+
+
+            "accuracy":
+
+            self.round_data.get(
+                "accuracy"
+            ),
+
+
+            "errors":
+
+            self.round_data.get(
+                "errors"
             )
 
 
-        if prediction != fact:
-
-            return (
-                "Необходимо проверить "
-                "веса атаки, защиты и формы"
-            )
-
-
-        return (
-            "Ошибка не определена"
-        )
+        }
 
 
 
-# =====================================
+# =================================================
 
 
 if __name__ == "__main__":
@@ -323,6 +452,7 @@ if __name__ == "__main__":
 
 
     test = [
+
 
         {
 
@@ -343,7 +473,11 @@ if __name__ == "__main__":
 
 
             "fact_score":
-            "2:1"
+            "2:1",
+
+
+            "notes":
+            "ЦСКА победил"
 
         }
 
@@ -352,7 +486,11 @@ if __name__ == "__main__":
 
 
     result = analyzer.analyze_round(
+
+        1,
+
         test
+
     )
 
 
