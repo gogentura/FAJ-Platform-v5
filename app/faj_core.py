@@ -2,31 +2,33 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ Platform v9.5
+FAJ Platform v9.3
 
 FAJ Core
 
-Главный аналитический модуль.
+Главный управляющий модуль.
 
 Цикл:
 
 Team Passport
         ↓
-Strength Calculation
+FAJ Rating
         ↓
 xG Engine
         ↓
-Probability Engine
+Poisson
+        ↓
+Expert Layer
         ↓
 Prediction
         ↓
-Memory Learning
+Memory / Calibration
+
 
 """
 
 
 from datetime import datetime
-import math
 
 
 from app.passport_updater import PassportUpdater
@@ -39,14 +41,16 @@ class FAJCore:
 
     def __init__(self):
 
-        self.version = "9.5"
+        self.version = "9.3"
+
 
         self.passport = PassportUpdater()
 
         self.memory = MemoryEngine()
 
 
-        # базовые параметры FAJ
+
+        # FAJ constants
 
         self.LEAGUE_XG = 1.35
 
@@ -55,7 +59,7 @@ class FAJCore:
 
 
     # =================================================
-    # SEARCH TEAM
+    # TEAM
     # =================================================
 
 
@@ -64,6 +68,7 @@ class FAJCore:
         name
     ):
 
+
         return self.passport.find_team(
             name
         )
@@ -71,7 +76,7 @@ class FAJCore:
 
 
     # =================================================
-    # MAIN PREDICTION
+    # PREDICTION ENGINE
     # =================================================
 
 
@@ -82,21 +87,25 @@ class FAJCore:
     ):
 
 
-        home_team = self.get_team(
+        home_passport = self.get_team(
             home
         )
 
-        away_team = self.get_team(
+
+        away_passport = self.get_team(
             away
         )
 
 
-        if not home_team or not away_team:
+        if not home_passport or not away_passport:
 
 
             return {
 
-                "error":
+                "status":
+                "error",
+
+                "message":
                 "Команда не найдена"
 
             }
@@ -104,104 +113,222 @@ class FAJCore:
 
 
         # -----------------------------
-        # Passport values
+        # Passport
         # -----------------------------
 
 
+        home_strength = self.calculate_strength(
+            home_passport
+        )
+
+
+        away_strength = self.calculate_strength(
+            away_passport
+        )
+
+
+
+        # -----------------------------
+        # xG
+        # -----------------------------
+
+
+        xg_home, xg_away = self.calculate_xg(
+
+            home_passport,
+
+            away_passport
+
+        )
+
+
+
+        # -----------------------------
+        # Probability
+        # -----------------------------
+
+
+        probabilities = self.calculate_probability(
+
+            home_strength,
+
+            away_strength
+
+        )
+
+
+
+        # -----------------------------
+        # Score
+        # -----------------------------
+
+
+        score = self.poisson_score(
+
+            xg_home,
+
+            xg_away
+
+        )
+
+
+
+        # -----------------------------
+        # Expert Layer
+        # -----------------------------
+
+
+        expert = self.expert_layer(
+
+            home_passport,
+
+            away_passport
+
+        )
+
+
+
+        return {
+
+
+            "version":
+            self.version,
+
+
+            "match":
+
+            f"{home} - {away}",
+
+
+
+            "teams":
+
+            {
+
+                "home":
+                home_strength,
+
+
+                "away":
+                away_strength
+
+            },
+
+
+
+            "xG":
+
+            {
+
+                "home":
+                xg_home,
+
+
+                "away":
+                xg_away
+
+            },
+
+
+
+            "probability":
+            probabilities,
+
+
+
+            "score":
+            score,
+
+
+
+            "expert":
+            expert
+
+
+
+        }
+
+
+
+    # =================================================
+    # FAJ RATING
+    # =================================================
+
+
+    def calculate_strength(
+        self,
+        team
+    ):
+
+
+        values = [
+
+            self.num(team.get("attack")),
+
+            self.num(team.get("defense")),
+
+            self.num(team.get("control")),
+
+            self.num(team.get("efficiency")),
+
+            self.num(team.get("mentality")),
+
+            self.num(team.get("form"))
+
+        ]
+
+
+        return round(
+
+            sum(values)
+            /
+            len(values),
+
+            2
+
+        )
+
+
+
+    # =================================================
+    # xG ENGINE
+    # =================================================
+
+
+    def calculate_xg(
+        self,
+        home,
+        away
+    ):
+
+
         attack_home = self.num(
-            home_team.get(
-                "attack"
-            )
+            home.get("attack")
+        )
+
+
+        attack_away = self.num(
+            away.get("attack")
         )
 
 
         defense_home = self.num(
-            home_team.get(
-                "defense"
-            )
-        )
-
-
-        form_home = self.num(
-            home_team.get(
-                "form"
-            )
-        )
-
-
-
-        attack_away = self.num(
-            away_team.get(
-                "attack"
-            )
+            home.get("defense")
         )
 
 
         defense_away = self.num(
-            away_team.get(
-                "defense"
-            )
+            away.get("defense")
+        )
+
+
+        form_home = self.num(
+            home.get("form")
         )
 
 
         form_away = self.num(
-            away_team.get(
-                "form"
-            )
-        )
-
-
-
-        # -----------------------------
-        # xG ENGINE v9.5
-        # -----------------------------
-
-
-        home_attack_factor = (
-            1 +
-            (attack_home - 75)
-            /
-            200
-        )
-
-
-        away_attack_factor = (
-            1 +
-            (attack_away - 75)
-            /
-            200
-        )
-
-
-        home_def_factor = (
-            1 -
-            (defense_away - 75)
-            /
-            250
-        )
-
-
-        away_def_factor = (
-            1 -
-            (defense_home - 75)
-            /
-            250
-        )
-
-
-        home_form_factor = (
-            1 +
-            (form_home - 75)
-            /
-            300
-        )
-
-
-        away_form_factor = (
-            1 +
-            (form_away - 75)
-            /
-            300
+            away.get("form")
         )
 
 
@@ -210,11 +337,11 @@ class FAJCore:
 
             self.LEAGUE_XG *
 
-            home_attack_factor *
+            (1 + (attack_home-75)/200) *
 
-            home_def_factor *
+            (1 - (defense_away-75)/250) *
 
-            home_form_factor *
+            (1 + (form_home-75)/300) *
 
             self.HOME_ADVANTAGE
 
@@ -226,211 +353,153 @@ class FAJCore:
 
             self.LEAGUE_XG *
 
-            away_attack_factor *
+            (1 + (attack_away-75)/200) *
 
-            away_def_factor *
+            (1 - (defense_home-75)/250) *
 
-            away_form_factor
+            (1 + (form_away-75)/300)
 
         )
 
 
 
-        # ограничение
+        return (
 
-        xg_home = round(
-            max(
-                0.1,
-                min(
-                    xg_home,
-                    4.0
-                )
+            round(
+                self.limit_xg(xg_home),
+                2
             ),
-            2
-        )
 
-
-        xg_away = round(
-            max(
-                0.1,
-                min(
-                    xg_away,
-                    4.0
-                )
-            ),
-            2
-        )
-
-
-
-        # -----------------------------
-        # Probability Engine
-        # -----------------------------
-
-
-        strength_home = (
-
-            attack_home +
-
-            defense_home +
-
-            form_home
-
-        )
-
-
-        strength_away = (
-
-            attack_away +
-
-            defense_away +
-
-            form_away
+            round(
+                self.limit_xg(xg_away),
+                2
+            )
 
         )
 
 
 
-        total = (
+    # =================================================
+    # PROBABILITY
+    # =================================================
 
-            strength_home +
 
-            strength_away
+    def calculate_probability(
+        self,
+        home,
+        away
+    ):
 
-        )
 
+        total = home + away
 
 
         p1 = round(
-            strength_home / total * 100,
+            home/total*100,
             1
         )
 
 
         p2 = round(
-            strength_away / total * 100,
+            away/total*100,
             1
         )
 
 
         draw = round(
-            100 - p1 - p2,
+
+            100-p1-p2,
+
             1
+
         )
-
-
-
-        # -----------------------------
-        # SCORE MODEL
-        # -----------------------------
-
-
-        score = self.predict_score(
-            xg_home,
-            xg_away
-        )
-
 
 
         return {
 
 
-            "FAJ Version":
-            self.version,
+            "P1":
+            p1,
 
 
-            "match":
-
-            f"{home} - {away}",
-
+            "X":
+            draw,
 
 
-            "xG":
+            "P2":
+            p2
 
-            {
-
-                "home":
-                xg_home,
-
-                "away":
-                xg_away
-
-            },
-
-
-
-            "probability":
-
-            {
-
-                "P1":
-                p1,
-
-                "X":
-                draw,
-
-                "P2":
-                p2
-
-            },
-
-
-
-            "prediction":
-
-            score,
-
-
-            "confidence":
-
-            round(
-                max(
-                    p1,
-                    draw,
-                    p2
-                )
-                /
-                100,
-                2
-            )
 
         }
 
 
 
     # =================================================
-    # SCORE
+    # POISSON PLACEHOLDER
     # =================================================
 
 
-    def predict_score(
+    def poisson_score(
         self,
-        home_xg,
-        away_xg
+        xg_home,
+        xg_away
     ):
 
 
-        home_goals = round(
-            home_xg
-        )
+        return {
 
 
-        away_goals = round(
-            away_xg
-        )
+            "main":
+
+            f"{round(xg_home)}:{round(xg_away)}",
 
 
-        return (
 
-            f"{home_goals}:"
-            f"{away_goals}"
+            "alternatives":
 
-        )
+            [
+
+                "1:1",
+
+                "1:0",
+
+                "2:1"
+
+            ]
+
+        }
 
 
 
     # =================================================
-    # NUMBER
+    # EXPERT LAYER
+    # =================================================
+
+
+    def expert_layer(
+        self,
+        home,
+        away
+    ):
+
+
+        return {
+
+
+            "status":
+            "ACTIVE",
+
+
+            "comment":
+
+            "Экспертный слой ожидает ручной корректировки"
+
+        }
+
+
+
+    # =================================================
+    # UTILS
     # =================================================
 
 
@@ -439,15 +508,36 @@ class FAJCore:
         value
     ):
 
+
         try:
 
-            return float(
-                value
-            )
+            return float(value)
 
         except:
 
             return 70
+
+
+
+    def limit_xg(
+        self,
+        value
+    ):
+
+
+        return max(
+
+            0.1,
+
+            min(
+
+                value,
+
+                4.0
+
+            )
+
+        )
 
 
 
@@ -459,35 +549,31 @@ class FAJCore:
     def status(self):
 
 
-        print(
-            "======================"
-        )
-
-        print(
-            "FAJ CORE",
-            self.version
-        )
+        return {
 
 
-        print(
-            "Teams:",
+            "version":
+            self.version,
+
+
+            "teams":
             len(
                 self.passport.passports
-            )
-        )
+            ),
 
 
-        print(
-            "Memory:",
+            "memory":
             len(
                 self.memory.memory
+            ),
+
+
+            "date":
+            datetime.now().strftime(
+                "%Y-%m-%d"
             )
-        )
 
-
-        print(
-            "======================"
-        )
+        }
 
 
 
@@ -498,17 +584,19 @@ if __name__ == "__main__":
     faj = FAJCore()
 
 
-    faj.status()
-
-
-
-    result = faj.predict_match(
-
-        "Динамо М",
-
-        "Крылья Советов"
-
+    print(
+        faj.status()
     )
 
 
-    print(result)
+    print(
+
+        faj.predict_match(
+
+            "Динамо М",
+
+            "Крылья Советов"
+
+        )
+
+    )
