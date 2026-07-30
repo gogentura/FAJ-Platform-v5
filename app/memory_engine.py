@@ -6,22 +6,23 @@ FAJ Platform v9.2
 
 Memory Engine
 
-Adaptive Learning Core
+Назначение:
+
+Центральная память FAJ.
 
 Функции:
 
-- хранение опыта FAJ
+- хранение опыта
 - защита от дублей
-- группировка ошибок
-- анализ повторяемости
-- подготовка данных для Calibration Engine
+- анализ ошибок
+- обучение модели
+- подготовка Calibration Engine
 
 """
 
 
-from pathlib import Path
 from datetime import datetime
-import pandas as pd
+import hashlib
 
 
 
@@ -30,94 +31,55 @@ class MemoryEngine:
 
     def __init__(self):
 
+        self.version = "9.2"
 
-        self.memory_file = Path(
-            "data/faj_memory.csv"
-        )
-
-
-        self.columns = [
-
-            "id",
-            "date",
-            "version",
-            "cycle",
-            "object_type",
-            "object_name",
-            "category",
-            "observation",
-            "conclusion",
-            "action",
-            "status",
-            "confidence"
-
-        ]
-
-
-        if self.memory_file.exists():
-
-            self.memory = pd.read_csv(
-                self.memory_file,
-                encoding="utf-8-sig"
-            )
-
-
-        else:
-
-
-            self.memory = pd.DataFrame(
-                columns=self.columns
-            )
+        self.memory = []
 
 
 
-    # =================================
+    # ==================================================
 
-
-    def save(self):
-
-
-        self.memory.to_csv(
-
-            self.memory_file,
-
-            index=False,
-
-            encoding="utf-8-sig"
-
-        )
-
-
-
-    # =================================
-
-
-    def exists(
+    def generate_id(
         self,
+        object_name,
+        category,
         observation
     ):
 
+        raw = (
 
-        if len(self.memory)==0:
-
-            return False
-
-
-        result = self.memory[
-
-            self.memory["observation"]
-            ==
+            object_name +
+            category +
             observation
 
-        ]
+        )
+
+        return hashlib.md5(
+            raw.encode("utf-8")
+        ).hexdigest()[:10]
 
 
-        return len(result) > 0
+
+    # ==================================================
+
+    def exists(
+        self,
+        memory_id
+    ):
+
+
+        for item in self.memory:
+
+            if item.get("id") == memory_id:
+
+                return True
+
+
+        return False
 
 
 
-    # =================================
-
+    # ==================================================
 
     def add_memory(
 
@@ -137,304 +99,270 @@ class MemoryEngine:
 
         action,
 
-        confidence=0.8,
-
-        cycle="LEARNING"
+        confidence=0.8
 
     ):
 
 
-        # защита от дублей
+        memory_id = self.generate_id(
 
+            object_name,
 
-        if self.exists(
+            category,
+
             observation
-        ):
+
+        )
+
+
+
+        # защита от повторов
+
+        if self.exists(memory_id):
+
+            print(
+
+                "[FAJ MEMORY] Duplicate skipped:",
+
+                observation[:50]
+
+            )
 
             return False
 
 
 
-        new_id = (
-
-            len(self.memory)
-
-        )
-
-
-
-        row = {
+        record = {
 
 
             "id":
-            new_id,
+
+                memory_id,
 
 
             "date":
-            datetime.now().strftime(
-                "%Y-%m-%d"
-            ),
+
+                datetime.now()
+                .strftime(
+                    "%Y-%m-%d"
+                ),
 
 
             "version":
-            version,
 
-
-            "cycle":
-            cycle,
+                version,
 
 
             "object_type":
-            object_type,
+
+                object_type,
 
 
-            "object_name":
-            object_name,
+            "object":
+
+                object_name,
 
 
             "category":
-            category,
+
+                category,
 
 
             "observation":
-            observation,
+
+                observation,
 
 
             "conclusion":
-            conclusion,
+
+                conclusion,
 
 
             "action":
-            action,
+
+                action,
 
 
             "status":
-            "OPEN",
+
+                "OPEN",
 
 
             "confidence":
-            confidence
+
+                confidence
+
 
         }
 
 
 
-        self.memory = pd.concat(
-
-            [
-
-                self.memory,
-
-                pd.DataFrame(
-                    [row]
-                )
-
-            ],
-
-            ignore_index=True
-
+        self.memory.append(
+            record
         )
 
 
-        self.save()
+        print(
+
+            "[FAJ MEMORY] Added:",
+
+            category
+
+        )
 
 
         return True
 
 
 
-    # =================================
+    # ==================================================
 
+    def search(
 
-    def get_open_memories(self):
-
-
-        return self.memory[
-
-            self.memory["status"]
-            ==
-            "OPEN"
-
-        ]
-
-
-
-    # =================================
-
-
-    def get_model_errors(self):
-
-
-        return self.memory[
-
-            self.memory["category"]
-            .astype(str)
-            .str.contains(
-                "Error"
-            )
-
-        ]
-
-
-
-    # =================================
-
-
-    def get_team_memory(
         self,
-        team
+
+        keyword
+
     ):
 
 
-        return self.memory[
+        result = []
 
-            self.memory["object_name"]
-            ==
-            team
+
+        for item in self.memory:
+
+
+            text = (
+
+                item["observation"]
+                +
+                item["category"]
+
+            ).lower()
+
+
+
+            if keyword.lower() in text:
+
+
+                result.append(item)
+
+
+
+        return result
+
+
+
+    # ==================================================
+
+    def get_open_memory(self):
+
+
+        return [
+
+            x for x in self.memory
+
+            if x["status"] == "OPEN"
 
         ]
 
 
 
-    # =================================
+    # ==================================================
+
+    def mark_learned(
+
+        self,
+
+        memory_id
+
+    ):
 
 
-    def get_learning_summary(self):
+        for item in self.memory:
 
 
-        if len(self.memory)==0:
-
-            return {}
+            if item["id"] == memory_id:
 
 
+                item["status"] = "LEARNED"
 
-        summary = {
+                return True
+
+
+
+        return False
+
+
+
+    # ==================================================
+
+    def statistics(self):
+
+
+        model_errors = 0
+        team_events = 0
+        system_events = 0
+
+
+
+        for item in self.memory:
+
+
+            if item["object_type"] == "MODEL":
+
+                model_errors += 1
+
+
+            elif item["object_type"] == "TEAM":
+
+                team_events += 1
+
+
+            elif item["object_type"] == "SYSTEM":
+
+                system_events += 1
+
+
+
+        return {
 
 
             "total":
 
-            len(
-                self.memory
-            ),
+                len(self.memory),
 
 
-            "open":
+            "model":
 
-            len(
-                self.get_open_memories()
-            ),
+                model_errors,
 
 
-            "model_errors":
+            "team":
 
-            len(
-                self.get_model_errors()
-            )
+                team_events,
+
+
+            "system":
+
+                system_events
+
 
         }
 
 
-        return summary
+
+    # ==================================================
+
+    def export(self):
+
+
+        return self.memory
 
 
 
-    # =================================
 
-
-    def apply_memory(
-        self,
-        index
-    ):
-
-
-        self.memory.loc[
-
-            index,
-
-            "status"
-
-        ] = "APPLIED"
-
-
-
-        self.save()
-
-
-
-    # =================================
-
-
-    def clear_old_duplicates(self):
-
-
-        if len(self.memory)==0:
-
-            return
-
-
-
-        self.memory = self.memory.drop_duplicates(
-
-            subset=[
-
-                "observation"
-
-            ]
-
-        )
-
-
-
-        self.save()
-
-
-
-    # =================================
-
-
-    def summary(self):
-
-
-        data = self.get_learning_summary()
-
-
-        print()
-
-        print(
-            "========== FAJ MEMORY v9.2 =========="
-        )
-
-
-        print(
-            "Всего:",
-            data.get(
-                "total"
-            )
-        )
-
-
-        print(
-            "Открытых:",
-            data.get(
-                "open"
-            )
-        )
-
-
-        print(
-            "Ошибок модели:",
-            data.get(
-                "model_errors"
-            )
-        )
-
-
-        print(
-            "====================================="
-        )
-
-        print()
-
+# ==================================================
 
 
 if __name__ == "__main__":
@@ -442,4 +370,68 @@ if __name__ == "__main__":
 
     memory = MemoryEngine()
 
-    memory.summary()
+
+
+    memory.add_memory(
+
+        version="9.2",
+
+        object_type="MODEL",
+
+        object_name="FAJ",
+
+        category="Prediction Error",
+
+        observation=
+
+        "ЦСКА - Балтика | FAJ X | Fact P1",
+
+        conclusion=
+
+        "Переоценена вероятность ничьей",
+
+        action=
+
+        "Снизить draw weight",
+
+        confidence=0.9
+
+    )
+
+
+
+    # повтор специально
+
+    memory.add_memory(
+
+        version="9.2",
+
+        object_type="MODEL",
+
+        object_name="FAJ",
+
+        category="Prediction Error",
+
+        observation=
+
+        "ЦСКА - Балтика | FAJ X | Fact P1",
+
+        conclusion=
+
+        "Переоценена вероятность ничьей",
+
+        action=
+
+        "Снизить draw weight",
+
+        confidence=0.9
+
+    )
+
+
+
+    print()
+
+    print(
+        memory.statistics()
+    )
