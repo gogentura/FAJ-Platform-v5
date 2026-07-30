@@ -1,18 +1,21 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ Platform 9.0
+FAJ Platform 9.1
 
-Football Analytics Journal
+Football Analytics Journal Platform
 
-Главный интерфейс Streamlit
+Adaptive Football Intelligence
 
-Модули:
+Modules:
 - FAJ Database
+- FAJ Engine
 - Prediction Engine
 - FAJ Core
 - Round Loader
+
 """
+
 
 import streamlit as st
 
@@ -30,7 +33,7 @@ from app.round_loader import RoundLoader
 # ==================================================
 
 st.set_page_config(
-    page_title="FAJ Platform 9.0",
+    page_title="FAJ Platform 9.1",
     page_icon="⚽",
     layout="wide"
 )
@@ -84,12 +87,12 @@ db, engine, predictor, faj_core, loader = load_system()
 # ==================================================
 
 st.title(
-    "⚽ FAJ Platform 9.0"
+    "⚽ FAJ Platform 9.1"
 )
 
 
 st.caption(
-    "Football Analytics Journal — Adaptive Football Intelligence"
+    "Football Analytics Journal — Adaptive Football Intelligence | Learning Cycle v9.1"
 )
 
 
@@ -130,9 +133,7 @@ with st.expander(
 
         st.metric(
             "Память",
-            len(
-                faj_core.memory.memory
-            )
+            len(faj_core.memory.memory)
         )
 
 
@@ -140,9 +141,7 @@ with st.expander(
 
         st.metric(
             "История",
-            len(
-                faj_core.passport.history
-            )
+            len(faj_core.passport.history)
         )
 
 
@@ -158,15 +157,14 @@ st.divider()
 tab1, tab2, tab3 = st.tabs(
     [
         "⚽ Анализ матча",
-        "🧬 Обновление FAJ",
-        "📚 Память модели"
+        "🧬 Learning Cycle",
+        "📚 Память FAJ"
     ]
 )
 
 
 
 # ==================================================
-# TAB 1
 # MATCH ANALYSIS
 # ==================================================
 
@@ -180,14 +178,13 @@ with tab1:
 
     teams = sorted(
         [
-            team["team"]
-            for team in db.passports
+            item["team"]
+            for item in db.passports
         ]
     )
 
 
     col1, col2 = st.columns(2)
-
 
 
     with col1:
@@ -196,7 +193,6 @@ with tab1:
             "Домашняя команда",
             teams
         )
-
 
 
     with col2:
@@ -211,7 +207,7 @@ with tab1:
 
     if st.button(
         "🔮 Анализировать матч",
-        use_container_width=True
+        width="stretch"
     ):
 
 
@@ -219,7 +215,6 @@ with tab1:
             home_team,
             away_team
         )
-
 
 
         if prediction is None:
@@ -233,83 +228,85 @@ with tab1:
         else:
 
 
-            st.divider()
-
-
             st.subheader(
-                "Результат анализа"
+                "Результат FAJ"
             )
 
 
-
             c1, c2, c3 = st.columns(3)
-
 
 
             with c1:
 
                 st.metric(
                     "xG хозяев",
-                    prediction["xg_home"]
+                    prediction.get(
+                        "xg_home",
+                        "-"
+                    )
                 )
-
 
 
             with c2:
 
                 st.metric(
                     "xG гостей",
-                    prediction["xg_away"]
+                    prediction.get(
+                        "xg_away",
+                        "-"
+                    )
                 )
-
 
 
             with c3:
 
                 st.metric(
                     "Исход",
-                    prediction["result"]
+                    prediction.get(
+                        "result",
+                        "-"
+                    )
                 )
 
 
 
             st.success(
-                f"Прогнозируемый счёт: "
-                f"{prediction['score_prediction']}"
+                f"Прогноз счёта: "
+                f"{prediction.get('score_prediction','-')}"
             )
 
 
             st.info(
-                f"Модель: {prediction['model']}"
+                f"Модель: "
+                f"{prediction.get('model','FAJ Engine')}"
             )
 
 
 
 # ==================================================
-# TAB 2
-# MODEL UPDATE
+# LEARNING CYCLE
 # ==================================================
 
 with tab2:
 
 
     st.subheader(
-        "⚙️ Цикл обучения FAJ"
+        "🧬 Learning Cycle FAJ"
     )
 
 
     st.write(
         """
-FAJ выполняет цикл:
+Цикл обучения:
 
-1. Загружает результаты тура
-2. Сравнивает прогноз и факт
-3. Записывает ошибки в память
-4. Обновляет знания
-5. Создаёт новую историю паспортов
+1. Получение результатов тура
+2. Сравнение FAJ Prediction и факта
+3. Анализ ошибок
+4. Запись памяти
+5. История паспортов
+6. Подготовка к калибровке
         """
     )
-
 
 
     round_number = st.number_input(
@@ -322,7 +319,7 @@ FAJ выполняет цикл:
 
     if st.button(
         "🚀 Обработать тур",
-        use_container_width=True
+        width="stretch"
     ):
 
 
@@ -351,11 +348,9 @@ FAJ выполняет цикл:
             )
 
 
-
             st.info(
                 f"Матчей обработано: {len(round_data)}"
             )
-
 
 
         except Exception as e:
@@ -368,7 +363,6 @@ FAJ выполняет цикл:
 
 
 # ==================================================
-# TAB 3
 # MEMORY
 # ==================================================
 
@@ -376,9 +370,8 @@ with tab3:
 
 
     st.subheader(
-        "🧠 Память FAJ"
+        "📚 Память FAJ"
     )
-
 
 
     memory = faj_core.memory.memory
@@ -396,7 +389,20 @@ with tab3:
     else:
 
 
+        memory_view = memory.copy()
+
+
+        # исправление Arrow ошибки Streamlit
+
+        for column in memory_view.columns:
+
+            memory_view[column] = (
+                memory_view[column]
+                .astype(str)
+            )
+
+
         st.dataframe(
-            memory,
-            use_container_width=True
+            memory_view,
+            width="stretch"
         )
