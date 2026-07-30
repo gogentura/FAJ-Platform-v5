@@ -1,188 +1,134 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """
-FAJ Platform v9.5
+FAJ Platform v9.6
 
 Football Analytics Journal
 Adaptive Football Intelligence
 
-Главный интерфейс платформы.
-
-Цикл:
-
-Команда
-↓
-Паспорт
-↓
-Матч
-↓
-FAJ Core
-↓
-Прогноз
-↓
-Memory Engine
+UI Recovery Version
 
 """
 
 
 import streamlit as st
 import pandas as pd
+import os
 
 
-from app.faj_core import FAJCore
 from app.passport_updater import PassportUpdater
-from app.memory_engine import MemoryEngine
 
 
-
-# ==================================================
+# ==========================================
 # CONFIG
-# ==================================================
-
+# ==========================================
 
 st.set_page_config(
-
-    page_title="FAJ Platform 9.5",
-
+    page_title="FAJ Platform",
     page_icon="⚽",
-
     layout="wide"
-
 )
 
 
-
-# ==================================================
+# ==========================================
 # STYLE
-# ==================================================
-
+# ==========================================
 
 st.markdown(
 """
 <style>
 
-body {
-    background-color:#ffffff;
-}
-
 .main-title {
-
     text-align:center;
-    font-size:38px;
+    font-size:34px;
     font-weight:700;
-
 }
 
 .subtitle {
-
     text-align:center;
-    color:#666;
+    color:#777;
     font-size:18px;
-
 }
 
-
-.card {
-
-    padding:20px;
-
-    border-radius:15px;
-
-    border:1px solid #ddd;
-
-    background:#fafafa;
-
+.menu {
+    display:flex;
+    justify-content:center;
+    gap:20px;
 }
-
 
 </style>
-
 """,
 unsafe_allow_html=True
 )
 
 
 
-# ==================================================
-# INIT
-# ==================================================
+# ==========================================
+# LOAD PASSPORTS
+# ==========================================
 
 
-@st.cache_resource
-def load_system():
+@st.cache_data
+def load_passports():
 
-    return {
+    updater = PassportUpdater()
 
-        "core": FAJCore(),
-
-        "passport": PassportUpdater(),
-
-        "memory": MemoryEngine()
-
-    }
+    return updater.passports
 
 
 
-system = load_system()
-
-
-core = system["core"]
-
-passport = system["passport"]
-
-memory = system["memory"]
+passports = load_passports()
 
 
 
-# ==================================================
+teams = sorted(
+    [
+        x.get("team")
+        for x in passports
+        if x.get("team")
+    ]
+)
+
+
+
+# ==========================================
 # HEADER
-# ==================================================
+# ==========================================
 
 
 st.markdown(
-
 """
 <div class="main-title">
-⚽ FAJ Platform 9.5
+⚽ FAJ Platform 9.6
 </div>
 
 <div class="subtitle">
 Football Analytics Journal — Adaptive Football Intelligence
 </div>
-
 """,
-
 unsafe_allow_html=True
-
 )
 
 
-st.write("")
+
+st.divider()
 
 
 
-# ==================================================
-# MENU
-# ==================================================
+# ==========================================
+# CENTER MENU
+# ==========================================
 
 
-page = st.radio(
+menu = st.radio(
 
     "",
 
     [
-
         "🏠 Главная",
-
         "⚽ Матч",
-
-        "🏆 Тур",
-
-        "📖 Паспорта",
-
+        "🏟 Команды",
         "🧠 Память"
-
     ],
 
     horizontal=True
@@ -191,360 +137,101 @@ page = st.radio(
 
 
 
-# ==================================================
-# HELPERS
-# ==================================================
-
-
-def get_passport(team):
-
-    """
-    Безопасное получение паспорта.
-    Поддерживает список и словарь.
-    """
-
-    data = passport.passports
-
-
-    if isinstance(data, dict):
-
-        return data.get(team)
-
-
-    if isinstance(data, list):
-
-        for item in data:
-
-            if isinstance(item, dict):
-
-                if item.get("team") == team:
-
-                    return item
-
-
-    return None
+st.divider()
 
 
 
-
-def value(data,key):
-
-    if not data:
-
-        return 0
-
-    return data.get(key,0)
-
-
-
-# ==================================================
+# ==========================================
 # HOME
-# ==================================================
+# ==========================================
 
 
-if page=="🏠 Главная":
+if menu == "🏠 Главная":
+
+
+    st.subheader(
+        "📊 Состояние FAJ"
+    )
 
 
     col1,col2,col3,col4 = st.columns(4)
 
 
-    with col1:
-
-        st.metric(
-
-            "Версия",
-
-            "9.5"
-
-        )
-
-
-    with col2:
-
-        st.metric(
-
-            "Команды",
-
-            len(passport.passports)
-
-        )
-
-
-    with col3:
-
-        st.metric(
-
-            "Память",
-
-            len(memory.memory)
-
-        )
-
-
-    with col4:
-
-        st.metric(
-
-            "Паспорта",
-
-            len(passport.passports)
-
-        )
-
-
-
-    st.divider()
-
-
-    st.markdown(
-
-    """
-    ## FAJ Intelligence Cycle
-
-
-    ⚽ Анализ матча
-
-    ↓
-
-    📊 Расчёт вероятностей
-
-    ↓
-
-    🔮 Прогноз
-
-    ↓
-
-    🧠 Обучение на результате
-
-    ↓
-
-    📖 Обновление паспортов
-
-    """
-
+    col1.metric(
+        "Версия",
+        "9.6"
     )
 
 
-
-# ==================================================
-# MATCH
-# ==================================================
-
-
-elif page=="⚽ Матч":
-
-
-    st.header(
-        "⚽ FAJ Match Analyzer"
+    col2.metric(
+        "Команды",
+        len(teams)
     )
 
 
-    teams=[]
+    col3.metric(
+        "Паспорта",
+        len(passports)
+    )
 
 
-    for p in passport.passports:
+    memory_count = 0
 
 
-        if isinstance(p,dict):
-
-            teams.append(
-                p.get("team")
-            )
-
-
-    teams=[x for x in teams if x]
-
-
-    col1,col2=st.columns(2)
-
-
-    with col1:
-
-        home=st.selectbox(
-
-            "Домашняя команда",
-
-            teams
-
-        )
-
-
-    with col2:
-
-        away=st.selectbox(
-
-            "Гостевая команда",
-
-            teams,
-
-            index=1
-
-        )
-
-
-
-    st.divider()
-
-
-
-    c1,c2=st.columns(2)
-
-
-
-    with c1:
-
-        st.subheader(home)
-
-        hp=get_passport(home)
-
-        st.write(
-
-            "Атака:",
-            value(hp,"attack")
-
-        )
-
-        st.write(
-
-            "Защита:",
-            value(hp,"defense")
-
-        )
-
-        st.write(
-
-            "Форма:",
-            value(hp,"form")
-
-        )
-
-
-
-    with c2:
-
-        st.subheader(away)
-
-        ap=get_passport(away)
-
-        st.write(
-
-            "Атака:",
-            value(ap,"attack")
-
-        )
-
-        st.write(
-
-            "Защита:",
-            value(ap,"defense")
-
-        )
-
-        st.write(
-
-            "Форма:",
-            value(ap,"form")
-
-        )
-
-
-
-    st.divider()
-
-
-
-    if st.button(
-        "🔮 Рассчитать прогноз",
-        use_container_width=True
+    if os.path.exists(
+        "data/faj_memory.csv"
     ):
 
+        try:
 
-        st.success(
-            "FAJ Engine запущен"
-        )
-
-
-        st.info(
-
-        """
-        Модуль прогнозирования подключается через FAJ Core.
-
-        Следующий этап:
-        xG Engine + Poisson + Expert Layer
-
-        """
-
-        )
-
-
-
-# ==================================================
-# ROUND
-# ==================================================
-
-
-elif page=="🏆 Тур":
-
-
-    st.header(
-        "🏆 Анализ тура"
-    )
-
-
-    st.write(
-
-        "Последний обработанный тур"
-
-    )
-
-
-    st.metric(
-
-        "Матчей",
-
-        8
-
-    )
-
-
-    st.metric(
-
-        "Точность",
-
-        "2 / 8"
-
-    )
-
-
-
-# ==================================================
-# PASSPORTS
-# ==================================================
-
-
-elif page=="📖 Паспорта":
-
-
-    st.header(
-
-        "📖 FAJ Team Passports"
-
-    )
-
-
-    teams=[]
-
-
-    for p in passport.passports:
-
-        if isinstance(p,dict):
-
-            teams.append(
-                p.get("team")
+            df = pd.read_csv(
+                "data/faj_memory.csv"
             )
 
+            memory_count=len(df)
 
-    team=st.selectbox(
+        except:
+
+            pass
+
+
+
+    col4.metric(
+        "Память",
+        memory_count
+    )
+
+
+
+    st.info(
+        """
+FAJ Engine готов.
+
+Следующий этап:
+xG Engine
+Poisson Model
+Expert Layer
+
+"""
+    )
+
+
+
+
+# ==========================================
+# TEAM PASSPORT
+# ==========================================
+
+
+elif menu == "🏟 Команды":
+
+
+    st.subheader(
+        "🏟 FAJ Passport команды"
+    )
+
+
+    team_name = st.selectbox(
 
         "Выберите команду",
 
@@ -553,91 +240,201 @@ elif page=="📖 Паспорта":
     )
 
 
-    data=get_passport(team)
+
+    team = None
+
+
+    for t in passports:
+
+        if t.get("team") == team_name:
+
+            team=t
+            break
 
 
 
-    if data:
+    if team:
 
 
-        st.subheader(team)
-
-
-        st.write(
-
-            "Атака:",
-
-            value(data,"attack")
-
+        st.success(
+            team_name
         )
 
 
-        st.write(
+        c1,c2,c3 = st.columns(3)
 
-            "Защита:",
 
-            value(data,"defense")
 
+        c1.metric(
+            "Атака",
+            team.get(
+                "attack",
+                "-"
+            )
         )
 
 
-        st.write(
-
-            "Форма:",
-
-            value(data,"form")
-
+        c2.metric(
+            "Защита",
+            team.get(
+                "defense",
+                "-"
+            )
         )
 
 
-    else:
-
-        st.warning(
-
-            "Паспорт не найден"
-
+        c3.metric(
+            "Форма",
+            team.get(
+                "form",
+                "-"
+            )
         )
 
 
 
-# ==================================================
-# MEMORY
-# ==================================================
+        st.json(
+            team
+        )
 
 
-elif page=="🧠 Память":
+
+# ==========================================
+# MATCH
+# ==========================================
 
 
-    st.header(
+elif menu == "⚽ Матч":
 
-        "🧠 FAJ Learning Memory"
+
+    st.subheader(
+        "⚽ FAJ Match Analyzer"
+    )
+
+
+
+    home = st.selectbox(
+
+        "Домашняя команда",
+
+        teams,
+
+        index=0
 
     )
 
 
-    if memory.memory:
+
+    away = st.selectbox(
+
+        "Гостевая команда",
+
+        teams,
+
+        index=min(
+            1,
+            len(teams)-1
+        )
+
+    )
 
 
-        df=pd.DataFrame(
 
-            memory.memory
+    if st.button(
+        "🔮 Рассчитать FAJ прогноз"
+    ):
 
+
+        st.warning(
+            """
+Модуль прогноза подключается.
+
+FAJ Core → xG → Poisson → Expert Layer
+
+"""
         )
 
 
-        st.dataframe(
-
-            df,
-
-            use_container_width=True
-
+        st.write(
+            "Матч:",
+            home,
+            "-",
+            away
         )
 
 
-    else:
+
+
+# ==========================================
+# MEMORY
+# ==========================================
+
+
+elif menu == "🧠 Память":
+
+
+    st.subheader(
+        "🧠 FAJ Learning Memory"
+    )
+
+
+    files = [
+
+        "data/faj_memory.csv",
+
+        "data/passport_history_v9.csv"
+
+    ]
+
+
+    loaded=False
+
+
+
+    for file in files:
+
+
+        if os.path.exists(file):
+
+
+            try:
+
+                df=pd.read_csv(file)
+
+
+                st.dataframe(
+                    df,
+                    use_container_width=True
+                )
+
+
+                loaded=True
+
+
+                break
+
+
+            except Exception as e:
+
+
+                st.error(
+                    str(e)
+                )
+
+
+
+    if not loaded:
+
 
         st.info(
-
-            "Память пуста"
-
+            "Память пока пуста"
         )
+
+
+
+st.divider()
+
+
+st.caption(
+    "FAJ Platform 9.6 — UI Recovery"
+)
