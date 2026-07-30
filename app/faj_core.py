@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ Platform v9.3.1
+FAJ Platform v9.3.2
 
 FAJ Core
 
@@ -10,7 +10,7 @@ FAJ Core
 
 Цикл:
 
-Матч
+Match
  ↓
 Prediction
  ↓
@@ -40,7 +40,7 @@ class FAJCore:
 
     def __init__(self):
 
-        self.version = "9.3.1"
+        self.version = "9.3.2"
 
 
         self.memory = MemoryEngine()
@@ -118,7 +118,7 @@ class FAJCore:
 
                     action=(
 
-                        "Калибровка FAJ"
+                        "Запустить калибровку"
 
                     ),
 
@@ -140,31 +140,31 @@ class FAJCore:
         )
 
 
+
         self.passport.save_history(
 
             version,
 
-            f"Тур {round_number}"
+            f"Обработка тура {round_number}"
 
         )
+
 
 
         return {
 
 
             "round":
-
             round_number,
 
 
             "errors":
-
             errors,
 
 
             "version":
-
             version
+
 
         }
 
@@ -194,7 +194,7 @@ class FAJCore:
 
 
     # =====================================
-    # STATUS ДЛЯ STREAMLIT
+    # STATUS API ДЛЯ STREAMLIT
     # =====================================
 
 
@@ -209,7 +209,6 @@ class FAJCore:
             "memory"
         ):
 
-
             memory_count = len(
                 self.memory.memory
             )
@@ -223,7 +222,6 @@ class FAJCore:
             self.passport,
             "passports"
         ):
-
 
             teams = len(
                 self.passport.passports
@@ -248,10 +246,19 @@ class FAJCore:
             for item in self.memory.memory:
 
 
+                if not isinstance(
+                    item,
+                    dict
+                ):
+                    continue
+
+
+
                 obj = item.get(
                     "object_type",
                     ""
                 )
+
 
 
                 if obj == "MODEL":
@@ -259,9 +266,11 @@ class FAJCore:
                     model_events += 1
 
 
+
                 elif obj == "TEAM":
 
                     team_events += 1
+
 
 
                 elif obj == "SYSTEM":
@@ -312,12 +321,79 @@ class FAJCore:
 
 
 
+    # =====================================
+    # STATUS ДЛЯ ТЕРМИНАЛА
+    # =====================================
+
+
+    def print_status(self):
+
+
+        data = self.status()
+
+
+
+        print()
+
+        print(
+            "========== FAJ CORE =========="
+        )
+
+
+        print(
+            "Version:",
+            data["version"]
+        )
+
+
+        print(
+            "Teams:",
+            data["teams"]
+        )
+
+
+        print(
+            "Memory:",
+            data["memory"]
+        )
+
+
+        print(
+            "Model Events:",
+            data["model_events"]
+        )
+
+
+        print(
+            "Team Events:",
+            data["team_events"]
+        )
+
+
+        print(
+            "System Events:",
+            data["system_events"]
+        )
+
+
+        print(
+            "=============================="
+        )
+
+
+        print()
+
+
+
+# =====================================
+# TEST
+# =====================================
+
+
 if __name__ == "__main__":
 
 
     faj = FAJCore()
 
 
-    print(
-        faj.status()
-    )
+    faj.print_status()
