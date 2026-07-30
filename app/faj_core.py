@@ -10,15 +10,16 @@ FAJ Core
 
 Цикл:
 
-Match
+Матч
  ↓
 Round Analyzer
  ↓
-FAJ Core
- ↓
 Memory Engine
  ↓
+Calibration
+ ↓
 Passport History
+
 
 """
 
@@ -37,21 +38,19 @@ class FAJCore:
 
     def __init__(self):
 
-
         self.version = "9.2"
-
 
         self.memory = MemoryEngine()
 
-
         self.passport = PassportUpdater()
-
 
         self.analyzer = RoundAnalyzer()
 
+        self.processed_rounds = []
 
 
-    # =====================================
+
+    # ======================================
 
 
     def process_round(
@@ -65,14 +64,10 @@ class FAJCore:
 
         print("==============================")
 
-        print(
-            " FAJ ROUND PROCESSING v9.2 "
-        )
+        print(" FAJ ROUND PROCESSING ")
 
         print("==============================")
 
-
-        print()
 
 
         print(
@@ -86,7 +81,24 @@ class FAJCore:
 
 
 
-        # 1. Анализ тура
+        # защита от дублей
+
+
+        if round_number in self.processed_rounds:
+
+
+            print(
+                "Тур уже обработан"
+            )
+
+
+            return
+
+
+
+        # ================================
+
+        # Анализ тура
 
 
         analysis = self.analyzer.analyze_round(
@@ -95,78 +107,117 @@ class FAJCore:
 
 
 
+        self.save_analysis(
+            round_number,
+            analysis
+        )
+
+
+
+        # ================================
+
+        # История паспортов
+
+
+        new_version = self.create_version(
+            round_number
+        )
+
+
+        self.passport.save_history(
+
+            new_version,
+
+            f"После тура {round_number}"
+
+        )
+
+
+
+        self.processed_rounds.append(
+            round_number
+        )
+
+
+
+        print()
+
+        print(
+            f"FAJ обновлён {new_version}"
+        )
+
+        print()
+
+
+
+    # ======================================
+
+
+    def save_analysis(
+        self,
+        round_number,
+        analysis
+    ):
+
+
         stats = analysis[
             "round_stats"
         ]
 
 
 
-        print()
+        # --------------------------
 
-        print(
-            "Точность:",
-            stats["accuracy"]
+        # MODEL MEMORY
+
+
+        self.memory.add_memory(
+
+            version=self.version,
+
+            object_type="MODEL",
+
+            object_name="FAJ",
+
+            category="Round Analysis",
+
+            observation=(
+
+                f"Тур {round_number}: "
+
+                f"{stats['correct']} из "
+
+                f"{stats['matches']}"
+
+            ),
+
+            conclusion=(
+
+                f"Точность модели "
+                f"{stats['accuracy']}"
+
+            ),
+
+            action=(
+
+                "Запустить калибровку"
+
+            ),
+
+            confidence=0.95
+
         )
 
 
 
-        # 2. Записываем системные выводы
+        # --------------------------
+
+        # Ошибки модели
 
 
-        self.save_model_memory(
-            analysis
-        )
-
-
-
-        # 3. Командные наблюдения
-
-
-        self.save_team_memory(
-            analysis
-        )
-
-
-
-        # 4. История паспортов
-
-
-        version = self.create_version(
-            round_number
-        )
-
-
-        self.passport.save_history(
-            version,
-            f"После тура {round_number}"
-        )
-
-
-
-        print()
-
-        print(
-            f"FAJ обновлён: {version}"
-        )
-
-
-        print()
-
-
-
-    # =====================================
-
-
-    def save_model_memory(
-        self,
-        analysis
-    ):
-
-
-        for item in analysis[
+        for error in analysis[
             "model_errors"
         ]:
-
 
 
             self.memory.add_memory(
@@ -177,42 +228,34 @@ class FAJCore:
 
                 object_name="FAJ",
 
-                category=item[
+                category=error[
                     "category"
                 ],
 
-
-                observation=item[
+                observation=error[
                     "observation"
                 ],
 
-
-                conclusion=item[
+                conclusion=error[
                     "conclusion"
                 ],
 
-
-                action=item[
+                action=error[
                     "action"
                 ],
 
-
-                confidence=0.9
+                confidence=0.8
 
             )
 
 
 
-    # =====================================
+        # --------------------------
+
+        # Командные наблюдения
 
 
-    def save_team_memory(
-        self,
-        analysis
-    ):
-
-
-        for item in analysis[
+        for team in analysis[
             "team_observations"
         ]:
 
@@ -223,26 +266,26 @@ class FAJCore:
 
                 object_type="TEAM",
 
-                object_name=item[
+                object_name=team[
                     "team"
                 ],
 
+                category="Round Performance",
 
-                category="Round Analysis",
-
-
-                observation=item[
+                observation=team[
                     "observation"
                 ],
 
+                conclusion=(
 
-                conclusion="Командный фактор обновляется",
+                    "Командный показатель "
+                    "требует проверки"
 
+                ),
 
-                action=item[
+                action=team[
                     "action"
                 ],
-
 
                 confidence=0.85
 
@@ -250,7 +293,47 @@ class FAJCore:
 
 
 
-    # =====================================
+        # --------------------------
+
+        # SYSTEM
+
+
+        self.memory.add_memory(
+
+            version=self.version,
+
+            object_type="SYSTEM",
+
+            object_name="Learning",
+
+            category="Cycle",
+
+            observation=(
+
+                f"Тур {round_number} "
+                "завершён"
+
+            ),
+
+            conclusion=(
+
+                "FAJ накопил новые данные"
+
+            ),
+
+            action=(
+
+                "Перейти к следующему циклу"
+
+            ),
+
+            confidence=1.0
+
+        )
+
+
+
+    # ======================================
 
 
     def create_version(
@@ -266,14 +349,14 @@ class FAJCore:
 
         return (
 
-            f"9.{round_number}."
+            f"9.{round_number}-"
             f"{date}"
 
         )
 
 
 
-    # =====================================
+    # ======================================
 
 
     def status(self):
@@ -287,8 +370,7 @@ class FAJCore:
 
 
         print(
-            "Версия:",
-            self.version
+            f"Версия: {self.version}"
         )
 
 
@@ -301,7 +383,7 @@ class FAJCore:
 
 
         print(
-            "Команд:",
+            "Паспорта:",
             len(
                 self.passport.passports
             )
@@ -314,7 +396,7 @@ class FAJCore:
 
 
 
-# =====================================
+# ======================================
 
 
 if __name__ == "__main__":
