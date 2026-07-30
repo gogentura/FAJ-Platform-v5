@@ -2,26 +2,28 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ Platform v9.7
-
-Streamlit Interface
+FAJ Platform v9.7.1
 
 Football Analytics Journal
 Adaptive Football Intelligence
+
+Streamlit Interface
 
 """
 
 
 import streamlit as st
+import pandas as pd
 
 
 from app.faj_core import FAJCore
+from app.passport_updater import PassportUpdater
 
 
 
-# ==================================================
+# ======================================
 # CONFIG
-# ==================================================
+# ======================================
 
 
 st.set_page_config(
@@ -36,66 +38,12 @@ st.set_page_config(
 
 
 
-# ==================================================
-# STYLE
-# ==================================================
-
-
-st.markdown(
-
-"""
-<style>
-
-.main {
-
-    background-color: #ffffff;
-
-}
-
-
-.block-container {
-
-    padding-top:2rem;
-
-}
-
-
-.faj-card {
-
-    background:#f5f7fa;
-
-    padding:20px;
-
-    border-radius:12px;
-
-    margin-top:15px;
-
-}
-
-
-.center {
-
-    text-align:center;
-
-}
-
-</style>
-
-""",
-
-unsafe_allow_html=True
-
-)
-
-
-
-# ==================================================
+# ======================================
 # INIT
-# ==================================================
+# ======================================
 
 
 @st.cache_resource
-
 def load_core():
 
     return FAJCore()
@@ -106,80 +54,36 @@ core = load_core()
 
 
 
-# ==================================================
-# TRANSLATION
-# ==================================================
+passport = core.passport
 
-
-TRANSLATE = {
-
-
-"attack":"Атака",
-
-"defense":"Защита",
-
-"control":"Контроль",
-
-"efficiency":"Эффективность",
-
-"mentality":"Ментальность",
-
-"tempo":"Темп",
-
-"press":"Прессинг",
-
-"predictability":"Предсказуемость",
-
-"flexibility":"Гибкость",
-
-"home_power":"Домашняя сила",
-
-"coach":"Тренер",
-
-"form":"Форма",
-
-"transfer_index":"Трансферы",
-
-"depth":"Глубина состава",
-
-"uncertainty":"Неопределенность"
-
-
-
-}
-
-
-
-# ==================================================
-# HEADER
-# ==================================================
-
-
-st.title(
-
-"⚽ FAJ Platform 9.7"
-
-)
-
-
-st.caption(
-
-"Football Analytics Journal — Adaptive Football Intelligence"
-
-)
-
-
-
-# ==================================================
-# STATUS
-# ==================================================
 
 
 status = core.status()
 
 
 
-col1,col2,col3,col4 = st.columns(4)
+# ======================================
+# HEADER
+# ======================================
+
+
+st.title(
+    "⚽ FAJ Platform 9.3.1"
+)
+
+
+st.caption(
+    "Football Analytics Journal — Adaptive Football Intelligence"
+)
+
+
+
+# ======================================
+# STATUS BLOCK
+# ======================================
+
+
+col1, col2, col3, col4 = st.columns(4)
 
 
 
@@ -189,9 +93,14 @@ with col1:
 
         "Версия",
 
-        status["version"]
+        status.get(
+            "version",
+            "9.3.1"
+
+        )
 
     )
+
 
 
 with col2:
@@ -200,9 +109,14 @@ with col2:
 
         "Команды",
 
-        status["teams"]
+        status.get(
+            "teams",
+            0
+
+        )
 
     )
+
 
 
 with col3:
@@ -211,18 +125,27 @@ with col3:
 
         "Память",
 
-        status["memory"]
+        status.get(
+            "memory",
+            0
+
+        )
 
     )
+
 
 
 with col4:
 
     st.metric(
 
-        "Дата",
+        "Паспорта",
 
-        status["date"]
+        status.get(
+            "passports",
+            0
+
+        )
 
     )
 
@@ -232,281 +155,140 @@ st.divider()
 
 
 
-# ==================================================
+# ======================================
 # TEAM SELECT
-# ==================================================
+# ======================================
+
+
+st.subheader(
+    "⚽ Выбор команды"
+)
+
+
+
+teams = []
+
+
+
+if hasattr(
+    passport,
+    "passports"
+):
+
+
+    for item in passport.passports:
+
+
+        if isinstance(
+            item,
+            dict
+        ):
+
+
+            name = item.get(
+                "team"
+            )
+
+
+            if name:
+
+                teams.append(
+                    name
+                )
+
+
+
+teams = sorted(
+    list(
+        set(
+            teams
+        )
+    )
+)
+
+
+
+if not teams:
+
+
+    teams = [
+
+        "Зенит",
+
+        "Спартак",
+
+        "ЦСКА",
+
+        "Динамо М"
+
+    ]
+
+
+
+selected_team = st.selectbox(
+
+    "Команда",
+
+    teams
+
+)
+
+
+
+# ======================================
+# PASSPORT
+# ======================================
+
+
+st.divider()
 
 
 st.subheader(
 
-"🎯 Выбор матча"
+    f"📘 FAJ Passport — {selected_team}"
 
 )
 
 
 
-teams=[]
+team_data = None
 
 
 
-for team in core.passport.passports:
+for item in passport.passports:
 
 
-    if isinstance(team,dict):
-
-        name = team.get("team")
-
-        if name:
-
-            teams.append(name)
-
-
-
-teams = sorted(teams)
-
-
-
-col1,col2 = st.columns(2)
-
-
-
-with col1:
-
-
-    home = st.selectbox(
-
-        "🏠 Хозяева",
-
-        teams
-
-    )
-
-
-with col2:
-
-
-    away = st.selectbox(
-
-        "✈️ Гости",
-
-        teams,
-
-        index=1
-
-    )
-
-
-
-# ==================================================
-# PASSPORT DISPLAY
-# ==================================================
-
-
-def show_passport(team_name):
-
-
-    passport = core.get_team(
-        team_name
-    )
-
-
-    if passport is None:
-
-        st.warning(
-
-            "Паспорт не найден"
-
-        )
-
-        return
-
-
-
-    st.markdown(
-
-    f"""
-
-    <div class="faj-card">
-
-    <h3>📘 FAJ Passport — {team_name}</h3>
-
-    </div>
-
-    """,
-
-    unsafe_allow_html=True
-
-    )
-
-
-    cols = st.columns(3)
-
-
-
-    count=0
-
-
-    for key,value in passport.items():
-
-
-        if key=="team":
-
-            continue
-
-
-
-        title = TRANSLATE.get(
-
-            key,
-
-            key
-
-        )
-
-
-        cols[count%3].metric(
-
-            title,
-
-            value
-
-        )
-
-
-        count+=1
-
-
-
-
-
-# ==================================================
-# PASSPORT BUTTONS
-# ==================================================
-
-
-with st.expander(
-
-"📘 Паспорт хозяев"
-
-):
-
-    show_passport(home)
-
-
-
-with st.expander(
-
-"📘 Паспорт гостей"
-
-):
-
-    show_passport(away)
-
-
-
-st.divider()
-
-
-
-# ==================================================
-# PREDICT
-# ==================================================
-
-
-st.markdown(
-
-"""
-
-<div class="center">
-
-<h2>🤖 FAJ Engine</h2>
-
-</div>
-
-""",
-
-unsafe_allow_html=True
-
-)
-
-
-
-if st.button(
-
-"⚡ Рассчитать прогноз",
-
-use_container_width=True
-
-):
-
-
-    with st.spinner(
-
-        "FAJ Core → xG → Poisson → Expert Layer"
-
+    if isinstance(
+        item,
+        dict
     ):
 
 
-        prediction = core.predict_match(
-
-            home,
-
-            away
-
-        )
+        if item.get(
+            "team"
+        ) == selected_team:
 
 
-
-    st.success(
-
-        "Прогноз рассчитан"
-
-    )
+            team_data = item
 
 
 
-    st.markdown(
-
-    """
-
-    <div class="faj-card">
-
-    <h3>⚽ FAJ Prediction</h3>
-
-    </div>
-
-    """,
-
-    unsafe_allow_html=True
-
-    )
+if team_data:
 
 
-
-    st.write(
-
-        "Матч:",
-
-        prediction["match"]
-
-    )
-
-
-
-    # xG
-
-
-    c1,c2 = st.columns(2)
-
+    c1,c2,c3 = st.columns(3)
 
 
     with c1:
 
         st.metric(
 
-            "xG хозяева",
+            "Атака",
 
-            prediction["xG"]["home"]
+            team_data.get(
+                "attack",
+                "-"
+            )
 
         )
 
@@ -515,81 +297,275 @@ use_container_width=True
 
         st.metric(
 
-            "xG гости",
+            "Защита",
 
-            prediction["xG"]["away"]
+            team_data.get(
+                "defense",
+                "-"
+            )
+
+        )
+
+
+    with c3:
+
+        st.metric(
+
+            "Форма",
+
+            team_data.get(
+                "form",
+                "-"
+            )
 
         )
 
 
 
-    st.subheader(
+    with st.expander(
+        "Полный паспорт"
+    ):
 
-        "Вероятности"
+
+        df = pd.DataFrame(
+
+            [
+
+                team_data
+
+            ]
+
+        )
+
+
+        st.dataframe(
+
+            df,
+
+            width="stretch"
+
+        )
+
+
+
+else:
+
+
+    st.warning(
+
+        "Паспорт команды не найден"
 
     )
 
 
-    st.json(
 
-        prediction["probability"]
-
-    )
-
+# ======================================
+# PREDICTION
+# ======================================
 
 
-    st.subheader(
+st.divider()
 
-        "Основной счет"
+
+st.subheader(
+    "🔮 FAJ Prediction Engine"
+)
+
+
+
+home = selected_team
+
+
+
+away = st.selectbox(
+
+    "Соперник",
+
+    [
+
+        x for x in teams
+
+        if x != home
+
+    ]
+
+)
+
+
+
+if st.button(
+
+    "Рассчитать прогноз",
+
+    type="primary"
+
+):
+
+
+    st.success(
+
+        "FAJ Engine запущен"
 
     )
 
 
     st.info(
 
-        prediction["score"]["main"]
+        f"""
+Матч:
+
+{home} — {away}
+
+
+Цикл:
+
+FAJ Core
+
+↓
+
+xG Engine
+
+↓
+
+Poisson Model
+
+↓
+
+Expert Layer
+
+"""
 
     )
 
 
 
-    st.subheader(
+    # временный результат
 
-        "Экспертный слой"
+    st.metric(
 
-    )
+        "Ожидаемый исход",
 
-
-    st.write(
-
-        prediction["expert"]["comment"]
+        "Расчётный модуль подключается"
 
     )
 
 
 
-# ==================================================
-# FOOTER
-# ==================================================
+# ======================================
+# MEMORY
+# ======================================
 
 
 st.divider()
 
 
-st.markdown(
+st.subheader(
+
+    "🧠 Learning Memory"
+
+)
+
+
+
+memory_count = status.get(
+
+    "memory",
+
+    0
+
+)
+
+
+
+st.write(
+
+    f"""
+
+Записей памяти FAJ:
+
+**{memory_count}**
 
 """
 
-<div class="center">
+)
 
-FAJ Platform 9.7<br>
 
-Adaptive Football Intelligence
 
-</div>
+# ======================================
+# EVENTS
+# ======================================
 
-""",
 
-unsafe_allow_html=True
+st.subheader(
+
+    "📊 Системные события"
+
+)
+
+
+
+e1,e2,e3 = st.columns(3)
+
+
+
+with e1:
+
+    st.metric(
+
+        "Ошибки модели",
+
+        status.get(
+
+            "model_events",
+
+            0
+
+        )
+
+    )
+
+
+with e2:
+
+    st.metric(
+
+        "Командные события",
+
+        status.get(
+
+            "team_events",
+
+            0
+
+        )
+
+    )
+
+
+with e3:
+
+    st.metric(
+
+        "Система",
+
+        status.get(
+
+            "system_events",
+
+            0
+
+        )
+
+    )
+
+
+
+st.divider()
+
+
+
+st.caption(
+
+    "FAJ Platform 9.3.1 | Adaptive Football Intelligence"
 
 )
