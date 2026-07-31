@@ -1,1 +1,5 @@
-
+{
+  "version": "10.0",
+  "base_xg": 1.35,
+  "home_advantage": 1.12
+}
