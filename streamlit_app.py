@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-FAJ Platform v10.0
+FAJ Platform v10.1
 Football Analytics Journal
 Adaptive Football Intelligence
 Professional Match Center Interface
@@ -9,12 +9,13 @@ Professional Match Center Interface
 import streamlit as st
 import pandas as pd
 from app.faj_core import FAJCore
+from app.prediction import FAJPrediction  # <-- НОВЫЙ ИМПОРТ
 
 # =====================================================
 # CONFIG
 # =====================================================
 st.set_page_config(
-    page_title="FAJ Platform 10.0",
+    page_title="FAJ Platform 10.1",
     page_icon="⚽",
     layout="wide"
 )
@@ -28,7 +29,7 @@ def get_core():
 
 core = get_core()
 status = core.status() if hasattr(core, 'status') else {
-    "version": "10.0",
+    "version": "10.1",
     "teams": 0,
     "memory": 0,
     "passports": 0,
@@ -38,6 +39,11 @@ status = core.status() if hasattr(core, 'status') else {
 }
 
 passport = getattr(core, "passport", None)
+
+# =====================================================
+# PREDICTION ENGINE  <-- НОВЫЙ БЛОК
+# =====================================================
+prediction_engine = FAJPrediction(passport)
 
 # =====================================================
 # STYLE
@@ -79,7 +85,7 @@ unsafe_allow_html=True
 st.markdown(
 """
 <div class="big-title">
-⚽ FAJ PLATFORM 10.0
+⚽ FAJ PLATFORM 10.1
 </div>
 <div class="subtitle">
 Football Analytics Journal — Adaptive Football Intelligence
@@ -129,7 +135,7 @@ if not teams:
     ]
 
 # =====================================================
-# MATCH CENTER
+# MATCH CENTER  <-- ОБНОВЛЕННЫЙ БЛОК
 # =====================================================
 if section == "🏟 Матч-центр":
     st.header("🏟 Центр прогнозирования")
@@ -144,63 +150,63 @@ if section == "🏟 Матч-центр":
     st.write("")
     
     if st.button("🔮 Рассчитать прогноз", use_container_width=True):
-        st.markdown(
-        f"""
-        <div class="card">
-        <h2>{home} ⚔️ {away}</h2>
-        <h3>FAJ Prediction</h3>
-        </div>
-        """,
-        unsafe_allow_html=True
-        )
-        st.info(
+        with st.spinner("FAJ анализирует матч..."):
+            result = prediction_engine.predict(home, away)
+        
+        if "error" in result:
+            st.error(result["error"])
+        else:
+            st.success("FAJ Prediction завершён")
+            st.divider()
+            
+            st.subheader("🔮 Итоговый прогноз FAJ")
+            col1,col2,col3 = st.columns(3)
+            probs = result["probability"]
+            with col1:
+                st.metric("Победа хозяев", f'{probs["P1"]}%')
+            with col2:
+                st.metric("Ничья", f'{probs["X"]}%')
+            with col3:
+                st.metric("Победа гостей", f'{probs["P2"]}%')
+            
+            st.divider()
+            st.subheader("⚽ Ожидаемый xG")
+            xg1,xg2 = st.columns(2)
+            with xg1:
+                st.metric(home, result["xg"]["home_xg"])
+            with xg2:
+                st.metric(away, result["xg"]["away_xg"])
+            
+            st.divider()
+            st.subheader("🎯 Вероятные счета")
+            score_df = pd.DataFrame(result["scores"])
+            score_df.columns = ["Счет", "Вероятность %"]
+            st.dataframe(
+                score_df,
+                hide_index=True,
+                use_container_width=True
+            )
+            
+            st.divider()
+            st.subheader("📊 Confidence Index")
+            confidence = result["confidence"] / 100
+            st.progress(confidence)
+            st.write(f'{result["confidence"]}%')
+            
+            st.divider()
+            st.subheader("🧠 Почему FAJ выбрал такой прогноз")
+            st.write(
+f"""
+FAJ анализирует:
+✓ силу атаки {home}
+✓ баланс защиты {away}
+✓ текущую форму команд
+✓ домашний фактор
+✓ паспорт команды
+Версия модели:
+FAJ Prediction {result["version"]}
 """
-Цикл анализа:
-FAJ Core
-↓
-xG Engine
-↓
-Poisson Model
-↓
-Expert Layer
-↓
-Final Prediction
-"""
-        )
-        c1,c2,c3 = st.columns(3)
-        with c1:
-            st.metric("Победа хозяев", "—")
-        with c2:
-            st.metric("Ничья", "—")
-        with c3:
-            st.metric("Победа гостей", "—")
-        
-        st.subheader("⚽ Ожидаемый xG")
-        x1,x2 = st.columns(2)
-        with x1:
-            st.metric(home, "—")
-        with x2:
-            st.metric(away, "—")
-        
-        st.subheader("🎯 Вероятные счета")
-        st.write("""
-        1:0
-        1:1
-        2:1
-        2:0
-        0:0
-        """)
-        
-        st.subheader("Почему FAJ выбрал такой прогноз")
-        st.write("""
-        ✔ Форма команд
-        ✔ Паспорт силы
-        ✔ Атакующий рейтинг
-        ✔ Защитный баланс
-        ✔ Домашний фактор
-        """)
-        st.progress(0)
-        st.caption("Confidence Index: модуль расчета подключается")
+            )
 
 # =====================================================
 # TEAMS / PASSPORT CENTER
@@ -380,7 +386,7 @@ elif section == "⚙️ Система":
     
     c1,c2,c3,c4 = st.columns(4)
     with c1:
-        st.metric("Версия", status.get("version", "10.0"))
+        st.metric("Версия", status.get("version", "10.1"))
     with c2:
         st.metric("Команды", status.get("teams", 0))
     with c3:
@@ -393,6 +399,7 @@ elif section == "⚙️ Система":
     modules = {
         "FAJ Core": "🟢 Активен",
         "Passport Engine": "🟢 Активен",
+        "Prediction Engine": "🟢 Активен",  # <-- НОВЫЙ МОДУЛЬ
         "Memory Engine": "🟡 Ожидает данные",
         "xG Engine": "🟡 Подключается",
         "Poisson Model": "🟡 Подключается",
@@ -415,4 +422,4 @@ elif section == "⚙️ Система":
 # FOOTER
 # =====================================================
 st.divider()
-st.caption("⚽ FAJ Platform 10.0 | Adaptive Football Intelligence")
+st.caption("⚽ FAJ Platform 10.1 | Adaptive Football Intelligence")
