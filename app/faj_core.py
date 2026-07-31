@@ -2,27 +2,29 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ Platform v9.3.2
+FAJ Platform v10.0
 
 FAJ Core
 
-Главный управляющий модуль.
+Главный управляющий модуль платформы.
 
-Цикл:
+Pipeline:
 
 Match
  ↓
-Prediction
+Passport Engine
  ↓
-Fact Result
+Prediction Engine
  ↓
-Memory Engine
+xG Engine
  ↓
-Calibration
+Poisson
  ↓
-Passport Update
+Expert Layer
  ↓
-History
+Memory
+ ↓
+Journal
 
 """
 
@@ -32,15 +34,18 @@ from datetime import datetime
 
 from app.memory_engine import MemoryEngine
 from app.passport_updater import PassportUpdater
+from app.prediction import FAJPrediction
 
 
 
 class FAJCore:
 
 
+
     def __init__(self):
 
-        self.version = "9.3.2"
+
+        self.version = "10.0"
 
 
         self.memory = MemoryEngine()
@@ -49,33 +54,257 @@ class FAJCore:
         self.passport = PassportUpdater()
 
 
+        self.prediction = FAJPrediction(
+
+            self.passport
+
+        )
+
+
 
     # =====================================
-    # ОБРАБОТКА ТУРА
+    # MATCH PREDICTION API
+    # =====================================
+
+
+    def predict_match(
+
+        self,
+
+        home,
+
+        away
+
+    ):
+
+
+        result = self.prediction.predict(
+
+            home,
+
+            away
+
+        )
+
+
+
+        if "error" in result:
+
+
+            return {
+
+
+                "status":
+                "error",
+
+
+                "message":
+                result["error"]
+
+            }
+
+
+
+        explanation = self.generate_explanation(
+
+            result
+
+        )
+
+
+
+        result["explanation"] = explanation
+
+
+        result["timestamp"] = datetime.now().strftime(
+
+            "%Y-%m-%d %H:%M"
+
+        )
+
+
+        return {
+
+
+            "status":
+
+            "success",
+
+
+            "data":
+
+            result
+
+        }
+
+
+
+    # =====================================
+    # EXPLANATION LAYER
+    # =====================================
+
+
+    def generate_explanation(
+
+        self,
+
+        result
+
+    ):
+
+
+        reasons = []
+
+
+
+        xg = result.get(
+
+            "xg",
+
+            {}
+
+        )
+
+
+        probability = result.get(
+
+            "probability",
+
+            {}
+
+        )
+
+
+
+        if xg.get(
+
+            "home_xg",
+
+            0
+
+        ) > xg.get(
+
+            "away_xg",
+
+            0
+
+        ):
+
+
+            reasons.append(
+
+                "Преимущество атаки хозяев"
+
+            )
+
+
+        else:
+
+
+            reasons.append(
+
+                "Гостевая атака выглядит сильнее"
+
+            )
+
+
+
+        if probability.get(
+
+            "P1",
+
+            0
+
+        ) > probability.get(
+
+            "P2",
+
+            0
+
+        ):
+
+
+            reasons.append(
+
+                "FAJ склоняется к победе хозяев"
+
+            )
+
+
+        elif probability.get(
+
+            "P2",
+
+            0
+
+        ) > probability.get(
+
+            "P1",
+
+            0
+
+        ):
+
+
+            reasons.append(
+
+                "FAJ склоняется к победе гостей"
+
+            )
+
+
+        else:
+
+
+            reasons.append(
+
+                "Матч имеет высокий риск ничьей"
+
+            )
+
+
+
+        return reasons
+
+
+
+    # =====================================
+    # ROUND PROCESSING
     # =====================================
 
 
     def process_round(
+
         self,
+
         round_number,
+
         results
+
     ):
 
 
         errors = 0
 
 
+
         for match in results:
 
 
+
             prediction = match.get(
+
                 "prediction"
+
             )
 
 
             fact = match.get(
+
                 "fact_result"
+
             )
+
 
 
             if prediction != fact:
@@ -84,68 +313,65 @@ class FAJCore:
                 errors += 1
 
 
+
                 self.memory.add_memory(
+
 
                     version=self.version,
 
+
                     object_type="MODEL",
+
 
                     object_name="FAJ",
 
+
                     category="Prediction Error",
+
 
                     observation=(
 
                         f"{match.get('home')} - "
+
                         f"{match.get('away')} | "
 
-                        f"FAJ: {prediction} | "
+                        f"FAJ {prediction} | "
 
-                        f"Факт: {fact} | "
-
-                        f"Счёт: {match.get('fact_score')}"
+                        f"Факт {fact}"
 
                     ),
 
 
-                    conclusion=(
+                    conclusion=
 
-                        "Проверить параметры "
-                        "модели"
-
-                    ),
+                    "Необходимо проверить параметры модели",
 
 
-                    action=(
+                    action=
 
-                        "Запустить калибровку"
-
-                    ),
+                    "Калибровка весов",
 
 
                     confidence=0.8
+
 
                 )
 
 
 
             self.passport.update_after_match(
+
                 match
+
             )
-
-
-
-        version = self.create_version(
-            round_number
-        )
 
 
 
         self.passport.save_history(
 
-            version,
+            self.version,
 
-            f"Обработка тура {round_number}"
+            f"Round {round_number}"
 
         )
 
@@ -155,46 +381,20 @@ class FAJCore:
 
 
             "round":
+
             round_number,
 
 
             "errors":
-            errors,
 
-
-            "version":
-            version
-
+            errors
 
         }
 
 
 
     # =====================================
-
-
-    def create_version(
-        self,
-        round_number
-    ):
-
-
-        date = datetime.now().strftime(
-            "%Y%m%d"
-        )
-
-
-        return (
-
-            f"9.{round_number}-"
-            f"{date}"
-
-        )
-
-
-
-    # =====================================
-    # STATUS API ДЛЯ STREAMLIT
+    # STATUS API
     # =====================================
 
 
@@ -204,13 +404,20 @@ class FAJCore:
         memory_count = 0
 
 
+
         if hasattr(
+
             self.memory,
+
             "memory"
+
         ):
 
+
             memory_count = len(
+
                 self.memory.memory
+
             )
 
 
@@ -218,64 +425,21 @@ class FAJCore:
         teams = 0
 
 
+
         if hasattr(
+
             self.passport,
+
             "passports"
+
         ):
+
 
             teams = len(
+
                 self.passport.passports
+
             )
-
-
-
-        model_events = 0
-
-        team_events = 0
-
-        system_events = 0
-
-
-
-        if hasattr(
-            self.memory,
-            "memory"
-        ):
-
-
-            for item in self.memory.memory:
-
-
-                if not isinstance(
-                    item,
-                    dict
-                ):
-                    continue
-
-
-
-                obj = item.get(
-                    "object_type",
-                    ""
-                )
-
-
-
-                if obj == "MODEL":
-
-                    model_events += 1
-
-
-
-                elif obj == "TEAM":
-
-                    team_events += 1
-
-
-
-                elif obj == "SYSTEM":
-
-                    system_events += 1
 
 
 
@@ -292,29 +456,29 @@ class FAJCore:
             teams,
 
 
-            "memory":
-
-            memory_count,
-
-
             "passports":
 
             teams,
 
 
+            "memory":
+
+            memory_count,
+
+
             "model_events":
 
-            model_events,
+            0,
 
 
             "team_events":
 
-            team_events,
+            0,
 
 
             "system_events":
 
-            system_events
+            1
 
 
         }
@@ -322,7 +486,7 @@ class FAJCore:
 
 
     # =====================================
-    # STATUS ДЛЯ ТЕРМИНАЛА
+    # TERMINAL
     # =====================================
 
 
@@ -336,64 +500,31 @@ class FAJCore:
         print()
 
         print(
-            "========== FAJ CORE =========="
+            "========== FAJ CORE v10 =========="
         )
+
+
+        for k,v in data.items():
+
+            print(
+
+                f"{k}: {v}"
+
+            )
 
 
         print(
-            "Version:",
-            data["version"]
+            "================================="
         )
 
 
-        print(
-            "Teams:",
-            data["teams"]
-        )
 
-
-        print(
-            "Memory:",
-            data["memory"]
-        )
-
-
-        print(
-            "Model Events:",
-            data["model_events"]
-        )
-
-
-        print(
-            "Team Events:",
-            data["team_events"]
-        )
-
-
-        print(
-            "System Events:",
-            data["system_events"]
-        )
-
-
-        print(
-            "=============================="
-        )
-
-
-        print()
-
-
-
-# =====================================
-# TEST
-# =====================================
 
 
 if __name__ == "__main__":
 
 
-    faj = FAJCore()
+    core = FAJCore()
 
 
-    faj.print_status()
+    core.print_status()
