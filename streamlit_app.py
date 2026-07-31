@@ -269,7 +269,7 @@ st.markdown('<div class="sub-header">Adaptive Football Intelligence — Само
 # =====================================================
 page = st.radio(
     "",
-    ["🏠 Матч-центр", "📊 Сравнение", "🧠 Обучение", "📘 Команды", "⚙️ Система", "📥 Загрузка данных"],
+    ["🏠 Матч-центр", "📊 Сравнение", "🧠 Обучение", "📘 Команды", "⚙️ Система", "📥 Загрузка данных", "📡 API Тест"],
     horizontal=True
 )
 st.divider()
@@ -484,7 +484,7 @@ elif page == "⚙️ Система":
     st.json(stats)
 
 # =====================================================
-# СТРАНИЦА: МАТЧ-ЦЕНТР (С FAJMatchEngine)
+# СТРАНИЦА: МАТЧ-ЦЕНТР
 # =====================================================
 elif page == "🏠 Матч-центр":
     st.markdown("### 🏟 Центр прогнозирования — 2-й тур РПЛ")
@@ -493,7 +493,6 @@ elif page == "🏠 Матч-центр":
         st.warning("Нет команд в базе данных")
         st.stop()
     
-    # Импортируем FAJ Match Engine
     from app.faj_match_engine import FAJMatchEngine
     engine = FAJMatchEngine()
     
@@ -558,12 +557,10 @@ elif page == "🏠 Матч-центр":
         faj_pred = data.get('faj', '—')
         expert_pred = data.get('expert', '—')
         
-        # Получаем паспорта команд
         home_passport = get_team_passport(home)
         away_passport = get_team_passport(away)
         
         if home_passport and away_passport:
-            # Используем FAJ Match Engine
             result = engine.predict_match(home_passport, away_passport)
             
             st.markdown(f"""
@@ -628,6 +625,119 @@ elif page == "🏠 Матч-центр":
                     st.metric("Ваш прогноз", expert_pred)
         else:
             st.warning(f"Нет паспортов для команд {home} или {away}")
+
+# =====================================================
+# СТРАНИЦА: API ТЕСТ
+# =====================================================
+elif page == "📡 API Тест":
+    st.markdown("### 📡 Тест подключения API")
+    
+    from app.api.football_api import FootballAPI
+    from app.api.football_data_api import FootballDataAPI
+    from app.config import Config
+    
+    football_api = FootballAPI()
+    football_data = FootballDataAPI()
+    
+    st.markdown("#### 🔑 Статус токенов")
+    col1, col2 = st.columns(2)
+    with col1:
+        if football_api.is_ready():
+            st.success("✅ API Football токен настроен")
+        else:
+            st.error("❌ API Football токен НЕ настроен")
+    with col2:
+        if football_data.is_ready():
+            st.success("✅ Football-data токен настроен")
+        else:
+            st.error("❌ Football-data токен НЕ настроен")
+    
+    st.divider()
+    
+    if "api_requests" not in st.session_state:
+        st.session_state.api_requests = 0
+    
+    st.markdown("#### 📊 Счётчик запросов")
+    st.metric("API Football запросов сегодня", st.session_state.api_requests)
+    st.caption(f"Лимит: {Config.MAX_REQUESTS_PER_DAY} запросов в день")
+    
+    st.divider()
+    
+    st.markdown("#### ⚽ Тест API Football")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        league_to_test = st.selectbox(
+            "Выберите лигу для теста",
+            ["RPL", "EPL", "LALIGA", "UCL", "SERIEA", "BUNDESLIGA", "LIGUE1"]
+        )
+    with col2:
+        season_to_test = st.number_input("Сезон", value=2026, min_value=2020, max_value=2026)
+    
+    if st.button("🚀 Получить матчи из API Football", use_container_width=True):
+        with st.spinner("Запрос к API Football..."):
+            result = football_api.get_league_fixtures(league_to_test, season=season_to_test)
+            st.session_state.api_requests += 1
+        
+        if result.get("error"):
+            st.error(f"❌ Ошибка: {result.get('message')}")
+            if result.get("status_code"):
+                st.write(f"Код ошибки: {result['status_code']}")
+        else:
+            fixtures = result.get("response", [])
+            st.success(f"✅ Получено матчей: {len(fixtures)}")
+            
+            if fixtures:
+                st.markdown("**Последние матчи:**")
+                for fixture in fixtures[:5]:
+                    home = fixture.get("teams", {}).get("home", {}).get("name", "?")
+                    away = fixture.get("teams", {}).get("away", {}).get("name", "?")
+                    date = fixture.get("fixture", {}).get("date", "")[:10]
+                    st.write(f"- {date}: {home} vs {away}")
+    
+    st.divider()
+    
+    st.markdown("#### 📊 Тест Football-data.org")
+    
+    if st.button("📊 Получить таблицу РПЛ из Football-data", use_container_width=True):
+        with st.spinner("Запрос к Football-data..."):
+            result = football_data.get_league_standings("RPL", season=2026)
+        
+        if result.get("error"):
+            st.error(f"❌ Ошибка: {result.get('message')}")
+        else:
+            standings = result.get("standings", [])
+            if standings:
+                st.success("✅ Получена таблица")
+                table_data = []
+                for item in standings:
+                    if isinstance(item, dict) and "table" in item:
+                        for team in item.get("table", [])[:10]:
+                            table_data.append({
+                                "Место": team.get("position"),
+                                "Команда": team.get("team", {}).get("name"),
+                                "Очки": team.get("points")
+                            })
+                if table_data:
+                    st.dataframe(pd.DataFrame(table_data), use_container_width=True, hide_index=True)
+    
+    st.divider()
+    
+    with st.expander("ℹ️ О лимитах API"):
+        st.markdown("""
+        **API Football**
+        - Лимит: 100 запросов в день (бесплатный тариф)
+        - Используйте для: составов, травм, деталей матчей
+        
+        **Football-data.org**
+        - Лимит: 10 запросов в минуту (бесплатный тариф)
+        - Используйте для: истории, результатов, таблиц
+        
+        **Рекомендация**
+        - Загружайте историю через Football-data
+        - Детали матчей берите из API Football
+        - Не обновляйте все лиги каждый день
+        """)
 
 # =====================================================
 # FOOTER
