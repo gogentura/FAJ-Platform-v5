@@ -2,19 +2,19 @@
 # -*- coding: utf-8 -*-
 """
 FAJ Platform v10.0 - Football Data API Client
-Поддерживает: РПЛ, АПЛ, Ла Лигу, Бундеслигу, Серию А, Лигу 1, ЛЧ, ЛЕ
 """
 
 import requests
 import time
 
 from app.config import Config
+from app.api.ids import IDs
 
 
 class FootballDataAPI:
     
     def __init__(self):
-        self.base_url = Config.BASE_URL_FOOTBALL_DATA
+        self.base_url = Config.get_football_data_url()
         self.token = Config.get_football_data_token()
         self.headers = {"X-Auth-Token": self.token}
         self.last_request_time = 0
@@ -40,7 +40,7 @@ class FootballDataAPI:
             return {"error": True, "message": str(e)}
     
     # =========================================================
-    # УНИВЕРСАЛЬНЫЕ МЕТОДЫ
+    # ОСНОВНЫЕ МЕТОДЫ
     # =========================================================
     
     def get_matches(self, competition: str, season: int = None,
@@ -63,65 +63,32 @@ class FootballDataAPI:
         params = {"season": season}
         return self._request(f"/competitions/{competition}/teams", params)
     
+    def get_competitions(self) -> dict:
+        return self._request("/competitions")
+    
     # =========================================================
-    # МЕТОДЫ ПО ТУРНИРАМ
+    # МЕТОДЫ ПО ЛИГЕ
     # =========================================================
     
     def get_league_matches(self, league_key: str, season: int = None,
                            matchday: int = None, date_from: str = None,
                            date_to: str = None) -> dict:
-        code = Config.get_fd_code(league_key)
+        code = IDs.get_fd_code(league_key)
         if not season:
-            season = Config.get_season(league_key)
+            season = Config.get_current_season()
         return self.get_matches(code, season, matchday, date_from, date_to)
     
     def get_league_standings(self, league_key: str, season: int = None) -> dict:
-        code = Config.get_fd_code(league_key)
+        code = IDs.get_fd_code(league_key)
         if not season:
-            season = Config.get_season(league_key)
+            season = Config.get_current_season()
         return self.get_standings(code, season)
     
     def get_league_teams(self, league_key: str, season: int = None) -> dict:
-        code = Config.get_fd_code(league_key)
+        code = IDs.get_fd_code(league_key)
         if not season:
-            season = Config.get_season(league_key)
+            season = Config.get_current_season()
         return self.get_teams(code, season)
-    
-    # =========================================================
-    # МЕТОДЫ ДЛЯ КОНКРЕТНЫХ ТУРНИРОВ
-    # =========================================================
-    
-    def get_rpl_matches(self, season: int = None, matchday: int = None) -> dict:
-        return self.get_league_matches("RPL", season, matchday)
-    
-    def get_epl_matches(self, season: int = None, matchday: int = None) -> dict:
-        return self.get_league_matches("EPL", season, matchday)
-    
-    def get_laliga_matches(self, season: int = None, matchday: int = None) -> dict:
-        return self.get_league_matches("LALIGA", season, matchday)
-    
-    def get_ucl_matches(self, season: int = None) -> dict:
-        return self.get_league_matches("UCL", season)
-    
-    # =========================================================
-    # ОБНОВЛЕНИЕ ВСЕХ ТУРНИРОВ
-    # =========================================================
-    
-    def update_all_leagues(self, season: int = None) -> dict:
-        results = {}
-        for league_key in Config.get_all_leagues():
-            try:
-                matches = self.get_league_matches(league_key, season)
-                results[league_key] = {
-                    "status": "success",
-                    "count": len(matches.get("matches", []))
-                }
-            except Exception as e:
-                results[league_key] = {
-                    "status": "error",
-                    "message": str(e)
-                }
-        return results
     
     def is_ready(self) -> bool:
         return self.token is not None and self.token != ""
