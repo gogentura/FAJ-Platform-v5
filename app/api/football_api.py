@@ -2,20 +2,20 @@
 # -*- coding: utf-8 -*-
 """
 FAJ Platform v10.0 - API Football Client
-Поддерживает: РПЛ, АПЛ, Ла Лигу, Бундеслигу, Серию А, Лигу 1, ЛЧ, ЛЕ
 """
 
 import requests
 import time
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 from app.config import Config
+from app.api.ids import IDs
 
 
 class FootballAPI:
     
     def __init__(self):
-        self.base_url = Config.BASE_URL_FOOTBALL_API
+        self.base_url = Config.get_api_football_url()
         self.token = Config.get_football_api_token()
         self.headers = {"x-apisports-key": self.token}
         self.last_request_time = 0
@@ -41,12 +41,13 @@ class FootballAPI:
             return {"error": True, "message": str(e)}
     
     # =========================================================
-    # УНИВЕРСАЛЬНЫЕ МЕТОДЫ
+    # ОСНОВНЫЕ МЕТОДЫ
     # =========================================================
     
     def get_fixtures(self, league: int, season: int, team: int = None,
                      date: str = None, from_date: str = None,
-                     to_date: str = None, status: str = None) -> dict:
+                     to_date: str = None, status: str = None,
+                     last: int = None) -> dict:
         params = {"league": league, "season": season}
         if team:
             params["team"] = team
@@ -58,6 +59,8 @@ class FootballAPI:
             params["to"] = to_date
         if status:
             params["status"] = status
+        if last:
+            params["last"] = last
         return self._request("/fixtures", params)
     
     def get_team_stats(self, team_id: int, league: int = None, season: int = None) -> dict:
@@ -67,6 +70,9 @@ class FootballAPI:
         if season:
             params["season"] = season
         return self._request("/teams/statistics", params)
+    
+    def get_team_info(self, team_id: int) -> dict:
+        return self._request("/teams", {"id": team_id})
     
     def get_team_squad(self, team_id: int) -> dict:
         return self._request("/players/squads", {"team": team_id})
@@ -88,76 +94,53 @@ class FootballAPI:
         return self._request("/teams", {"league": league, "season": season})
     
     # =========================================================
-    # МЕТОДЫ ПО ТУРНИРАМ
+    # МЕТОДЫ ПО ЛИГЕ
     # =========================================================
     
     def get_league_fixtures(self, league_key: str, season: int = None) -> dict:
-        """Получить матчи лиги по её ключу (RPL, EPL, LALIGA, UCL, и т.д.)"""
-        league_id = Config.get_api_id(league_key)
+        league_id = IDs.get_api_id(league_key)
         if not season:
-            season = Config.get_season(league_key)
+            season = Config.get_current_season()
         return self.get_fixtures(league=league_id, season=season)
     
     def get_league_standings(self, league_key: str, season: int = None) -> dict:
-        league_id = Config.get_api_id(league_key)
+        league_id = IDs.get_api_id(league_key)
         if not season:
-            season = Config.get_season(league_key)
+            season = Config.get_current_season()
         return self.get_standings(league=league_id, season=season)
     
     def get_league_teams(self, league_key: str, season: int = None) -> dict:
-        league_id = Config.get_api_id(league_key)
+        league_id = IDs.get_api_id(league_key)
         if not season:
-            season = Config.get_season(league_key)
+            season = Config.get_current_season()
         return self.get_teams(league=league_id, season=season)
     
     # =========================================================
-    # МЕТОДЫ ДЛЯ КОНКРЕТНЫХ ТУРНИРОВ
+    # МЕТОДЫ ПО КОМАНДЕ
     # =========================================================
     
-    def get_rpl_fixtures(self, season: int = None) -> dict:
-        return self.get_league_fixtures("RPL", season)
+    def get_team_stats_by_name(self, team_name: str, league_key: str = "RPL", season: int = None) -> dict:
+        team_id = IDs.get_team_id(team_name)
+        if team_id == 0:
+            return {"error": True, "message": f"Команда {team_name} не найдена"}
+        
+        league_id = IDs.get_api_id(league_key)
+        if not season:
+            season = Config.get_current_season()
+        
+        return self.get_team_stats(team_id=team_id, league=league_id, season=season)
     
-    def get_epl_fixtures(self, season: int = None) -> dict:
-        return self.get_league_fixtures("EPL", season)
-    
-    def get_laliga_fixtures(self, season: int = None) -> dict:
-        return self.get_league_fixtures("LALIGA", season)
-    
-    def get_seriea_fixtures(self, season: int = None) -> dict:
-        return self.get_league_fixtures("SERIEA", season)
-    
-    def get_bundesliga_fixtures(self, season: int = None) -> dict:
-        return self.get_league_fixtures("BUNDESLIGA", season)
-    
-    def get_ligue1_fixtures(self, season: int = None) -> dict:
-        return self.get_league_fixtures("LIGUE1", season)
-    
-    def get_ucl_fixtures(self, season: int = None) -> dict:
-        return self.get_league_fixtures("UCL", season)
-    
-    def get_uel_fixtures(self, season: int = None) -> dict:
-        return self.get_league_fixtures("UEL", season)
-    
-    # =========================================================
-    # ОБНОВЛЕНИЕ ВСЕХ ТУРНИРОВ (ОПЦИОНАЛЬНО)
-    # =========================================================
-    
-    def update_all_leagues(self, season: int = None) -> dict:
-        """Обновить данные по всем поддерживаемым турнирам"""
-        results = {}
-        for league_key in Config.get_all_leagues():
-            try:
-                fixtures = self.get_league_fixtures(league_key, season)
-                results[league_key] = {
-                    "status": "success",
-                    "count": len(fixtures.get("response", []))
-                }
-            except Exception as e:
-                results[league_key] = {
-                    "status": "error",
-                    "message": str(e)
-                }
-        return results
+    def get_team_fixtures(self, team_name: str, league_key: str = "RPL", 
+                          season: int = None, status: str = None, last: int = 5) -> dict:
+        team_id = IDs.get_team_id(team_name)
+        if team_id == 0:
+            return {"error": True, "message": f"Команда {team_name} не найдена"}
+        
+        league_id = IDs.get_api_id(league_key)
+        if not season:
+            season = Config.get_current_season()
+        
+        return self.get_fixtures(league=league_id, season=season, team=team_id, status=status, last=last)
     
     def is_ready(self) -> bool:
         return self.token is not None and self.token != ""
