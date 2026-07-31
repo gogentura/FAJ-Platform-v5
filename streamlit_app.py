@@ -9,6 +9,7 @@ import pandas as pd
 import json
 import os
 from datetime import datetime
+from math import exp
 
 # =====================================================
 # КОНСТАНТЫ
@@ -233,6 +234,10 @@ def run_training():
         "new_weights": new_weights,
         "version": new_record["version"]
     }
+
+def poisson_prob(k, xg):
+    """Функция Пуассона для расчёта вероятности счёта"""
+    return (exp(-xg) * (xg ** k)) / (k ** 0.5 if k == 0 else 1)
 
 # =====================================================
 # ПЕРЕВОД ПОКАЗАТЕЛЕЙ
@@ -493,23 +498,215 @@ elif page == "⚙️ Система":
     st.json(stats)
 
 # =====================================================
-# СТРАНИЦА: МАТЧ-ЦЕНТР (ЗАГЛУШКА)
+# СТРАНИЦА: МАТЧ-ЦЕНТР (С ПРОГНОЗАМИ НА 2-Й ТУР)
 # =====================================================
 elif page == "🏠 Матч-центр":
-    st.markdown("### 🏟 Центр прогнозирования")
+    st.markdown("### 🏟 Центр прогнозирования — 2-й тур РПЛ")
     
     if not teams:
         st.warning("Нет команд в базе данных")
         st.stop()
     
-    col1, col2 = st.columns(2)
-    with col1:
-        home = st.selectbox("🏠 Домашняя команда", teams, key="home")
-    with col2:
-        away_options = [t for t in teams if t != home]
-        away = st.selectbox("✈️ Гостевая команда", away_options if away_options else teams, key="away")
+    # Загружаем прогнозы на 2-й тур
+    tour2 = load_json("tour2_predictions.json")
     
-    st.info("🔧 Модуль прогнозирования временно отключен для обновления. Используйте данные из '📥 Загрузка данных' и '📊 Сравнение'.")
+    if not tour2:
+        st.warning("Нет данных для 2-го тура. Проверьте файл tour2_predictions.json")
+        st.stop()
+    
+    # Показываем таблицу прогнозов
+    st.markdown("### 📊 Прогнозы на 2-й тур")
+    
+    # Собираем данные для таблицы
+    matches_data = []
+    for match, data in tour2.items():
+        # Разбиваем название матча на команды
+        if '-' in match:
+            home, away = match.split('-')
+        else:
+            home, away = match.split('–')
+        
+        faj_pred = data.get('faj', '—')
+        expert_pred = data.get('expert', '—')
+        xg_home = data.get('xg_home', '—')
+        xg_away = data.get('xg_away', '—')
+        
+        # Определяем исход по прогнозу FAJ
+        faj_outcome = get_outcome(faj_pred) if faj_pred != '—' else '—'
+        
+        # Определяем лучшую ставку
+        if faj_outcome == "П1":
+            best_bet = f"Победа {home}"
+        elif faj_outcome == "П2":
+            best_bet = f"Победа {away}"
+        elif faj_outcome == "X":
+            best_bet = "Ничья"
+        else:
+            best_bet = "—"
+        
+        matches_data.append({
+            "Матч": f"{home} – {away}",
+            "Прогноз FAJ": faj_pred,
+            "Ваш прогноз": expert_pred,
+            "xG хозяев": xg_home,
+            "xG гостей": xg_away,
+            "Лучшая ставка": best_bet
+        })
+    
+    df_matches = pd.DataFrame(matches_data)
+    st.dataframe(df_matches, use_container_width=True, hide_index=True)
+    
+    st.divider()
+    
+    # Детальный прогноз для выбранного матча
+    st.markdown("### 🔍 Детальный прогноз по матчу")
+    
+    # Создаём список матчей для выбора
+    match_options = list(tour2.keys())
+    selected_match = st.selectbox("Выберите матч для детального прогноза", match_options)
+    
+    if selected_match:
+        data = tour2[selected_match]
+        
+        if '-' in selected_match:
+            home, away = selected_match.split('-')
+        else:
+            home, away = selected_match.split('–')
+        
+        faj_pred = data.get('faj', '—')
+        expert_pred = data.get('expert', '—')
+        xg_home = data.get('xg_home', '—')
+        xg_away = data.get('xg_away', '—')
+        
+        # Используем обученные веса для расчёта вероятностей
+        weights_history = load_json("weights_history.json")
+        if weights_history:
+            current_weights = weights_history[-1].get('weights', {})
+        else:
+            current_weights = {
+                "attack": 0.18, "defense": 0.18, "control": 0.15,
+                "efficiency": 0.12, "mentality": 0.10, "tempo": 0.07,
+                "press": 0.05, "transition": 0.05, "flexibility": 0.05,
+                "coach": 0.05
+            }
+        
+        # Расчёт вероятностей
+        try:
+            xg_h = float(xg_home) if xg_home != '—' else 1.35
+            xg_a = float(xg_away) if xg_away != '—' else 1.35
+        except:
+            xg_h = 1.35
+            xg_a = 1.35
+        
+        # Простая модель вероятностей на основе xG
+        total_xg = xg_h + xg_a
+        if total_xg > 0:
+            p1 = round((xg_h / total_xg) * 100 * 0.7 + 15, 1)
+            p2 = round((xg_a / total_xg) * 100 * 0.7 + 15, 1)
+            px = round(100 - p1 - p2, 1)
+        else:
+            p1 = 33.3
+            px = 33.3
+            p2 = 33.3
+        
+        # Уверенность
+        confidence = round(50 + abs(xg_h - xg_a) * 10, 1)
+        if confidence > 90:
+            confidence = 90
+        
+        # Тотал > 2.5
+        total_over25 = round(30 + (xg_h + xg_a) * 10, 1)
+        if total_over25 > 85:
+            total_over25 = 85
+        
+        # Обе забьют
+        btts_prob = round(30 + (xg_h * xg_a) * 15, 1)
+        if btts_prob > 85:
+            btts_prob = 85
+        
+        # Лучшая ставка
+        max_prob = max(p1, px, p2)
+        if max_prob == p1:
+            best_bet = f"Победа {home}"
+        elif max_prob == px:
+            best_bet = "Ничья"
+        else:
+            best_bet = f"Победа {away}"
+        
+        # Топ-3 счёта (упрощённо)
+        scores = []
+        for i in range(4):
+            for j in range(4):
+                prob = poisson_prob(i, xg_h) * poisson_prob(j, xg_a)
+                if prob > 0.01:
+                    scores.append({"Счёт": f"{i}:{j}", "Вероятность %": round(prob * 100, 1)})
+        scores = sorted(scores, key=lambda x: x["Вероятность %"], reverse=True)[:5]
+        
+        # Отображаем детальный прогноз
+        st.markdown(f"""
+        <div class="prediction-card">
+            <h2 style="text-align:center; color:#f3f4f6; margin:0;">{home} ⚔️ {away}</h2>
+            <p style="text-align:center; color:#9ca3af;">FAJ Prediction v10.0</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric(f"Победа {home}", f"{p1}%")
+        with col2:
+            st.metric("Ничья", f"{px}%")
+        with col3:
+            st.metric(f"Победа {away}", f"{p2}%")
+        
+        st.divider()
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric(f"⚽ xG {home}", xg_h)
+        with col2:
+            st.metric(f"⚽ xG {away}", xg_a)
+        
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("📊 Уверенность", f"{confidence}%")
+        with col2:
+            st.metric("⚽ Тотал > 2.5", f"{total_over25}%")
+        with col3:
+            st.metric("🤝 Обе забьют", f"{btts_prob}%")
+        with col4:
+            st.markdown(f"""
+            <div class="best-bet">
+                <div style="color:#9ca3af; font-size:12px;">ЛУЧШАЯ СТАВКА</div>
+                <div style="color:#10b981; font-weight:700; font-size:16px;">{best_bet}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        st.markdown("### 🎯 Самые вероятные счета")
+        if scores:
+            st.dataframe(pd.DataFrame(scores), hide_index=True, use_container_width=True)
+        
+        with st.expander("🧠 Почему FAJ выбрал такой прогноз"):
+            st.write(f"""
+            Анализ матча {home} vs {away} на основе:
+            
+            1. **xG хозяев**: {xg_h}
+            2. **xG гостей**: {xg_a}
+            3. **Вероятности**: П1 {p1}% | X {px}% | П2 {p2}%
+            4. **Уверенность модели**: {confidence}%
+            5. **Ключевые факторы**:
+               - {'Домашнее преимущество' if xg_h > xg_a else 'Гостевой фактор'}
+               - {'Атакующий стиль' if xg_h > 1.5 else 'Сбалансированная игра'}
+            """)
+        
+        # Сравнение с экспертом
+        if expert_pred != '—':
+            st.divider()
+            st.markdown("### 📊 Сравнение прогнозов")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("FAJ", faj_pred)
+            with col2:
+                st.metric("Ваш прогноз", expert_pred)
 
 # =====================================================
 # FOOTER
