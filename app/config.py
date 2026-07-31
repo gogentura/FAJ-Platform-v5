@@ -65,6 +65,13 @@ class Config:
         except:
             return os.getenv("MODEL_VERSION", "10.0")
     
+    @staticmethod
+    def get_max_requests_per_day():
+        try:
+            return int(st.secrets["MAX_REQUESTS_PER_DAY"])
+        except:
+            return int(os.getenv("MAX_REQUESTS_PER_DAY", 100))
+    
     # =========================================================
     # ПРОВЕРКА ГОТОВНОСТИ
     # =========================================================
@@ -86,5 +93,6 @@ class Config:
             "current_season": Config.get_current_season(),
             "cache_days": Config.get_cache_days(),
             "model_version": Config.get_model_version(),
+            "max_requests_per_day": Config.get_max_requests_per_day(),
             "ready": Config.is_ready()
         }
