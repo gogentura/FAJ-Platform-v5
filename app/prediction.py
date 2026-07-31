@@ -11,7 +11,7 @@ from app.learning_db import LearningDB
 
 
 class FAJPrediction:
-    def __init__(self):
+    def __init__(self, passport_manager=None):  # <-- ДОБАВИЛИ passport_manager
         self.learning_db = LearningDB()
         self.base_xg = 1.35
         self.home_advantage = 1.12
