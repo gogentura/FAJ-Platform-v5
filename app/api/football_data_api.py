@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-FAJ Platform v10.0 - Football Data API Client
+FAJ Platform v10.0 - API Football Client
 """
 
 import requests
@@ -11,14 +11,14 @@ from app.config import Config
 from app.api.ids import IDs
 
 
-class FootballDataAPI:
+class FootballAPI:
     
     def __init__(self):
-        self.base_url = Config.get_football_data_url()
-        self.token = Config.get_football_data_token()
-        self.headers = {"X-Auth-Token": self.token}
+        self.base_url = Config.get_api_football_url()
+        self.token = Config.get_football_api_token()
+        self.headers = {"x-apisports-key": self.token}
         self.last_request_time = 0
-        self.min_request_interval = 3
+        self.min_request_interval = 6
     
     def _request(self, endpoint: str, params: dict = None) -> dict:
         current_time = time.time()
@@ -39,56 +39,95 @@ class FootballDataAPI:
         except Exception as e:
             return {"error": True, "message": str(e)}
     
-    # =========================================================
-    # ОСНОВНЫЕ МЕТОДЫ
-    # =========================================================
+    def get_fixtures(self, league: int, season: int, team: int = None,
+                     date: str = None, from_date: str = None,
+                     to_date: str = None, status: str = None,
+                     last: int = None) -> dict:
+        params = {"league": league, "season": season}
+        if team:
+            params["team"] = team
+        if date:
+            params["date"] = date
+        if from_date:
+            params["from"] = from_date
+        if to_date:
+            params["to"] = to_date
+        if status:
+            params["status"] = status
+        if last:
+            params["last"] = last
+        return self._request("/fixtures", params)
     
-    def get_matches(self, competition: str, season: int = None,
-                    matchday: int = None, date_from: str = None,
-                    date_to: str = None) -> dict:
-        params = {"season": season}
-        if matchday:
-            params["matchday"] = matchday
-        if date_from:
-            params["dateFrom"] = date_from
-        if date_to:
-            params["dateTo"] = date_to
-        return self._request(f"/competitions/{competition}/matches", params)
+    def get_team_stats(self, team_id: int, league: int = None, season: int = None) -> dict:
+        params = {"team": team_id}
+        if league:
+            params["league"] = league
+        if season:
+            params["season"] = season
+        return self._request("/teams/statistics", params)
     
-    def get_standings(self, competition: str, season: int = None) -> dict:
-        params = {"season": season}
-        return self._request(f"/competitions/{competition}/standings", params)
+    def get_team_info(self, team_id: int) -> dict:
+        return self._request("/teams", {"id": team_id})
     
-    def get_teams(self, competition: str, season: int = None) -> dict:
-        params = {"season": season}
-        return self._request(f"/competitions/{competition}/teams", params)
+    def get_team_squad(self, team_id: int) -> dict:
+        return self._request("/players/squads", {"team": team_id})
     
-    def get_competitions(self) -> dict:
-        return self._request("/competitions")
+    def get_injuries(self, league: int = None, team: int = None, season: int = None) -> dict:
+        params = {}
+        if league:
+            params["league"] = league
+        if team:
+            params["team"] = team
+        if season:
+            params["season"] = season
+        return self._request("/injuries", params)
     
-    # =========================================================
-    # МЕТОДЫ ПО ЛИГЕ
-    # =========================================================
+    def get_standings(self, league: int, season: int) -> dict:
+        return self._request("/standings", {"league": league, "season": season})
     
-    def get_league_matches(self, league_key: str, season: int = None,
-                           matchday: int = None, date_from: str = None,
-                           date_to: str = None) -> dict:
-        code = IDs.get_fd_code(league_key)
+    def get_teams(self, league: int, season: int) -> dict:
+        return self._request("/teams", {"league": league, "season": season})
+    
+    def get_league_fixtures(self, league_key: str, season: int = None) -> dict:
+        league_id = IDs.get_api_id(league_key)
         if not season:
             season = Config.get_current_season()
-        return self.get_matches(code, season, matchday, date_from, date_to)
+        return self.get_fixtures(league=league_id, season=season)
     
     def get_league_standings(self, league_key: str, season: int = None) -> dict:
-        code = IDs.get_fd_code(league_key)
+        league_id = IDs.get_api_id(league_key)
         if not season:
             season = Config.get_current_season()
-        return self.get_standings(code, season)
+        return self.get_standings(league=league_id, season=season)
     
     def get_league_teams(self, league_key: str, season: int = None) -> dict:
-        code = IDs.get_fd_code(league_key)
+        league_id = IDs.get_api_id(league_key)
         if not season:
             season = Config.get_current_season()
-        return self.get_teams(code, season)
+        return self.get_teams(league=league_id, season=season)
+    
+    def get_team_stats_by_name(self, team_name: str, league_key: str = "RPL", season: int = None) -> dict:
+        team_id = IDs.get_team_id(team_name)
+        if team_id == 0:
+            return {"error": True, "message": f"Команда {team_name} не найдена"}
+        
+        league_id = IDs.get_api_id(league_key)
+        if not season:
+            season = Config.get_current_season()
+        
+        return self.get_team_stats(team_id=team_id, league=league_id, season=season)
+    
+    def get_team_fixtures(self, team_name: str, league_key: str = "RPL", 
+                          season: int = None, status: str = None, last: int = 5) -> dict:
+        team_id = IDs.get_team_id(team_name)
+        if team_id == 0:
+            return {"error": True, "message": f"Команда {team_name} не найдена"}
+        
+        league_id = IDs.get_api_id(league_key)
+        if not season:
+            season = Config.get_current_season()
+        
+        return self.get_fixtures(league=league_id, season=season, team=team_id, status=status, last=last)
     
     def is_ready(self) -> bool:
         return self.token is not None and self.token != ""
