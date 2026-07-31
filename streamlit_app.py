@@ -639,6 +639,9 @@ elif page == "📡 API Тест":
     football_api = FootballAPI()
     football_data = FootballDataAPI()
     
+    # =========================================================
+    # СТАТУС ТОКЕНОВ
+    # =========================================================
     st.markdown("#### 🔑 Статус токенов")
     col1, col2 = st.columns(2)
     with col1:
@@ -654,29 +657,70 @@ elif page == "📡 API Тест":
     
     st.divider()
     
+    # =========================================================
+    # СЧЁТЧИК ЗАПРОСОВ
+    # =========================================================
     if "api_requests" not in st.session_state:
         st.session_state.api_requests = 0
     
     st.markdown("#### 📊 Счётчик запросов")
-    st.metric("API Football запросов сегодня", st.session_state.api_requests)
-    st.caption(f"Лимит: {Config.MAX_REQUESTS_PER_DAY} запросов в день")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("API Football запросов сегодня", st.session_state.api_requests)
+    with col2:
+        st.metric("Лимит", f"{Config.MAX_REQUESTS_PER_DAY}")
+    with col3:
+        remaining = max(0, Config.MAX_REQUESTS_PER_DAY - st.session_state.api_requests)
+        st.metric("Осталось", remaining)
     
     st.divider()
     
-    st.markdown("#### ⚽ Тест API Football")
+    # =========================================================
+    # ТЕСТ API FOOTBALL — ПО КОМАНДЕ
+    # =========================================================
+    st.markdown("#### ⚽ Тест API Football (по команде)")
     
     col1, col2 = st.columns(2)
     with col1:
-        league_to_test = st.selectbox(
-            "Выберите лигу для теста",
-            ["RPL", "EPL", "LALIGA", "UCL", "SERIEA", "BUNDESLIGA", "LIGUE1"]
+        team_options = {
+            "Зенит": 788,
+            "Спартак": 780,
+            "ЦСКА": 790,
+            "Динамо М": 789,
+            "Краснодар": 798,
+            "Локомотив": 787,
+            "Ростов": 795,
+            "Рубин": 797,
+            "Ахмат": 793,
+            "Оренбург": 796,
+            "Крылья Советов": 791,
+            "Факел": 804,
+            "Балтика": 799,
+            "Динамо Мх": 803,
+            "Акрон": 12345,
+            "Родина": 12346
+        }
+        selected_team = st.selectbox(
+            "Выберите команду для теста",
+            list(team_options.keys())
         )
-    with col2:
-        season_to_test = st.number_input("Сезон", value=2026, min_value=2020, max_value=2026)
+        team_id = team_options[selected_team]
     
-    if st.button("🚀 Получить матчи из API Football", use_container_width=True):
-        with st.spinner("Запрос к API Football..."):
-            result = football_api.get_league_fixtures(league_to_test, season=season_to_test)
+    with col2:
+        league_for_team = st.selectbox(
+            "Лига",
+            ["RPL", "EPL", "LALIGA", "UCL"]
+        )
+        season_for_team = st.number_input("Сезон", value=2026, min_value=2020, max_value=2026)
+    
+    if st.button("🔍 Получить статистику команды", use_container_width=True):
+        with st.spinner(f"Запрос статистики для {selected_team}..."):
+            league_id = Config.get_api_id(league_for_team)
+            result = football_api.get_team_stats(
+                team_id=team_id,
+                league=league_id,
+                season=season_for_team
+            )
             st.session_state.api_requests += 1
         
         if result.get("error"):
@@ -684,63 +728,58 @@ elif page == "📡 API Тест":
             if result.get("status_code"):
                 st.write(f"Код ошибки: {result['status_code']}")
         else:
-            fixtures = result.get("response", [])
-            st.success(f"✅ Получено матчей: {len(fixtures)}")
+            st.success(f"✅ Статистика для {selected_team} получена")
             
-            if fixtures:
-                st.markdown("**Последние матчи:**")
-                for fixture in fixtures[:5]:
-                    home = fixture.get("teams", {}).get("home", {}).get("name", "?")
-                    away = fixture.get("teams", {}).get("away", {}).get("name", "?")
-                    date = fixture.get("fixture", {}).get("date", "")[:10]
-                    st.write(f"- {date}: {home} vs {away}")
+            stats = result.get("response", {})
+            if stats:
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("🏟 Матчей", stats.get("fixtures", {}).get("played", {}).get("total", "—"))
+                    st.metric("⚽ Голов забито", stats.get("goals", {}).get("for", {}).get("total", {}).get("total", "—"))
+                with col2:
+                    st.metric("✅ Побед", stats.get("fixtures", {}).get("wins", {}).get("total", "—"))
+                    st.metric("⚽ Голов пропущено", stats.get("goals", {}).get("against", {}).get("total", {}).get("total", "—"))
+                with col3:
+                    st.metric("🤝 Ничьих", stats.get("fixtures", {}).get("draws", {}).get("total", "—"))
+                    st.metric("📊 xG", stats.get("goals", {}).get("for", {}).get("average", {}).get("total", "—"))
+                
+                with st.expander("📋 Полная статистика"):
+                    st.json(stats)
+            else:
+                st.warning("Нет данных по команде")
     
     st.divider()
     
-    st.markdown("#### 📊 Тест Football-data.org")
+    # =========================================================
+    # ТЕСТ API FOOTBALL — МАТЧИ КОМАНДЫ
+    # =========================================================
+    st.markdown("#### 🏟 Тест API Football (матчи команды)")
     
-    if st.button("📊 Получить таблицу РПЛ из Football-data", use_container_width=True):
-        with st.spinner("Запрос к Football-data..."):
-            result = football_data.get_league_standings("RPL", season=2026)
+    if st.button("📅 Получить последние матчи команды", use_container_width=True):
+        with st.spinner(f"Запрос матчей для {selected_team}..."):
+            league_id = Config.get_api_id(league_for_team)
+            result = football_api.get_fixtures(
+                league=league_id,
+                season=season_for_team,
+                team=team_id,
+                status="FT"
+            )
+            st.session_state.api_requests += 1
         
         if result.get("error"):
             st.error(f"❌ Ошибка: {result.get('message')}")
         else:
-            standings = result.get("standings", [])
-            if standings:
-                st.success("✅ Получена таблица")
-                table_data = []
-                for item in standings:
-                    if isinstance(item, dict) and "table" in item:
-                        for team in item.get("table", [])[:10]:
-                            table_data.append({
-                                "Место": team.get("position"),
-                                "Команда": team.get("team", {}).get("name"),
-                                "Очки": team.get("points")
-                            })
-                if table_data:
-                    st.dataframe(pd.DataFrame(table_data), use_container_width=True, hide_index=True)
-    
-    st.divider()
-    
-    with st.expander("ℹ️ О лимитах API"):
-        st.markdown("""
-        **API Football**
-        - Лимит: 100 запросов в день (бесплатный тариф)
-        - Используйте для: составов, травм, деталей матчей
-        
-        **Football-data.org**
-        - Лимит: 10 запросов в минуту (бесплатный тариф)
-        - Используйте для: истории, результатов, таблиц
-        
-        **Рекомендация**
-        - Загружайте историю через Football-data
-        - Детали матчей берите из API Football
-        - Не обновляйте все лиги каждый день
-        """)
-
-# =====================================================
-# FOOTER
-# =====================================================
-st.divider()
-st.caption("⚽ FAJ Platform 10.0 | Adaptive Football Intelligence")
+            fixtures = result.get("response", [])
+            st.success(f"✅ Получено матчей: {len(fixtures)}")
+            
+            if fixtures:
+                st.markdown("**Последние 5 матчей:**")
+                match_data = []
+                for fixture in fixtures[:5]:
+                    home = fixture.get("teams", {}).get("home", {}).get("name", "?")
+                    away = fixture.get("teams", {}).get("away", {}).get("name", "?")
+                    home_goals = fixture.get("goals", {}).get("home")
+                    away_goals = fixture.get("goals", {}).get("away")
+                    date = fixture.get("fixture", {}).get("date", "")[:10]
+                    
+                    if home_goals is not None and away_go
