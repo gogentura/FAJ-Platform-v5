@@ -2,25 +2,19 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ Platform v10.0
+FAJ Platform v10.0.1
 
 Prediction Engine
 
-Football Analytics Journal
-
-Pipeline:
-
 Passport
-   ↓
-Strength Model
-   ↓
+    ↓
 xG Engine
-   ↓
-Poisson
-   ↓
-Expert Layer
-   ↓
-Prediction
+    ↓
+Poisson Matrix
+    ↓
+Outcome Probability
+    ↓
+Final Prediction
 
 """
 
@@ -33,28 +27,20 @@ from itertools import product
 class FAJPrediction:
 
 
+    def __init__(self, passport_manager):
 
-    def __init__(
-        self,
-        passport_manager
-    ):
-
-
-        self.version = "10.0"
+        self.version = "10.0.1"
 
         self.passport = passport_manager
 
 
 
     # =====================================
-    # TEAM DATA
+    # FIND TEAM
     # =====================================
 
 
-    def get_team(
-        self,
-        name
-    ):
+    def get_team(self, name):
 
 
         if not self.passport:
@@ -66,9 +52,7 @@ class FAJPrediction:
         for team in self.passport.passports:
 
 
-            if team.get(
-                "team"
-            ) == name:
+            if team.get("team") == name:
 
                 return team
 
@@ -83,62 +67,34 @@ class FAJPrediction:
     # =====================================
 
 
-    def calculate_xg(
-        self,
-        home,
-        away
-    ):
+    def calculate_xg(self, home, away):
 
 
         home_attack = float(
-            home.get(
-                "attack",
-                70
-            )
+            home.get("attack", 70)
         )
-
 
         away_attack = float(
-            away.get(
-                "attack",
-                70
-            )
+            away.get("attack", 70)
         )
-
 
 
         home_def = float(
-            home.get(
-                "defense",
-                70
-            )
+            home.get("defense", 70)
         )
-
 
         away_def = float(
-            away.get(
-                "defense",
-                70
-            )
+            away.get("defense", 70)
         )
-
 
 
         home_form = float(
-            home.get(
-                "form",
-                70
-            )
+            home.get("form", 70)
         )
-
 
         away_form = float(
-            away.get(
-                "form",
-                70
-            )
+            away.get("form", 70)
         )
-
 
 
         home_advantage = 1.12
@@ -193,20 +149,17 @@ class FAJPrediction:
 
 
             "home_xg":
-
             round(
-                xg_home,
+                min(xg_home,4),
                 2
             ),
 
 
             "away_xg":
-
             round(
-                xg_away,
+                min(xg_away,4),
                 2
             )
-
 
         }
 
@@ -218,57 +171,42 @@ class FAJPrediction:
     # =====================================
 
 
-    def poisson(
-        self,
-        value,
-        goals
-    ):
+    def poisson(self, xg, goals):
 
 
         return (
 
-            math.pow(
-                value,
-                goals
-            )
+            math.pow(xg, goals)
 
             *
 
-            math.exp(
-                -value
-            )
+            math.exp(-xg)
 
             /
 
-            math.factorial(
-                goals
-            )
+            math.factorial(goals)
 
         )
 
 
 
     # =====================================
-    # SCORE MATRIX
+    # FULL SCORE MATRIX
     # =====================================
 
 
-    def score_matrix(
-        self,
-        home_xg,
-        away_xg
-    ):
+    def score_matrix(self, home_xg, away_xg):
 
 
-        results = []
+        matrix = []
 
 
 
-        for h,a in product(
+        for home_goals, away_goals in product(
 
-            range(0,6),
+            range(0,8),
 
-            range(0,6)
+            range(0,8)
 
         ):
 
@@ -277,38 +215,34 @@ class FAJPrediction:
 
                 self.poisson(
                     home_xg,
-                    h
+                    home_goals
                 )
 
                 *
 
                 self.poisson(
                     away_xg,
-                    a
+                    away_goals
                 )
 
             )
 
 
-            results.append({
+
+            matrix.append({
 
                 "score":
-
-                f"{h}:{a}",
+                f"{home_goals}:{away_goals}",
 
 
                 "probability":
-
-                round(
-                    probability*100,
-                    2
-                )
+                probability
 
             })
 
 
 
-        results.sort(
+        matrix.sort(
 
             key=lambda x:
             x["probability"],
@@ -319,24 +253,21 @@ class FAJPrediction:
 
 
 
-        return results[:5]
+        return matrix
 
 
 
     # =====================================
-    # FINAL P1 X P2
+    # P1 X P2
     # =====================================
 
 
-    def outcome_probability(
-        self,
-        matrix
-    ):
+    def outcome_probability(self, matrix):
 
 
         p1 = 0
 
-        x = 0
+        draw = 0
 
         p2 = 0
 
@@ -345,34 +276,49 @@ class FAJPrediction:
         for item in matrix:
 
 
-            score = item["score"]
-
-
-            h,a = map(
+            home, away = map(
 
                 int,
 
-                score.split(":")
+                item["score"].split(":")
 
             )
 
 
-
-            if h>a:
-
-                p1 += item["probability"]
+            value = item["probability"]
 
 
 
-            elif h==a:
+            if home > away:
 
-                x += item["probability"]
+
+                p1 += value
+
+
+
+            elif home == away:
+
+
+                draw += value
 
 
 
             else:
 
-                p2 += item["probability"]
+
+                p2 += value
+
+
+
+        total = (
+
+            p1 +
+
+            draw +
+
+            p2
+
+        )
 
 
 
@@ -381,32 +327,39 @@ class FAJPrediction:
 
             "P1":
 
-            round(p1,1),
+            round(
+                p1 / total * 100,
+                1
+            ),
 
 
             "X":
 
-            round(x,1),
+            round(
+                draw / total * 100,
+                1
+            ),
 
 
             "P2":
 
-            round(p2,1)
+            round(
+                p2 / total * 100,
+                1
+            )
+
 
         }
 
 
 
+
     # =====================================
-    # MAIN
+    # MAIN PREDICTION
     # =====================================
 
 
-    def predict(
-        self,
-        home_name,
-        away_name
-    ):
+    def predict(self, home_name, away_name):
 
 
         home = self.get_team(
@@ -424,6 +377,7 @@ class FAJPrediction:
 
 
             return {
+
 
                 "error":
 
@@ -444,7 +398,7 @@ class FAJPrediction:
 
 
 
-        scores = self.score_matrix(
+        matrix = self.score_matrix(
 
             xg["home_xg"],
 
@@ -454,17 +408,42 @@ class FAJPrediction:
 
 
 
-        outcome = self.outcome_probability(
+        probabilities = self.outcome_probability(
 
-            scores
+            matrix
 
         )
 
 
 
+        top_scores = []
+
+
+
+        for item in matrix[:5]:
+
+
+            top_scores.append({
+
+                "score":
+
+                item["score"],
+
+
+                "probability":
+
+                round(
+                    item["probability"]*100,
+                    2
+                )
+
+            })
+
+
+
         confidence = max(
 
-            outcome.values()
+            probabilities.values()
 
         )
 
@@ -490,22 +469,19 @@ class FAJPrediction:
 
             "scores":
 
-            scores,
+            top_scores,
 
 
             "probability":
 
-            outcome,
+            probabilities,
 
 
             "confidence":
 
             round(
-
                 confidence,
-
                 1
-
             ),
 
 
