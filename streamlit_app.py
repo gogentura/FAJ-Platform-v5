@@ -1,425 +1,296 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-FAJ Platform v10.1
-Football Analytics Journal
-Adaptive Football Intelligence
-Professional Match Center Interface
+FAJ Platform v10.0
+Professional Analytics Dashboard
 """
+
 import streamlit as st
 import pandas as pd
-from app.faj_core import FAJCore
-from app.prediction import FAJPrediction  # <-- НОВЫЙ ИМПОРТ
+from app.prediction import FAJPrediction
+from app.learning_db import LearningDB
 
 # =====================================================
 # CONFIG
 # =====================================================
 st.set_page_config(
-    page_title="FAJ Platform 10.1",
+    page_title="FAJ Platform 10.0",
     page_icon="⚽",
     layout="wide"
 )
 
 # =====================================================
-# CORE
+# INIT
 # =====================================================
 @st.cache_resource
-def get_core():
-    return FAJCore()
+def get_engine():
+    return FAJPrediction()
 
-core = get_core()
-status = core.status() if hasattr(core, 'status') else {
-    "version": "10.1",
-    "teams": 0,
-    "memory": 0,
-    "passports": 0,
-    "model_events": 0,
-    "team_events": 0,
-    "system_events": 0
-}
+@st.cache_resource
+def get_learning_db():
+    return LearningDB()
 
-passport = getattr(core, "passport", None)
-
-# =====================================================
-# PREDICTION ENGINE  <-- НОВЫЙ БЛОК
-# =====================================================
-prediction_engine = FAJPrediction(passport)
+engine = get_engine()
+learning_db = get_learning_db()
 
 # =====================================================
 # STYLE
 # =====================================================
-st.markdown(
-"""
+st.markdown("""
 <style>
-.block-container {
-    padding-top: 2rem;
-}
-.card {
-    background:#111827;
-    padding:25px;
-    border-radius:18px;
-    margin-bottom:20px;
-}
-.big-title {
-    font-size:40px;
-    font-weight:800;
-}
-.subtitle {
-    color:#9ca3af;
-    font-size:18px;
-}
-.metric-box {
-    background:#1f2937;
-    padding:20px;
-    border-radius:15px;
-    text-align:center;
-}
+    .main-header {
+        font-size: 32px;
+        font-weight: 700;
+        background: linear-gradient(135deg, #60a5fa, #a78bfa);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
+    .sub-header {
+        color: #9ca3af;
+        font-size: 16px;
+        margin-bottom: 20px;
+    }
+    .prediction-card {
+        background: rgba(30, 30, 50, 0.8);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 16px;
+        padding: 20px;
+        margin-bottom: 16px;
+    }
+    .metric-value {
+        font-size: 28px;
+        font-weight: 700;
+        color: #f3f4f6;
+    }
+    .metric-label {
+        color: #9ca3af;
+        font-size: 14px;
+    }
+    .best-bet {
+        background: rgba(16, 185, 129, 0.15);
+        border: 1px solid rgba(16, 185, 129, 0.3);
+        border-radius: 12px;
+        padding: 12px 20px;
+        text-align: center;
+    }
 </style>
-""",
-unsafe_allow_html=True
-)
+""", unsafe_allow_html=True)
 
 # =====================================================
 # HEADER
 # =====================================================
-st.markdown(
-"""
-<div class="big-title">
-⚽ FAJ PLATFORM 10.1
-</div>
-<div class="subtitle">
-Football Analytics Journal — Adaptive Football Intelligence
-</div>
-""",
-unsafe_allow_html=True
-)
-st.write("")
+st.markdown('<div class="main-header">⚽ FAJ PLATFORM 10.0</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">Adaptive Football Intelligence — Самообучающаяся система прогнозирования</div>', unsafe_allow_html=True)
 
 # =====================================================
 # NAVIGATION
 # =====================================================
-section = st.radio(
+page = st.radio(
     "",
-    [
-        "🏟 Матч-центр",
-        "👥 Команды",
-        "🧠 Обучение",
-        "📜 Журнал",
-        "⚙️ Система"
-    ],
+    ["🏠 Матч-центр", "📊 Сравнение", "🧠 Обучение", "📘 Команды", "⚙️ Система"],
     horizontal=True
 )
+
 st.divider()
 
 # =====================================================
-# TEAM LIST
+# PAGE: МАТЧ-ЦЕНТР
 # =====================================================
-teams = []
-if passport and hasattr(passport, "passports"):
-    for item in passport.passports:
-        if isinstance(item, dict):
-            name = item.get("team")
-            if name:
-                teams.append(name)
-teams = sorted(list(set(teams)))
-
-if not teams:
-    teams = [
-        "Зенит",
-        "Спартак",
-        "ЦСКА",
-        "Динамо М",
-        "Краснодар",
-        "Локомотив",
-        "Ростов"
-    ]
-
-# =====================================================
-# MATCH CENTER  <-- ОБНОВЛЕННЫЙ БЛОК
-# =====================================================
-if section == "🏟 Матч-центр":
-    st.header("🏟 Центр прогнозирования")
-    col1,col2 = st.columns(2)
-    with col1:
-        home = st.selectbox("Домашняя команда", teams)
-    with col2:
-        away = st.selectbox(
-            "Гостевая команда",
-            [x for x in teams if x != home]
-        )
-    st.write("")
+if page == "🏠 Матч-центр":
+    st.markdown("### 🏟 Центр прогнозирования")
     
-    if st.button("🔮 Рассчитать прогноз", use_container_width=True):
-        with st.spinner("FAJ анализирует матч..."):
-            result = prediction_engine.predict(home, away)
-        
-        if "error" in result:
-            st.error(result["error"])
-        else:
-            st.success("FAJ Prediction завершён")
-            st.divider()
-            
-            st.subheader("🔮 Итоговый прогноз FAJ")
-            col1,col2,col3 = st.columns(3)
-            probs = result["probability"]
-            with col1:
-                st.metric("Победа хозяев", f'{probs["P1"]}%')
-            with col2:
-                st.metric("Ничья", f'{probs["X"]}%')
-            with col3:
-                st.metric("Победа гостей", f'{probs["P2"]}%')
-            
-            st.divider()
-            st.subheader("⚽ Ожидаемый xG")
-            xg1,xg2 = st.columns(2)
-            with xg1:
-                st.metric(home, result["xg"]["home_xg"])
-            with xg2:
-                st.metric(away, result["xg"]["away_xg"])
-            
-            st.divider()
-            st.subheader("🎯 Вероятные счета")
-            score_df = pd.DataFrame(result["scores"])
-            score_df.columns = ["Счет", "Вероятность %"]
-            st.dataframe(
-                score_df,
-                hide_index=True,
-                use_container_width=True
-            )
-            
-            st.divider()
-            st.subheader("📊 Confidence Index")
-            confidence = result["confidence"] / 100
-            st.progress(confidence)
-            st.write(f'{result["confidence"]}%')
-            
-            st.divider()
-            st.subheader("🧠 Почему FAJ выбрал такой прогноз")
-            st.write(
-f"""
-FAJ анализирует:
-✓ силу атаки {home}
-✓ баланс защиты {away}
-✓ текущую форму команд
-✓ домашний фактор
-✓ паспорт команды
-Версия модели:
-FAJ Prediction {result["version"]}
-"""
-            )
-
-# =====================================================
-# TEAMS / PASSPORT CENTER
-# =====================================================
-elif section == "👥 Команды":
-    st.header("👥 Команды FAJ")
+    teams = learning_db.get_all_teams()
+    
     col1, col2 = st.columns(2)
     with col1:
-        team_one = st.selectbox("Выберите команду", teams, key="passport_team")
+        home = st.selectbox("🏠 Домашняя команда", teams, key="home")
     with col2:
-        compare = st.checkbox("Сравнить команды")
+        away = st.selectbox("✈️ Гостевая команда", [t for t in teams if t != home], key="away")
     
-    def get_team_data(name):
-        if not passport:
-            return None
-        if not hasattr(passport, "passports"):
-            return None
-        for item in passport.passports:
-            if isinstance(item, dict):
-                if item.get("team") == name:
-                    return item
-        return None
-    
-    team_data = get_team_data(team_one)
-    
-    if team_data:
-        st.subheader(f"📘 {team_one}")
-        c1,c2,c3 = st.columns(3)
-        with c1:
-            st.metric("⚔️ Атака", team_data.get("attack", "-"))
-        with c2:
-            st.metric("🛡 Защита", team_data.get("defense", "-"))
-        with c3:
-            st.metric("🔥 Форма", team_data.get("form", "-"))
+    if st.button("🔮 Рассчитать прогноз", use_container_width=True, type="primary"):
+        with st.spinner("FAJ анализирует матч..."):
+            result = engine.predict_match(home, away)
         
-        st.divider()
-        st.subheader("FAJ Passport")
-        translate = {
-            "attack": "Атака",
-            "defense": "Защита",
-            "control": "Контроль",
-            "efficiency": "Эффективность",
-            "mentality": "Ментальность",
-            "tempo": "Темп",
-            "press": "Прессинг",
-            "predictability": "Предсказуемость",
-            "flexibility": "Гибкость",
-            "home_power": "Сила дома",
-            "coach": "Тренер",
-            "form": "Форма",
-            "transfer_index": "Трансферы",
-            "depth": "Глубина состава"
-        }
-        for key,value in translate.items():
-            if key in team_data:
-                score = float(team_data[key])
-                st.write(f"**{value}** — {score}")
-                st.progress(min(int(score), 100))
+        if "error" in result:
+            st.error(f"❌ {result['error']}")
+        else:
+            # Основная карточка прогноза
+            st.markdown(f"""
+            <div class="prediction-card">
+                <h2 style="text-align:center; color:#f3f4f6; margin:0;">
+                    {home} ⚔️ {away}
+                </h2>
+                <p style="text-align:center; color:#9ca3af;">FAJ Prediction v{result['version']}</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # 3 колонки: вероятности
+            col1, col2, col3 = st.columns(3)
+            probs = result['probability']
+            
+            with col1:
+                st.markdown(f"""
+                <div style="text-align:center; padding:12px; background:rgba(16,185,129,0.1); border-radius:12px;">
+                    <div style="font-size:32px; font-weight:700; color:#10b981;">{probs['P1']}%</div>
+                    <div style="color:#9ca3af;">Победа {home}</div>
+                    <div style="background:#374151; height:4px; border-radius:2px; margin-top:8px;">
+                        <div style="background:#10b981; height:4px; border-radius:2px; width:{probs['P1']}%;"></div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            with col2:
+                st.markdown(f"""
+                <div style="text-align:center; padding:12px; background:rgba(245,158,11,0.1); border-radius:12px;">
+                    <div style="font-size:32px; font-weight:700; color:#f59e0b;">{probs['X']}%</div>
+                    <div style="color:#9ca3af;">Ничья</div>
+                    <div style="background:#374151; height:4px; border-radius:2px; margin-top:8px;">
+                        <div style="background:#f59e0b; height:4px; border-radius:2px; width:{probs['X']}%;"></div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            with col3:
+                st.markdown(f"""
+                <div style="text-align:center; padding:12px; background:rgba(239,68,68,0.1); border-radius:12px;">
+                    <div style="font-size:32px; font-weight:700; color:#ef4444;">{probs['P2']}%</div>
+                    <div style="color:#9ca3af;">Победа {away}</div>
+                    <div style="background:#374151; height:4px; border-radius:2px; margin-top:8px;">
+                        <div style="background:#ef4444; height:4px; border-radius:2px; width:{probs['P2']}%;"></div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            st.divider()
+            
+            # xG
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric(f"⚽ xG {home}", result['xg']['home_xg'])
+            with col2:
+                st.metric(f"⚽ xG {away}", result['xg']['away_xg'])
+            
+            # Дополнительные метрики
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("📊 Уверенность", f"{result['confidence']}%")
+            with col2:
+                st.metric("⚽ Тотал > 2.5", f"{result['total_over25']}%")
+            with col3:
+                st.metric("🤝 Обе забьют", f"{result['btts']}%")
+            with col4:
+                st.markdown(f"""
+                <div class="best-bet">
+                    <div style="color:#9ca3af; font-size:12px;">ЛУЧШАЯ СТАВКА</div>
+                    <div style="color:#10b981; font-weight:700; font-size:16px;">{result['best_bet']}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # Топ-5 счетов
+            st.markdown("### 🎯 Самые вероятные счета")
+            score_df = pd.DataFrame(result['top_scores'])
+            score_df.columns = ["Счет", "Вероятность %"]
+            st.dataframe(score_df, hide_index=True, use_container_width=True)
+            
+            # Объяснение
+            with st.expander("🧠 Почему FAJ выбрал такой прогноз"):
+                st.write(result['explanation'])
+
+# =====================================================
+# PAGE: СРАВНЕНИЕ
+# =====================================================
+elif page == "📊 Сравнение":
+    st.markdown("### 📊 Сравнение прогнозов FAJ vs Эксперт")
+    
+    summary = learning_db.get_comparison_summary()
+    if summary.empty:
+        st.info("Нет данных для сравнения. Добавьте прогнозы и результаты.")
     else:
-        st.warning("Паспорт команды не найден")
-    
-    # =====================================================
-    # COMPARE TEAMS
-    # =====================================================
-    if compare:
-        st.divider()
-        st.subheader("⚔️ Сравнение команд")
-        team_two = st.selectbox(
-            "Вторая команда",
-            [x for x in teams if x != team_one],
-            key="compare_team"
-        )
-        data_two = get_team_data(team_two)
+        st.dataframe(summary, use_container_width=True, hide_index=True)
         
-        if team_data and data_two:
-            compare_fields = {
-                "attack": "⚔️ Атака",
-                "defense": "🛡 Защита",
-                "form": "🔥 Форма",
-                "control": "🎯 Контроль",
-                "mentality": "🧠 Ментальность",
-                "coach": "👔 Тренер",
-                "depth": "👥 Глубина состава"
-            }
-            rows = []
-            for key,label in compare_fields.items():
-                rows.append({
-                    "Показатель": label,
-                    team_one: team_data.get(key, "-"),
-                    team_two: data_two.get(key, "-")
+        # Статистика точности
+        stats = learning_db.calculate_accuracy()
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Всего матчей", stats['total'])
+        with col2:
+            st.metric("FAJ (исход)", f"{stats['faj']}%")
+        with col3:
+            st.metric("Эксперт (исход)", f"{stats['expert']}%")
+        with col4:
+            st.metric("FAJ (точный счет)", f"{stats['faj_score']}%")
+
+# =====================================================
+# PAGE: ОБУЧЕНИЕ
+# =====================================================
+elif page == "🧠 Обучение":
+    st.markdown("### 🧠 Самообучение модели")
+    
+    stats = learning_db.get_learning_stats()
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("📚 Записей в памяти", stats['total_records'])
+    with col2:
+        st.metric("🏟 Команд в БД", stats['teams_count'])
+    with col3:
+        st.metric("⚖️ Обновлений весов", stats['weights_updates'])
+    with col4:
+        st.metric("📅 Последнее обновление", stats['last_update'][:16] if stats['last_update'] else "—")
+    
+    st.divider()
+    
+    # История весов
+    weights_df = learning_db.get_weights_history_df()
+    if not weights_df.empty:
+        st.markdown("### ⚖️ История изменения весов")
+        st.dataframe(weights_df, use_container_width=True, hide_index=True)
+    
+    # Память обучения
+    if learning_db.memory:
+        st.markdown("### 📋 Последние записи обучения")
+        memory_df = pd.DataFrame(learning_db.memory[-10:])
+        st.dataframe(memory_df, use_container_width=True, hide_index=True)
+
+# =====================================================
+# PAGE: КОМАНДЫ
+# =====================================================
+elif page == "📘 Команды":
+    st.markdown("### 📘 Паспорта команд")
+    
+    teams = learning_db.get_all_teams()
+    selected = st.selectbox("Выберите команду", teams)
+    
+    if selected:
+        passport = learning_db.get_team_passport(selected)
+        if passport:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown(f"## {selected}")
+                st.json(passport)
+            with col2:
+                # Визуализация показателей
+                df = pd.DataFrame({
+                    "Показатель": list(passport.keys()),
+                    "Значение": list(passport.values())
                 })
-            df = pd.DataFrame(rows)
-            st.dataframe(
-                df,
-                use_container_width=True,
-                hide_index=True
-            )
-            st.info(
-f"""
-FAJ анализ:
-{team_one}
-vs
-{team_two}
-Следующий этап:
-FAJ Compare Engine
-↓
-Преимущество команд
-↓
-Вероятность матча
-"""
-            )
+                st.bar_chart(df.set_index("Показатель"))
 
 # =====================================================
-# LEARNING CENTER
+# PAGE: СИСТЕМА
 # =====================================================
-elif section == "🧠 Обучение":
-    st.header("🧠 Learning Center")
-    st.subheader("Последние выводы FAJ")
+elif page == "⚙️ Система":
+    st.markdown("### ⚙️ Системная информация")
     
-    memory = []
-    if hasattr(core, "memory"):
-        if hasattr(core.memory, "memory"):
-            memory = core.memory.memory
+    stats = learning_db.get_learning_stats()
+    weights = learning_db.get_current_weights()
     
-    if not memory:
-        st.info(
-            "Память пока пуста. "
-            "После обработки тура FAJ начнет обучение."
-        )
-    else:
-        for item in reversed(memory[-10:]):
-            if isinstance(item, dict):
-                st.markdown(
-f"""
-<div class="card">
-<b>{item.get('category','EVENT')}</b>
-<br>
-{item.get('observation','')}
-<br><br>
-<b>Вывод:</b>
-{item.get('conclusion','')}
-<br>
-<b>Действие:</b>
-{item.get('action','')}
-</div>
-""",
-                    unsafe_allow_html=True
-                )
-
-# =====================================================
-# JOURNAL
-# =====================================================
-elif section == "📜 Журнал":
-    st.header("📜 Журнал модели")
-    st.write("История изменений FAJ")
-    
-    journal = []
-    if hasattr(core, "memory"):
-        if hasattr(core.memory, "memory"):
-            journal = core.memory.memory
-    
-    if journal:
-        df = pd.DataFrame(journal)
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True
-        )
-    else:
-        st.info("Записей журнала нет")
-
-# =====================================================
-# SYSTEM
-# =====================================================
-elif section == "⚙️ Система":
-    st.header("⚙️ FAJ System")
-    
-    c1,c2,c3,c4 = st.columns(4)
-    with c1:
-        st.metric("Версия", status.get("version", "10.1"))
-    with c2:
-        st.metric("Команды", status.get("teams", 0))
-    with c3:
-        st.metric("Паспорта", status.get("passports", 0))
-    with c4:
-        st.metric("Память", status.get("memory", 0))
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Версия платформы", "10.0")
+    with col2:
+        st.metric("Команд в системе", stats['teams_count'])
+    with col3:
+        st.metric("Записей памяти", stats['total_records'])
     
     st.divider()
-    st.subheader("Состояние модулей")
-    modules = {
-        "FAJ Core": "🟢 Активен",
-        "Passport Engine": "🟢 Активен",
-        "Prediction Engine": "🟢 Активен",  # <-- НОВЫЙ МОДУЛЬ
-        "Memory Engine": "🟡 Ожидает данные",
-        "xG Engine": "🟡 Подключается",
-        "Poisson Model": "🟡 Подключается",
-        "Expert Layer": "🟡 Подключается"
-    }
-    for name,state in modules.items():
-        st.write(f"{name}: {state}")
-    
-    st.divider()
-    st.subheader("FAJ Statistics")
-    st.json({
-        "Версия": status.get("version"),
-        "Команд": status.get("teams"),
-        "Паспортов": status.get("passports"),
-        "Записей памяти": status.get("memory"),
-        "Ошибок модели": status.get("model_events")
-    })
-
-# =====================================================
-# FOOTER
-# =====================================================
-st.divider()
-st.caption("⚽ FAJ Platform 10.1 | Adaptive Football Intelligence")
+    st.markdown("### ⚖️ Текущие веса модели")
+    st.json(weights)
