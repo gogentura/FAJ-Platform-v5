@@ -453,25 +453,45 @@ elif page == "📘 Команды":
         st.warning("Нет команд в базе")
 
 # =====================================================
-# СТРАНИЦА: СИСТЕМА
+# СТРАНИЦА: СИСТЕМА (С БД И API СТАТИСТИКОЙ)
 # =====================================================
 elif page == "⚙️ Система":
     st.markdown("### ⚙️ Системная информация")
+    
+    from app.database import FAJDatabase
+    
+    db = FAJDatabase()
+    db_status = db.get_status()
     
     comparison = load_json("comparison_log.json")
     passports = load_json("passports_2026.json")
     memory = load_json("learning_memory.json")
     weights = load_json("weights_history.json")
     
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("Версия", "10.0")
     with col2:
-        st.metric("Команд", len(passports))
+        st.metric("Команд в БД", db_status.get('teams', 0))
     with col3:
-        st.metric("Записей памяти", len(memory))
+        st.metric("Матчей в БД", db_status.get('matches', 0))
+    with col4:
+        st.metric("Записей журнала", db_status.get('journal', 0))
     
     st.divider()
+    
+    api_stats = db.get_api_stats_today()
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("API Football запросов сегодня", api_stats.get('football_api', 0))
+    with col2:
+        st.metric("Football-data запросов сегодня", api_stats.get('football_data', 0))
+    with col3:
+        remaining = max(0, 100 - api_stats.get('football_api', 0))
+        st.metric("Осталось (API Football)", remaining)
+    
+    st.divider()
+    
     st.markdown("### ⚖️ Текущие веса")
     if weights:
         st.json(weights[-1].get('weights', {}))
@@ -482,6 +502,12 @@ elif page == "⚙️ Система":
     st.markdown("### 📊 Статистика точности")
     stats = calculate_accuracy()
     st.json(stats)
+    
+    st.divider()
+    
+    with st.expander("🗄️ Информация о базе данных"):
+        st.json(db_status)
+        st.caption(f"Путь к БД: {db_status.get('db_path', '—')}")
 
 # =====================================================
 # СТРАНИЦА: МАТЧ-ЦЕНТР
@@ -627,21 +653,20 @@ elif page == "🏠 Матч-центр":
             st.warning(f"Нет паспортов для команд {home} или {away}")
 
 # =====================================================
-# СТРАНИЦА: API ТЕСТ (ПО КОМАНДЕ)
+# СТРАНИЦА: API ТЕСТ
 # =====================================================
 elif page == "📡 API Тест":
     st.markdown("### 📡 Тест подключения API")
     
     from app.api.football_api import FootballAPI
-    from app.api.football_data_api import FootballDataAPI
+    from app.api.football_data import FootballDataAPI
+    from app.api.ids import IDs
     from app.config import Config
     
     football_api = FootballAPI()
     football_data = FootballDataAPI()
     
-    # =========================================================
-    # СТАТУС ТОКЕНОВ
-    # =========================================================
+    # Статус токенов
     st.markdown("#### 🔑 Статус токенов")
     col1, col2 = st.columns(2)
     with col1:
@@ -657,9 +682,7 @@ elif page == "📡 API Тест":
     
     st.divider()
     
-    # =========================================================
-    # СЧЁТЧИК ЗАПРОСОВ
-    # =========================================================
+    # Счётчик запросов
     if "api_requests" not in st.session_state:
         st.session_state.api_requests = 0
     
@@ -675,55 +698,20 @@ elif page == "📡 API Тест":
     
     st.divider()
     
-    # =========================================================
-    # ТЕСТ API FOOTBALL — ПО КОМАНДЕ
-    # =========================================================
+    # Тест API Football по команде
     st.markdown("#### ⚽ Тест API Football (по команде)")
     
-    # Список команд с их ID в API-Football
-    team_ids = {
-        "Зенит": 788,
-        "Спартак": 780,
-        "ЦСКА": 790,
-        "Динамо М": 789,
-        "Краснодар": 798,
-        "Локомотив": 787,
-        "Ростов": 795,
-        "Рубин": 797,
-        "Ахмат": 793,
-        "Оренбург": 796,
-        "Крылья Советов": 791,
-        "Факел": 804,
-        "Балтика": 799,
-        "Динамо Мх": 803,
-        "Акрон": 12345,
-        "Родина": 12346
-    }
+    team_options = IDs.get_all_teams()
     
     col1, col2 = st.columns(2)
     with col1:
-        selected_team = st.selectbox(
-            "Выберите команду для теста",
-            list(team_ids.keys())
-        )
-        team_id = team_ids[selected_team]
-    
+        selected_team = st.selectbox("Выберите команду для теста", team_options)
     with col2:
-        league_for_team = st.selectbox(
-            "Лига",
-            ["RPL", "EPL", "LALIGA", "UCL"],
-            key="team_league"
-        )
-        season_for_team = st.number_input("Сезон", value=2026, min_value=2020, max_value=2026, key="team_season")
+        league_for_team = st.selectbox("Лига", ["RPL", "EPL", "LALIGA", "UCL"])
     
     if st.button("🔍 Получить статистику команды", use_container_width=True):
         with st.spinner(f"Запрос статистики для {selected_team}..."):
-            league_id = Config.get_api_id(league_for_team)
-            result = football_api.get_team_stats(
-                team_id=team_id,
-                league=league_id,
-                season=season_for_team
-            )
+            result = football_api.get_team_stats_by_name(selected_team, league_for_team)
             st.session_state.api_requests += 1
         
         if result.get("error"):
@@ -732,7 +720,6 @@ elif page == "📡 API Тест":
                 st.write(f"Код ошибки: {result['status_code']}")
         else:
             st.success(f"✅ Статистика для {selected_team} получена")
-            
             stats = result.get("response", {})
             if stats:
                 col1, col2, col3 = st.columns(3)
@@ -753,20 +740,12 @@ elif page == "📡 API Тест":
     
     st.divider()
     
-    # =========================================================
-    # ТЕСТ API FOOTBALL — ПОСЛЕДНИЕ МАТЧИ КОМАНДЫ
-    # =========================================================
-    st.markdown("#### 🏟 Тест API Football (матчи команды)")
+    # Последние матчи команды
+    st.markdown("#### 🏟 Последние матчи команды")
     
-    if st.button("📅 Получить последние матчи команды", use_container_width=True):
+    if st.button("📅 Получить последние матчи", use_container_width=True):
         with st.spinner(f"Запрос матчей для {selected_team}..."):
-            league_id = Config.get_api_id(league_for_team)
-            result = football_api.get_fixtures(
-                league=league_id,
-                season=season_for_team,
-                team=team_id,
-                status="FT"
-            )
+            result = football_api.get_team_fixtures(selected_team, league_for_team, last=5, status="FT")
             st.session_state.api_requests += 1
         
         if result.get("error"):
@@ -800,24 +779,18 @@ elif page == "📡 API Тест":
     
     st.divider()
     
-    # =========================================================
-    # ТЕСТ FOOTBALL-DATA
-    # =========================================================
+    # Тест Football-data
     st.markdown("#### 📊 Тест Football-data.org")
     
     col1, col2 = st.columns(2)
     with col1:
-        fd_league = st.selectbox(
-            "Турнир",
-            ["RPL", "EPL", "LALIGA", "UCL"],
-            key="fd_league"
-        )
+        fd_league = st.selectbox("Турнир", ["RPL", "EPL", "LALIGA", "UCL"], key="fd_league")
     with col2:
         fd_season = st.number_input("Сезон (Football-data)", value=2026, min_value=2020, max_value=2026, key="fd_season")
     
     if st.button("📊 Получить таблицу из Football-data", use_container_width=True):
         with st.spinner("Запрос к Football-data..."):
-            result = football_data.get_league_standings(fd_league, season=fd_season)
+            result = football_data.get_league_standings(fd_league, fd_season)
         
         if result.get("error"):
             st.error(f"❌ Ошибка: {result.get('message')}")
@@ -847,9 +820,6 @@ elif page == "📡 API Тест":
     
     st.divider()
     
-    # =========================================================
-    # ИНФОРМАЦИЯ О ЛИМИТАХ
-    # =========================================================
     with st.expander("ℹ️ О лимитах API"):
         st.markdown("""
         **API Football**
