@@ -9,7 +9,7 @@ import pandas as pd
 import json
 import os
 from datetime import datetime
-from math import exp
+from math import exp, factorial
 
 # =====================================================
 # КОНСТАНТЫ
@@ -69,6 +69,15 @@ def get_team_passport(team_name):
     """Получить паспорт команды"""
     passports = load_json("passports_2026.json")
     return passports.get(team_name, {})
+
+def poisson_prob(k, xg):
+    """Функция Пуассона для расчёта вероятности счёта (без ошибок)"""
+    if xg == 0:
+        return 1.0 if k == 0 else 0.0
+    try:
+        return (exp(-xg) * (xg ** k)) / factorial(k)
+    except:
+        return 0.0
 
 def load_tour1_to_comparison():
     """Загрузка данных 1-го тура в comparison_log"""
@@ -235,10 +244,6 @@ def run_training():
         "version": new_record["version"]
     }
 
-def poisson_prob(k, xg):
-    """Функция Пуассона для расчёта вероятности счёта"""
-    return (exp(-xg) * (xg ** k)) / (k ** 0.5 if k == 0 else 1)
-
 # =====================================================
 # ПЕРЕВОД ПОКАЗАТЕЛЕЙ
 # =====================================================
@@ -353,7 +358,6 @@ elif page == "📊 Сравнение":
     if summary.empty:
         st.info("Нет данных для сравнения. Загрузите данные 1-го тура через раздел '📥 Загрузка данных'.")
     else:
-        # Переименовываем колонки на русский
         rename_map = {
             'match': 'Матч',
             'faj_pred': 'Прогноз FAJ',
@@ -507,20 +511,16 @@ elif page == "🏠 Матч-центр":
         st.warning("Нет команд в базе данных")
         st.stop()
     
-    # Загружаем прогнозы на 2-й тур
     tour2 = load_json("tour2_predictions.json")
     
     if not tour2:
         st.warning("Нет данных для 2-го тура. Проверьте файл tour2_predictions.json")
         st.stop()
     
-    # Показываем таблицу прогнозов
     st.markdown("### 📊 Прогнозы на 2-й тур")
     
-    # Собираем данные для таблицы
     matches_data = []
     for match, data in tour2.items():
-        # Разбиваем название матча на команды
         if '-' in match:
             home, away = match.split('-')
         else:
@@ -531,10 +531,8 @@ elif page == "🏠 Матч-центр":
         xg_home = data.get('xg_home', '—')
         xg_away = data.get('xg_away', '—')
         
-        # Определяем исход по прогнозу FAJ
         faj_outcome = get_outcome(faj_pred) if faj_pred != '—' else '—'
         
-        # Определяем лучшую ставку
         if faj_outcome == "П1":
             best_bet = f"Победа {home}"
         elif faj_outcome == "П2":
@@ -558,10 +556,8 @@ elif page == "🏠 Матч-центр":
     
     st.divider()
     
-    # Детальный прогноз для выбранного матча
     st.markdown("### 🔍 Детальный прогноз по матчу")
     
-    # Создаём список матчей для выбора
     match_options = list(tour2.keys())
     selected_match = st.selectbox("Выберите матч для детального прогноза", match_options)
     
@@ -578,19 +574,6 @@ elif page == "🏠 Матч-центр":
         xg_home = data.get('xg_home', '—')
         xg_away = data.get('xg_away', '—')
         
-        # Используем обученные веса для расчёта вероятностей
-        weights_history = load_json("weights_history.json")
-        if weights_history:
-            current_weights = weights_history[-1].get('weights', {})
-        else:
-            current_weights = {
-                "attack": 0.18, "defense": 0.18, "control": 0.15,
-                "efficiency": 0.12, "mentality": 0.10, "tempo": 0.07,
-                "press": 0.05, "transition": 0.05, "flexibility": 0.05,
-                "coach": 0.05
-            }
-        
-        # Расчёт вероятностей
         try:
             xg_h = float(xg_home) if xg_home != '—' else 1.35
             xg_a = float(xg_away) if xg_away != '—' else 1.35
@@ -598,7 +581,6 @@ elif page == "🏠 Матч-центр":
             xg_h = 1.35
             xg_a = 1.35
         
-        # Простая модель вероятностей на основе xG
         total_xg = xg_h + xg_a
         if total_xg > 0:
             p1 = round((xg_h / total_xg) * 100 * 0.7 + 15, 1)
@@ -609,22 +591,18 @@ elif page == "🏠 Матч-центр":
             px = 33.3
             p2 = 33.3
         
-        # Уверенность
         confidence = round(50 + abs(xg_h - xg_a) * 10, 1)
         if confidence > 90:
             confidence = 90
         
-        # Тотал > 2.5
         total_over25 = round(30 + (xg_h + xg_a) * 10, 1)
         if total_over25 > 85:
             total_over25 = 85
         
-        # Обе забьют
         btts_prob = round(30 + (xg_h * xg_a) * 15, 1)
         if btts_prob > 85:
             btts_prob = 85
         
-        # Лучшая ставка
         max_prob = max(p1, px, p2)
         if max_prob == p1:
             best_bet = f"Победа {home}"
@@ -633,16 +611,15 @@ elif page == "🏠 Матч-центр":
         else:
             best_bet = f"Победа {away}"
         
-        # Топ-3 счёта (упрощённо)
+        # Расчёт вероятностей счетов через Пуассона (исправлено)
         scores = []
-        for i in range(4):
-            for j in range(4):
+        for i in range(5):
+            for j in range(5):
                 prob = poisson_prob(i, xg_h) * poisson_prob(j, xg_a)
-                if prob > 0.01:
+                if prob > 0.005:
                     scores.append({"Счёт": f"{i}:{j}", "Вероятность %": round(prob * 100, 1)})
         scores = sorted(scores, key=lambda x: x["Вероятность %"], reverse=True)[:5]
         
-        # Отображаем детальный прогноз
         st.markdown(f"""
         <div class="prediction-card">
             <h2 style="text-align:center; color:#f3f4f6; margin:0;">{home} ⚔️ {away}</h2>
@@ -698,7 +675,6 @@ elif page == "🏠 Матч-центр":
                - {'Атакующий стиль' if xg_h > 1.5 else 'Сбалансированная игра'}
             """)
         
-        # Сравнение с экспертом
         if expert_pred != '—':
             st.divider()
             st.markdown("### 📊 Сравнение прогнозов")
