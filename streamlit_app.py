@@ -781,4 +781,93 @@ elif page == "📡 API Тест":
                     home = fixture.get("teams", {}).get("home", {}).get("name", "?")
                     away = fixture.get("teams", {}).get("away", {}).get("name", "?")
                     home_goals = fixture.get("goals", {}).get("home")
-                    away_
+                    away_goals = fixture.get("goals", {}).get("away")
+                    date = fixture.get("fixture", {}).get("date", "")[:10]
+                    
+                    if home_goals is not None and away_goals is not None:
+                        score = f"{home_goals}:{away_goals}"
+                    else:
+                        score = "—"
+                    
+                    match_data.append({
+                        "Дата": date,
+                        "Хозяева": home,
+                        "Гости": away,
+                        "Счёт": score
+                    })
+                
+                st.dataframe(pd.DataFrame(match_data), use_container_width=True, hide_index=True)
+    
+    st.divider()
+    
+    # =========================================================
+    # ТЕСТ FOOTBALL-DATA
+    # =========================================================
+    st.markdown("#### 📊 Тест Football-data.org")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        fd_league = st.selectbox(
+            "Турнир",
+            ["RPL", "EPL", "LALIGA", "UCL"],
+            key="fd_league"
+        )
+    with col2:
+        fd_season = st.number_input("Сезон (Football-data)", value=2026, min_value=2020, max_value=2026, key="fd_season")
+    
+    if st.button("📊 Получить таблицу из Football-data", use_container_width=True):
+        with st.spinner("Запрос к Football-data..."):
+            result = football_data.get_league_standings(fd_league, season=fd_season)
+        
+        if result.get("error"):
+            st.error(f"❌ Ошибка: {result.get('message')}")
+            if result.get("status_code"):
+                st.write(f"Код ошибки: {result['status_code']}")
+        else:
+            standings = result.get("standings", [])
+            if standings:
+                st.success("✅ Получена таблица")
+                table_data = []
+                for item in standings:
+                    if isinstance(item, dict) and "table" in item:
+                        for team in item.get("table", [])[:10]:
+                            table_data.append({
+                                "Место": team.get("position"),
+                                "Команда": team.get("team", {}).get("name"),
+                                "Игры": team.get("playedGames"),
+                                "Победы": team.get("won"),
+                                "Ничьи": team.get("draw"),
+                                "Поражения": team.get("lost"),
+                                "Очки": team.get("points")
+                            })
+                if table_data:
+                    st.dataframe(pd.DataFrame(table_data), use_container_width=True, hide_index=True)
+            else:
+                st.warning("Нет данных таблицы")
+    
+    st.divider()
+    
+    # =========================================================
+    # ИНФОРМАЦИЯ О ЛИМИТАХ
+    # =========================================================
+    with st.expander("ℹ️ О лимитах API"):
+        st.markdown("""
+        **API Football**
+        - Лимит: 100 запросов в день (бесплатный тариф)
+        - 1 запрос = 1 команда / 1 матч
+        - Для 16 команд РПЛ нужно 16 запросов
+        
+        **Football-data.org**
+        - Лимит: 10 запросов в минуту (бесплатный тариф)
+        - 1 запрос = вся таблица / все матчи тура
+        
+        **Рекомендация для FAJ**
+        - Football-data: загружаем историю (1-2 запроса за тур)
+        - API Football: обновляем только нужные команды (5-10 запросов за тур)
+        """)
+
+# =====================================================
+# FOOTER
+# =====================================================
+st.divider()
+st.caption("⚽ FAJ Platform 10.0 | Adaptive Football Intelligence")
