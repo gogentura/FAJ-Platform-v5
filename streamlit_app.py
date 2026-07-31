@@ -627,7 +627,7 @@ elif page == "🏠 Матч-центр":
             st.warning(f"Нет паспортов для команд {home} или {away}")
 
 # =====================================================
-# СТРАНИЦА: API ТЕСТ
+# СТРАНИЦА: API ТЕСТ (ПО КОМАНДЕ)
 # =====================================================
 elif page == "📡 API Тест":
     st.markdown("### 📡 Тест подключения API")
@@ -680,38 +680,41 @@ elif page == "📡 API Тест":
     # =========================================================
     st.markdown("#### ⚽ Тест API Football (по команде)")
     
+    # Список команд с их ID в API-Football
+    team_ids = {
+        "Зенит": 788,
+        "Спартак": 780,
+        "ЦСКА": 790,
+        "Динамо М": 789,
+        "Краснодар": 798,
+        "Локомотив": 787,
+        "Ростов": 795,
+        "Рубин": 797,
+        "Ахмат": 793,
+        "Оренбург": 796,
+        "Крылья Советов": 791,
+        "Факел": 804,
+        "Балтика": 799,
+        "Динамо Мх": 803,
+        "Акрон": 12345,
+        "Родина": 12346
+    }
+    
     col1, col2 = st.columns(2)
     with col1:
-        team_options = {
-            "Зенит": 788,
-            "Спартак": 780,
-            "ЦСКА": 790,
-            "Динамо М": 789,
-            "Краснодар": 798,
-            "Локомотив": 787,
-            "Ростов": 795,
-            "Рубин": 797,
-            "Ахмат": 793,
-            "Оренбург": 796,
-            "Крылья Советов": 791,
-            "Факел": 804,
-            "Балтика": 799,
-            "Динамо Мх": 803,
-            "Акрон": 12345,
-            "Родина": 12346
-        }
         selected_team = st.selectbox(
             "Выберите команду для теста",
-            list(team_options.keys())
+            list(team_ids.keys())
         )
-        team_id = team_options[selected_team]
+        team_id = team_ids[selected_team]
     
     with col2:
         league_for_team = st.selectbox(
             "Лига",
-            ["RPL", "EPL", "LALIGA", "UCL"]
+            ["RPL", "EPL", "LALIGA", "UCL"],
+            key="team_league"
         )
-        season_for_team = st.number_input("Сезон", value=2026, min_value=2020, max_value=2026)
+        season_for_team = st.number_input("Сезон", value=2026, min_value=2020, max_value=2026, key="team_season")
     
     if st.button("🔍 Получить статистику команды", use_container_width=True):
         with st.spinner(f"Запрос статистики для {selected_team}..."):
@@ -751,7 +754,7 @@ elif page == "📡 API Тест":
     st.divider()
     
     # =========================================================
-    # ТЕСТ API FOOTBALL — МАТЧИ КОМАНДЫ
+    # ТЕСТ API FOOTBALL — ПОСЛЕДНИЕ МАТЧИ КОМАНДЫ
     # =========================================================
     st.markdown("#### 🏟 Тест API Football (матчи команды)")
     
@@ -773,13 +776,9 @@ elif page == "📡 API Тест":
             st.success(f"✅ Получено матчей: {len(fixtures)}")
             
             if fixtures:
-                st.markdown("**Последние 5 матчей:**")
                 match_data = []
                 for fixture in fixtures[:5]:
                     home = fixture.get("teams", {}).get("home", {}).get("name", "?")
                     away = fixture.get("teams", {}).get("away", {}).get("name", "?")
                     home_goals = fixture.get("goals", {}).get("home")
-                    away_goals = fixture.get("goals", {}).get("away")
-                    date = fixture.get("fixture", {}).get("date", "")[:10]
-                    
-                    if home_goals is not None and away_go
+                    away_
