@@ -15,7 +15,6 @@ from app.api.ids import IDs
 class FootballAPI:
     
     def __init__(self):
-        # Прямое получение токена из Secrets
         self.token = self._get_token()
         self.base_url = "https://v3.football.api-sports.io"
         self.headers = {"x-apisports-key": self.token}
@@ -23,7 +22,6 @@ class FootballAPI:
         self.min_request_interval = 6
     
     def _get_token(self):
-        """Получить токен из Secrets или переменных окружения"""
         try:
             return st.secrets["FOOTBALL_API_TOKEN"]
         except:
@@ -78,19 +76,6 @@ class FootballAPI:
     def get_team_info(self, team_id: int) -> dict:
         return self._request("/teams", {"id": team_id})
     
-    def get_team_squad(self, team_id: int) -> dict:
-        return self._request("/players/squads", {"team": team_id})
-    
-    def get_injuries(self, league: int = None, team: int = None, season: int = None) -> dict:
-        params = {}
-        if league:
-            params["league"] = league
-        if team:
-            params["team"] = team
-        if season:
-            params["season"] = season
-        return self._request("/injuries", params)
-    
     def get_standings(self, league: int, season: int) -> dict:
         return self._request("/standings", {"league": league, "season": season})
     
@@ -103,35 +88,27 @@ class FootballAPI:
             season = 2026
         return self.get_fixtures(league=league_id, season=season)
     
-    def get_league_standings(self, league_key: str, season: int = None) -> dict:
-        league_id = IDs.get_api_id(league_key)
-        if not season:
-            season = 2026
-        return self.get_standings(league=league_id, season=season)
-    
-    def get_league_teams(self, league_key: str, season: int = None) -> dict:
-        league_id = IDs.get_api_id(league_key)
-        if not season:
-            season = 2026
-        return self.get_teams(league=league_id, season=season)
-    
     def get_team_stats_by_name(self, team_name: str, league_key: str = "RPL", season: int = None) -> dict:
         team_id = IDs.get_team_id(team_name)
         if team_id == 0:
-            return {"error": True, "message": f"Команда {team_name} не найдена"}
+            return {"error": True, "message": f"Команда {team_name} не найдена в справочнике ID"}
+        
         league_id = IDs.get_api_id(league_key)
         if not season:
             season = 2026
+        
         return self.get_team_stats(team_id=team_id, league=league_id, season=season)
     
     def get_team_fixtures(self, team_name: str, league_key: str = "RPL", 
                           season: int = None, status: str = None, last: int = 5) -> dict:
         team_id = IDs.get_team_id(team_name)
         if team_id == 0:
-            return {"error": True, "message": f"Команда {team_name} не найдена"}
+            return {"error": True, "message": f"Команда {team_name} не найдена в справочнике ID"}
+        
         league_id = IDs.get_api_id(league_key)
         if not season:
             season = 2026
+        
         return self.get_fixtures(league=league_id, season=season, team=team_id, status=status, last=last)
     
     def is_ready(self) -> bool:
