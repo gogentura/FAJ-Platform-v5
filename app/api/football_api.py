@@ -16,15 +16,18 @@ class FootballAPI:
     
     def __init__(self):
         # Прямое получение токена из Secrets
-        try:
-            self.token = st.secrets["FOOTBALL_API_TOKEN"]
-        except:
-            self.token = os.getenv("FOOTBALL_API_TOKEN", "")
-        
+        self.token = self._get_token()
         self.base_url = "https://v3.football.api-sports.io"
         self.headers = {"x-apisports-key": self.token}
         self.last_request_time = 0
         self.min_request_interval = 6
+    
+    def _get_token(self):
+        """Получить токен из Secrets или переменных окружения"""
+        try:
+            return st.secrets["FOOTBALL_API_TOKEN"]
+        except:
+            return os.getenv("FOOTBALL_API_TOKEN", "")
     
     def _request(self, endpoint: str, params: dict = None) -> dict:
         current_time = time.time()
