@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 FAJ Platform v10.0 - Config
-Единый источник конфигурации из Streamlit Secrets
 """
 
 import streamlit as st
@@ -10,11 +9,6 @@ import os
 
 
 class Config:
-    """Конфигурация FAJ Platform v10.0 — всё из Secrets"""
-    
-    # =========================================================
-    # API НАСТРОЙКИ (из Streamlit Secrets)
-    # =========================================================
     
     @staticmethod
     def get_football_api_token():
@@ -72,16 +66,9 @@ class Config:
         except:
             return int(os.getenv("MAX_REQUESTS_PER_DAY", 100))
     
-    # =========================================================
-    # ПРОВЕРКА ГОТОВНОСТИ
-    # =========================================================
-    
     @staticmethod
     def is_ready() -> bool:
-        return (
-            Config.get_football_api_token() != "" and
-            Config.get_football_data_token() != ""
-        )
+        return Config.get_football_api_token() != "" and Config.get_football_data_token() != ""
     
     @staticmethod
     def get_status() -> dict:
