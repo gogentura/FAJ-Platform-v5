@@ -269,7 +269,7 @@ st.markdown('<div class="sub-header">Adaptive Football Intelligence — Само
 # =====================================================
 page = st.radio(
     "",
-    ["🏠 Матч-центр", "📊 Сравнение", "🧠 Обучение", "📘 Команды", "⚙️ Система", "📥 Загрузка данных", "📜 Архив прогнозов", "📡 API Тест"],
+    ["🏠 Матч-центр", "📊 Сравнение", "🧠 Обучение", "📘 Команды", "⚙️ Система", "📥 Загрузка данных", "📜 Архив прогнозов", "📡 API Тест", "📊 РПЛ"],
     horizontal=True
 )
 st.divider()
@@ -774,7 +774,6 @@ elif page == "📡 API Тест":
     
     st.divider()
     
-    # Кнопка для поиска ID команд
     st.markdown("#### 🔍 Поиск ID команды")
     search_team = st.text_input("Введите название команды на русском", placeholder="Например: Зенит")
     if st.button("🔍 Найти ID команды", use_container_width=True):
@@ -802,7 +801,7 @@ elif page == "📡 API Тест":
     with col1:
         selected_team = st.selectbox("Выберите команду для теста", team_options)
     with col2:
-        league_for_team = st.selectbox("Лига", ["RPL", "EPL", "LALIGA"])
+        league_for_team = st.selectbox("Лига", ["EPL", "LALIGA", "UCL", "BUNDESLIGA", "SERIEA"])
     
     if st.button("🔍 Получить статистику команды", use_container_width=True):
         with st.spinner(f"Запрос статистики для {selected_team}..."):
@@ -872,7 +871,7 @@ elif page == "📡 API Тест":
     
     col1, col2 = st.columns(2)
     with col1:
-        fd_league = st.selectbox("Турнир", ["RPL", "EPL", "LALIGA"], key="fd_league")
+        fd_league = st.selectbox("Турнир", ["EPL", "LALIGA", "UCL", "BUNDESLIGA", "SERIEA"], key="fd_league")
     with col2:
         fd_season = st.number_input("Сезон (Football-data)", value=2026, min_value=2020, max_value=2026, key="fd_season")
     
@@ -913,7 +912,6 @@ elif page == "📡 API Тест":
         **API Football**
         - Лимит: 100 запросов в день (бесплатный тариф)
         - 1 запрос = 1 команда / 1 матч
-        - Для 16 команд РПЛ нужно 16 запросов
         
         **Football-data.org**
         - Лимит: 10 запросов в минуту (бесплатный тариф)
@@ -923,6 +921,103 @@ elif page == "📡 API Тест":
         - Football-data: загружаем историю (1-2 запроса за тур)
         - API Football: обновляем только нужные команды (5-10 запросов за тур)
         """)
+
+# =====================================================
+# СТРАНИЦА: РПЛ — ПАРСИНГ
+# =====================================================
+elif page == "📊 РПЛ":
+    st.markdown("### 📊 РПЛ — данные с сайтов")
+    
+    from app.parsers.soccerland_parser import SoccerlandParser
+    parser = SoccerlandParser()
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("""
+        <div class="prediction-card">
+            <h4 style="color: #f3f4f6; margin-top: 0;">📋 Что собираем</h4>
+            <p style="color: #9ca3af; font-size: 14px;">
+                ✅ Турнирная таблица<br>
+                ✅ Результаты матчей с голами<br>
+                ✅ Бомбардиры и ассистенты<br>
+                ✅ Расписание туров
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown("""
+        <div class="prediction-card">
+            <h4 style="color: #f3f4f6; margin-top: 0;">🌐 Источник</h4>
+            <p style="color: #9ca3af; font-size: 14px;">
+                soccerland.ru<br>
+                <span style="color: #6b7280; font-size: 12px;">Обновляется вручную по кнопке</span>
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.divider()
+    
+    if st.button("🔄 Обновить данные РПЛ", use_container_width=True, type="primary"):
+        with st.spinner("Сбор данных с soccerland.ru..."):
+            result = parser.update_all()
+        
+        st.success(f"✅ Данные обновлены: {datetime.now().strftime('%H:%M:%S')}")
+        
+        # Сохраняем результат в сессию для отображения
+        st.session_state.rpl_data = result
+    
+    st.divider()
+    
+    # Показываем данные из сессии или из файла
+    rpl_data = st.session_state.get("rpl_data")
+    if not rpl_data:
+        # Пробуем загрузить из файла
+        try:
+            with open("data/rpl_live_data.json", "r", encoding="utf-8") as f:
+                rpl_data = json.load(f)
+        except:
+            rpl_data = None
+    
+    if rpl_data:
+        # Таблица
+        if rpl_data.get("standings"):
+            st.markdown("### 📊 Турнирная таблица")
+            df_standings = pd.DataFrame(rpl_data["standings"])
+            st.dataframe(df_standings, use_container_width=True, hide_index=True)
+        
+        st.divider()
+        
+        # Матчи
+        if rpl_data.get("matches"):
+            st.markdown("### 📋 Результаты матчей")
+            matches = rpl_data["matches"]
+            
+            # Разбиваем на сыгранные и предстоящие
+            played = [m for m in matches if m.get("status") == "FT"]
+            upcoming = [m for m in matches if m.get("status") == "NS"]
+            
+            if played:
+                st.markdown("#### ✅ Сыгранные матчи")
+                df_played = pd.DataFrame(played)
+                st.dataframe(df_played, use_container_width=True, hide_index=True)
+            
+            if upcoming:
+                st.markdown("#### ⏳ Предстоящие матчи")
+                df_upcoming = pd.DataFrame(upcoming)
+                st.dataframe(df_upcoming, use_container_width=True, hide_index=True)
+        
+        st.divider()
+        
+        # Бомбардиры
+        if rpl_data.get("scorers"):
+            st.markdown("### ⚽ Бомбардиры")
+            df_scorers = pd.DataFrame(rpl_data["scorers"])
+            st.dataframe(df_scorers, use_container_width=True, hide_index=True)
+        
+        st.caption(f"Последнее обновление: {rpl_data.get('timestamp', '—')}")
+    else:
+        st.info("Нажмите 'Обновить данные РПЛ' для загрузки информации.")
 
 # =====================================================
 # FOOTER
