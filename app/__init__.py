@@ -4,7 +4,10 @@
 FAJ Platform v10.0 - App Package
 """
 
-__all__ = []
+from app.api.football_api import FootballAPI
+from app.api.football_data import FootballDataAPI
+from app.api.ids import IDs
+from app.database import FAJDatabase
+from app.faj_match_engine import FAJMatchEngine
 
-# Импорты из api делаются напрямую, чтобы избежать циклов
-# from app.api import FootballAPI, FootballDataAPI, IDs
+__all__ = ["FootballAPI", "FootballDataAPI", "IDs", "FAJDatabase", "FAJMatchEngine"]
