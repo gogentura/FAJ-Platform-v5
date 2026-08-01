@@ -16,15 +16,18 @@ class FootballDataAPI:
     
     def __init__(self):
         # Прямое получение токена из Secrets
-        try:
-            self.token = st.secrets["FOOTBALL_DATA_TOKEN"]
-        except:
-            self.token = os.getenv("FOOTBALL_DATA_TOKEN", "")
-        
+        self.token = self._get_token()
         self.base_url = "https://api.football-data.org/v4"
         self.headers = {"X-Auth-Token": self.token}
         self.last_request_time = 0
         self.min_request_interval = 3
+    
+    def _get_token(self):
+        """Получить токен из Secrets или переменных окружения"""
+        try:
+            return st.secrets["FOOTBALL_DATA_TOKEN"]
+        except:
+            return os.getenv("FOOTBALL_DATA_TOKEN", "")
     
     def _request(self, endpoint: str, params: dict = None) -> dict:
         current_time = time.time()
