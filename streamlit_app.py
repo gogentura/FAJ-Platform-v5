@@ -774,6 +774,26 @@ elif page == "📡 API Тест":
     
     st.divider()
     
+    # Кнопка для поиска ID команд
+    st.markdown("#### 🔍 Поиск ID команды")
+    search_team = st.text_input("Введите название команды на русском", placeholder="Например: Зенит")
+    if st.button("🔍 Найти ID команды", use_container_width=True):
+        if search_team:
+            with st.spinner("Поиск..."):
+                result = football_api.get_teams(league=235, season=2026)
+                if result.get("response"):
+                    found = False
+                    for team in result["response"]:
+                        if search_team.lower() in team["team"]["name"].lower():
+                            st.success(f"✅ {team['team']['name']} → ID: {team['team']['id']}")
+                            found = True
+                    if not found:
+                        st.warning(f"Команда '{search_team}' не найдена в РПЛ")
+                else:
+                    st.error("Не удалось получить список команд")
+    
+    st.divider()
+    
     st.markdown("#### ⚽ Тест API Football (по команде)")
     
     team_options = IDs.get_all_teams()
@@ -782,7 +802,7 @@ elif page == "📡 API Тест":
     with col1:
         selected_team = st.selectbox("Выберите команду для теста", team_options)
     with col2:
-        league_for_team = st.selectbox("Лига", ["RPL", "EPL", "LALIGA", "UCL"])
+        league_for_team = st.selectbox("Лига", ["RPL", "EPL", "LALIGA"])
     
     if st.button("🔍 Получить статистику команды", use_container_width=True):
         with st.spinner(f"Запрос статистики для {selected_team}..."):
@@ -791,27 +811,22 @@ elif page == "📡 API Тест":
         
         if result.get("error"):
             st.error(f"❌ Ошибка: {result.get('message')}")
-            if result.get("status_code"):
-                st.write(f"Код ошибки: {result['status_code']}")
         else:
-            st.success(f"✅ Статистика для {selected_team} получена")
             stats = result.get("response", {})
-            if stats:
+            if stats and stats.get("fixtures"):
+                st.success(f"✅ Статистика для {selected_team} получена")
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     st.metric("🏟 Матчей", stats.get("fixtures", {}).get("played", {}).get("total", "—"))
-                    st.metric("⚽ Голов забито", stats.get("goals", {}).get("for", {}).get("total", {}).get("total", "—"))
                 with col2:
                     st.metric("✅ Побед", stats.get("fixtures", {}).get("wins", {}).get("total", "—"))
-                    st.metric("⚽ Голов пропущено", stats.get("goals", {}).get("against", {}).get("total", {}).get("total", "—"))
                 with col3:
                     st.metric("🤝 Ничьих", stats.get("fixtures", {}).get("draws", {}).get("total", "—"))
-                    st.metric("📊 xG", stats.get("goals", {}).get("for", {}).get("average", {}).get("total", "—"))
                 
                 with st.expander("📋 Полная статистика"):
                     st.json(stats)
             else:
-                st.warning("Нет данных по команде")
+                st.warning("Нет данных по команде. Проверьте ID команды.")
     
     st.divider()
     
@@ -857,7 +872,7 @@ elif page == "📡 API Тест":
     
     col1, col2 = st.columns(2)
     with col1:
-        fd_league = st.selectbox("Турнир", ["RPL", "EPL", "LALIGA", "UCL"], key="fd_league")
+        fd_league = st.selectbox("Турнир", ["RPL", "EPL", "LALIGA"], key="fd_league")
     with col2:
         fd_season = st.number_input("Сезон (Football-data)", value=2026, min_value=2020, max_value=2026, key="fd_season")
     
@@ -889,7 +904,7 @@ elif page == "📡 API Тест":
                 if table_data:
                     st.dataframe(pd.DataFrame(table_data), use_container_width=True, hide_index=True)
             else:
-                st.warning("Нет данных таблицы")
+                st.warning("Нет данных таблицы. Возможно, неверный код турнира.")
     
     st.divider()
     
