@@ -89,20 +89,30 @@ class FAJMatchEngine:
         }
     
     def calculate_btts(self, xg_home: float, xg_away: float) -> float:
-        from math import exp
-        p_home_zero = exp(-xg_home)
-        p_away_zero = exp(-xg_away)
+        p_home_zero = math.exp(-xg_home)
+        p_away_zero = math.exp(-xg_away)
         return 1 - p_home_zero - p_away_zero + (p_home_zero * p_away_zero)
     
     def calculate_over25(self, xg_home: float, xg_away: float) -> float:
-        from math import exp
+        """Вероятность тотала больше 2.5 через распределение Пуассона"""
         prob_under25 = 0
+        # Суммируем вероятности для голов 0,1,2
         for i in range(3):
             for j in range(3):
                 if i + j <= 2:
-                    prob_under25 += (exp(-xg_home) * (xg_home ** i)) / (i ** 0.5 if i == 0 else 1) * \
-                                   (exp(-xg_away) * (xg_away ** j)) / (j ** 0.5 if j == 0 else 1)
-        return 1 - prob_under25
+                    prob_home = self._poisson_prob(i, xg_home)
+                    prob_away = self._poisson_prob(j, xg_away)
+                    prob_under25 += prob_home * prob_away
+        return max(0, min(1, 1 - prob_under25))
+    
+    def _poisson_prob(self, k: int, xg: float) -> float:
+        """Вероятность k голов при среднем xg"""
+        if xg == 0:
+            return 1.0 if k == 0 else 0.0
+        try:
+            return (math.exp(-xg) * (xg ** k)) / math.factorial(k)
+        except:
+            return 0.0
     
     def calculate_confidence(self, p1: float, px: float, p2: float) -> int:
         max_prob = max(p1, px, p2)
