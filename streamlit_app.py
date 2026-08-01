@@ -269,7 +269,7 @@ st.markdown('<div class="sub-header">Adaptive Football Intelligence — Само
 # =====================================================
 page = st.radio(
     "",
-    ["🏠 Матч-центр", "📊 Сравнение", "🧠 Обучение", "📘 Команды", "⚙️ Система", "📥 Загрузка данных", "📡 API Тест"],
+    ["🏠 Матч-центр", "📊 Сравнение", "🧠 Обучение", "📘 Команды", "⚙️ Система", "📥 Загрузка данных", "📜 Архив прогнозов", "📡 API Тест"],
     horizontal=True
 )
 st.divider()
@@ -281,6 +281,9 @@ teams = get_all_teams()
 # =====================================================
 if page == "📥 Загрузка данных":
     st.markdown("### 📥 Загрузка данных в систему")
+    
+    from app.database import FAJDatabase
+    db = FAJDatabase()
     
     col1, col2 = st.columns(2)
     with col1:
@@ -294,13 +297,8 @@ if page == "📥 Загрузка данных":
     with col2:
         st.markdown("""
         <div class="prediction-card">
-            <h4 style="color: #f3f4f6; margin-top: 0;">📋 Что будет загружено</h4>
-            <p style="color: #9ca3af; font-size: 14px;">
-                ✅ Прогнозы FAJ<br>
-                ✅ Экспертные прогнозы<br>
-                ✅ Фактические результаты<br>
-                ✅ Сравнение исходов
-            </p>
+            <h4 style="color: #f3f4f6; margin-top: 0;">🗄️ Миграция в SQLite</h4>
+            <p style="color: #9ca3af;">Перенести все данные из JSON в постоянную базу данных.</p>
         </div>
         """, unsafe_allow_html=True)
     
@@ -327,8 +325,34 @@ if page == "📥 Загрузка данных":
     
     st.divider()
     
+    if st.button("🗄️ Перенести данные в SQLite", use_container_width=True):
+        with st.spinner("Миграция данных в SQLite..."):
+            result = db.migrate_from_json()
+        
+        if result.get("errors"):
+            st.warning(f"⚠️ Миграция завершена с ошибками: {len(result['errors'])}")
+            for err in result["errors"]:
+                st.write(f"- {err}")
+        else:
+            st.markdown(f"""
+            <div class="success-box">
+                <h4 style="color: #10b981; margin: 0;">✅ Миграция завершена!</h4>
+                <p style="color: #d1d5db; margin: 8px 0 0 0;">
+                    Паспортов: <strong>{result['passports']}</strong><br>
+                    Матчей: <strong>{result['matches']}</strong><br>
+                    Прогнозов: <strong>{result['predictions']}</strong><br>
+                    Записей журнала: <strong>{result['journal']}</strong><br>
+                    Записей весов: <strong>{result['weights']}</strong>
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+    
+    st.divider()
+    
     comparison = load_json("comparison_log.json")
-    st.metric("Записей в сравнении", len(comparison))
+    st.metric("Записей в сравнении (JSON)", len(comparison))
+    db_status = db.get_status()
+    st.metric("Записей в БД (SQLite)", db_status.get('matches', 0))
 
 # =====================================================
 # СТРАНИЦА: СРАВНЕНИЕ
@@ -453,13 +477,12 @@ elif page == "📘 Команды":
         st.warning("Нет команд в базе")
 
 # =====================================================
-# СТРАНИЦА: СИСТЕМА (С БД И API СТАТИСТИКОЙ)
+# СТРАНИЦА: СИСТЕМА
 # =====================================================
 elif page == "⚙️ Система":
     st.markdown("### ⚙️ Системная информация")
     
     from app.database import FAJDatabase
-    
     db = FAJDatabase()
     db_status = db.get_status()
     
@@ -508,6 +531,62 @@ elif page == "⚙️ Система":
     with st.expander("🗄️ Информация о базе данных"):
         st.json(db_status)
         st.caption(f"Путь к БД: {db_status.get('db_path', '—')}")
+
+# =====================================================
+# СТРАНИЦА: АРХИВ ПРОГНОЗОВ
+# =====================================================
+elif page == "📜 Архив прогнозов":
+    st.markdown("### 📜 Архив прогнозов FAJ")
+    
+    from app.database import FAJDatabase
+    db = FAJDatabase()
+    matches = db.get_matches(limit=100)
+    
+    if not matches:
+        st.info("Нет сохранённых прогнозов. Загрузите данные через '📥 Загрузка данных'.")
+    else:
+        archive_data = []
+        for match in matches:
+            home = match.get('home_team_name', '?')
+            away = match.get('away_team_name', '?')
+            home_goals = match.get('home_goals')
+            away_goals = match.get('away_goals')
+            if home_goals is not None and away_goals is not None:
+                score = f"{home_goals}:{away_goals}"
+            else:
+                score = "—"
+            status = match.get('status', 'NS')
+            
+            with db._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT predicted_score, home_win_prob, draw_prob, away_win_prob, confidence
+                    FROM predictions WHERE match_id = ?
+                    ORDER BY created_at DESC LIMIT 1
+                """, (match.get('id'),))
+                pred_row = cursor.fetchone()
+            
+            if pred_row:
+                archive_data.append({
+                    "Матч": f"{home} – {away}",
+                    "Прогноз": pred_row[0] if pred_row[0] else "—",
+                    "Счёт": score,
+                    "Уверенность": f"{pred_row[4]}%" if pred_row[4] else "—",
+                    "Статус": "✅ Завершён" if status == "FT" else "⏳ Ожидается"
+                })
+        
+        if archive_data:
+            st.dataframe(pd.DataFrame(archive_data), use_container_width=True, hide_index=True)
+            st.divider()
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Всего прогнозов", len(archive_data))
+            with col2:
+                completed = sum(1 for m in matches if m.get('status') == 'FT')
+                st.metric("Завершённых матчей", completed)
+            with col3:
+                pending = len(archive_data) - completed
+                st.metric("Ожидается", pending)
 
 # =====================================================
 # СТРАНИЦА: МАТЧ-ЦЕНТР
@@ -661,12 +740,10 @@ elif page == "📡 API Тест":
     from app.api.football_api import FootballAPI
     from app.api.football_data import FootballDataAPI
     from app.api.ids import IDs
-    from app.config import Config
     
     football_api = FootballAPI()
     football_data = FootballDataAPI()
     
-    # Статус токенов
     st.markdown("#### 🔑 Статус токенов")
     col1, col2 = st.columns(2)
     with col1:
@@ -682,7 +759,6 @@ elif page == "📡 API Тест":
     
     st.divider()
     
-    # Счётчик запросов
     if "api_requests" not in st.session_state:
         st.session_state.api_requests = 0
     
@@ -691,14 +767,13 @@ elif page == "📡 API Тест":
     with col1:
         st.metric("API Football запросов сегодня", st.session_state.api_requests)
     with col2:
-        st.metric("Лимит", f"{Config.MAX_REQUESTS_PER_DAY}")
+        st.metric("Лимит", "100")
     with col3:
-        remaining = max(0, Config.MAX_REQUESTS_PER_DAY - st.session_state.api_requests)
+        remaining = max(0, 100 - st.session_state.api_requests)
         st.metric("Осталось", remaining)
     
     st.divider()
     
-    # Тест API Football по команде
     st.markdown("#### ⚽ Тест API Football (по команде)")
     
     team_options = IDs.get_all_teams()
@@ -740,7 +815,6 @@ elif page == "📡 API Тест":
     
     st.divider()
     
-    # Последние матчи команды
     st.markdown("#### 🏟 Последние матчи команды")
     
     if st.button("📅 Получить последние матчи", use_container_width=True):
@@ -779,7 +853,6 @@ elif page == "📡 API Тест":
     
     st.divider()
     
-    # Тест Football-data
     st.markdown("#### 📊 Тест Football-data.org")
     
     col1, col2 = st.columns(2)
