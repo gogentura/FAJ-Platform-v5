@@ -24,6 +24,8 @@ class FAJDatabase:
     def init_tables(self):
         with self._get_connection() as conn:
             cursor = conn.cursor()
+            
+            # 1. КОМАНДЫ
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS teams (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,6 +35,8 @@ class FAJDatabase:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            
+            # 2. ПАСПОРТЫ
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS passports (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,6 +61,8 @@ class FAJDatabase:
                     FOREIGN KEY (team_id) REFERENCES teams(id)
                 )
             """)
+            
+            # 3. МАТЧИ
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS matches (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,6 +80,8 @@ class FAJDatabase:
                     FOREIGN KEY (away_team_id) REFERENCES teams(id)
                 )
             """)
+            
+            # 4. ПРОГНОЗЫ (исправлено — убраны лишние колонки)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS predictions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,6 +93,8 @@ class FAJDatabase:
                     FOREIGN KEY (match_id) REFERENCES matches(id)
                 )
             """)
+            
+            # 5. ЖУРНАЛ
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS journal (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,6 +105,8 @@ class FAJDatabase:
                     FOREIGN KEY (match_id) REFERENCES matches(id)
                 )
             """)
+            
+            # 6. ИСТОРИЯ ВЕСОВ
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS weights_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -115,6 +127,8 @@ class FAJDatabase:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            
+            # 7. СТАТИСТИКА API
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS api_stats (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,6 +138,7 @@ class FAJDatabase:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            
             conn.commit()
     
     def add_team(self, name: str, league: str = "RPL") -> int:
@@ -140,12 +155,12 @@ class FAJDatabase:
             cursor = conn.cursor()
             cursor.execute("SELECT id FROM teams WHERE name = ?", (name,))
             result = cursor.fetchone()
-            return result[0] if result else None
+_id:
+                       return result[0] if result else None
     
     def save_passport(self, team_name: str, data: Dict, version: str = "10.0"):
         team_id = self.get_team_id(team_name)
-        if not team_id:
-            team_id = self.add_team(team_name)
+        if not team team_id = self.add_team(team_name)
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
