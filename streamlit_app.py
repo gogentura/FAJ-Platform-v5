@@ -557,10 +557,11 @@ elif page == "📜 Архив прогнозов":
                 score = "—"
             status = match.get('status', 'NS')
             
+            # Получаем прогноз для этого матча
             with db._get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    SELECT predicted_score, home_win_prob, draw_prob, away_win_prob, confidence
+                    SELECT predicted_score, confidence
                     FROM predictions WHERE match_id = ?
                     ORDER BY created_at DESC LIMIT 1
                 """, (match.get('id'),))
@@ -571,7 +572,15 @@ elif page == "📜 Архив прогнозов":
                     "Матч": f"{home} – {away}",
                     "Прогноз": pred_row[0] if pred_row[0] else "—",
                     "Счёт": score,
-                    "Уверенность": f"{pred_row[4]}%" if pred_row[4] else "—",
+                    "Уверенность": f"{pred_row[1]}%" if pred_row[1] else "—",
+                    "Статус": "✅ Завершён" if status == "FT" else "⏳ Ожидается"
+                })
+            else:
+                archive_data.append({
+                    "Матч": f"{home} – {away}",
+                    "Прогноз": "—",
+                    "Счёт": score,
+                    "Уверенность": "—",
                     "Статус": "✅ Завершён" if status == "FT" else "⏳ Ожидается"
                 })
         
@@ -939,8 +948,8 @@ elif page == "📊 РПЛ":
             <p style="color: #9ca3af; font-size: 14px;">
                 ✅ Турнирная таблица<br>
                 ✅ Результаты матчей с голами<br>
-                ✅ Бомбардиры и ассистенты<br>
-                ✅ Расписание туров
+                ✅ Предстоящие матчи (календарь)<br>
+                ✅ Бомбардиры и ассистенты
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -948,10 +957,10 @@ elif page == "📊 РПЛ":
     with col2:
         st.markdown("""
         <div class="prediction-card">
-            <h4 style="color: #f3f4f6; margin-top: 0;">🌐 Источник</h4>
+            <h4 style="color: #f3f4f6; margin-top: 0;">🌐 Источники</h4>
             <p style="color: #9ca3af; font-size: 14px;">
-                soccerland.ru<br>
-                <span style="color: #6b7280; font-size: 12px;">Обновляется вручную по кнопке</span>
+                soccerland.ru — таблица, результаты, бомбардиры<br>
+                championat.com — календарь (предстоящие матчи)
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -959,20 +968,16 @@ elif page == "📊 РПЛ":
     st.divider()
     
     if st.button("🔄 Обновить данные РПЛ", use_container_width=True, type="primary"):
-        with st.spinner("Сбор данных с soccerland.ru..."):
+        with st.spinner("Сбор данных с сайтов..."):
             result = parser.update_all()
         
         st.success(f"✅ Данные обновлены: {datetime.now().strftime('%H:%M:%S')}")
-        
-        # Сохраняем результат в сессию для отображения
         st.session_state.rpl_data = result
     
     st.divider()
     
-    # Показываем данные из сессии или из файла
     rpl_data = st.session_state.get("rpl_data")
     if not rpl_data:
-        # Пробуем загрузить из файла
         try:
             with open("data/rpl_live_data.json", "r", encoding="utf-8") as f:
                 rpl_data = json.load(f)
@@ -988,24 +993,20 @@ elif page == "📊 РПЛ":
         
         st.divider()
         
-        # Матчи
+        # Предстоящие матчи
+        if rpl_data.get("upcoming"):
+            st.markdown("### ⏳ Предстоящие матчи")
+            df_upcoming = pd.DataFrame(rpl_data["upcoming"])
+            st.dataframe(df_upcoming, use_container_width=True, hide_index=True)
+        
+        # Сыгранные матчи
         if rpl_data.get("matches"):
-            st.markdown("### 📋 Результаты матчей")
+            st.markdown("### ✅ Сыгранные матчи")
             matches = rpl_data["matches"]
-            
-            # Разбиваем на сыгранные и предстоящие
             played = [m for m in matches if m.get("status") == "FT"]
-            upcoming = [m for m in matches if m.get("status") == "NS"]
-            
             if played:
-                st.markdown("#### ✅ Сыгранные матчи")
                 df_played = pd.DataFrame(played)
                 st.dataframe(df_played, use_container_width=True, hide_index=True)
-            
-            if upcoming:
-                st.markdown("#### ⏳ Предстоящие матчи")
-                df_upcoming = pd.DataFrame(upcoming)
-                st.dataframe(df_upcoming, use_container_width=True, hide_index=True)
         
         st.divider()
         
