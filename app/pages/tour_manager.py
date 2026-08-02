@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 """
-FAJ Platform v10.0 - Управление турами
+FAJ Platform v10.0
+Tour Manager
+
+Управление турами + связь с Memory Brain
 """
 
 import streamlit as st
@@ -9,189 +13,339 @@ import pandas as pd
 import json
 import os
 
+
 DATA_DIR = "data"
 
+
+# =====================================================
+# JSON
+# =====================================================
+
 def load_json(filename):
+
     path = os.path.join(DATA_DIR, filename)
+
     if not os.path.exists(path):
         return {}
+
     try:
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(
+            path,
+            "r",
+            encoding="utf-8"
+        ) as f:
             return json.load(f)
+
     except:
         return {}
 
+
+
+# =====================================================
+# ОСНОВНАЯ СТРАНИЦА
+# =====================================================
+
 def render():
-    st.markdown("### 🗓️ Управление турами")
-    
+
+    st.markdown(
+        "### 🗓️ Управление турами FAJ"
+    )
+
+
     from app.database import FAJDatabase
+
     db = FAJDatabase()
-    
-    # =========================================================
-    # 1. ТЕКУЩЕЕ СОСТОЯНИЕ БАЗЫ
-    # =========================================================
-    st.markdown("#### 📋 Матчи в базе данных")
+
+
+    # =================================================
+    # СОСТОЯНИЕ БАЗЫ
+    # =================================================
+
+    st.markdown(
+        "## 📋 Матчи в базе"
+    )
+
+
     matches = db.get_matches(limit=1000)
-    
+
+
     if matches:
+
         df = pd.DataFrame(matches)
-        df_display = df[['home_team_name', 'away_team_name', 'status', 'home_goals', 'away_goals']]
-        df_display.columns = ['Хозяева', 'Гости', 'Статус', 'Голы хозяев', 'Голы гостей']
-        st.dataframe(df_display, use_container_width=True, hide_index=True)
-        st.caption(f"Всего матчей: {len(matches)}")
+
+
+        columns = [
+            c for c in [
+                "home_team_name",
+                "away_team_name",
+                "status",
+                "home_goals",
+                "away_goals"
+            ]
+            if c in df.columns
+        ]
+
+
+        st.dataframe(
+            df[columns],
+            width="stretch",
+            hide_index=True
+        )
+
+
+        st.caption(
+            f"Всего матчей: {len(matches)}"
+        )
+
     else:
-        st.info("В базе пока нет матчей")
-    
+
+        st.info(
+            "Матчей нет"
+        )
+
+
+
     st.divider()
-    
-    # =========================================================
-    # 2. ЗАГРУЗКА ТУРА
-    # =========================================================
-    st.markdown("#### 📥 Загрузить тур")
-    
-    tour_files = [f for f in os.listdir(DATA_DIR) if f.startswith("tour") and f.endswith(".json") and "results" not in f]
-    
-    if not tour_files:
-        st.warning("Нет файлов с турами в папке data/")
-        return
-    
-    selected_file = st.selectbox("Выберите файл с туром", tour_files)
-    
-    # Показываем содержимое файла
-    tour_data = load_json(selected_file)
-    if tour_data:
-        st.markdown(f"**Файл `{selected_file}` содержит {len(tour_data)} матчей:**")
-        for match_name in tour_data.keys():
-            st.write(f"- {match_name}")
-    
-    if st.button("📥 Загрузить тур в базу", use_container_width=True):
-        if not tour_data:
-            st.error("❌ Файл пуст или не найден")
-        else:
-            loaded = 0
-            skipped = 0
-            errors = []
-            
-            for match_name, data in tour_data.items():
-                try:
-                    if '-' in match_name:
-                        home, away = match_name.split('-', 1)
-                    else:
-                        home, away = match_name.split('–', 1)
-                    
-                    # Проверяем, есть ли уже
-                    existing = db.get_matches(limit=1000)
-                    exists = False
-                    for m in existing:
-                        if m.get('home_team_name') == home and m.get('away_team_name') == away:
-                            exists = True
-                            break
-                    
-                    if not exists:
-                        match_id = db.save_match({
-                            "home_team": home.strip(),
-                            "away_team": away.strip(),
-                            "league": "RPL",
-                            "season": 2026,
-                            "status": "NS",
-                            "xg_home": data.get('xg_home'),
-                            "xg_away": data.get('xg_away')
-                        })
-                        faj_pred = data.get('faj', '')
-                        if faj_pred:
-                            db.save_prediction(match_id, faj_pred)
-                        loaded += 1
-                    else:
-                        skipped += 1
-                except Exception as e:
-                    errors.append(f"{match_name}: {str(e)}")
-            
-            st.success(f"✅ Загружено: {loaded}, пропущено (уже есть): {skipped}")
-            if errors:
-                st.warning(f"⚠️ Ошибок: {len(errors)}")
-                for err in errors[:5]:
-                    st.write(f"- {err}")
-    
-    st.divider()
-    
-    # =========================================================
-    # 3. ОБНОВЛЕНИЕ РЕЗУЛЬТАТОВ
-    # =========================================================
-    st.markdown("#### 📊 Обновить результаты тура")
-    
-    result_files = [f for f in os.listdir(DATA_DIR) if f.endswith("_results.json")]
-    
+
+
+
+    # =================================================
+    # ЗАГРУЗКА РЕЗУЛЬТАТОВ
+    # =================================================
+
+    st.markdown(
+        "## 📊 Обновление результатов"
+    )
+
+
+    result_files = [
+
+        f for f in os.listdir(DATA_DIR)
+
+        if f.endswith("_results.json")
+
+    ]
+
+
     if not result_files:
-        st.info("Нет файлов с результатами")
-    else:
-        selected_results = st.selectbox("Выберите файл с результатами", result_files)
-        
-        results_data = load_json(selected_results)
-        if results_data:
-            st.markdown(f"**Файл `{selected_results}` содержит {len(results_data)} результатов:**")
-            for match_name in results_data.keys():
-                actual = results_data[match_name].get('actual', '—')
-                st.write(f"- {match_name} → {actual}")
-        
-        if st.button("📊 Обновить результаты из файла", use_container_width=True):
-            if not results_data:
-                st.error("❌ Файл пуст или не найден")
-            else:
-                updated = 0
-                not_found = 0
-                errors = []
-                
-                for match_name, data in results_data.items():
-                    actual = data.get('actual', '')
-                    if ':' not in actual:
-                        continue
-                    
+
+        st.warning(
+            "Нет файлов результатов"
+        )
+
+        return
+
+
+
+    selected = st.selectbox(
+        "Выберите результаты",
+        result_files
+    )
+
+
+    results = load_json(selected)
+
+
+
+    if results:
+
+
+        st.write(
+            f"Найдено результатов: {len(results)}"
+        )
+
+
+        for match, data in results.items():
+
+            st.write(
+                match,
+                "→",
+                data.get(
+                    "actual",
+                    "-"
+                )
+            )
+
+
+
+    # =================================================
+    # ОБНОВЛЕНИЕ
+    # =================================================
+
+    if st.button(
+        "📥 Обновить результаты и обучить FAJ",
+        width="stretch"
+    ):
+
+
+        updated = 0
+        memory_added = 0
+
+
+        # подключаем память
+
+        from app.brain.memory_brain import FAJMemoryBrain
+
+
+        memory = FAJMemoryBrain()
+
+
+
+        matches_db = db.get_matches(
+            limit=1000
+        )
+
+
+
+        for match_name, data in results.items():
+
+
+            actual = data.get(
+                "actual",
+                ""
+            )
+
+
+            if ":" not in actual:
+                continue
+
+
+
+            hg, ag = map(
+                int,
+                actual.split(":")
+            )
+
+
+
+            for m in matches_db:
+
+
+                home = m.get(
+                    "home_team_name"
+                )
+
+                away = m.get(
+                    "away_team_name"
+                )
+
+
+                db_match = (
+                    f"{home}-{away}"
+                )
+
+
+                if db_match == match_name:
+
+
+                    # обновляем БД
+
                     try:
-                        hg, ag = map(int, actual.split(':'))
-                        matches_list = db.get_matches(limit=1000)
-                        found = False
-                        
-                        for m in matches_list:
-                            home = m.get('home_team_name')
-                            away = m.get('away_team_name')
-                            if f"{home}-{away}" == match_name:
-                                with db._get_connection() as conn:
-                                    cursor = conn.cursor()
-                                    cursor.execute("""
-                                        UPDATE matches 
-                                        SET home_goals = ?, away_goals = ?, status = 'FT'
-                                        WHERE id = ?
-                                    """, (hg, ag, m.get('id')))
-                                    conn.commit()
-                                    updated += 1
-                                    found = True
-                                break
-                        
-                        if not found:
-                            not_found += 1
-                            errors.append(f"{match_name} — матч не найден в БД")
-                    except Exception as e:
-                        errors.append(f"{match_name}: {str(e)}")
-                
-                st.success(f"✅ Обновлено: {updated} матчей")
-                if not_found > 0:
-                    st.warning(f"⚠️ Не найдено в БД: {not_found}")
-                if errors:
-                    for err in errors[:5]:
-                        st.write(f"- {err}")
-    
+
+                        with db._get_connection() as conn:
+
+                            cursor = conn.cursor()
+
+
+                            cursor.execute(
+                                """
+                                UPDATE matches
+                                SET home_goals=?,
+                                    away_goals=?,
+                                    status='FT'
+                                WHERE id=?
+                                """,
+                                (
+                                    hg,
+                                    ag,
+                                    m.get("id")
+                                )
+                            )
+
+
+                            conn.commit()
+
+
+                        updated += 1
+
+
+                    except Exception:
+
+                        pass
+
+
+
+                    # добавляем результат в память
+
+                    memory.add_result(
+                        match_name,
+                        actual
+                    )
+
+
+                    memory.analyze_prediction(
+                        match_name
+                    )
+
+
+                    memory_added += 1
+
+
+
+        st.success(
+            f"""
+            ✅ Обновлено матчей: {updated}
+
+            🧠 Добавлено в память: {memory_added}
+            """
+        )
+
+
+
     st.divider()
-    
-    # =========================================================
-    # 4. ОЧИСТКА
-    # =========================================================
-    with st.expander("🗑️ Очистка базы"):
-        st.warning("⚠️ Это удалит ВСЕ матчи и прогнозы!")
-        if st.button("🗑️ Удалить все матчи и прогнозы", use_container_width=True):
-            with db._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM predictions")
-                cursor.execute("DELETE FROM matches")
-                conn.commit()
-            st.success("✅ База очищена")
-            st.rerun()
+
+
+
+    # =================================================
+    # СТАТУС ПАМЯТИ
+    # =================================================
+
+    st.markdown(
+        "## 🧠 Статус памяти FAJ"
+    )
+
+
+    from app.brain.memory_brain import FAJMemoryBrain
+
+
+    brain = FAJMemoryBrain()
+
+
+    stats = brain.get_statistics()
+
+
+    col1, col2, col3 = st.columns(3)
+
+
+    with col1:
+
+        st.metric(
+            "Прогнозов",
+            stats["total_predictions"]
+        )
+
+
+    with col2:
+
+        st.metric(
+            "Завершённых",
+            stats["finished_matches"]
+        )
+
+
+    with col3:
+
+        st.metric(
+            "Точность",
+            f"{stats['accuracy']}%"
+        )
