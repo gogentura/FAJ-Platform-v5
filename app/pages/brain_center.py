@@ -5,11 +5,7 @@
 FAJ Platform v10.0
 Brain Center
 
-Центр управления мозгом FAJ:
-- память прогнозов
-- обучение модели
-- анализ ошибок
-- рекомендации корректировки
+Центр управления мозгом FAJ
 """
 
 import streamlit as st
@@ -29,62 +25,64 @@ def render():
     )
 
     st.caption(
-        "Adaptive Football Intelligence — память, обучение и корректировка модели"
+        "Память • Обучение • Корректировки модели"
     )
 
 
-    # =====================================================
-    # ИНИЦИАЛИЗАЦИЯ МОЗГА
-    # =====================================================
+    # =====================================
+    # ИНИЦИАЛИЗАЦИЯ
+    # =====================================
 
-    memory = FAJMemoryBrain()
+    try:
 
-    learning = FAJLearningBrain()
+        memory = FAJMemoryBrain()
+        learning = FAJLearningBrain()
+        correction = FAJCorrectionBrain()
 
-    correction = FAJCorrectionBrain()
+
+    except Exception as e:
+
+        st.error(
+            f"Ошибка загрузки Brain: {e}"
+        )
+
+        return
 
 
 
-    # =====================================================
-    # ОБЩАЯ СТАТИСТИКА
-    # =====================================================
+    # =====================================
+    # MEMORY
+    # =====================================
 
     st.markdown(
-        "## 📊 Память FAJ"
+        "## 🗃 Memory Brain"
     )
 
 
-    stats = memory.get_statistics()
+    memory_stats = memory.get_statistics()
 
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3 = st.columns(3)
 
 
     with col1:
         st.metric(
             "Всего прогнозов",
-            stats["total_predictions"]
+            memory_stats["total_predictions"]
         )
 
 
     with col2:
         st.metric(
             "Завершено матчей",
-            stats["finished_matches"]
+            memory_stats["finished_matches"]
         )
 
 
     with col3:
         st.metric(
-            "Точных прогнозов",
-            stats["correct_predictions"]
-        )
-
-
-    with col4:
-        st.metric(
             "Точность",
-            f'{stats["accuracy"]}%'
+            f"{memory_stats['accuracy']}%"
         )
 
 
@@ -93,9 +91,10 @@ def render():
 
 
 
-    # =====================================================
-    # АНАЛИЗ ОБУЧЕНИЯ
-    # =====================================================
+    # =====================================
+    # LEARNING
+    # =====================================
+
 
     st.markdown(
         "## 📚 Learning Brain"
@@ -105,47 +104,24 @@ def render():
     learning_status = learning.get_status()
 
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
 
 
     with col1:
 
         st.metric(
-            "Обучение готово",
-            "Да"
-            if learning_status["learning_ready"]
-            else "Нет"
+            "Обучающих матчей",
+            learning_status["samples"]
         )
 
 
     with col2:
 
         st.metric(
-            "Точность модели",
-            f'{learning_status["accuracy"]}%'
+            "Accuracy",
+            f"{learning_status['accuracy']}%"
         )
 
-
-    with col3:
-
-        st.metric(
-            "Матчей для анализа",
-            learning_status["samples"]
-        )
-
-
-
-    st.divider()
-
-
-
-    # =====================================================
-    # ПОИСК ПРОБЛЕМ
-    # =====================================================
-
-    st.markdown(
-        "## 🔍 Анализ слабых мест"
-    )
 
 
     patterns = learning.find_patterns()
@@ -153,22 +129,21 @@ def render():
 
     if patterns:
 
+        st.warning(
+            "Найдены слабые места модели"
+        )
 
         for p in patterns:
 
-            st.warning(
-                f"""
-                Тип: {p.get('type')}
-
-                {p.get('message')}
-                """
+            st.write(
+                "⚠️",
+                p["message"]
             )
-
 
     else:
 
         st.success(
-            "Серьёзных проблем модели не обнаружено"
+            "Критических проблем не найдено"
         )
 
 
@@ -177,27 +152,18 @@ def render():
 
 
 
-    # =====================================================
-    # КОРРЕКТИРОВКИ
-    # =====================================================
+    # =====================================
+    # CORRECTION
+    # =====================================
+
 
     st.markdown(
-        "## ⚙️ Correction Brain"
+        "## 🔧 Correction Brain"
     )
-
-
-    correction_status = correction.get_status()
-
-
-    st.write(
-        f"Количество анализов корректировки: "
-        f"{correction_status['corrections_count']}"
-    )
-
 
 
     if st.button(
-        "🧠 Запустить анализ ошибок FAJ",
+        "Провести анализ ошибок FAJ",
         use_container_width=True
     ):
 
@@ -205,7 +171,7 @@ def render():
 
 
         st.success(
-            "Анализ завершён"
+            "Анализ выполнен"
         )
 
 
@@ -215,66 +181,88 @@ def render():
 
 
 
-    st.divider()
+    history = correction.get_history()
 
 
-
-    # =====================================================
-    # ИСТОРИЯ ПАМЯТИ
-    # =====================================================
-
-    st.markdown(
-        "## 📝 История прогнозов"
-    )
+    if history:
 
 
-    memory_data = memory.get_memory()
+        st.markdown(
+            "### История корректировок"
+        )
 
 
-    if memory_data:
-
-
-        rows = []
-
-
-        for item in memory_data:
-
-
-            rows.append({
-
-                "Матч":
-                    item.get("match"),
-
-
-                "Статус":
-                    item.get("status"),
-
-
-                "Прогноз":
-                    str(
-                        item.get("prediction", {})
-                        .get("top_scores", [])
-                    ),
-
-
-                "Результат":
-                    item.get("actual_result")
-
-            })
-
-
-        df = pd.DataFrame(rows)
-
+        df = pd.DataFrame(history)
 
         st.dataframe(
             df,
-            use_container_width=True,
-            hide_index=True
+            use_container_width=True
         )
 
 
     else:
 
+        st.info(
+            "Корректировок пока нет"
+        )
+
+
+
+    st.divider()
+
+
+
+    # =====================================
+    # ПАМЯТЬ МАТЧЕЙ
+    # =====================================
+
+
+    st.markdown(
+        "## 📝 Последние записи памяти"
+    )
+
+
+    records = memory.get_memory()
+
+
+    if records:
+
+
+        show = []
+
+
+        for item in records[-10:]:
+
+            show.append({
+
+                "Матч":
+                    item.get("match"),
+
+                "Статус":
+                    item.get("status"),
+
+                "Прогноз":
+                    item.get("prediction",{}).get(
+                        "top_scores",
+                        "-"
+                    ),
+
+                "Результат":
+                    item.get(
+                        "actual_result",
+                        "-"
+                    )
+
+            })
+
+
+        st.dataframe(
+            pd.DataFrame(show),
+            use_container_width=True
+        )
+
+
+    else:
 
         st.info(
             "Память FAJ пока пустая"
@@ -282,9 +270,8 @@ def render():
 
 
 
-    st.divider()
+# Для Streamlit pages
 
+if __name__ == "__main__":
 
-    st.caption(
-        "FAJ Brain v10.0 | Memory → Learning → Correction"
-    )
+    render()
