@@ -245,8 +245,7 @@ def render():
             <div style="background: rgba(30, 30, 50, 0.8); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 16px; padding: 20px; margin-bottom: 16px;">
                 <h2 style="text-align:center; color:#f3f4f6; margin:0;">{home} ⚔️ {away}</h2>
                 <p style="text-align:center; color:#9ca3af;">
-                    FAJ Prediction v10.0
-                    {f' | Результат: {actual_score} {status}' if actual_score != '—' else ''}
+                    FAJ Prediction v10.0{f' | Результат: {actual_score} {status}' if actual_score != '—' else ''}
                 </p>
             </div>
             """, unsafe_allow_html=True)
