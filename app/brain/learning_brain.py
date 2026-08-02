@@ -2,19 +2,14 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ Platform v10.1
-
+FAJ Platform v10.0
 Learning Brain
 
-Анализирует ошибки прогнозов,
-учится на результатах матчей
-и формирует рекомендации для модели.
+Модуль обучения на истории матчей
 """
 
-from datetime import datetime
 from typing import Dict, List
-import json
-import os
+from app.brain.memory_brain import FAJMemoryBrain
 
 
 class FAJLearningBrain:
@@ -22,386 +17,224 @@ class FAJLearningBrain:
 
     def __init__(self):
 
-        self.learning_rate = 0.01
-
-        self.model_version = "10.1"
-
-        self.memory_file = "data/learning_memory.json"
+        self.memory = FAJMemoryBrain()
 
 
-        # Базовые веса FAJ Engine
+    # =========================================
+    # АНАЛИЗ ВСЕЙ ИСТОРИИ
+    # =========================================
 
-        self.weights = {
+    def analyze_history(self) -> Dict:
 
-            "attack": 0.18,
-            "defense": 0.18,
-            "control": 0.15,
-            "efficiency": 0.12,
-            "mentality": 0.10,
-            "tempo": 0.05,
-            "press": 0.05,
-            "transition": 0.05,
-            "flexibility": 0.05,
-            "coach": 0.04,
-            "form": 0.03
-
-        }
+        records = self.memory.get_memory()
 
 
-        self.memory = self.load_memory()
+        total = len(records)
+
+        finished = 0
+
+        correct = 0
+
+        mistakes = []
 
 
-
-    # =====================================================
-    # ПАМЯТЬ ОБУЧЕНИЯ
-    # =====================================================
+        for item in records:
 
 
-    def load_memory(self) -> List:
-
-        if os.path.exists(self.memory_file):
-
-            try:
-
-                with open(
-                    self.memory_file,
-                    "r",
-                    encoding="utf-8"
-                ) as f:
-
-                    return json.load(f)
-
-            except:
-
-                return []
-
-        return []
+            if item.get("status") != "finished":
+                continue
 
 
+            finished += 1
 
-    def save_memory(self):
 
-        os.makedirs(
-            "data",
-            exist_ok=True
-        )
-
-        with open(
-            self.memory_file,
-            "w",
-            encoding="utf-8"
-        ) as f:
-
-            json.dump(
-                self.memory,
-                f,
-                ensure_ascii=False,
-                indent=2
+            analysis = item.get(
+                "analysis"
             )
 
 
-
-    # =====================================================
-    # АНАЛИЗ МАТЧА
-    # =====================================================
+            if not analysis:
+                continue
 
 
-    def analyze_prediction(
-            self,
-            prediction: Dict,
-            actual: Dict
-    ) -> Dict:
+            if analysis.get("correct"):
 
-
-        analysis = {
-
-            "date":
-                datetime.now().isoformat(),
-
-            "errors": [],
-
-            "corrections": []
-
-        }
-
-
-
-        # -------------------------------
-        # Проверяем точный счёт
-        # -------------------------------
-
-
-        predicted_scores = prediction.get(
-            "top_scores",
-            []
-        )
-
-
-        actual_score = (
-
-            str(actual.get("home_goals"))
-            +
-            ":"
-            +
-            str(actual.get("away_goals"))
-
-        )
-
-
-        if predicted_scores:
-
-            best_score = predicted_scores[0].get(
-                "score"
-            )
-
-
-            if best_score != actual_score:
-
-                analysis["errors"].append(
-                    "wrong_score"
-                )
-
-
-
-        # -------------------------------
-        # Проверяем исход
-        # -------------------------------
-
-
-        home = actual.get(
-            "home_goals",
-            0
-        )
-
-        away = actual.get(
-            "away_goals",
-            0
-        )
-
-
-        if home > away:
-
-            real_result = "home"
-
-        elif away > home:
-
-            real_result = "away"
-
-        else:
-
-            real_result = "draw"
-
-
-
-        prediction_result = self.get_prediction_result(
-            prediction
-        )
-
-
-        if real_result != prediction_result:
-
-            analysis["errors"].append(
-                "wrong_result"
-            )
-
-
-
-        # -------------------------------
-        # Анализируем причины
-        # -------------------------------
-
-
-        if "wrong_result" in analysis["errors"]:
-
-
-            if real_result == "home":
-
-                analysis["corrections"].append(
-                    "increase_home_attack_weight"
-                )
-
-
-            elif real_result == "away":
-
-                analysis["corrections"].append(
-                    "increase_away_strength_weight"
-                )
-
+                correct += 1
 
             else:
 
-                analysis["corrections"].append(
-                    "increase_draw_factor"
-                )
+                mistakes.append({
+
+                    "match":
+                        item.get("match"),
+
+                    "prediction":
+                        analysis.get(
+                            "predicted_score"
+                        ),
+
+                    "actual":
+                        analysis.get(
+                            "actual_score"
+                        )
+
+                })
 
 
+        accuracy = 0
 
-        return analysis
+        if finished:
 
-
-
-    # =====================================================
-    # ОПРЕДЕЛЕНИЕ ПРОГНОЗА
-    # =====================================================
-
-
-    def get_prediction_result(
-            self,
-            prediction: Dict
-    ) -> str:
+            accuracy = round(
+                correct / finished * 100,
+                1
+            )
 
 
-        home = prediction.get(
-            "home_win",
-            0
-        )
+        return {
 
-        draw = prediction.get(
-            "draw",
-            0
-        )
+            "total_predictions": total,
 
-        away = prediction.get(
-            "away_win",
-            0
-        )
+            "finished": finished,
 
+            "correct": correct,
 
-        maximum = max(
-            home,
-            draw,
-            away
-        )
+            "accuracy": accuracy,
 
-
-        if maximum == home:
-
-            return "home"
-
-        elif maximum == away:
-
-            return "away"
-
-        else:
-
-            return "draw"
-
-
-
-    # =====================================================
-    # ОБУЧЕНИЕ ВЕСОВ
-    # =====================================================
-
-
-    def learn(
-            self,
-            analysis: Dict
-    ) -> Dict:
-
-
-        changes = {}
-
-
-        for correction in analysis.get(
-            "corrections",
-            []
-        ):
-
-
-            if correction == "increase_home_attack_weight":
-
-                self.weights["attack"] += self.learning_rate
-
-                changes["attack"] = "+0.01"
-
-
-
-            elif correction == "increase_away_strength_weight":
-
-                self.weights["defense"] += self.learning_rate
-
-                changes["defense"] = "+0.01"
-
-
-
-            elif correction == "increase_draw_factor":
-
-                self.weights["mentality"] += self.learning_rate
-
-                changes["mentality"] = "+0.01"
-
-
-
-        return changes
-
-
-
-    # =====================================================
-    # ПОЛНЫЙ ЦИКЛ ОБУЧЕНИЯ
-    # =====================================================
-
-
-    def process_match(
-            self,
-            prediction: Dict,
-            actual: Dict
-    ) -> Dict:
-
-
-        analysis = self.analyze_prediction(
-            prediction,
-            actual
-        )
-
-
-        changes = self.learn(
-            analysis
-        )
-
-
-        record = {
-
-            "timestamp":
-                datetime.now().isoformat(),
-
-            "analysis":
-                analysis,
-
-            "changes":
-                changes
+            "mistakes": mistakes
 
         }
 
 
-        self.memory.append(
-            record
+
+    # =========================================
+    # ПОИСК СЛАБЫХ МЕСТ
+    # =========================================
+
+    def find_patterns(self) -> List:
+
+
+        analysis = self.analyze_history()
+
+
+        patterns = []
+
+
+        mistakes = analysis.get(
+            "mistakes",
+            []
         )
 
 
-        self.save_memory()
+        if len(mistakes) >= 5:
 
 
-        return record
+            patterns.append({
+
+                "type":
+                    "score_prediction",
+
+                "message":
+                    "FAJ часто ошибается в точном счёте"
+
+            })
+
+
+        if analysis.get(
+            "accuracy",
+            0
+        ) < 50 and analysis.get(
+            "finished",
+            0
+        ) >= 10:
+
+
+            patterns.append({
+
+                "type":
+                    "model_quality",
+
+                "message":
+                    "Требуется корректировка весов модели"
+
+            })
+
+
+        return patterns
 
 
 
-    # =====================================================
-    # СТАТУС МОЗГА
-    # =====================================================
+    # =========================================
+    # РЕКОМЕНДАЦИИ ДЛЯ FAJ ENGINE
+    # =========================================
+
+    def generate_recommendations(self) -> Dict:
 
 
-    def get_status(self):
+        patterns = self.find_patterns()
+
+
+        recommendations = []
+
+
+        for p in patterns:
+
+
+            if p["type"] == "score_prediction":
+
+                recommendations.append(
+
+                    "Увеличить влияние xG"
+
+                )
+
+
+            if p["type"] == "model_quality":
+
+                recommendations.append(
+
+                    "Пересмотреть веса паспорта"
+
+                )
+
 
         return {
 
-            "version":
-                self.model_version,
 
-            "memory_size":
-                len(self.memory),
+            "patterns": patterns,
 
-            "weights":
-                self.weights
+            "recommendations":
+                recommendations
+
+        }
+
+
+
+    # =========================================
+    # СТАТУС
+    # =========================================
+
+    def get_status(self):
+
+
+        result = self.analyze_history()
+
+
+        return {
+
+            "learning_ready":
+
+                result["finished"] > 0,
+
+
+            "accuracy":
+
+                result["accuracy"],
+
+
+            "samples":
+
+                result["finished"]
 
         }
 
@@ -411,11 +244,6 @@ if __name__ == "__main__":
 
 
     brain = FAJLearningBrain()
-
-
-    print("="*50)
-    print("FAJ Learning Brain v10.1")
-    print("="*50)
 
 
     print(
