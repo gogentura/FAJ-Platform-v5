@@ -4,7 +4,12 @@
 """
 FAJ Platform v10.0
 Brain Center
-Панель управления искусственным интеллектом FAJ
+
+Центр управления мозгом FAJ:
+- память
+- обучение
+- анализ ошибок
+- корректировки
 """
 
 import streamlit as st
@@ -16,43 +21,69 @@ from datetime import datetime
 DATA_DIR = "data"
 
 
+
+# =====================================================
+# ЗАГРУЗКА JSON
+# =====================================================
+
 def load_json(filename):
-    path = os.path.join(DATA_DIR, filename)
+
+    path = os.path.join(
+        DATA_DIR,
+        filename
+    )
 
     if not os.path.exists(path):
         return {}
 
     try:
-        with open(path, "r", encoding="utf-8") as f:
+
+        with open(
+            path,
+            "r",
+            encoding="utf-8"
+        ) as f:
+
             return json.load(f)
 
-    except Exception:
+    except:
+
         return {}
 
 
+
+# =====================================================
+# ОСНОВНАЯ СТРАНИЦА
+# =====================================================
+
 def render():
 
-    st.markdown("# 🧠 FAJ Brain Center")
 
-    st.info(
-        """
-        Центральная панель мозга FAJ.
-
-        Здесь будут:
-        - память модели
-        - обучение на результатах
-        - корректировка ошибок
-        - анализ качества прогнозов
-        """
+    st.markdown(
+        "# 🧠 FAJ Brain Center"
     )
 
 
-    # ==============================
-    # СТАТУС МОЗГА
-    # ==============================
+    st.info(
+        """
+FAJ Brain v10.0
 
-    st.markdown("## 📊 Статус системы")
+Модули:
 
+🗃 Memory Brain  
+📚 Learning Brain  
+🔧 Correction Brain  
+
+Мозг анализирует прогнозы,
+результаты и ошибки модели.
+"""
+    )
+
+
+
+    # =================================================
+    # ПОДКЛЮЧЕНИЕ BRAIN
+    # =================================================
 
     try:
 
@@ -66,42 +97,72 @@ def render():
         correction = FAJCorrectionBrain()
 
 
-        col1, col2, col3 = st.columns(3)
-
-
-        with col1:
-            status = memory.get_status()
-
-            st.metric(
-                "Память",
-                status.get("records", 0)
-            )
-
-
-        with col2:
-
-            status = learning.get_status()
-
-            st.metric(
-                "Обучение",
-                status.get("cycles", 0)
-            )
-
-
-        with col3:
-
-            status = correction.get_status()
-
-            st.metric(
-                "Коррекции",
-                status.get("corrections", 0)
-            )
-
-
     except Exception as e:
 
         st.error(
-            f"Ошибка подключения Brain: {e}"
+            f"Ошибка загрузки Brain: {e}"
+        )
+
+        return
+
+
+
+    # =================================================
+    # СТАТУС
+    # =================================================
+
+    st.markdown(
+        "## 📊 Статус мозга"
+    )
+
+
+    col1, col2, col3 = st.columns(3)
+
+
+    memory_status = memory.get_status()
+    learning_status = learning.get_status()
+    correction_status = correction.get_status()
+
+
+
+    with col1:
+
+        st.metric(
+            "🗃 Память",
+            memory_status.get(
+                "records",
+                memory_status.get(
+                    "memory_count",
+                    0
+                )
+            )
+        )
+
+
+
+    with col2:
+
+        st.metric(
+            "📚 Циклы обучения",
+            learning_status.get(
+                "cycles",
+                learning_status.get(
+                    "learning_cycles",
+                    0
+                )
+            )
+        )
+
+
+
+    with col3:
+
+        st.metric(
+            "🔧 Коррекции",
+            correction_status.get(
+                "corrections_count",
+                0
+            )
         )
 
 
@@ -109,21 +170,26 @@ def render():
     st.divider()
 
 
-    # ==============================
+
+    # =================================================
     # ПАМЯТЬ
-    # ==============================
+    # =================================================
 
-    st.markdown("## 🗃 Память FAJ")
+    st.markdown(
+        "## 🗃 Память FAJ"
+    )
 
 
-    memory_file = load_json(
+    memory_data = load_json(
         "brain_memory.json"
     )
 
 
-    if memory_file:
+    if memory_data:
 
-        st.json(memory_file)
+        st.json(
+            memory_data
+        )
 
     else:
 
@@ -137,37 +203,40 @@ def render():
 
 
 
-    # ==============================
+    # =================================================
     # ОБУЧЕНИЕ
-    # ==============================
+    # =================================================
 
-    st.markdown("## 🔄 Обучение модели")
+    st.markdown(
+        "## 📚 Обучение модели"
+    )
 
 
     if st.button(
-        "Запустить цикл обучения",
+        "▶ Запустить обучение",
         use_container_width=True
     ):
 
+
         try:
 
-            from app.brain.learning_brain import FAJLearningBrain
+            result = learning.learn()
 
-            brain = FAJLearningBrain()
-
-            result = brain.learn()
 
             st.success(
-                "Цикл обучения завершён"
+                "Обучение завершено"
             )
 
-            st.json(result)
+
+            st.json(
+                result
+            )
 
 
         except Exception as e:
 
             st.error(
-                str(e)
+                f"Ошибка обучения: {e}"
             )
 
 
@@ -176,44 +245,72 @@ def render():
 
 
 
-    # ==============================
-    # КОРРЕКТИРОВКИ
-    # ==============================
-
+    # =================================================
+    # КОРРЕКЦИИ
+    # =================================================
 
     st.markdown(
-        "## 🔧 Коррекция прогнозов"
+        "## 🔧 Анализ ошибок"
     )
 
 
     if st.button(
-        "Анализ ошибок FAJ",
+        "🔍 Найти ошибки FAJ",
         use_container_width=True
     ):
 
 
         try:
 
-            from app.brain.correction_brain import FAJCorrectionBrain
-
-
-            brain = FAJCorrectionBrain()
-
-            result = brain.analyze_errors()
+            result = correction.analyze_errors()
 
 
             st.success(
                 "Анализ завершён"
             )
 
-            st.json(result)
+
+            st.json(
+                result
+            )
 
 
         except Exception as e:
 
             st.error(
-                str(e)
+                f"Ошибка анализа: {e}"
             )
+
+
+
+    st.divider()
+
+
+
+    # =================================================
+    # ИСТОРИЯ КОРРЕКЦИЙ
+    # =================================================
+
+    st.markdown(
+        "## 📜 История корректировок"
+    )
+
+
+    history = correction.get_history()
+
+
+    if history:
+
+        st.dataframe(
+            history,
+            use_container_width=True
+        )
+
+    else:
+
+        st.info(
+            "Корректировок пока нет"
+        )
 
 
 
