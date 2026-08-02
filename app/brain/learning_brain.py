@@ -3,13 +3,18 @@
 
 """
 FAJ Platform v10.1
+
 Learning Brain
 
-Анализ ошибок прогнозов и обучение модели
+Анализирует ошибки прогнозов,
+учится на результатах матчей
+и формирует рекомендации для модели.
 """
 
 from datetime import datetime
-from typing import Dict
+from typing import Dict, List
+import json
+import os
 
 
 class FAJLearningBrain:
@@ -17,7 +22,15 @@ class FAJLearningBrain:
 
     def __init__(self):
 
-        # базовые веса FAJ
+        self.learning_rate = 0.01
+
+        self.model_version = "10.1"
+
+        self.memory_file = "data/learning_memory.json"
+
+
+        # Базовые веса FAJ Engine
+
         self.weights = {
 
             "attack": 0.18,
@@ -35,121 +48,243 @@ class FAJLearningBrain:
         }
 
 
-        self.learning_rate = 0.01
+        self.memory = self.load_memory()
 
 
 
     # =====================================================
-    # АНАЛИЗ ПРОГНОЗА
+    # ПАМЯТЬ ОБУЧЕНИЯ
     # =====================================================
 
-    def analyze_match(
+
+    def load_memory(self) -> List:
+
+        if os.path.exists(self.memory_file):
+
+            try:
+
+                with open(
+                    self.memory_file,
+                    "r",
+                    encoding="utf-8"
+                ) as f:
+
+                    return json.load(f)
+
+            except:
+
+                return []
+
+        return []
+
+
+
+    def save_memory(self):
+
+        os.makedirs(
+            "data",
+            exist_ok=True
+        )
+
+        with open(
+            self.memory_file,
+            "w",
+            encoding="utf-8"
+        ) as f:
+
+            json.dump(
+                self.memory,
+                f,
+                ensure_ascii=False,
+                indent=2
+            )
+
+
+
+    # =====================================================
+    # АНАЛИЗ МАТЧА
+    # =====================================================
+
+
+    def analyze_prediction(
             self,
             prediction: Dict,
             actual: Dict
     ) -> Dict:
 
 
-        result = {
+        analysis = {
 
-            "timestamp":
+            "date":
                 datetime.now().isoformat(),
 
-            "error_type": [],
+            "errors": [],
 
-            "score_error": None,
-
-            "learning": {}
+            "corrections": []
 
         }
 
 
-        predicted_score = prediction.get(
+
+        # -------------------------------
+        # Проверяем точный счёт
+        # -------------------------------
+
+
+        predicted_scores = prediction.get(
             "top_scores",
             []
         )
 
 
         actual_score = (
-            f"{actual.get('home_goals')}:"
-            f"{actual.get('away_goals')}"
+
+            str(actual.get("home_goals"))
+            +
+            ":"
+            +
+            str(actual.get("away_goals"))
+
         )
 
 
-        # ---------------------------------
-        # Проверяем счёт
-        # ---------------------------------
+        if predicted_scores:
 
-        if predicted_score:
-
-            best_score = (
-                predicted_score[0]
-                .get("score")
+            best_score = predicted_scores[0].get(
+                "score"
             )
+
 
             if best_score != actual_score:
 
-                result["error_type"].append(
+                analysis["errors"].append(
                     "wrong_score"
                 )
 
 
-        # ---------------------------------
-        # Проверяем исход
-        # ---------------------------------
 
-        predicted_home = prediction.get(
+        # -------------------------------
+        # Проверяем исход
+        # -------------------------------
+
+
+        home = actual.get(
+            "home_goals",
+            0
+        )
+
+        away = actual.get(
+            "away_goals",
+            0
+        )
+
+
+        if home > away:
+
+            real_result = "home"
+
+        elif away > home:
+
+            real_result = "away"
+
+        else:
+
+            real_result = "draw"
+
+
+
+        prediction_result = self.get_prediction_result(
+            prediction
+        )
+
+
+        if real_result != prediction_result:
+
+            analysis["errors"].append(
+                "wrong_result"
+            )
+
+
+
+        # -------------------------------
+        # Анализируем причины
+        # -------------------------------
+
+
+        if "wrong_result" in analysis["errors"]:
+
+
+            if real_result == "home":
+
+                analysis["corrections"].append(
+                    "increase_home_attack_weight"
+                )
+
+
+            elif real_result == "away":
+
+                analysis["corrections"].append(
+                    "increase_away_strength_weight"
+                )
+
+
+            else:
+
+                analysis["corrections"].append(
+                    "increase_draw_factor"
+                )
+
+
+
+        return analysis
+
+
+
+    # =====================================================
+    # ОПРЕДЕЛЕНИЕ ПРОГНОЗА
+    # =====================================================
+
+
+    def get_prediction_result(
+            self,
+            prediction: Dict
+    ) -> str:
+
+
+        home = prediction.get(
             "home_win",
             0
         )
 
-        predicted_away = prediction.get(
+        draw = prediction.get(
+            "draw",
+            0
+        )
+
+        away = prediction.get(
             "away_win",
             0
         )
 
 
-        if actual.get("home_goals") > actual.get("away_goals"):
-
-            actual_result = "home"
-
-        elif actual.get("home_goals") < actual.get("away_goals"):
-
-            actual_result = "away"
-
-        else:
-
-            actual_result = "draw"
+        maximum = max(
+            home,
+            draw,
+            away
+        )
 
 
+        if maximum == home:
 
-        if actual_result == "home":
+            return "home"
 
-            if predicted_home < 50:
-                result["error_type"].append(
-                    "underestimated_home"
-                )
+        elif maximum == away:
 
-
-        elif actual_result == "away":
-
-            if predicted_away < 50:
-                result["error_type"].append(
-                    "underestimated_away"
-                )
-
-
+            return "away"
 
         else:
 
-            if prediction.get("draw",0)<30:
-
-                result["error_type"].append(
-                    "missed_draw"
-                )
-
-
-        return result
+            return "draw"
 
 
 
@@ -158,19 +293,22 @@ class FAJLearningBrain:
     # =====================================================
 
 
-    def update_weights(
+    def learn(
             self,
-            errors:list
+            analysis: Dict
     ) -> Dict:
 
 
         changes = {}
 
 
-        for error in errors:
+        for correction in analysis.get(
+            "corrections",
+            []
+        ):
 
 
-            if error == "underestimated_home":
+            if correction == "increase_home_attack_weight":
 
                 self.weights["attack"] += self.learning_rate
 
@@ -178,7 +316,7 @@ class FAJLearningBrain:
 
 
 
-            elif error == "underestimated_away":
+            elif correction == "increase_away_strength_weight":
 
                 self.weights["defense"] += self.learning_rate
 
@@ -186,19 +324,11 @@ class FAJLearningBrain:
 
 
 
-            elif error == "missed_draw":
+            elif correction == "increase_draw_factor":
 
                 self.weights["mentality"] += self.learning_rate
 
                 changes["mentality"] = "+0.01"
-
-
-
-            elif error == "wrong_score":
-
-                self.weights["efficiency"] += self.learning_rate
-
-                changes["efficiency"] = "+0.01"
 
 
 
@@ -207,20 +337,87 @@ class FAJLearningBrain:
 
 
     # =====================================================
-    # ПОЛУЧИТЬ ТЕКУЩУЮ МОДЕЛЬ
+    # ПОЛНЫЙ ЦИКЛ ОБУЧЕНИЯ
     # =====================================================
 
 
-    def get_model_state(self):
+    def process_match(
+            self,
+            prediction: Dict,
+            actual: Dict
+    ) -> Dict:
+
+
+        analysis = self.analyze_prediction(
+            prediction,
+            actual
+        )
+
+
+        changes = self.learn(
+            analysis
+        )
+
+
+        record = {
+
+            "timestamp":
+                datetime.now().isoformat(),
+
+            "analysis":
+                analysis,
+
+            "changes":
+                changes
+
+        }
+
+
+        self.memory.append(
+            record
+        )
+
+
+        self.save_memory()
+
+
+        return record
+
+
+
+    # =====================================================
+    # СТАТУС МОЗГА
+    # =====================================================
+
+
+    def get_status(self):
 
         return {
 
-            "weights": self.weights,
-
-            "learning_rate":
-                self.learning_rate,
-
             "version":
-                "10.1"
+                self.model_version,
+
+            "memory_size":
+                len(self.memory),
+
+            "weights":
+                self.weights
 
         }
+
+
+
+if __name__ == "__main__":
+
+
+    brain = FAJLearningBrain()
+
+
+    print("="*50)
+    print("FAJ Learning Brain v10.1")
+    print("="*50)
+
+
+    print(
+        brain.get_status()
+    )
