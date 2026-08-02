@@ -2,17 +2,14 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ Platform v10.1
-Brain Package
+FAJ Platform v10.0
+Brain Module
 
-Центр обучения, памяти и самоанализа модели FAJ
+Мозг FAJ Platform
 """
 
-from .data_brain import FAJDataBrain
+# Пока импортируем только готовые модули
+
+from .memory_brain import FAJMemoryBrain
 from .learning_brain import FAJLearningBrain
-
-
-__all__ = [
-    "FAJDataBrain",
-    "FAJLearningBrain"
-]
+from .correction_brain import FAJCorrectionBrain
