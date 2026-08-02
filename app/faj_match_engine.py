@@ -3,19 +3,12 @@
 
 """
 FAJ Platform v10.0
-
-Match Prediction Engine + Brain Integration
-
+Match Engine
 """
 
 import math
 import random
-
-from typing import Dict, Tuple
 from collections import Counter
-
-from app.brain.brain_manager import FAJBrainManager
-
 
 
 class FAJMatchEngine:
@@ -24,289 +17,203 @@ class FAJMatchEngine:
     def __init__(self):
 
         self.league_mean_xg = 1.35
-
         self.home_advantage = 1.12
-
         self.simulation_count = 10000
 
 
-        self.weights = {
 
-            "attack": 0.18,
-            "defense": 0.18,
-            "control": 0.15,
-            "efficiency": 0.12,
-            "mentality": 0.10,
-            "tempo": 0.05,
-            "press": 0.05,
-            "transition": 0.05,
-            "flexibility": 0.05,
-            "coach": 0.04,
-            "form": 0.03
+    def calculate_team_power(self, passport):
+
+        weights = {
+
+            "attack":0.18,
+            "defense":0.18,
+            "control":0.15,
+            "efficiency":0.12,
+            "mentality":0.10,
+            "tempo":0.05,
+            "press":0.05,
+            "transition":0.05,
+            "flexibility":0.05,
+            "coach":0.04,
+            "form":0.03
 
         }
-
-
-        # подключаем мозг
-
-        self.brain = FAJBrainManager()
-
-
-
-    # =====================================================
-    # СИЛА КОМАНДЫ
-    # =====================================================
-
-    def calculate_team_power(
-        self,
-        passport: Dict
-    ) -> float:
 
 
         power = 0
 
 
-        for key, weight in self.weights.items():
-
-            value = passport.get(
-                key,
-                50
-            )
+        for key, weight in weights.items():
 
             try:
 
-                power += float(value) * weight
+                power += float(
+                    passport.get(key,50)
+                ) * weight
 
             except:
 
                 power += 50 * weight
 
 
-        return round(
-            power,
-            2
-        )
+        return round(power,2)
 
 
-
-    # =====================================================
-    # xG
-    # =====================================================
 
     def calculate_xg(
         self,
-        home_passport,
-        away_passport
-    ) -> Tuple[float,float]:
+        home,
+        away
+    ):
 
 
         home_attack = float(
-            home_passport.get(
-                "attack",
-                50
-            )
-        ) / 100
-
-
-        away_defense = float(
-            away_passport.get(
-                "defense",
-                50
-            )
+            home.get("attack",50)
         ) / 100
 
 
         away_attack = float(
-            away_passport.get(
-                "attack",
-                50
-            )
+            away.get("attack",50)
         ) / 100
 
 
-        home_defense = float(
-            home_passport.get(
-                "defense",
-                50
-            )
+        home_def = float(
+            home.get("defense",50)
         ) / 100
 
 
-
-        home_form = float(
-            home_passport.get(
-                "form",
-                50
-            )
-        ) / 100
-
-
-        away_form = float(
-            away_passport.get(
-                "form",
-                50
-            )
+        away_def = float(
+            away.get("defense",50)
         ) / 100
 
 
 
         xg_home = (
             self.league_mean_xg *
-            (home_attack / max(away_defense,0.01)) *
-            (0.5+0.5*home_form) *
+            (home_attack / max(away_def,0.1)) *
             self.home_advantage
         )
 
 
         xg_away = (
             self.league_mean_xg *
-            (away_attack / max(home_defense,0.01)) *
-            (0.5+0.5*away_form)
-        )
-
-
-        xg_home=max(
-            0.10,
-            min(
-                4,
-                xg_home
-            )
-        )
-
-
-        xg_away=max(
-            0.10,
-            min(
-                4,
-                xg_away
-            )
+            (away_attack / max(home_def,0.1))
         )
 
 
         return (
-            round(xg_home,2),
-            round(xg_away,2)
+            round(min(max(xg_home,0.1),4),2),
+            round(min(max(xg_away,0.1),4),2)
         )
 
 
 
-    # =====================================================
-    # POISSON
-    # =====================================================
+    def poisson(self, x):
 
-    def poisson_sample(
-        self,
-        xg
-    ):
+        L = math.exp(-x)
 
-        L=math.exp(-xg)
-
-        k=0
-
-        p=1
+        k = 0
+        p = 1
 
 
-        while p>L:
+        while p > L:
 
-            k+=1
-
-            p*=random.random()
+            k += 1
+            p *= random.random()
 
 
         return k-1
 
 
 
-    # =====================================================
-    # MONTE CARLO
-    # =====================================================
-
-    def monte_carlo_simulation(
+    def simulate(
         self,
         xg_home,
         xg_away
     ):
 
 
-        results=[]
+        scores=[]
 
 
-        for _ in range(
-            self.simulation_count
-        ):
+        for _ in range(self.simulation_count):
 
-            results.append(
+            scores.append(
                 (
-                    self.poisson_sample(xg_home),
-                    self.poisson_sample(xg_away)
+                    self.poisson(xg_home),
+                    self.poisson(xg_away)
                 )
             )
 
 
-
         home=sum(
-            1 for h,a in results
-            if h>a
+            1 for h,a in scores if h>a
         )
-
 
         draw=sum(
-            1 for h,a in results
-            if h==a
+            1 for h,a in scores if h==a
         )
-
 
         away=sum(
-            1 for h,a in results
-            if h<a
+            1 for h,a in scores if h<a
         )
 
 
-        scores=Counter(results)
+        counter=Counter(scores)
+
+
+        top=[]
+
+        for score,count in counter.most_common(5):
+
+            top.append({
+
+                "score":
+                    f"{score[0]}:{score[1]}",
+
+                "prob":
+                    round(
+                        count/self.simulation_count*100,
+                        1
+                    )
+
+            })
 
 
         return {
 
             "P1":
-                home/self.simulation_count,
+                round(home/self.simulation_count*100,1),
 
             "PX":
-                draw/self.simulation_count,
+                round(draw/self.simulation_count*100,1),
 
             "P2":
-                away/self.simulation_count,
+                round(away/self.simulation_count*100,1),
 
-
-            "top_scores":[
-
-                {
-                    "score":f"{h}:{a}",
-
-                    "prob":round(
-                        c/self.simulation_count*100,
-                        1
-                    )
-                }
-
-                for (h,a),c
-                in scores.most_common(5)
-
-            ]
+            "top_scores":
+                top
 
         }
 
 
 
-    # =====================================================
-    # ГЛАВНЫЙ ПРОГНОЗ
-    # =====================================================
-
     def predict_match(
         self,
         home_passport,
-        away_passport,
-        match_name=None
+        away_passport
     ):
+
+
+        home_power = self.calculate_team_power(
+            home_passport
+        )
+
+
+        away_power = self.calculate_team_power(
+            away_passport
+        )
 
 
         xg_home,xg_away = self.calculate_xg(
@@ -315,55 +222,61 @@ class FAJMatchEngine:
         )
 
 
-        simulation=self.monte_carlo_simulation(
+        simulation = self.simulate(
             xg_home,
             xg_away
         )
 
 
 
-        result={
+        return {
+
+
+            "home_power":
+                home_power,
+
+
+            "away_power":
+                away_power,
+
 
             "xg_home":
                 xg_home,
+
 
             "xg_away":
                 xg_away,
 
 
             "home_win":
-                round(simulation["P1"]*100,1),
+                simulation["P1"],
 
 
             "draw":
-                round(simulation["PX"]*100,1),
+                simulation["PX"],
 
 
             "away_win":
-                round(simulation["P2"]*100,1),
+                simulation["P2"],
 
 
             "top_scores":
-                simulation["top_scores"]
+                simulation["top_scores"],
+
+
+            "confidence":
+                round(
+                    max(
+                        simulation["P1"],
+                        simulation["PX"],
+                        simulation["P2"]
+                    ),
+                    1
+                ),
+
+
+            "risk":
+                "Средний"
+
 
         }
-
-
-
-        # =========================================
-        # запись в память FAJ
-        # =========================================
-
-        if match_name:
-
-
-            self.brain.save_prediction(
-
-                match_name,
-
-                result
-
-            )
-
-
-        return result
