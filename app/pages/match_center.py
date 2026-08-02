@@ -5,10 +5,9 @@
 FAJ Platform v10.0
 Match Center
 
-Центр прогнозирования:
-- показывает матчи
-- запускает FAJ Engine
-- сохраняет прогнозы в память
+Центр прогнозирования матчей
+Связь:
+Passport → FAJ Engine → Memory Brain
 """
 
 import streamlit as st
@@ -20,6 +19,9 @@ import os
 DATA_DIR = "data"
 
 
+# =====================================================
+# ЗАГРУЗКА JSON
+# =====================================================
 
 def load_json(filename):
 
@@ -32,11 +34,13 @@ def load_json(filename):
         return {}
 
     try:
+
         with open(
             path,
             "r",
             encoding="utf-8"
         ) as f:
+
             return json.load(f)
 
     except:
@@ -45,22 +49,30 @@ def load_json(filename):
 
 
 
-def get_team_passport(team):
+# =====================================================
+# ПАСПОРТА
+# =====================================================
+
+def get_team_passport(team_name):
 
     passports = load_json(
         "passports_2026.json"
     )
 
     return passports.get(
-        team.strip(),
+        team_name.strip(),
         {}
     )
 
 
 
+# =====================================================
+# ИСХОД
+# =====================================================
+
 def get_outcome(score):
 
-    if not score:
+    if not score or ":" not in score:
         return None
 
     try:
@@ -85,32 +97,15 @@ def get_outcome(score):
 
 
 
+# =====================================================
+# ОСНОВНАЯ СТРАНИЦА
+# =====================================================
+
 def render():
 
-
     st.markdown(
-        "## 🏟 Матч-центр FAJ"
+        "## 🏟 Матч-центр FAJ v10.0"
     )
-
-
-    from app.database import FAJDatabase
-    from app.faj_match_engine import FAJMatchEngine
-    from app.brain.memory_brain import FAJMemoryBrain
-
-
-    db = FAJDatabase()
-
-
-    memory = FAJMemoryBrain()
-
-
-    engine = FAJMatchEngine()
-
-
-
-    # ============================
-    # ЗАГРУЗКА ТУРА
-    # ============================
 
 
     tour = load_json(
@@ -128,8 +123,12 @@ def render():
 
 
 
+    # =============================================
+    # СПИСОК МАТЧЕЙ
+    # =============================================
+
     st.markdown(
-        "### 📊 Прогнозы FAJ"
+        "### 📊 Прогнозы тура"
     )
 
 
@@ -158,9 +157,13 @@ def render():
         })
 
 
+    df=pd.DataFrame(rows)
+
+
     st.dataframe(
-        pd.DataFrame(rows),
-        width="stretch"
+        df,
+        width="stretch",
+        hide_index=True
     )
 
 
@@ -169,10 +172,9 @@ def render():
 
 
 
-    # ============================
+    # =============================================
     # ВЫБОР МАТЧА
-    # ============================
-
+    # =============================================
 
     selected = st.selectbox(
 
@@ -183,25 +185,20 @@ def render():
     )
 
 
-    if not selected:
 
+    if not selected:
         return
 
 
 
     if "-" in selected:
 
-        home,away = selected.split(
-            "-",
-            1
-        )
+        home,away = selected.split("-",1)
 
     else:
 
-        home,away = selected.split(
-            "–",
-            1
-        )
+        home,away = selected.split("–",1)
+
 
 
     home=home.strip()
@@ -215,13 +212,9 @@ def render():
 
 
 
-    home_passport = get_team_passport(
-        home
-    )
+    home_passport=get_team_passport(home)
 
-    away_passport = get_team_passport(
-        away
-    )
+    away_passport=get_team_passport(away)
 
 
 
@@ -231,30 +224,28 @@ def render():
             "Нет паспорта одной из команд"
         )
 
-        st.write(
-            home_passport
-        )
-
-        st.write(
-            away_passport
-        )
-
         return
 
 
 
-    # ============================
-    # ЗАПУСК ENGINE
-    # ============================
+    # =============================================
+    # ENGINE
+    # =============================================
+
+    from app.faj_match_engine import FAJMatchEngine
 
 
-    result = engine.predict_match(
+    engine=FAJMatchEngine()
+
+
+    result=engine.predict_match(
 
         home_passport,
 
         away_passport
 
     )
+
 
 
     # DEBUG
@@ -267,65 +258,48 @@ def render():
 
 
 
-    # ============================
-    # БЕЗОПАСНЫЕ ЗНАЧЕНИЯ
-    # ============================
-
-
-    home_power = result.get(
-        "home_power",
-        0
-    )
-
-
-    away_power = result.get(
-        "away_power",
-        0
-    )
-
-
-    xg_home = result.get(
-        "xg_home",
-        0
-    )
-
-
-    xg_away = result.get(
-        "xg_away",
-        0
-    )
+    st.divider()
 
 
 
-    # ============================
-    # ПОКАЗАТЕЛИ
-    # ============================
+    # =============================================
+    # ОСНОВНЫЕ ПОКАЗАТЕЛИ
+    # =============================================
 
 
-    c1,c2,c3 = st.columns(3)
+    c1,c2,c3=st.columns(3)
 
 
     with c1:
 
         st.metric(
+
             f"Победа {home}",
+
             f"{result.get('home_win',0)}%"
+
         )
 
 
     with c2:
 
         st.metric(
+
             "Ничья",
+
             f"{result.get('draw',0)}%"
+
         )
 
 
     with c3:
 
         st.metric(
+
             f"Победа {away}",
+
             f"{result.get('away_win',0)}%"
+
         )
 
 
@@ -334,32 +308,66 @@ def render():
 
 
 
-    c1,c2 = st.columns(2)
+    # =============================================
+    # СИЛА И xG
+    # =============================================
+
+
+    c1,c2=st.columns(2)
+
 
 
     with c1:
 
         st.metric(
+
+            f"⚽ xG {home}",
+
+            result.get(
+                "xg_home",
+                "-"
+            )
+
+        )
+
+
+        st.metric(
+
             f"🏠 Сила {home}",
-            home_power
+
+            result.get(
+                "home_power",
+                "-"
+            )
+
         )
 
-        st.metric(
-            "xG хозяев",
-            xg_home
-        )
 
 
     with c2:
 
-        st.metric(
-            f"✈️ Сила {away}",
-            away_power
-        )
 
         st.metric(
-            "xG гостей",
-            xg_away
+
+            f"⚽ xG {away}",
+
+            result.get(
+                "xg_away",
+                "-"
+            )
+
+        )
+
+
+        st.metric(
+
+            f"✈️ Сила {away}",
+
+            result.get(
+                "away_power",
+                "-"
+            )
+
         )
 
 
@@ -368,35 +376,69 @@ def render():
 
 
 
-    c1,c2,c3 = st.columns(3)
+    # =============================================
+    # ДОПОЛНИТЕЛЬНЫЕ
+    # =============================================
+
+
+    c1,c2,c3,c4=st.columns(4)
 
 
     with c1:
 
         st.metric(
+
             "Уверенность",
+
             f"{result.get('confidence',0)}%"
+
         )
 
 
     with c2:
 
         st.metric(
+
+            "Тотал >2.5",
+
+            f"{result.get('over25',0)}%"
+
+        )
+
+
+    with c3:
+
+        st.metric(
+
+            "Обе забьют",
+
+            f"{result.get('btts',0)}%"
+
+        )
+
+
+    with c4:
+
+        st.metric(
+
             "Риск",
+
             result.get(
                 "risk",
                 "-"
             )
+
         )
 
 
-    with c3:
 
-        st.metric(
-            "Обе забьют",
-            f"{result.get('btts',0)}%"
-        )
+    st.divider()
 
+
+
+    # =============================================
+    # ВЕРОЯТНЫЕ СЧЕТА
+    # =============================================
 
 
     st.markdown(
@@ -404,7 +446,7 @@ def render():
     )
 
 
-    scores = result.get(
+    scores=result.get(
         "top_scores",
         []
     )
@@ -413,21 +455,34 @@ def render():
     if scores:
 
         st.dataframe(
+
             pd.DataFrame(scores),
-            width="stretch"
+
+            width="stretch",
+
+            hide_index=True
+
         )
 
 
 
-    # ============================
+    # =============================================
     # СОХРАНЕНИЕ В ПАМЯТЬ
-    # ============================
+    # =============================================
+
+
+    st.divider()
 
 
     if st.button(
         "🧠 Сохранить прогноз в память FAJ",
         width="stretch"
     ):
+
+        from app.brain.memory_brain import FAJMemoryBrain
+
+
+        memory=FAJMemoryBrain()
 
 
         memory.save_prediction(
@@ -440,5 +495,5 @@ def render():
 
 
         st.success(
-            "Прогноз сохранён. Создана запись в faj_memory.json"
+            "✅ Прогноз сохранён в faj_memory.json"
         )
