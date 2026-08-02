@@ -53,9 +53,11 @@ def render():
     
     from app.faj_match_engine import FAJMatchEngine
     from app.database import FAJDatabase
+    from app.passport_manager import PassportManager
     
     engine = FAJMatchEngine()
     db = FAJDatabase()
+    passport_mgr = PassportManager()
     
     tour2 = load_json("tour2_predictions.json")
     
@@ -63,7 +65,31 @@ def render():
         st.warning("Нет данных для 2-го тура. Проверьте файл tour2_predictions.json")
         return
     
-    st.markdown("### 📊 Прогнозы на 2-й тур")
+    # =========================================================
+    # ПОЛУЧАЕМ РЕЗУЛЬТАТЫ ИЗ SQLite
+    # =========================================================
+    existing_matches = db.get_matches(limit=100)
+    results_map = {}
+    for m in existing_matches:
+        home = m.get('home_team_name')
+        away = m.get('away_team_name')
+        if home and away:
+            key = f"{home}-{away}"
+            if m.get('status') == 'FT':
+                results_map[key] = {
+                    "score": f"{m.get('home_goals', '')}:{m.get('away_goals', '')}",
+                    "status": "✅ Завершён"
+                }
+            else:
+                results_map[key] = {
+                    "score": "—",
+                    "status": "⏳ Ожидается"
+                }
+    
+    # =========================================================
+    # ТАБЛИЦА ПРОГНОЗОВ + РЕЗУЛЬТАТОВ
+    # =========================================================
+    st.markdown("### 📊 Прогнозы и результаты 2-го тура")
     
     matches_data = []
     for match, data in tour2.items():
@@ -74,8 +100,11 @@ def render():
         
         faj_pred = data.get('faj', '—')
         expert_pred = data.get('expert', '—')
-        xg_home = data.get('xg_home', '—')
-        xg_away = data.get('xg_away', '—')
+        
+        # Берём результат из SQLite
+        result_info = results_map.get(match, {"score": "—", "status": "⏳ Ожидается"})
+        actual_score = result_info["score"]
+        status = result_info["status"]
         
         faj_outcome = get_outcome(faj_pred) if faj_pred != '—' else '—'
         
@@ -88,20 +117,42 @@ def render():
         else:
             best_bet = "—"
         
+        # Проверяем совпадение прогноза с результатом
+        match_result = "—"
+        if actual_score != "—":
+            if faj_pred == actual_score:
+                match_result = "✅ Точный счёт!"
+            elif faj_outcome == get_outcome(actual_score):
+                match_result = "✅ Исход угадан"
+            else:
+                match_result = "❌ Не угадан"
+        
         matches_data.append({
             "Матч": f"{home} – {away}",
             "Прогноз FAJ": faj_pred,
             "Ваш прогноз": expert_pred,
-            "xG хозяев": xg_home,
-            "xG гостей": xg_away,
+            "Результат": actual_score,
+            "Статус": status,
+            "Совпадение": match_result,
             "Лучшая ставка": best_bet
         })
     
     df_matches = pd.DataFrame(matches_data)
     st.dataframe(df_matches, use_container_width=True, hide_index=True)
     
+    # =========================================================
+    # КНОПКА ОБНОВЛЕНИЯ РЕЗУЛЬТАТОВ
+    # =========================================================
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        if st.button("🔄 Обновить результаты", use_container_width=True):
+            st.rerun()
+    
     st.divider()
     
+    # =========================================================
+    # ДЕТАЛЬНЫЙ ПРОГНОЗ ПО МАТЧУ
+    # =========================================================
     st.markdown("### 🔍 Детальный прогноз по матчу")
     
     match_options = list(tour2.keys())
@@ -124,6 +175,9 @@ def render():
         if home_passport and away_passport:
             result = engine.predict_match(home_passport, away_passport)
             
+            # =========================================================
+            # СОХРАНЯЕМ ПРОГНОЗ В SQLite
+            # =========================================================
             try:
                 match_id = None
                 existing_matches = db.get_matches(limit=1000)
@@ -146,14 +200,37 @@ def render():
                 predicted_score = result['top_scores'][0]['score'] if result['top_scores'] else "1:1"
                 db.save_prediction(match_id, predicted_score, result['confidence'])
                 
+                # Обновляем паспорта через PassportManager (если есть результат)
+                result_info = results_map.get(selected_match, {})
+                if result_info.get("status") == "✅ Завершён":
+                    score = result_info.get("score", "")
+                    if ":" in score:
+                        try:
+                            hg, ag = map(int, score.split(':'))
+                            passport_mgr.update_after_match(home, away, hg, ag, result['xg_home'], result['xg_away'])
+                        except:
+                            pass
+                
                 st.success("✅ Прогноз сохранён в базу данных!")
             except Exception as e:
                 st.warning(f"⚠️ Не удалось сохранить прогноз: {e}")
             
+            # =========================================================
+            # ОТОБРАЖАЕМ РЕЗУЛЬТАТ
+            # =========================================================
+            
+            # Проверяем, есть ли результат
+            result_info = results_map.get(selected_match, {})
+            actual_score = result_info.get("score", "—")
+            status = result_info.get("status", "⏳ Ожидается")
+            
             st.markdown(f"""
-            <div class="prediction-card">
+            <div style="background: rgba(30, 30, 50, 0.8); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 16px; padding: 20px; margin-bottom: 16px;">
                 <h2 style="text-align:center; color:#f3f4f6; margin:0;">{home} ⚔️ {away}</h2>
-                <p style="text-align:center; color:#9ca3af;">FAJ Prediction v10.0</p>
+                <p style="text-align:center; color:#9ca3af;">
+                    FAJ Prediction v10.0
+                    {f' | Результат: {actual_score} {status}' if actual_score != '—' else ''}
+                </p>
             </div>
             """, unsafe_allow_html=True)
             
