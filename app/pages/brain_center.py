@@ -5,45 +5,32 @@
 FAJ Platform v10.0
 Brain Center
 
-Центр управления мозгом FAJ:
-- память
-- обучение
-- анализ ошибок
-- корректировки модели
+Центр памяти и обучения FAJ
 """
 
 import streamlit as st
 import json
 import os
+import pandas as pd
+
 
 from app.brain.memory_brain import FAJMemoryBrain
 from app.brain.learning_brain import FAJLearningBrain
 from app.brain.correction_brain import FAJCorrectionBrain
 
 
+
 DATA_DIR = "data"
+
 
 
 def render():
 
-    st.markdown("# 🧠 FAJ Brain Center v10.0")
-
-    st.info(
-        """
-        Здесь работает обучающий слой FAJ:
-        
-        Memory Brain → хранит прогнозы и результаты
-
-        Learning Brain → ищет ошибки
-
-        Correction Brain → предлагает изменения модели
-        """
+    st.markdown("# 🧠 FAJ Brain Center")
+    st.caption(
+        "Память • обучение • анализ ошибок • корректировка модели"
     )
 
-
-    # =====================================
-    # ИНИЦИАЛИЗАЦИЯ
-    # =====================================
 
     memory = FAJMemoryBrain()
     learning = FAJLearningBrain()
@@ -51,11 +38,11 @@ def render():
 
 
 
-    # =====================================
-    # СТАТУС
-    # =====================================
+    # =====================================================
+    # СТАТУС МОЗГА
+    # =====================================================
 
-    st.markdown("## 📊 Статус мозга")
+    st.markdown("## 🧠 Статус мозга")
 
 
     stats = memory.get_statistics()
@@ -90,64 +77,36 @@ def render():
 
 
 
-    # =====================================
-    # СОЗДАНИЕ ТЕСТОВОЙ ПАМЯТИ
-    # =====================================
+    # =====================================================
+    # ПАМЯТЬ FAJ
+    # =====================================================
 
-    st.markdown("## 🧠 Память FAJ")
+    st.markdown("## 📂 Память FAJ")
 
 
     if st.button(
-        "➕ Создать тестовый прогноз",
+        "📂 Показать память",
         use_container_width=True
     ):
 
-
-        prediction = {
-
-            "top_scores":[
-                {
-                    "score":"2:1",
-                    "prob":35
-                }
-            ],
-
-            "xg_home":1.8,
-
-            "xg_away":1.1
-
-        }
+        records = memory.get_memory()
 
 
-        memory.save_prediction(
-            "Спартак-ЦСКА",
-            prediction
-        )
+        if records:
 
+            df = pd.DataFrame(records)
 
-        st.success(
-            "Прогноз сохранён. Создан faj_memory.json"
-        )
+            st.dataframe(
+                df,
+                use_container_width=True,
+                hide_index=True
+            )
 
+        else:
 
-
-    memory_file = os.path.join(
-        DATA_DIR,
-        "faj_memory.json"
-    )
-
-
-    if os.path.exists(memory_file):
-
-        st.success(
-            "✅ faj_memory.json существует"
-        )
-
-    else:
-
-        st.warning(
-            "Память пока пустая"
-        )
+            st.info(
+                "Память пока пустая"
+            )
 
 
 
@@ -155,17 +114,15 @@ def render():
 
 
 
-    # =====================================
-    # АНАЛИЗ
-    # =====================================
+    # =====================================================
+    # АНАЛИЗ ОБУЧЕНИЯ
+    # =====================================================
 
-    st.markdown(
-        "## 🔍 Анализ ошибок"
-    )
+    st.markdown("## 📊 Обучение")
 
 
     if st.button(
-        "Провести анализ ошибок",
+        "🔍 Анализ ошибок",
         use_container_width=True
     ):
 
@@ -181,17 +138,15 @@ def render():
 
 
 
-    # =====================================
+    # =====================================================
     # КОРРЕКТИРОВКА
-    # =====================================
+    # =====================================================
 
-    st.markdown(
-        "## ⚙️ Корректировка модели"
-    )
+    st.markdown("## ⚙️ Корректировка модели")
 
 
     if st.button(
-        "Создать рекомендации FAJ",
+        "⚙️ Создать корректировку",
         use_container_width=True
     ):
 
@@ -212,13 +167,11 @@ def render():
 
 
 
-    # =====================================
+    # =====================================================
     # ИСТОРИЯ
-    # =====================================
+    # =====================================================
 
-    st.markdown(
-        "## 📚 История корректировок"
-    )
+    st.markdown("## 📚 История корректировок")
 
 
     history = correction.get_history()
@@ -228,14 +181,49 @@ def render():
 
         st.json(history)
 
+
     else:
 
         st.info(
-            "История корректировок пока пустая"
+            "Истории корректировок пока нет"
         )
 
 
 
-if __name__ == "__main__":
+    st.divider()
 
-    render()
+
+
+    # =====================================================
+    # ФАЙЛ ПАМЯТИ
+    # =====================================================
+
+    st.markdown("## 💾 Файлы мозга")
+
+
+    memory_file = os.path.join(
+        DATA_DIR,
+        "faj_memory.json"
+    )
+
+
+    if os.path.exists(memory_file):
+
+        st.success(
+            "✅ faj_memory.json существует"
+        )
+
+
+        size = os.path.getsize(memory_file)
+
+
+        st.write(
+            f"Размер файла: {size} байт"
+        )
+
+
+    else:
+
+        st.warning(
+            "faj_memory.json ещё не создан"
+        )
