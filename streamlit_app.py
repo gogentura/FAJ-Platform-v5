@@ -557,7 +557,6 @@ elif page == "📜 Архив прогнозов":
                 score = "—"
             status = match.get('status', 'NS')
             
-            # Получаем прогноз для этого матча
             with db._get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
@@ -598,7 +597,7 @@ elif page == "📜 Архив прогнозов":
                 st.metric("Ожидается", pending)
 
 # =====================================================
-# СТРАНИЦА: МАТЧ-ЦЕНТР
+# СТРАНИЦА: МАТЧ-ЦЕНТР (С СОХРАНЕНИЕМ ПРОГНОЗОВ)
 # =====================================================
 elif page == "🏠 Матч-центр":
     st.markdown("### 🏟 Центр прогнозирования — 2-й тур РПЛ")
@@ -608,7 +607,10 @@ elif page == "🏠 Матч-центр":
         st.stop()
     
     from app.faj_match_engine import FAJMatchEngine
+    from app.database import FAJDatabase
+    
     engine = FAJMatchEngine()
+    db = FAJDatabase()
     
     tour2 = load_json("tour2_predictions.json")
     
@@ -677,10 +679,43 @@ elif page == "🏠 Матч-центр":
         if home_passport and away_passport:
             result = engine.predict_match(home_passport, away_passport)
             
+            # =========================================================
+            # СОХРАНЯЕМ ПРОГНОЗ В SQLite
+            # =========================================================
+            try:
+                match_id = None
+                existing_matches = db.get_matches(limit=1000)
+                for m in existing_matches:
+                    if m.get('home_team_name') == home and m.get('away_team_name') == away:
+                        match_id = m.get('id')
+                        break
+                
+                if not match_id:
+                    match_id = db.save_match({
+                        "home_team": home,
+                        "away_team": away,
+                        "league": "RPL",
+                        "season": 2026,
+                        "status": "NS",
+                        "xg_home": result['xg_home'],
+                        "xg_away": result['xg_away']
+                    })
+                
+                predicted_score = result['top_scores'][0]['score'] if result['top_scores'] else "1:1"
+                db.save_prediction(match_id, predicted_score, result['confidence'])
+                
+                st.success("✅ Прогноз сохранён в базу данных!")
+            except Exception as e:
+                st.warning(f"⚠️ Не удалось сохранить прогноз: {e}")
+            
+            # =========================================================
+            # ОТОБРАЖАЕМ РЕЗУЛЬТАТ
+            # =========================================================
+            
             st.markdown(f"""
             <div class="prediction-card">
                 <h2 style="text-align:center; color:#f3f4f6; margin:0;">{home} ⚔️ {away}</h2>
-                <p style="text-align:center; color:#9ca3af;">FAJ Prediction v6.9</p>
+                <p style="text-align:center; color:#9ca3af;">FAJ Prediction v10.0</p>
             </div>
             """, unsafe_allow_html=True)
             
@@ -985,7 +1020,6 @@ elif page == "📊 РПЛ":
             rpl_data = None
     
     if rpl_data:
-        # Таблица
         if rpl_data.get("standings"):
             st.markdown("### 📊 Турнирная таблица")
             df_standings = pd.DataFrame(rpl_data["standings"])
@@ -993,13 +1027,11 @@ elif page == "📊 РПЛ":
         
         st.divider()
         
-        # Предстоящие матчи
         if rpl_data.get("upcoming"):
             st.markdown("### ⏳ Предстоящие матчи")
             df_upcoming = pd.DataFrame(rpl_data["upcoming"])
             st.dataframe(df_upcoming, use_container_width=True, hide_index=True)
         
-        # Сыгранные матчи
         if rpl_data.get("matches"):
             st.markdown("### ✅ Сыгранные матчи")
             matches = rpl_data["matches"]
@@ -1010,7 +1042,6 @@ elif page == "📊 РПЛ":
         
         st.divider()
         
-        # Бомбардиры
         if rpl_data.get("scorers"):
             st.markdown("### ⚽ Бомбардиры")
             df_scorers = pd.DataFrame(rpl_data["scorers"])
