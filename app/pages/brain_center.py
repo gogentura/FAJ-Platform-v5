@@ -9,8 +9,6 @@ Brain Center
 """
 
 import streamlit as st
-import json
-import os
 import pandas as pd
 
 
@@ -20,20 +18,23 @@ from app.brain.correction_brain import FAJCorrectionBrain
 
 
 
-DATA_DIR = "data"
-
-
-
 def render():
 
-    st.markdown("# 🧠 FAJ Brain Center")
+    st.markdown("## 🧠 FAJ Brain Center")
+
     st.caption(
-        "Память • обучение • анализ ошибок • корректировка модели"
+        "Память, обучение и корректировка модели"
     )
 
 
+    # =====================================================
+    # ИНИЦИАЛИЗАЦИЯ
+    # =====================================================
+
     memory = FAJMemoryBrain()
+
     learning = FAJLearningBrain()
+
     correction = FAJCorrectionBrain()
 
 
@@ -42,7 +43,7 @@ def render():
     # СТАТУС МОЗГА
     # =====================================================
 
-    st.markdown("## 🧠 Статус мозга")
+    st.markdown("### 🧠 Статус мозга")
 
 
     stats = memory.get_statistics()
@@ -53,21 +54,21 @@ def render():
 
     with col1:
         st.metric(
-            "Прогнозов в памяти",
+            "📚 Всего прогнозов",
             stats["total_predictions"]
         )
 
 
     with col2:
         st.metric(
-            "Завершённых матчей",
+            "✅ Завершённых матчей",
             stats["finished_matches"]
         )
 
 
     with col3:
         st.metric(
-            "Точность",
+            "🎯 Точность",
             f'{stats["accuracy"]}%'
         )
 
@@ -81,32 +82,63 @@ def render():
     # ПАМЯТЬ FAJ
     # =====================================================
 
-    st.markdown("## 📂 Память FAJ")
+    st.markdown("## 📚 Память FAJ")
 
 
-    if st.button(
-        "📂 Показать память",
-        use_container_width=True
-    ):
-
-        records = memory.get_memory()
+    records = memory.get_memory()
 
 
-        if records:
+    if records:
 
-            df = pd.DataFrame(records)
+        rows = []
 
-            st.dataframe(
-                df,
-                use_container_width=True,
-                hide_index=True
+
+        for item in records:
+
+            prediction = item.get(
+                "prediction",
+                {}
             )
 
-        else:
 
-            st.info(
-                "Память пока пустая"
-            )
+            rows.append({
+
+                "Дата":
+                    item.get("date",""),
+
+                "Матч":
+                    item.get("match",""),
+
+                "Статус":
+                    item.get("status",""),
+
+                "Прогноз":
+                    prediction.get(
+                        "top_scores",
+                        [{}]
+                    )[0].get(
+                        "score",
+                        "-"
+                    )
+
+            })
+
+
+        df = pd.DataFrame(rows)
+
+
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True
+        )
+
+
+    else:
+
+        st.info(
+            "Память FAJ пока пустая"
+        )
 
 
 
@@ -115,20 +147,50 @@ def render():
 
 
     # =====================================================
-    # АНАЛИЗ ОБУЧЕНИЯ
+    # ОБУЧЕНИЕ
     # =====================================================
 
-    st.markdown("## 📊 Обучение")
+    st.markdown("## 🤖 Самообучение модели")
+
+
+    learning_status = learning.get_status()
+
+
+    col1, col2, col3 = st.columns(3)
+
+
+    with col1:
+        st.metric(
+            "Записей в памяти",
+            learning_status["samples"]
+        )
+
+
+    with col2:
+        st.metric(
+            "Точность",
+            f'{learning_status["accuracy"]}%'
+        )
+
+
+    with col3:
+        st.metric(
+            "Готовность",
+            "Да" if learning_status["learning_ready"] else "Нет"
+        )
+
 
 
     if st.button(
-        "🔍 Анализ ошибок",
+        "🔍 Анализировать ошибки",
         use_container_width=True
     ):
 
-
         result = learning.analyze_history()
 
+        st.success(
+            "Анализ завершён"
+        )
 
         st.json(result)
 
@@ -168,10 +230,12 @@ def render():
 
 
     # =====================================================
-    # ИСТОРИЯ
+    # ИСТОРИЯ КОРРЕКТИРОВОК
     # =====================================================
 
-    st.markdown("## 📚 История корректировок")
+    st.markdown(
+        "## 📜 История корректировок"
+    )
 
 
     history = correction.get_history()
@@ -181,49 +245,8 @@ def render():
 
         st.json(history)
 
-
     else:
 
         st.info(
-            "Истории корректировок пока нет"
-        )
-
-
-
-    st.divider()
-
-
-
-    # =====================================================
-    # ФАЙЛ ПАМЯТИ
-    # =====================================================
-
-    st.markdown("## 💾 Файлы мозга")
-
-
-    memory_file = os.path.join(
-        DATA_DIR,
-        "faj_memory.json"
-    )
-
-
-    if os.path.exists(memory_file):
-
-        st.success(
-            "✅ faj_memory.json существует"
-        )
-
-
-        size = os.path.getsize(memory_file)
-
-
-        st.write(
-            f"Размер файла: {size} байт"
-        )
-
-
-    else:
-
-        st.warning(
-            "faj_memory.json ещё не создан"
+            "Корректировок пока нет"
         )
