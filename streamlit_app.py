@@ -36,7 +36,8 @@ page = st.radio(
         "📥 Загрузка данных",
         "📜 Архив прогнозов",
         "📡 API Тест",
-        "📊 РПЛ"
+        "📊 РПЛ",
+        "🗓️ Туры"
     ],
     horizontal=True
 )
@@ -72,6 +73,9 @@ elif page == "📡 API Тест":
     render()
 elif page == "📊 РПЛ":
     from app.pages.rpl import render
+    render()
+elif page == "🗓️ Туры":
+    from app.pages.tour_manager import render
     render()
 
 # =====================================================
