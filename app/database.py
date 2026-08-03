@@ -3,31 +3,36 @@
 
 """
 FAJ Platform v11.1
-Database Engine — ФИНАЛЬНАЯ ЗАМОРОЖЕННАЯ ВЕРСИЯ
+Database Engine — ФИНАЛЬНАЯ ЗАМОРОЖЕННАЯ ВЕРСИЯ 🔒
 
-Больше никаких изменений в структуре БД.
+БОЛЬШЕ НИКАКИХ ИЗМЕНЕНИЙ В СТРУКТУРЕ БД.
 Все новые модули только используют существующие таблицы.
 
+Дата заморозки: 03.08.2026
+Версия: v11.1
+Статус: 🔒 FREEZE
+
 Таблицы:
-- teams (UNIQUE name, league)
+- teams (индексы)
 - seasons
 - rounds
-- matches
-- match_predictions (с home_advantage)
+- matches (индексы)
+- match_predictions
 - match_events
 - players
 - player_events
 - team_base
-- team_dynamic
-- team_tournament
+- team_dynamic (last5_points REAL)
+- team_competition_profile
 - team_events
 - team_history
-- predictions (с algorithm)
+- predictions (prediction_status)
 - prediction_scores
 - prediction_distributions
 - expert_predictions
-- journal
-- learning_memory (с reference_id)
+- journal (error_score)
+- learning_memory
+- model_parameters (category)
 """
 
 import sqlite3
@@ -51,7 +56,7 @@ def init_database():
     cursor = conn.cursor()
 
     # ===============================
-    # 1. TEAMS (UNIQUE name, league)
+    # 1. TEAMS
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS teams (
@@ -60,10 +65,13 @@ def init_database():
             league TEXT NOT NULL,
             country TEXT,
             api_id INTEGER,
+            team_type TEXT DEFAULT 'club',
+            competition_group TEXT,
             created_at TEXT,
             UNIQUE(name, league)
         )
     """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_team_lookup ON teams(name, league)")
 
     # ===============================
     # 2. SEASONS
@@ -74,6 +82,7 @@ def init_database():
             name TEXT NOT NULL,
             league TEXT NOT NULL,
             year TEXT,
+            competition_type TEXT DEFAULT 'league',
             status TEXT DEFAULT 'active',
             created_at TEXT
         )
@@ -105,6 +114,7 @@ def init_database():
             home_team_id INTEGER,
             away_team_id INTEGER,
             date TEXT,
+            competition TEXT,
             status TEXT DEFAULT 'scheduled',
             actual_home INTEGER,
             actual_away INTEGER,
@@ -114,9 +124,11 @@ def init_database():
             FOREIGN KEY(away_team_id) REFERENCES teams(id)
         )
     """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_matches_round ON matches(round_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_matches_teams ON matches(home_team_id, away_team_id)")
 
     # ===============================
-    # 5. MATCH PREDICTIONS (с home_advantage)
+    # 5. MATCH PREDICTIONS
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS match_predictions (
@@ -127,6 +139,7 @@ def init_database():
             lambda_home REAL,
             lambda_away REAL,
             home_advantage REAL,
+            prediction_type TEXT DEFAULT 'standard',
             model_version TEXT,
             created_at TEXT,
             FOREIGN KEY(match_id) REFERENCES matches(id)
@@ -231,7 +244,7 @@ def init_database():
             fatigue INTEGER DEFAULT 50,
             injury_index INTEGER DEFAULT 0,
             coach_confidence INTEGER DEFAULT 50,
-            last5_points INTEGER DEFAULT 0,
+            last5_points REAL DEFAULT 0,
             last5_xg REAL DEFAULT 0,
             last5_xga REAL DEFAULT 0,
             last5_goals INTEGER DEFAULT 0,
@@ -247,20 +260,19 @@ def init_database():
     """)
 
     # ===============================
-    # 11. TEAM TOURNAMENT
+    # 11. TEAM COMPETITION PROFILE
     # ===============================
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS team_tournament (
+        CREATE TABLE IF NOT EXISTS team_competition_profile (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             team_id INTEGER,
             season_id INTEGER,
-            league_modifier REAL DEFAULT 1.0,
-            cup_modifier REAL DEFAULT 1.0,
-            ucl_modifier REAL DEFAULT 1.0,
-            supercup_modifier REAL DEFAULT 1.0,
+            competition TEXT,
+            modifier REAL DEFAULT 1.0,
             updated_at TEXT,
             FOREIGN KEY(team_id) REFERENCES teams(id),
-            FOREIGN KEY(season_id) REFERENCES seasons(id)
+            FOREIGN KEY(season_id) REFERENCES seasons(id),
+            UNIQUE(team_id, season_id, competition)
         )
     """)
 
@@ -301,7 +313,7 @@ def init_database():
     """)
 
     # ===============================
-    # 14. PREDICTIONS (с algorithm)
+    # 14. PREDICTIONS
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS predictions (
@@ -316,6 +328,7 @@ def init_database():
             over35 REAL,
             btts REAL,
             confidence INTEGER,
+            prediction_status TEXT DEFAULT 'active',
             created_at TEXT,
             FOREIGN KEY(match_id) REFERENCES matches(id)
         )
@@ -376,6 +389,7 @@ def init_database():
             expert_prediction TEXT,
             actual_result TEXT,
             error_type TEXT,
+            error_score REAL,
             analysis TEXT,
             created_at TEXT,
             FOREIGN KEY(match_id) REFERENCES matches(id)
@@ -383,7 +397,7 @@ def init_database():
     """)
 
     # ===============================
-    # 19. LEARNING MEMORY (с reference_id)
+    # 19. LEARNING MEMORY
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS learning_memory (
@@ -396,10 +410,27 @@ def init_database():
             delta TEXT,
             reason TEXT,
             confidence REAL,
+            impact REAL DEFAULT 1.0,
             algorithm TEXT,
             model_version TEXT,
             reference_id INTEGER,
             created_at TEXT
+        )
+    """)
+
+    # ===============================
+    # 20. MODEL PARAMETERS
+    # ===============================
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS model_parameters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            model_version TEXT,
+            category TEXT,
+            parameter TEXT,
+            value REAL,
+            description TEXT,
+            updated_at TEXT,
+            UNIQUE(model_version, parameter)
         )
     """)
 
@@ -421,9 +452,10 @@ class FAJDatabase:
         tables = [
             "teams", "seasons", "rounds", "matches", "match_predictions",
             "match_events", "players", "player_events", "team_base",
-            "team_dynamic", "team_tournament", "team_events", "team_history",
-            "predictions", "prediction_scores", "prediction_distributions",
-            "expert_predictions", "journal", "learning_memory"
+            "team_dynamic", "team_competition_profile", "team_events",
+            "team_history", "predictions", "prediction_scores",
+            "prediction_distributions", "expert_predictions", "journal",
+            "learning_memory", "model_parameters"
         ]
         result = {}
         for table in tables:
@@ -443,13 +475,16 @@ class FAJDatabase:
     # =================================
     # TEAMS
     # =================================
-    def add_team(self, name, league, country="", api_id=None):
+    def add_team(self, name, league, country="", api_id=None,
+                 team_type="club", competition_group=None):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT OR IGNORE INTO teams (name, league, country, api_id, created_at)
-            VALUES (?,?,?,?,?)
-        """, (name, league, country, api_id, datetime.now().isoformat()))
+            INSERT OR IGNORE INTO teams
+            (name, league, country, api_id, team_type, competition_group, created_at)
+            VALUES (?,?,?,?,?,?,?)
+        """, (name, league, country, api_id, team_type, competition_group,
+              datetime.now().isoformat()))
         conn.commit()
         team_id = cursor.lastrowid
         conn.close()
@@ -485,13 +520,13 @@ class FAJDatabase:
     # =================================
     # SEASONS
     # =================================
-    def create_season(self, name, league, year, status="active"):
+    def create_season(self, name, league, year, competition_type="league", status="active"):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO seasons (name, league, year, status, created_at)
-            VALUES (?,?,?,?,?)
-        """, (name, league, year, status, datetime.now().isoformat()))
+            INSERT INTO seasons (name, league, year, competition_type, status, created_at)
+            VALUES (?,?,?,?,?,?)
+        """, (name, league, year, competition_type, status, datetime.now().isoformat()))
         conn.commit()
         season_id = cursor.lastrowid
         conn.close()
@@ -542,13 +577,15 @@ class FAJDatabase:
     # =================================
     # MATCHES
     # =================================
-    def add_match(self, round_id, home_team_id, away_team_id, date=""):
+    def add_match(self, round_id, home_team_id, away_team_id,
+                  date="", competition="RPL"):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO matches (round_id, home_team_id, away_team_id, date, created_at)
-            VALUES (?,?,?,?,?)
-        """, (round_id, home_team_id, away_team_id, date, datetime.now().isoformat()))
+            INSERT INTO matches (round_id, home_team_id, away_team_id, date, competition, created_at)
+            VALUES (?,?,?,?,?,?)
+        """, (round_id, home_team_id, away_team_id, date, competition,
+              datetime.now().isoformat()))
         conn.commit()
         match_id = cursor.lastrowid
         conn.close()
@@ -581,16 +618,18 @@ class FAJDatabase:
     # =================================
     def save_match_prediction(self, match_id, xg_home, xg_away,
                               lambda_home=None, lambda_away=None,
-                              home_advantage=1.0, model_version="v11"):
+                              home_advantage=1.0, prediction_type="standard",
+                              model_version="v11"):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO match_predictions
             (match_id, xg_home, xg_away, lambda_home, lambda_away,
-             home_advantage, model_version, created_at)
-            VALUES (?,?,?,?,?,?,?,?)
+             home_advantage, prediction_type, model_version, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?)
         """, (match_id, xg_home, xg_away, lambda_home, lambda_away,
-              home_advantage, model_version, datetime.now().isoformat()))
+              home_advantage, prediction_type, model_version,
+              datetime.now().isoformat()))
         conn.commit()
         conn.close()
 
@@ -734,7 +773,7 @@ class FAJDatabase:
                 kwargs.get('fatigue', 50),
                 kwargs.get('injury_index', 0),
                 kwargs.get('coach_confidence', 50),
-                kwargs.get('last5_points', 0),
+                kwargs.get('last5_points', 0.0),
                 kwargs.get('last5_xg', 0.0),
                 kwargs.get('last5_xga', 0.0),
                 kwargs.get('last5_goals', 0),
@@ -749,26 +788,29 @@ class FAJDatabase:
         conn.close()
 
     # =================================
-    # TEAM TOURNAMENT
+    # TEAM COMPETITION PROFILE
     # =================================
-    def update_tournament(self, team_id, season_id, **kwargs):
+    def update_competition_profile(self, team_id, season_id, competition, modifier=1.0):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT OR REPLACE INTO team_tournament
-            (team_id, season_id, league_modifier, cup_modifier,
-             ucl_modifier, supercup_modifier, updated_at)
-            VALUES (?,?,?,?,?,?,?)
-        """, (
-            team_id, season_id,
-            kwargs.get('league_modifier', 1.0),
-            kwargs.get('cup_modifier', 1.0),
-            kwargs.get('ucl_modifier', 1.0),
-            kwargs.get('supercup_modifier', 1.0),
-            datetime.now().isoformat()
-        ))
+            INSERT OR REPLACE INTO team_competition_profile
+            (team_id, season_id, competition, modifier, updated_at)
+            VALUES (?,?,?,?,?)
+        """, (team_id, season_id, competition, modifier, datetime.now().isoformat()))
         conn.commit()
         conn.close()
+
+    def get_competition_profile(self, team_id, season_id, competition):
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM team_competition_profile
+            WHERE team_id = ? AND season_id = ? AND competition = ?
+        """, (team_id, season_id, competition))
+        row = cursor.fetchone()
+        conn.close()
+        return row
 
     # =================================
     # TEAM HISTORY
@@ -808,16 +850,18 @@ class FAJDatabase:
     # PREDICTIONS
     # =================================
     def save_prediction(self, match_id, model_version, algorithm, home_win, draw, away_win,
-                        over25, over35, btts, confidence):
+                        over25, over35, btts, confidence,
+                        prediction_status="active"):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO predictions
             (match_id, model_version, algorithm, home_win, draw, away_win,
-             over25, over35, btts, confidence, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+             over25, over35, btts, confidence, prediction_status, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
         """, (match_id, model_version, algorithm, home_win, draw, away_win,
-              over25, over35, btts, confidence, datetime.now().isoformat()))
+              over25, over35, btts, confidence, prediction_status,
+              datetime.now().isoformat()))
         conn.commit()
         pred_id = cursor.lastrowid
         conn.close()
@@ -871,19 +915,28 @@ class FAJDatabase:
         conn.close()
         return None, [], []
 
+    def update_prediction_status(self, prediction_id, status):
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE predictions SET prediction_status = ? WHERE id = ?
+        """, (status, prediction_id))
+        conn.commit()
+        conn.close()
+
     # =================================
     # JOURNAL
     # =================================
     def add_journal(self, match_id, faj_pred, expert_pred, actual,
-                    error_type, analysis=""):
+                    error_type, error_score=0.0, analysis=""):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO journal (match_id, faj_prediction, expert_prediction,
-                                 actual_result, error_type, analysis, created_at)
-            VALUES (?,?,?,?,?,?,?)
+                                 actual_result, error_type, error_score, analysis, created_at)
+            VALUES (?,?,?,?,?,?,?,?)
         """, (match_id, faj_pred, expert_pred, actual, error_type,
-              analysis, datetime.now().isoformat()))
+              error_score, analysis, datetime.now().isoformat()))
         conn.commit()
         conn.close()
 
@@ -891,21 +944,77 @@ class FAJDatabase:
     # LEARNING MEMORY
     # =================================
     def add_memory(self, event_type, object_name, feature="", before="", after="",
-                   delta="", reason="", confidence=1.0, algorithm="",
-                   model_version="v11", reference_id=None):
+                   delta="", reason="", confidence=1.0, impact=1.0,
+                   algorithm="", model_version="v11", reference_id=None):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO learning_memory
             (event_type, object, feature, before_value, after_value,
-             delta, reason, confidence, algorithm, model_version,
+             delta, reason, confidence, impact, algorithm, model_version,
              reference_id, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (event_type, object_name, feature, str(before), str(after),
-              str(delta), reason, confidence, algorithm, model_version,
-              reference_id, datetime.now().isoformat()))
+              str(delta), reason, confidence, impact, algorithm,
+              model_version, reference_id, datetime.now().isoformat()))
         conn.commit()
         conn.close()
+
+    # =================================
+    # MODEL PARAMETERS
+    # =================================
+    def set_parameter(self, model_version, category, parameter, value, description=""):
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO model_parameters
+            (model_version, category, parameter, value, description, updated_at)
+            VALUES (?,?,?,?,?,?)
+        """, (model_version, category, parameter, value, description,
+              datetime.now().isoformat()))
+        conn.commit()
+        conn.close()
+
+    def get_parameters(self, model_version, category=None):
+        conn = get_connection()
+        cursor = conn.cursor()
+        if category:
+            cursor.execute("""
+                SELECT * FROM model_parameters
+                WHERE model_version = ? AND category = ?
+                ORDER BY parameter
+            """, (model_version, category))
+        else:
+            cursor.execute("""
+                SELECT * FROM model_parameters
+                WHERE model_version = ?
+                ORDER BY category, parameter
+            """, (model_version,))
+        data = cursor.fetchall()
+        conn.close()
+        return data
+
+    def get_parameter(self, model_version, parameter):
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT value FROM model_parameters
+            WHERE model_version = ? AND parameter = ?
+        """, (model_version, parameter))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None
+
+    def get_all_model_versions(self):
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT model_version FROM model_parameters
+            ORDER BY model_version DESC
+        """)
+        data = cursor.fetchall()
+        conn.close()
+        return [row[0] for row in data]
 
 
 # =====================================================
