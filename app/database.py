@@ -3,15 +3,18 @@
 
 """
 FAJ Platform v11
-Database Core
+Database Layer
 
-SQLite Storage Engine
+Локальная база FAJ SQLite
 
-Tables:
-- tours
-- matches
-- memory
-- teams
+Хранит:
+- сезоны
+- туры
+- матчи
+- прогнозы FAJ
+- экспертные прогнозы
+- результаты
+- память Brain
 """
 
 import sqlite3
@@ -52,8 +55,9 @@ def get_connection():
     return conn
 
 
+
 # =====================================================
-# INITIALIZE DATABASE
+# INITIALIZATION
 # =====================================================
 
 def init_database():
@@ -64,7 +68,7 @@ def init_database():
 
 
     # -------------------------
-    # TOURS
+    # ТУРЫ
     # -------------------------
 
     cursor.execute(
@@ -73,9 +77,13 @@ def init_database():
 
             id INTEGER PRIMARY KEY AUTOINCREMENT,
 
+            name TEXT UNIQUE,
+
             league TEXT,
+
             season TEXT,
-            round INTEGER,
+
+            round_number INTEGER,
 
             status TEXT DEFAULT 'active',
 
@@ -87,7 +95,7 @@ def init_database():
 
 
     # -------------------------
-    # MATCHES
+    # МАТЧИ
     # -------------------------
 
     cursor.execute(
@@ -99,25 +107,22 @@ def init_database():
             tour_id INTEGER,
 
             home TEXT,
+
             away TEXT,
 
             faj_prediction TEXT,
+
             expert_prediction TEXT,
 
             actual TEXT,
 
             xg_home REAL,
+
             xg_away REAL,
-
-            home_win REAL,
-            draw REAL,
-            away_win REAL,
-
-            confidence REAL,
 
             status TEXT DEFAULT 'scheduled',
 
-            created TEXT,
+            memory_saved INTEGER DEFAULT 0,
 
             FOREIGN KEY(tour_id)
             REFERENCES tours(id)
@@ -133,19 +138,17 @@ def init_database():
 
     cursor.execute(
         """
-        CREATE TABLE IF NOT EXISTS memory (
+        CREATE TABLE IF NOT EXISTS faj_memory (
 
             id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-            match_id INTEGER,
+            match TEXT,
 
-            prediction TEXT,
+            faj_prediction TEXT,
+
+            expert_prediction TEXT,
 
             actual TEXT,
-
-            error_type TEXT,
-
-            lesson TEXT,
 
             created TEXT
 
@@ -155,16 +158,14 @@ def init_database():
 
 
     # -------------------------
-    # TEAM PASSPORTS
+    # PASSPORTS
     # -------------------------
 
     cursor.execute(
         """
-        CREATE TABLE IF NOT EXISTS teams (
+        CREATE TABLE IF NOT EXISTS passports (
 
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-            league TEXT,
 
             team TEXT UNIQUE,
 
@@ -173,10 +174,6 @@ def init_database():
             defense REAL DEFAULT 70,
 
             form REAL DEFAULT 70,
-
-            coach TEXT,
-
-            squad_strength REAL DEFAULT 70,
 
             updated TEXT
 
@@ -192,13 +189,14 @@ def init_database():
 
 
 # =====================================================
-# TOUR API
+# TOURS
 # =====================================================
 
 def create_tour(
-        league,
-        season,
-        round_number
+        name,
+        league="RPL",
+        season="2026/27",
+        round_number=1
 ):
 
     conn = get_connection()
@@ -208,36 +206,33 @@ def create_tour(
 
     cursor.execute(
         """
-        INSERT INTO tours
+        INSERT OR IGNORE INTO tours
+
         (
-            league,
-            season,
-            round,
-            created
+        name,
+        league,
+        season,
+        round_number,
+        created
         )
 
-        VALUES
-        (?, ?, ?, ?)
-
+        VALUES (?,?,?,?,?)
         """,
+
         (
+            name,
             league,
             season,
             round_number,
             datetime.now().isoformat()
         )
+
     )
-
-
-    tour_id = cursor.lastrowid
 
 
     conn.commit()
 
     conn.close()
-
-
-    return tour_id
 
 
 
@@ -252,7 +247,7 @@ def get_tours():
         """
         SELECT *
         FROM tours
-        ORDER BY id DESC
+        ORDER BY id
         """
     )
 
@@ -263,14 +258,16 @@ def get_tours():
     conn.close()
 
 
-    return data
+    return [
+        dict(row)
+        for row in data
+    ]
 
 
 
 # =====================================================
-# MATCH API
+# MATCHES
 # =====================================================
-
 
 def add_match(
         tour_id,
@@ -290,21 +287,21 @@ def add_match(
     cursor.execute(
         """
         INSERT INTO matches
+
         (
-            tour_id,
-            home,
-            away,
-            faj_prediction,
-            expert_prediction,
-            xg_home,
-            xg_away,
-            created
+        tour_id,
+        home,
+        away,
+        faj_prediction,
+        expert_prediction,
+        xg_home,
+        xg_away
         )
 
-        VALUES
-        (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?,?,?,?,?,?,?)
 
         """,
+
         (
             tour_id,
             home,
@@ -312,9 +309,9 @@ def add_match(
             faj_prediction,
             expert_prediction,
             xg_home,
-            xg_away,
-            datetime.now().isoformat()
+            xg_away
         )
+
     )
 
 
@@ -324,9 +321,7 @@ def add_match(
 
 
 
-def get_matches(
-        tour_id
-):
+def get_matches(tour_id):
 
     conn = get_connection()
 
@@ -336,27 +331,24 @@ def get_matches(
     cursor.execute(
         """
         SELECT *
-
         FROM matches
 
-        WHERE tour_id = ?
-
-        ORDER BY id
+        WHERE tour_id=?
 
         """,
-        (
-            tour_id,
-        )
+        (tour_id,)
     )
 
 
-    matches = cursor.fetchall()
-
+    rows = cursor.fetchall()
 
     conn.close()
 
 
-    return matches
+    return [
+        dict(row)
+        for row in rows
+    ]
 
 
 
@@ -374,14 +366,13 @@ def update_result(
         """
         UPDATE matches
 
-        SET
+        SET actual=?,
+        status='finished'
 
-        actual = ?,
-        status = 'finished'
-
-        WHERE id = ?
+        WHERE id=?
 
         """,
+
         (
             actual,
             match_id
@@ -399,13 +390,11 @@ def update_result(
 # MEMORY
 # =====================================================
 
-
 def add_memory(
-        match_id,
-        prediction,
-        actual,
-        error_type="",
-        lesson=""
+        match,
+        faj_prediction,
+        expert_prediction,
+        actual
 ):
 
     conn = get_connection()
@@ -415,26 +404,25 @@ def add_memory(
 
     cursor.execute(
         """
-        INSERT INTO memory
+        INSERT INTO faj_memory
+
         (
-            match_id,
-            prediction,
-            actual,
-            error_type,
-            lesson,
-            created
+        match,
+        faj_prediction,
+        expert_prediction,
+        actual,
+        created
         )
 
-        VALUES
-        (?, ?, ?, ?, ?, ?)
+        VALUES (?,?,?,?,?)
 
         """,
+
         (
-            match_id,
-            prediction,
+            match,
+            faj_prediction,
+            expert_prediction,
             actual,
-            error_type,
-            lesson,
             datetime.now().isoformat()
         )
     )
@@ -456,36 +444,85 @@ def get_memory():
     cursor.execute(
         """
         SELECT *
-
-        FROM memory
-
+        FROM faj_memory
         ORDER BY id DESC
-
         """
     )
 
 
-    data = cursor.fetchall()
-
+    rows = cursor.fetchall()
 
     conn.close()
 
 
-    return data
+    return [
+        dict(row)
+        for row in rows
+    ]
 
 
 
 # =====================================================
-# AUTO START
+# COMPATIBILITY CLASS
+# Для старых страниц FAJ
+# =====================================================
+
+class FAJDatabase:
+
+
+    def __init__(self):
+
+        init_database()
+
+
+
+    def get_connection(self):
+
+        return get_connection()
+
+
+
+    def get_tours(self):
+
+        return get_tours()
+
+
+
+    def get_memory(self):
+
+        return get_memory()
+
+
+
+    def create_tour(
+            self,
+            name,
+            league="RPL",
+            season="2026/27",
+            round_number=1
+    ):
+
+        return create_tour(
+            name,
+            league,
+            season,
+            round_number
+        )
+
+
+
+# =====================================================
+# AUTO INIT
 # =====================================================
 
 init_database()
 
 
+
 if __name__ == "__main__":
 
     print(
-        "FAJ Database v11 initialized"
+        "FAJ Database initialized"
     )
 
     print(
