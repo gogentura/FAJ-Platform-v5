@@ -15,7 +15,7 @@ def render():
     from app.database import FAJDatabase
     db = FAJDatabase()
     
-    # Получаем все матчи (без лимита)
+    # Получаем все матчи (без limit)
     matches = db.get_matches()
     
     if not matches:
@@ -41,12 +41,18 @@ def render():
         
         # Получаем прогноз
         pred, scores, dist = db.get_prediction(match['id'])
-        prediction = pred['algorithm'] if pred else "—"
+        if pred:
+            prediction = f"{pred.get('algorithm', 'FAJ')} v{pred.get('model_version', '11')}"
+            confidence = f"{pred.get('confidence', 0)}%"
+        else:
+            prediction = "—"
+            confidence = "—"
         
         archive_data.append({
             "Матч": f"{home_name} – {away_name}",
             "Прогноз": prediction,
             "Счёт": score,
+            "Уверенность": confidence,
             "Статус": status
         })
     
