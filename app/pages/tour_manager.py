@@ -1,24 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-FAJ Platform v10.1
+FAJ Platform v10.1.3
 Tour Manager
-Центр управления турами:
+- создание туров
+- загрузка туров
 - календарь матчей
-- прогнозы FAJ
-- экспертные прогнозы
-- фактические результаты
-- анализ точности
-- передача данных в Brain
+- результаты
+- память FAJ
 """
 import streamlit as st
 import json
 import os
 from datetime import datetime
 
-# =====================================================
-# ПУТИ ДАННЫХ
-# =====================================================
 DATA_DIR = "data"
 TOURS_FILE = os.path.join(
     DATA_DIR,
@@ -30,7 +25,7 @@ MEMORY_FILE = os.path.join(
 )
 
 # =====================================================
-# ЗАГРУЗКА ДАННЫХ
+# JSON STORAGE
 # =====================================================
 def load_json(path, default):
     if os.path.exists(path):
@@ -63,7 +58,7 @@ def save_json(path, data):
         )
 
 # =====================================================
-# ТУРЫ
+# TOURS
 # =====================================================
 def load_tours():
     return load_json(
@@ -78,7 +73,7 @@ def save_tours(data):
     )
 
 # =====================================================
-# ПАМЯТЬ FAJ
+# MEMORY
 # =====================================================
 def load_memory():
     return load_json(
@@ -92,26 +87,57 @@ def save_memory(data):
         data
     )
 
+def add_to_memory(match):
+    memory = load_memory()
+    memory.append({
+        "date":
+            datetime.now().isoformat(),
+        "match":
+            match.get(
+                "match"
+            ),
+        "prediction":
+            match.get(
+                "faj_prediction"
+            ),
+        "actual":
+            match.get(
+                "actual"
+            )
+    })
+    save_memory(
+        memory
+    )
+
 # =====================================================
-# СОЗДАНИЕ ТУРА
+# TOUR CREATE
 # =====================================================
-def create_tour():
-    return {
+def create_tour(name):
+    tours = load_tours()
+    tours[name] = {
         "created":
             datetime.now().isoformat(),
-        "matches": []
+        "matches":[]
     }
+    save_tours(
+        tours
+    )
 
 # =====================================================
 # ДОБАВЛЕНИЕ МАТЧА
 # =====================================================
 def add_match(
-        tour,
+        tour_name,
         match_name,
         faj_prediction="",
-        expert_prediction=""
+        expert_prediction="",
+        xg_home=None,
+        xg_away=None
 ):
-    match = {
+    tours = load_tours()
+    if tour_name not in tours:
+        return
+    tours[tour_name]["matches"].append({
         "match":
             match_name,
         "faj_prediction":
@@ -120,49 +146,116 @@ def add_match(
             expert_prediction,
         "actual":
             "",
-        "status":
-            "Ожидается",
         "xg_home":
-            None,
+            xg_home,
         "xg_away":
-            None
-    }
-    tour["matches"].append(
-        match
+            xg_away,
+        "status":
+            "Ожидается"
+    })
+    save_tours(
+        tours
     )
 
 # =====================================================
-# ПРОВЕРКА РЕЗУЛЬТАТА
+# ИМПОРТ JSON ТУРА
 # =====================================================
-def calculate_status(match):
-    if match.get("actual"):
-        return "Завершён"
-    return "Ожидается"
+def import_tour(file):
+    try:
+        data = json.load(
+            file
+        )
+    except:
+        return None
+    matches=[]
+    for name, value in data.items():
+        matches.append({
+            "match":
+                name,
+            "faj_prediction":
+                value.get(
+                    "faj_prediction",
+                    ""
+                ),
+            "expert_prediction":
+                value.get(
+                    "expert_prediction",
+                    ""
+                ),
+            "actual":
+                value.get(
+                    "actual",
+                    ""
+                ),
+            "xg_home":
+                value.get(
+                    "xg_home"
+                ),
+            "xg_away":
+                value.get(
+                    "xg_away"
+                ),
+            "status":
+                "Ожидается"
+        })
+    return matches
 
 # =====================================================
-# СРАВНЕНИЕ
+# СТАТИСТИКА
 # =====================================================
-def compare_score(
-        prediction,
-        actual
+def get_statistics(tour):
+    total = len(
+        tour.get(
+            "matches",
+            []
+        )
+    )
+    finished = 0
+    for m in tour.get(
+        "matches",
+        []
+    ):
+        if m.get(
+            "actual"
+        ):
+            finished += 1
+    return {
+        "total":
+            total,
+        "finished":
+            finished
+    }
+
+# =====================================================
+# СОХРАНЕНИЕ РЕЗУЛЬТАТА
+# =====================================================
+def save_result(
+        tour_name,
+        index,
+        result
 ):
-    if not prediction or not actual:
-        return False
-    return prediction == actual
+    tours = load_tours()
+    tours[tour_name]["matches"][index]["actual"] = result
+    tours[tour_name]["matches"][index]["status"] = "Завершён"
+    save_tours(
+        tours
+    )
 
 # =====================================================
-# ОТОБРАЖЕНИЕ ОДНОГО МАТЧА
+# ОТОБРАЖЕНИЕ МАТЧА
 # =====================================================
-def show_match(match, index):
-    status = calculate_status(match)
-    match["status"] = status
+def show_match(
+        tour_name,
+        index,
+        match
+):
     st.markdown(
-        f"### ⚽ {match.get('match','')}"
+        f"### ⚽ {match.get('match')}"
     )
     col1, col2, col3 = st.columns(3)
     with col1:
         st.write(
-            "🤖 FAJ прогноз"
+            "🤖 FAJ"
         )
         st.info(
             match.get(
@@ -182,472 +275,228 @@ def show_match(match, index):
         )
     with col3:
         st.write(
-            "🏁 Факт"
+            "🏁 Результат"
         )
-        if match.get("actual"):
+        if match.get(
+            "actual"
+        ):
             st.success(
                 match["actual"]
             )
         else:
             st.write(
-                "Ожидается"
+                "Не сыгран"
             )
-    # xG
-    if match.get("xg_home"):
-        c1, c2 = st.columns(2)
+    if match.get(
+        "xg_home"
+    ) is not None:
+        c1,c2 = st.columns(2)
         with c1:
             st.metric(
                 "xG хозяева",
-                match["xg_home"]
+                match.get(
+                    "xg_home"
+                )
             )
         with c2:
             st.metric(
                 "xG гости",
-                match["xg_away"]
+                match.get(
+                    "xg_away"
+                )
             )
-    # Анализ
-    if match.get("actual"):
-        st.write(
-            "📊 Анализ"
+    if not match.get(
+        "actual"
+    ):
+        result = st.text_input(
+            "Ввести счёт",
+            key=f"score_{tour_name}_{index}"
         )
-        if compare_score(
-            match.get("faj_prediction"),
-            match.get("actual")
+        if st.button(
+            "💾 Сохранить",
+            key=f"save_{tour_name}_{index}"
         ):
-            st.success(
-                "FAJ угадал счёт ✅"
+            save_result(
+                tour_name,
+                index,
+                result
             )
-        else:
-            st.error(
-                "FAJ ошибся ❌"
+            st.success(
+                "Результат сохранён"
+            )
+            st.rerun()
+    else:
+        if st.button(
+            "🧠 Добавить в память FAJ",
+            key=f"memory_{tour_name}_{index}"
+        ):
+            add_to_memory(
+                match
+            )
+            st.success(
+                "Добавлено в память"
             )
     st.divider()
 
 # =====================================================
-# СОХРАНЕНИЕ РЕЗУЛЬТАТА
-# =====================================================
-def update_result(
-        tours,
-        tour_number,
-        match_index,
-        result
-):
-    tours[tour_number]["matches"][match_index]["actual"] = result
-    tours[tour_number]["matches"][match_index]["status"] = "Завершён"
-    save_tours(
-        tours
-    )
-
-# =====================================================
-# ДОБАВЛЕНИЕ В MEMORY BRAIN
-# =====================================================
-def send_to_memory(
-        match
-):
-    memory = load_memory()
-    record = {
-        "id":
-            len(memory)+1,
-        "date":
-            datetime.now().isoformat(),
-        "match":
-            match["match"],
-        "prediction":
-            {
-            "faj_score":
-                match.get(
-                    "faj_prediction"
-                )
-            },
-        "actual_result":
-            match.get(
-                "actual"
-            ),
-        "status":
-            "finished"
-    }
-    memory.append(
-        record
-    )
-    save_memory(
-        memory
-    )
-
-# =====================================================
-# СТАТИСТИКА ТУРА
-# =====================================================
-def tour_statistics(
-        tour
-):
-    total = len(
-        tour.get(
-            "matches",
-            []
-        )
-    )
-    finished = 0
-    correct = 0
-    for match in tour["matches"]:
-        if match.get("actual"):
-            finished += 1
-            if compare_score(
-                match.get(
-                    "faj_prediction"
-                ),
-                match.get(
-                    "actual"
-                )
-            ):
-                correct += 1
-    accuracy = 0
-    if finished:
-        accuracy = round(
-            correct / finished * 100,
-            1
-        )
-    return {
-        "total":
-            total,
-        "finished":
-            finished,
-        "correct":
-            correct,
-        "accuracy":
-            accuracy
-    }
-
-# =====================================================
-# ГЛАВНАЯ СТРАНИЦА
+# ГЛАВНЫЙ ЭКРАН
 # =====================================================
 def render():
     st.title(
         "🗓️ Управление турами FAJ"
     )
+    # создание файла автоматически
+    tours = load_tours()
+    # -------------------------------------------------
+    # СОЗДАНИЕ ТУРА
+    # -------------------------------------------------
+    st.subheader(
+        "➕ Создать новый тур"
+    )
+    name = st.text_input(
+        "Название",
+        "Тур 1"
+    )
+    if st.button(
+        "Создать тур"
+    ):
+        create_tour(
+            name
+        )
+        st.success(
+            "Тур создан"
+        )
+        st.rerun()
+    st.divider()
+    # -------------------------------------------------
+    # ИМПОРТ
+    # -------------------------------------------------
+    st.subheader(
+        "📥 Загрузить тур"
+    )
+    uploaded = st.file_uploader(
+        "JSON файл",
+        type=[
+            "json"
+        ]
+    )
+    if uploaded:
+        if st.button(
+            "Импортировать тур"
+        ):
+            matches = import_tour(
+                uploaded
+            )
+            tours = load_tours()
+            tour_name = (
+                f"Тур {len(tours)+1}"
+            )
+            tours[tour_name]={
+                "created":
+                    datetime.now().isoformat(),
+                "matches":
+                    matches
+            }
+            save_tours(
+                tours
+            )
+            st.success(
+                "Тур импортирован"
+            )
+            st.rerun()
+    # -------------------------------------------------
+    # СПИСОК ТУРОВ
+    # -------------------------------------------------
     tours = load_tours()
     if not tours:
         st.info(
-            "Туры пока не загружены"
-        )
-        st.write(
-            "Создайте файл data/tours.json"
+            "Туров пока нет"
         )
         return
-    
-    tour_list = list(
-        tours.keys()
-    )
-    selected_tour = st.selectbox(
+    selected = st.selectbox(
         "Выберите тур",
-        tour_list
+        list(
+            tours.keys()
+        )
     )
-    tour = tours[selected_tour]
-    
+    tour = tours[selected]
+    st.divider()
     st.subheader(
-        f"⚽ {selected_tour}"
+        f"📋 {selected}"
     )
-    stats = tour_statistics(
+    stats = get_statistics(
         tour
     )
-    c1,c2,c3 = st.columns(3)
+    c1,c2 = st.columns(2)
     with c1:
         st.metric(
-            "Матчи",
+            "Всего матчей",
             stats["total"]
         )
     with c2:
         st.metric(
-            "Сыграно",
+            "Завершено",
             stats["finished"]
         )
-    with c3:
-        st.metric(
-            "Точность FAJ",
-            f'{stats["accuracy"]}%'
-        )
-    
-    # =====================================================
-    # СПИСОК МАТЧЕЙ ТУРА
-    # =====================================================
-    st.subheader(
-        "📋 Матчи тура"
-    )
+    # -------------------------------------------------
+    # МАТЧИ
+    # -------------------------------------------------
     for index, match in enumerate(
-        tour.get("matches", [])
+        tour.get(
+            "matches",
+            []
+        )
     ):
         show_match(
-            match,
-            index
+            selected,
+            index,
+            match
         )
-        # Ввод результата
-        if not match.get("actual"):
-            with st.expander(
-                f"✍️ Внести результат: {match.get('match')}"
-            ):
-                result = st.text_input(
-                    "Фактический счёт",
-                    key=f"result_{selected_tour}_{index}",
-                    placeholder="Например 2:1"
-                )
-                if st.button(
-                    "💾 Сохранить результат",
-                    key=f"save_{selected_tour}_{index}"
-                ):
-                    update_result(
-                        tours,
-                        selected_tour,
-                        index,
-                        result
-                    )
-                    st.success(
-                        "Результат сохранён"
-                    )
-                    st.rerun()
-        else:
-            if st.button(
-                "🧠 Добавить в память FAJ",
-                key=f"memory_{selected_tour}_{index}"
-            ):
-                send_to_memory(
-                    match
-                )
-                st.success(
-                    "Добавлено в Memory Brain"
-                )
-    
-    # =====================================================
-    # СОХРАНЕНИЕ ТУРА
-    # =====================================================
-    save_tours(
-        tours
-    )
+    # -------------------------------------------------
+    # АРХИВ
+    # -------------------------------------------------
     st.divider()
-    
-    # =====================================================
-    # ОБУЧЕНИЕ ПО ТУРУ
-    # =====================================================
     st.subheader(
-        "🧠 Обучение FAJ"
+        "📜 Архив туров"
     )
-    finished_matches = [
-        m for m in tour["matches"]
-        if m.get("actual")
-    ]
-    if finished_matches:
-        st.write(
-            f"Завершённых матчей: {len(finished_matches)}"
-        )
-        if st.button(
-            "🔎 Анализировать ошибки тура"
-        ):
-            try:
-                from app.brain.learning_brain import FAJLearningBrain
-                brain = FAJLearningBrain()
-                result = brain.analyze_history()
-                st.json(
-                    result
+    archive=[]
+    for name,item in tours.items():
+        archive.append({
+            "Тур":
+                name,
+            "Матчи":
+                len(
+                    item.get(
+                        "matches",
+                        []
+                    )
                 )
-            except Exception as e:
-                st.error(
-                    f"Ошибка Brain: {e}"
-                )
-    else:
-        st.info(
-            "После завершения матчей здесь появится анализ обучения"
-        )
-    
-    # =====================================================
-    # СОСТОЯНИЕ ПАМЯТИ
-    # =====================================================
+        })
+    st.table(
+        archive
+    )
+    # -------------------------------------------------
+    # ПАМЯТЬ
+    # -------------------------------------------------
     st.divider()
     st.subheader(
         "🧠 Память FAJ"
     )
     memory = load_memory()
     st.metric(
-        "Записей памяти",
+        "Записей",
         len(memory)
     )
     if memory:
         with st.expander(
-            "📜 Последние записи"
+            "Последние записи"
         ):
             st.json(
                 memory[-5:]
             )
 
 # =====================================================
-# ИМПОРТ ТУРА ИЗ JSON
+# ЗАПУСК
 # =====================================================
-def import_tour_from_json(uploaded_file):
-    try:
-        data = json.load(
-            uploaded_file
-        )
-    except Exception:
-        return None
-    tour = create_tour()
-    for match_name, values in data.items():
-        match = {
-            "match":
-                match_name,
-            "faj_prediction":
-                values.get(
-                    "faj_prediction",
-                    ""
-                ),
-            "expert_prediction":
-                values.get(
-                    "expert_prediction",
-                    ""
-                ),
-            "actual":
-                values.get(
-                    "actual",
-                    ""
-                ),
-            "status":
-                "Ожидается",
-            "xg_home":
-                values.get(
-                    "xg_home"
-                ),
-            "xg_away":
-                values.get(
-                    "xg_away"
-                )
-        }
-        tour["matches"].append(
-            match
-        )
-    return tour
-
-# =====================================================
-# СОЗДАНИЕ НОВОГО ТУРА
-# =====================================================
-def create_new_tour(
-        tours,
-        name,
-        matches
-):
-    tours[name] = {
-        "created":
-            datetime.now().isoformat(),
-        "matches":
-            matches
-    }
-    save_tours(
-        tours
-    )
-
-# =====================================================
-# ФОРМИРОВАНИЕ АРХИВА
-# =====================================================
-def get_archive(tours):
-    archive = []
-    for name, tour in tours.items():
-        stats = tour_statistics(
-            tour
-        )
-        archive.append({
-            "tour":
-                name,
-            "matches":
-                stats["total"],
-            "finished":
-                stats["finished"],
-            "accuracy":
-                stats["accuracy"]
-        })
-    return archive
-
-# =====================================================
-# БЛОК ЗАГРУЗКИ В RENDER
-# =====================================================
-def render_import_block():
-    st.sidebar.subheader(
-        "📥 Загрузка тура"
-    )
-    uploaded = st.sidebar.file_uploader(
-        "JSON файл тура",
-        type=[
-            "json"
-        ]
-    )
-    if uploaded:
-        if st.sidebar.button(
-            "Импортировать тур"
-        ):
-            tour = import_tour_from_json(
-                uploaded
-            )
-            if tour:
-                tours = load_tours()
-                number = (
-                    f"Тур {len(tours)+1}"
-                )
-                tours[number] = tour
-                save_tours(
-                    tours
-                )
-                st.sidebar.success(
-                    f"{number} создан"
-                )
-                st.rerun()
-            else:
-                st.sidebar.error(
-                    "Ошибка файла"
-                )
-
-# =====================================================
-# БЛОК АРХИВА
-# =====================================================
-def show_archive():
-    st.subheader(
-        "📜 Архив туров"
-    )
-    tours = load_tours()
-    if not tours:
-        st.info(
-            "Архив пуст"
-        )
-        return
-    archive = get_archive(
-        tours
-    )
-    st.table(
-        archive
-    )
-
-# =====================================================
-# ФИНАЛЬНЫЙ БЛОК СТРАНИЦЫ
-# =====================================================
-def render_footer():
-    st.divider()
-    st.caption(
-        "⚽ FAJ Platform 10.1 | Tour Manager | Brain Connected"
-    )
-
-# =====================================================
-# ДОПОЛНИТЕЛЬНЫЕ ДЕЙСТВИЯ
-# =====================================================
-def reset_tours():
-    save_tours({})
-
-# =====================================================
-# РАСШИРЕННЫЙ RENDER
-# =====================================================
-def render_page():
-    render_import_block()
-    render()
-    st.divider()
-    show_archive()
-    render_footer()
-
-# =====================================================
-# ЭКСПОРТ ДЛЯ STREAMLIT
-# =====================================================
-def main():
-    render_page()
-
 if __name__ == "__main__":
-    main()
+    render()
