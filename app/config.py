@@ -1,85 +1,101 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-FAJ Platform v10.0 - Config
+FAJ Platform v11.2.1
+Config — Единый файл настроек
 """
 
-import streamlit as st
-import os
-
-
-class Config:
+class FAJConfig:
+    """Конфигурация FAJ Platform"""
     
-    @staticmethod
-    def get_football_api_token():
-        try:
-            return st.secrets["FOOTBALL_API_TOKEN"]
-        except:
-            return os.getenv("FOOTBALL_API_TOKEN", "")
+    # =========================================================
+    # XG ENGINE
+    # =========================================================
+    LEAGUE_MEAN_XG = 1.35
+    HOME_ADVANTAGE = 1.12
+    XG_MIN = 0.10
+    XG_MAX = 4.00
     
-    @staticmethod
-    def get_football_data_token():
-        try:
-            return st.secrets["FOOTBALL_DATA_TOKEN"]
-        except:
-            return os.getenv("FOOTBALL_DATA_TOKEN", "")
+    # =========================================================
+    # WEIGHTS (для FAJ Rating)
+    # =========================================================
+    WEIGHTS = {
+        "attack": 0.18,
+        "defense": 0.18,
+        "control": 0.15,
+        "efficiency": 0.12,
+        "mentality": 0.10,
+        "tempo": 0.05,
+        "press": 0.05,
+        "transition": 0.05,
+        "tactical": 0.05,
+        "coach": 0.04,
+        "form": 0.03
+    }
     
-    @staticmethod
-    def get_api_football_url():
-        try:
-            return st.secrets["API_FOOTBALL_URL"]
-        except:
-            return os.getenv("API_FOOTBALL_URL", "https://v3.football.api-sports.io")
+    # =========================================================
+    # PASSPORT MANAGER
+    # =========================================================
+    MAX_CHANGE_PER_SEASON = 10
+    BASE_CORRECTION_LIMITS = {
+        5: 1,   # 5 матчей → ±1
+        10: 2,  # 10 матчей → ±2
+        15: 3   # 15 матчей → ±3
+    }
+    CONFIDENCE_FACTORS = {
+        5: 0.5,   # 5 матчей → 0.5
+        10: 0.7,  # 10 матчей → 0.7
+        15: 0.9   # 15 матчей → 0.9
+    }
     
-    @staticmethod
-    def get_football_data_url():
-        try:
-            return st.secrets["FOOTBALL_DATA_URL"]
-        except:
-            return os.getenv("FOOTBALL_DATA_URL", "https://api.football-data.org/v4")
+    # =========================================================
+    # FATIGUE
+    # =========================================================
+    FATIGUE_BASE = 10
+    FATIGUE_RECOVERY_RATE = 1.2
+    FATIGUE_RECOVERY_BONUS = 3
     
-    @staticmethod
-    def get_current_season():
-        try:
-            return int(st.secrets["CURRENT_SEASON"])
-        except:
-            return int(os.getenv("CURRENT_SEASON", 2026))
+    # =========================================================
+    # PERFORMANCE INDEX
+    # =========================================================
+    PERFORMANCE_WEIGHTS = {
+        "xg": 0.45,
+        "points": 0.25,
+        "shot_quality": 0.20,
+        "control": 0.10
+    }
     
-    @staticmethod
-    def get_cache_days():
-        try:
-            return int(st.secrets["CACHE_DAYS"])
-        except:
-            return int(os.getenv("CACHE_DAYS", 7))
+    # =========================================================
+    # MATCH INTENSITY
+    # =========================================================
+    MATCH_INTENSITY = {
+        "friendly": 0.6,
+        "league": 1.0,
+        "derby": 1.3,
+        "cup": 1.2,
+        "europe": 1.5,
+        "final": 1.8
+    }
     
-    @staticmethod
-    def get_model_version():
-        try:
-            return st.secrets["MODEL_VERSION"]
-        except:
-            return os.getenv("MODEL_VERSION", "10.0")
+    # =========================================================
+    # TEAM IDENTITY
+    # =========================================================
+    STYLES = ["possession", "direct", "counter", "mixed"]
+    TEMPOS = ["slow", "medium", "fast"]
+    PRESSING = ["low", "medium", "high"]
+    TRANSITIONS = ["slow", "medium", "fast"]
+    RISK_LEVELS = ["low", "medium", "high"]
     
-    @staticmethod
-    def get_max_requests_per_day():
-        try:
-            return int(st.secrets["MAX_REQUESTS_PER_DAY"])
-        except:
-            return int(os.getenv("MAX_REQUESTS_PER_DAY", 100))
+    # =========================================================
+    # PASSPORT CONFIDENCE
+    # =========================================================
+    INITIAL_PASSPORT_CONFIDENCE = 0.4
+    MAX_PASSPORT_CONFIDENCE = 0.9
+    CONFIDENCE_GROWTH_PER_MATCH = 0.02
     
-    @staticmethod
-    def is_ready() -> bool:
-        return Config.get_football_api_token() != "" and Config.get_football_data_token() != ""
-    
-    @staticmethod
-    def get_status() -> dict:
-        return {
-            "football_api_token": bool(Config.get_football_api_token()),
-            "football_data_token": bool(Config.get_football_data_token()),
-            "api_football_url": Config.get_api_football_url(),
-            "football_data_url": Config.get_football_data_url(),
-            "current_season": Config.get_current_season(),
-            "cache_days": Config.get_cache_days(),
-            "model_version": Config.get_model_version(),
-            "max_requests_per_day": Config.get_max_requests_per_day(),
-            "ready": Config.is_ready()
-        }
+    # =========================================================
+    # POISSON / MONTE CARLO
+    # =========================================================
+    MAX_GOALS = 8
+    SIMULATION_COUNT = 10000
+    POISSON_MAX_SCORE = 6
