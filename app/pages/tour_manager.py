@@ -15,6 +15,7 @@ import streamlit as st
 import json
 import os
 from datetime import datetime
+from app.faj_core import FAJCore
 
 # =====================================================
 # PATHS
@@ -28,6 +29,57 @@ MEMORY_FILE = os.path.join(
     DATA_DIR,
     "faj_memory.json"
 )
+
+# =====================================================
+# FAJ ENGINE CONNECTION
+# =====================================================
+def get_faj_core():
+    return FAJCore()
+
+# =====================================================
+# GENERATE FAJ PREDICTION
+# =====================================================
+def generate_prediction(home, away):
+    core = get_faj_core()
+    result = core.predict_match(
+        home,
+        away
+    )
+    if result.get("status") != "success":
+        return None
+    data = result.get(
+        "data",
+        {}
+    )
+    return {
+        "score":
+            data.get(
+                "top_scores",
+                [{}]
+            )[0].get(
+                "score",
+                ""
+            ),
+        "xg_home":
+            data.get(
+                "xg",
+                {}
+            ).get(
+                "home_xg"
+            ),
+        "xg_away":
+            data.get(
+                "xg",
+                {}
+            ).get(
+                "away_xg"
+            ),
+        "confidence":
+            data.get(
+                "confidence",
+                0
+            )
+    }
 
 # =====================================================
 # STORAGE ENGINE
