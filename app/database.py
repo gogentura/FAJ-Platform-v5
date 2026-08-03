@@ -2,19 +2,17 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ Platform v11
-Database Layer
+FAJ Platform v11.5
 
-Локальная база FAJ SQLite
+Database Engine
 
-Хранит:
-- сезоны
-- туры
-- матчи
-- прогнозы FAJ
-- экспертные прогнозы
-- результаты
-- память Brain
+SQLite storage:
+- seasons
+- rounds
+- matches
+- faj memory
+
+No JSON dependency
 """
 
 import sqlite3
@@ -55,9 +53,8 @@ def get_connection():
     return conn
 
 
-
 # =====================================================
-# INITIALIZATION
+# INIT DATABASE
 # =====================================================
 
 def init_database():
@@ -67,25 +64,21 @@ def init_database():
     cursor = conn.cursor()
 
 
-    # -------------------------
-    # ТУРЫ
-    # -------------------------
+    # ===============================
+    # SEASONS
+    # ===============================
 
     cursor.execute(
         """
-        CREATE TABLE IF NOT EXISTS tours (
+        CREATE TABLE IF NOT EXISTS seasons (
 
             id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-            name TEXT UNIQUE,
+            name TEXT NOT NULL,
 
-            league TEXT,
+            league TEXT NOT NULL,
 
-            season TEXT,
-
-            round_number INTEGER,
-
-            status TEXT DEFAULT 'active',
+            year TEXT,
 
             created TEXT
 
@@ -94,9 +87,35 @@ def init_database():
     )
 
 
-    # -------------------------
-    # МАТЧИ
-    # -------------------------
+    # ===============================
+    # ROUNDS
+    # ===============================
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS rounds (
+
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            season_id INTEGER,
+
+            round_number INTEGER,
+
+            status TEXT DEFAULT 'scheduled',
+
+            created TEXT,
+
+            FOREIGN KEY(season_id)
+            REFERENCES seasons(id)
+
+        )
+        """
+    )
+
+
+    # ===============================
+    # MATCHES
+    # ===============================
 
     cursor.execute(
         """
@@ -104,37 +123,43 @@ def init_database():
 
             id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-            tour_id INTEGER,
+            round_id INTEGER,
 
             home TEXT,
 
             away TEXT,
 
+
             faj_prediction TEXT,
 
             expert_prediction TEXT,
 
-            actual TEXT,
+
+            actual_score TEXT,
+
 
             xg_home REAL,
 
             xg_away REAL,
 
+
             status TEXT DEFAULT 'scheduled',
 
-            memory_saved INTEGER DEFAULT 0,
 
-            FOREIGN KEY(tour_id)
-            REFERENCES tours(id)
+            created TEXT,
+
+
+            FOREIGN KEY(round_id)
+            REFERENCES rounds(id)
 
         )
         """
     )
 
 
-    # -------------------------
-    # MEMORY BRAIN
-    # -------------------------
+    # ===============================
+    # MEMORY
+    # ===============================
 
     cursor.execute(
         """
@@ -142,40 +167,24 @@ def init_database():
 
             id INTEGER PRIMARY KEY AUTOINCREMENT,
 
+
+            competition TEXT,
+
+
             match TEXT,
 
-            faj_prediction TEXT,
 
-            expert_prediction TEXT,
+            prediction TEXT,
+
 
             actual TEXT,
 
+
+            error_type TEXT,
+
+
             created TEXT
 
-        )
-        """
-    )
-
-
-    # -------------------------
-    # PASSPORTS
-    # -------------------------
-
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS passports (
-
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-            team TEXT UNIQUE,
-
-            attack REAL DEFAULT 70,
-
-            defense REAL DEFAULT 70,
-
-            form REAL DEFAULT 70,
-
-            updated TEXT
 
         )
         """
@@ -189,282 +198,7 @@ def init_database():
 
 
 # =====================================================
-# TOURS
-# =====================================================
-
-def create_tour(
-        name,
-        league="RPL",
-        season="2026/27",
-        round_number=1
-):
-
-    conn = get_connection()
-
-    cursor = conn.cursor()
-
-
-    cursor.execute(
-        """
-        INSERT OR IGNORE INTO tours
-
-        (
-        name,
-        league,
-        season,
-        round_number,
-        created
-        )
-
-        VALUES (?,?,?,?,?)
-        """,
-
-        (
-            name,
-            league,
-            season,
-            round_number,
-            datetime.now().isoformat()
-        )
-
-    )
-
-
-    conn.commit()
-
-    conn.close()
-
-
-
-def get_tours():
-
-    conn = get_connection()
-
-    cursor = conn.cursor()
-
-
-    cursor.execute(
-        """
-        SELECT *
-        FROM tours
-        ORDER BY id
-        """
-    )
-
-
-    data = cursor.fetchall()
-
-
-    conn.close()
-
-
-    return [
-        dict(row)
-        for row in data
-    ]
-
-
-
-# =====================================================
-# MATCHES
-# =====================================================
-
-def add_match(
-        tour_id,
-        home,
-        away,
-        faj_prediction="",
-        expert_prediction="",
-        xg_home=None,
-        xg_away=None
-):
-
-    conn = get_connection()
-
-    cursor = conn.cursor()
-
-
-    cursor.execute(
-        """
-        INSERT INTO matches
-
-        (
-        tour_id,
-        home,
-        away,
-        faj_prediction,
-        expert_prediction,
-        xg_home,
-        xg_away
-        )
-
-        VALUES (?,?,?,?,?,?,?)
-
-        """,
-
-        (
-            tour_id,
-            home,
-            away,
-            faj_prediction,
-            expert_prediction,
-            xg_home,
-            xg_away
-        )
-
-    )
-
-
-    conn.commit()
-
-    conn.close()
-
-
-
-def get_matches(tour_id):
-
-    conn = get_connection()
-
-    cursor = conn.cursor()
-
-
-    cursor.execute(
-        """
-        SELECT *
-        FROM matches
-
-        WHERE tour_id=?
-
-        """,
-        (tour_id,)
-    )
-
-
-    rows = cursor.fetchall()
-
-    conn.close()
-
-
-    return [
-        dict(row)
-        for row in rows
-    ]
-
-
-
-def update_result(
-        match_id,
-        actual
-):
-
-    conn = get_connection()
-
-    cursor = conn.cursor()
-
-
-    cursor.execute(
-        """
-        UPDATE matches
-
-        SET actual=?,
-        status='finished'
-
-        WHERE id=?
-
-        """,
-
-        (
-            actual,
-            match_id
-        )
-    )
-
-
-    conn.commit()
-
-    conn.close()
-
-
-
-# =====================================================
-# MEMORY
-# =====================================================
-
-def add_memory(
-        match,
-        faj_prediction,
-        expert_prediction,
-        actual
-):
-
-    conn = get_connection()
-
-    cursor = conn.cursor()
-
-
-    cursor.execute(
-        """
-        INSERT INTO faj_memory
-
-        (
-        match,
-        faj_prediction,
-        expert_prediction,
-        actual,
-        created
-        )
-
-        VALUES (?,?,?,?,?)
-
-        """,
-
-        (
-            match,
-            faj_prediction,
-            expert_prediction,
-            actual,
-            datetime.now().isoformat()
-        )
-    )
-
-
-    conn.commit()
-
-    conn.close()
-
-
-
-def get_memory():
-
-    conn = get_connection()
-
-    cursor = conn.cursor()
-
-
-    cursor.execute(
-        """
-        SELECT *
-        FROM faj_memory
-        ORDER BY id DESC
-        """
-    )
-
-
-    rows = cursor.fetchall()
-
-    conn.close()
-
-
-    return [
-        dict(row)
-        for row in rows
-    ]
-
-
-
-# =====================================================
-# COMPATIBILITY CLASS
-# Для старых страниц FAJ
+# DATABASE CLASS
 # =====================================================
 
 class FAJDatabase:
@@ -476,38 +210,324 @@ class FAJDatabase:
 
 
 
-    def get_connection(self):
+    # =================================
+    # STATUS
+    # =================================
 
-        return get_connection()
+    def get_status(self):
 
+        conn = get_connection()
 
-
-    def get_tours(self):
-
-        return get_tours()
-
-
-
-    def get_memory(self):
-
-        return get_memory()
+        cursor = conn.cursor()
 
 
+        result = {}
 
-    def create_tour(
+
+        for table in [
+            "seasons",
+            "rounds",
+            "matches",
+            "faj_memory"
+        ]:
+
+            cursor.execute(
+                f"SELECT COUNT(*) FROM {table}"
+            )
+
+            result[table] = cursor.fetchone()[0]
+
+
+        conn.close()
+
+
+        return {
+
+            "database":
+                "SQLite",
+
+            "file":
+                DB_FILE,
+
+            "status":
+                "ACTIVE",
+
+            "tables":
+                result
+
+        }
+
+
+
+    # =================================
+    # SEASONS
+    # =================================
+
+    def create_season(
             self,
             name,
-            league="RPL",
-            season="2026/27",
-            round_number=1
+            league,
+            year
     ):
 
-        return create_tour(
+        conn = get_connection()
+
+        cursor = conn.cursor()
+
+
+        cursor.execute(
+            """
+            INSERT INTO seasons
+            (
             name,
             league,
-            season,
-            round_number
+            year,
+            created
+            )
+
+            VALUES (?,?,?,?)
+            """,
+
+            (
+                name,
+                league,
+                year,
+                datetime.now().isoformat()
+            )
         )
+
+
+        conn.commit()
+
+        season_id = cursor.lastrowid
+
+        conn.close()
+
+
+        return season_id
+
+
+
+    def get_seasons(self):
+
+        conn = get_connection()
+
+        cursor = conn.cursor()
+
+
+        cursor.execute(
+            """
+            SELECT *
+            FROM seasons
+            ORDER BY id DESC
+            """
+        )
+
+
+        data = cursor.fetchall()
+
+        conn.close()
+
+
+        return data
+
+
+
+    # =================================
+    # ROUNDS
+    # =================================
+
+    def create_round(
+            self,
+            season_id,
+            number
+    ):
+
+        conn = get_connection()
+
+        cursor = conn.cursor()
+
+
+        cursor.execute(
+            """
+            INSERT INTO rounds
+            (
+            season_id,
+            round_number,
+            created
+            )
+
+            VALUES (?,?,?)
+            """,
+
+            (
+                season_id,
+                number,
+                datetime.now().isoformat()
+            )
+        )
+
+
+        conn.commit()
+
+        round_id = cursor.lastrowid
+
+        conn.close()
+
+
+        return round_id
+
+
+
+    # =================================
+    # MATCHES
+    # =================================
+
+    def add_match(
+            self,
+            round_id,
+            home,
+            away,
+            faj_prediction="",
+            expert_prediction="",
+            xg_home=None,
+            xg_away=None
+    ):
+
+        conn = get_connection()
+
+        cursor = conn.cursor()
+
+
+        cursor.execute(
+            """
+            INSERT INTO matches
+
+            (
+            round_id,
+            home,
+            away,
+            faj_prediction,
+            expert_prediction,
+            xg_home,
+            xg_away,
+            created
+            )
+
+            VALUES (?,?,?,?,?,?,?,?)
+            """,
+
+            (
+                round_id,
+                home,
+                away,
+                faj_prediction,
+                expert_prediction,
+                xg_home,
+                xg_away,
+                datetime.now().isoformat()
+            )
+
+        )
+
+
+        conn.commit()
+
+        match_id = cursor.lastrowid
+
+        conn.close()
+
+
+        return match_id
+
+
+
+    def update_result(
+            self,
+            match_id,
+            score
+    ):
+
+        conn = get_connection()
+
+        cursor = conn.cursor()
+
+
+        cursor.execute(
+            """
+            UPDATE matches
+
+            SET
+
+            actual_score=?,
+
+            status='finished'
+
+            WHERE id=?
+
+            """,
+
+            (
+                score,
+                match_id
+            )
+        )
+
+
+        conn.commit()
+
+        conn.close()
+
+
+
+    # =================================
+    # MEMORY
+    # =================================
+
+    def add_memory(
+            self,
+            competition,
+            match,
+            prediction,
+            actual,
+            error_type=""
+    ):
+
+        conn = get_connection()
+
+        cursor = conn.cursor()
+
+
+        cursor.execute(
+            """
+            INSERT INTO faj_memory
+
+            (
+            competition,
+            match,
+            prediction,
+            actual,
+            error_type,
+            created
+            )
+
+            VALUES (?,?,?,?,?,?)
+            """,
+
+            (
+                competition,
+                match,
+                prediction,
+                actual,
+                error_type,
+                datetime.now().isoformat()
+            )
+        )
+
+
+        conn.commit()
+
+        conn.close()
 
 
 
@@ -516,15 +536,3 @@ class FAJDatabase:
 # =====================================================
 
 init_database()
-
-
-
-if __name__ == "__main__":
-
-    print(
-        "FAJ Database initialized"
-    )
-
-    print(
-        DB_FILE
-    )
