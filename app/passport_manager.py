@@ -788,4 +788,28 @@ class PassportManager:
 if __name__ == "__main__":
     pm = PassportManager()
 
-    team_id = pm.db
+    team_id = pm.db.get_team_id("Зенит", "RPL")
+    season_id = pm.db.get_season_id("RPL", "2026")
+
+    if team_id and season_id:
+        result = pm.create_initial_passport(team_id, season_id)
+        print("Паспорт создан:", result["status"])
+
+        prepared = pm.prepare_for_match(team_id, season_id, 1, opponent_strength=1.2, days_since_last=7)
+        print(f"Fatigue после восстановления: {prepared['recovery']['fatigue']}")
+
+        result = pm.full_match_update(
+            team_id, season_id, 1,
+            team_goals=2,
+            opponent_goals=1,
+            xg_for=1.8,
+            xg_against=0.9,
+            is_home=True,
+            opponent_strength=1.2,
+            match_intensity=1.0
+        )
+        print(f"\nПосле матча: {result['status']}")
+        print(f"Performance Index: {result.get('performance_index', 0):.2f}")
+
+        form = pm._get_form_summary(team_id, season_id)
+        print(f"\nФорма: {form}")
