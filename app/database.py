@@ -530,6 +530,37 @@ class FAJDatabase:
         conn.close()
 
 
+    # =================================
+    # OLD SYSTEM COMPATIBILITY
+    # =================================
+
+    def get_api_stats_today(self):
+        return {
+            "football_data": 0,
+            "api_calls": 0,
+            "date": datetime.now().strftime("%Y-%m-%d")
+        }
+
+    def get_learning_stats(self):
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) FROM faj_memory"
+        )
+        memory = cursor.fetchone()[0]
+        cursor.execute(
+            "SELECT COUNT(*) FROM matches"
+        )
+        matches = cursor.fetchone()[0]
+        conn.close()
+        return {
+            "total_records": memory,
+            "comparisons": matches,
+            "teams_count": 0,
+            "weights_updates": 0,
+            "last_update": datetime.now().isoformat()
+        }
+
 
 # =====================================================
 # AUTO INIT
