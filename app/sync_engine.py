@@ -9,6 +9,42 @@ FAJ Sync Engine — Единый модуль синхронизации
 
 from app.database import FAJDatabase
 from datetime import datetime
+import os
+import shutil
+
+
+# ============================================================
+# КОНФИГУРАЦИЯ ЛИГ (только нужные)
+# ============================================================
+
+LEAGUE_CONFIG = {
+    "РПЛ": {
+        "teams": 16,
+        "rounds": 30,
+        "country": "Россия",
+        "format": "double_round_robin"
+    },
+    "АПЛ": {
+        "teams": 20,
+        "rounds": 38,
+        "country": "Англия",
+        "format": "double_round_robin"
+    },
+    "Ла Лига": {
+        "teams": 20,
+        "rounds": 38,
+        "country": "Испания",
+        "format": "double_round_robin"
+    },
+    "Лига чемпионов": {
+        "teams": 36,
+        "rounds": 8,
+        "country": "Европа",
+        "format": "swiss_system",
+        "playoff_start": 9,
+        "direct_qualification": 8
+    }
+}
 
 
 # ============================================================
@@ -21,6 +57,8 @@ RPL_PASSPORTS_2026 = {
         "class": "Чемпионский претендент",
         "style": "Контроль + позиционная атака",
         "dna": "Команда, которая выигрывает классом",
+        "version": "RPL_2026.07",
+        "source": "FAJ Expert Layer",
         "indices": {
             "attack": 92, "defense": 91, "control": 94,
             "efficiency": 90, "mentality": 92, "tempo": 76, "press": 88
@@ -33,6 +71,8 @@ RPL_PASSPORTS_2026 = {
         "class": "Большая команда",
         "style": "Атакующий футбол, вертикальные атаки",
         "dna": "Большая команда с высоким потолком и высокой дисперсией",
+        "version": "RPL_2026.07",
+        "source": "FAJ Expert Layer",
         "indices": {
             "attack": 88, "defense": 82, "control": 86,
             "efficiency": 85, "mentality": 87, "tempo": 84, "press": 82
@@ -45,6 +85,8 @@ RPL_PASSPORTS_2026 = {
         "class": "Команда результата",
         "style": "Организация + переходы",
         "dna": "Команда результата",
+        "version": "RPL_2026.07",
+        "source": "FAJ Expert Layer",
         "indices": {
             "attack": 84, "defense": 88, "control": 84,
             "efficiency": 86, "mentality": 90, "tempo": 76, "press": 84
@@ -57,6 +99,8 @@ RPL_PASSPORTS_2026 = {
         "class": "Команда темпа",
         "style": "Высокий темп, давление",
         "dna": "Команда темпа",
+        "version": "RPL_2026.07",
+        "source": "FAJ Expert Layer",
         "indices": {
             "attack": 87, "defense": 81, "control": 86,
             "efficiency": 83, "mentality": 84, "tempo": 88, "press": 86
@@ -69,6 +113,8 @@ RPL_PASSPORTS_2026 = {
         "class": "Команда развития",
         "style": "Молодость + вертикальный футбол",
         "dna": "Команда развития",
+        "version": "RPL_2026.07",
+        "source": "FAJ Expert Layer",
         "indices": {
             "attack": 86, "defense": 80, "control": 83,
             "efficiency": 84, "mentality": 80, "tempo": 86, "press": 82
@@ -81,6 +127,8 @@ RPL_PASSPORTS_2026 = {
         "class": "Самая системная команда",
         "style": "Владение + позиционный футбол",
         "dna": "Самая системная команда России",
+        "version": "RPL_2026.07",
+        "source": "FAJ Expert Layer",
         "indices": {
             "attack": 86, "defense": 87, "control": 90,
             "efficiency": 87, "mentality": 86, "tempo": 76, "press": 84
@@ -93,6 +141,8 @@ RPL_PASSPORTS_2026 = {
         "class": "Команда-сюрприз",
         "style": "Организация + борьба",
         "dna": "Команда, которая усложняет жизнь фаворитам",
+        "version": "RPL_2026.07",
+        "source": "FAJ Expert Layer",
         "indices": {
             "attack": 77, "defense": 79, "control": 74,
             "efficiency": 78, "mentality": 86, "tempo": 70, "press": 76
@@ -105,6 +155,8 @@ RPL_PASSPORTS_2026 = {
         "class": "Сложный соперник",
         "style": "Физический футбол",
         "dna": "Сложный соперник",
+        "version": "RPL_2026.07",
+        "source": "FAJ Expert Layer",
         "indices": {
             "attack": 75, "defense": 80, "control": 70,
             "efficiency": 74, "mentality": 82, "tempo": 72, "press": 78,
@@ -118,6 +170,8 @@ RPL_PASSPORTS_2026 = {
         "class": "Рациональная команда",
         "style": "Организация + дисциплина",
         "dna": "Рациональная команда",
+        "version": "RPL_2026.07",
+        "source": "FAJ Expert Layer",
         "indices": {
             "attack": 74, "defense": 81, "control": 76,
             "efficiency": 78, "mentality": 84, "tempo": 70, "press": 74
@@ -130,6 +184,8 @@ RPL_PASSPORTS_2026 = {
         "class": "Команда скорости",
         "style": "Скорость + молодость",
         "dna": "Команда с энергией",
+        "version": "RPL_2026.07",
+        "source": "FAJ Expert Layer",
         "indices": {
             "attack": 78, "defense": 72, "control": 72,
             "efficiency": 74, "mentality": 76, "tempo": 84, "press": 78
@@ -142,6 +198,8 @@ RPL_PASSPORTS_2026 = {
         "class": "Оборонительная команда",
         "style": "Оборонительная модель",
         "dna": "Борьба + дисциплина",
+        "version": "RPL_2026.07",
+        "source": "FAJ Expert Layer",
         "indices": {
             "attack": 64, "defense": 76, "control": 66,
             "efficiency": 68, "mentality": 78, "tempo": 64, "press": 72
@@ -154,6 +212,8 @@ RPL_PASSPORTS_2026 = {
         "class": "Атакующий новичок",
         "style": "Открытый футбол",
         "dna": "Смелость + атака",
+        "version": "RPL_2026.07",
+        "source": "FAJ Expert Layer",
         "indices": {
             "attack": 78, "defense": 66, "control": 72,
             "efficiency": 70, "mentality": 74, "tempo": 82, "press": 76
@@ -166,6 +226,8 @@ RPL_PASSPORTS_2026 = {
         "class": "Организованная команда",
         "style": "Организация + физика",
         "dna": "Структура + дисциплина",
+        "version": "RPL_2026.07",
+        "source": "FAJ Expert Layer",
         "indices": {
             "attack": 70, "defense": 78, "control": 72,
             "efficiency": 72, "mentality": 80, "tempo": 68, "press": 74
@@ -178,6 +240,8 @@ RPL_PASSPORTS_2026 = {
         "class": "Новичок с энергией",
         "style": "Энергия новичка",
         "dna": "Мотивация + борьба",
+        "version": "RPL_2026.07",
+        "source": "FAJ Expert Layer",
         "indices": {
             "attack": 66, "defense": 70, "control": 64,
             "efficiency": 66, "mentality": 76, "tempo": 74, "press": 72
@@ -190,6 +254,8 @@ RPL_PASSPORTS_2026 = {
         "class": "Оборонительная команда",
         "style": "Оборона + характер",
         "dna": "Организация + борьба",
+        "version": "RPL_2026.07",
+        "source": "FAJ Expert Layer",
         "indices": {
             "attack": 66, "defense": 78, "control": 68,
             "efficiency": 70, "mentality": 82, "tempo": 64, "press": 72
@@ -202,6 +268,8 @@ RPL_PASSPORTS_2026 = {
         "class": "Команда развития",
         "style": "Развитие молодых игроков",
         "dna": "Потенциал + молодость",
+        "version": "RPL_2026.07",
+        "source": "FAJ Expert Layer",
         "indices": {
             "attack": 64, "defense": 68, "control": 66,
             "efficiency": 64, "mentality": 70, "tempo": 76, "press": 70
@@ -232,9 +300,30 @@ class SyncEngine:
         self.passports = RPL_PASSPORTS_2026
         self.league_dna = LEAGUE_DNA
         self.league = "РПЛ"
+        self.config = LEAGUE_CONFIG
 
     # ============================================================
-    # 1. СТАТУС
+    # 1. РЕЗЕРВНОЕ КОПИРОВАНИЕ
+    # ============================================================
+
+    def _backup_database(self):
+        """Создаёт резервную копию БД перед синхронизацией"""
+        from app.database import DB_FILE
+        
+        if not os.path.exists(DB_FILE):
+            return None
+        
+        backup_dir = "backup"
+        os.makedirs(backup_dir, exist_ok=True)
+        
+        timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+        backup_file = os.path.join(backup_dir, f"faj_{timestamp}.db")
+        
+        shutil.copy2(DB_FILE, backup_file)
+        return backup_file
+
+    # ============================================================
+    # 2. СТАТУС
     # ============================================================
 
     def get_status(self, league="РПЛ"):
@@ -255,7 +344,7 @@ class SyncEngine:
         }
 
     # ============================================================
-    # 2. ПОЛУЧЕНИЕ/СОЗДАНИЕ СЕЗОНА (с защитой от дублей)
+    # 3. ПОЛУЧЕНИЕ/СОЗДАНИЕ СЕЗОНА (с защитой от дублей)
     # ============================================================
 
     def _get_or_create_season(self, league="РПЛ", year="2026/27"):
@@ -272,43 +361,57 @@ class SyncEngine:
             year=year
         )
         
-        for i in range(1, 31):
+        # Используем конфиг для количества туров
+        rounds_count = self.config.get(league, {}).get("rounds", 30)
+        for i in range(1, rounds_count + 1):
             self.db.create_round(season_id, i)
         
         return season_id
 
     # ============================================================
-    # 3. КОМАНДЫ + ПАСПОРТА
+    # 4. КОМАНДЫ + ПАСПОРТА
     # ============================================================
 
     def sync_teams(self, league="РПЛ"):
         """Загружает команды и их паспорта в SQLite"""
         
+        # Резервная копия
+        backup_file = self._backup_database()
+        
         teams = list(self.passports.keys())
         
-        count = 0
+        created = 0
+        updated = 0
+        
         for name in teams:
-            team_id = self.db.add_team(name, league=league, country="Россия")
-            if team_id:
-                count += 1
+            existing_id = self.db.get_team_id(name, league)
+            if existing_id:
+                updated += 1
+            else:
+                team_id = self.db.add_team(name, league=league, country="Россия")
+                if team_id:
+                    created += 1
         
         season_id = self._get_or_create_season(league)
         
         passport_count = self.sync_passports(league)
         
+        # Используем метод database.py для сохранения мета-информации
         meta_count = self._save_passport_meta(season_id)
         
         return {
             "status": "success",
-            "loaded": count,
+            "created": created,
+            "updated": updated,
             "total": len(teams),
             "passports": passport_count.get("updated", 0),
             "meta": meta_count,
-            "season_id": season_id
+            "season_id": season_id,
+            "backup": backup_file
         }
 
     # ============================================================
-    # 4. ПАСПОРТА (ИЗ ВШИТЫХ ДАННЫХ)
+    # 5. ПАСПОРТА (ИЗ ВШИТЫХ ДАННЫХ)
     # ============================================================
 
     def sync_passports(self, league="РПЛ"):
@@ -344,34 +447,11 @@ class SyncEngine:
         }
 
     # ============================================================
-    # 5. МЕТА-ИНФОРМАЦИЯ ПАСПОРТОВ
+    # 6. МЕТА-ИНФОРМАЦИЯ ПАСПОРТОВ (через database.py)
     # ============================================================
 
     def _save_passport_meta(self, season_id):
-        """Сохраняет стиль, ДНК, strengths/weaknesses в отдельную таблицу"""
-        
-        import sqlite3
-        from app.database import DB_FILE
-        
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS team_passport_meta (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                team_id INTEGER,
-                season_id INTEGER,
-                style TEXT,
-                dna TEXT,
-                strengths TEXT,
-                weaknesses TEXT,
-                class TEXT,
-                updated_at TEXT,
-                FOREIGN KEY (team_id) REFERENCES teams(id),
-                FOREIGN KEY (season_id) REFERENCES seasons(id),
-                UNIQUE(team_id, season_id)
-            )
-        """)
+        """Сохраняет мета-информацию паспортов через FAJDatabase"""
         
         teams = self.db.get_teams(league="РПЛ")
         count = 0
@@ -379,29 +459,25 @@ class SyncEngine:
         for team in teams:
             passport = self.passports.get(team['name'])
             if passport:
-                cursor.execute("""
-                    INSERT OR REPLACE INTO team_passport_meta
-                    (team_id, season_id, style, dna, strengths, weaknesses, class, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    team['id'],
-                    season_id,
-                    passport.get("style", ""),
-                    passport.get("dna", ""),
-                    ", ".join(passport.get("strengths", [])),
-                    ", ".join(passport.get("weaknesses", [])),
-                    passport.get("class", ""),
-                    datetime.now().isoformat()
-                ))
+                self.db.save_passport_meta(
+                    team_id=team['id'],
+                    season_id=season_id,
+                    passport_data={
+                        "style": passport.get("style", ""),
+                        "dna": passport.get("dna", ""),
+                        "strengths": passport.get("strengths", []),
+                        "weaknesses": passport.get("weaknesses", []),
+                        "class": passport.get("class", ""),
+                        "version": passport.get("version", "1.0"),
+                        "source": passport.get("source", "FAJ Expert Layer")
+                    }
+                )
                 count += 1
-        
-        conn.commit()
-        conn.close()
         
         return count
 
     # ============================================================
-    # 6. МАТЧИ (ЗАГЛУШКА ДО ПАРСЕРА)
+    # 7. МАТЧИ (ЗАГЛУШКА ДО ПАРСЕРА)
     # ============================================================
 
     def sync_matches(self, league="РПЛ"):
@@ -413,7 +489,7 @@ class SyncEngine:
         }
 
     # ============================================================
-    # 7. РЕЗУЛЬТАТЫ (ЗАГЛУШКА)
+    # 8. РЕЗУЛЬТАТЫ (ЗАГЛУШКА)
     # ============================================================
 
     def sync_results(self, league="РПЛ"):
@@ -425,7 +501,7 @@ class SyncEngine:
         }
 
     # ============================================================
-    # 8. GOLD DATASET
+    # 9. GOLD DATASET
     # ============================================================
 
     def build_gold_dataset(self):
@@ -470,7 +546,7 @@ class SyncEngine:
         }
 
     # ============================================================
-    # 9. AUDIT
+    # 10. AUDIT
     # ============================================================
 
     def run_audit(self):
@@ -489,7 +565,7 @@ class SyncEngine:
             }
 
     # ============================================================
-    # 10. LEARNING
+    # 11. LEARNING
     # ============================================================
 
     def run_learning(self):
@@ -522,6 +598,10 @@ if __name__ == "__main__":
     
     print("\n🔄 Загрузка команд РПЛ 2026/27 с паспортами...")
     result = sync.sync_teams()
-    print(f"✅ Загружено: {result['loaded']} из {result['total']}")
+    print(f"✅ Создано: {result['created']}")
+    print(f"✅ Обновлено: {result['updated']}")
+    print(f"✅ Всего: {result['total']}")
     print(f"✅ Паспортов: {result['passports']}")
     print(f"✅ Мета-информации: {result['meta']}")
+    if result.get('backup'):
+        print(f"✅ Резервная копия: {result['backup']}")
