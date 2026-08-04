@@ -41,16 +41,14 @@ def render():
     st.divider()
 
     # =========================================================
-    # ТАБЛИЦЫ — ВСЕ ГРУППЫ
+    # ТАБЛИЦЫ
     # =========================================================
     st.subheader("📊 Таблицы")
 
-    # Группируем таблицы
     main = ["seasons", "rounds", "matches", "teams"]
     passport = ["team_base", "team_dynamic", "team_identity", "tactical_matchup", "player_impact"]
     pred = ["predictions", "prediction_scores", "prediction_distributions", "expert_predictions", "match_predictions"]
     learning = ["gold_dataset", "learning_records", "learning_events", "audit_log", "migrations"]
-    other = ["journal", "learning_memory", "model_parameters", "xg_memory", "match_snapshots", "model_parameters_learning"]
 
     col1, col2, col3, col4 = st.columns(4)
 
@@ -77,11 +75,6 @@ def render():
         for t in learning:
             if t in tables:
                 st.metric(t, tables[t])
-
-    with st.expander("📂 Другие таблицы"):
-        for t in other:
-            if t in tables:
-                st.write(f"{t}: {tables[t]}")
 
     st.divider()
 
