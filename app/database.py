@@ -728,6 +728,28 @@ def init_database():
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_params_version ON model_parameters_learning(model_version)")
 
+    # ============================================================
+    # 32. TEAM PASSPORT META (новая таблица)
+    # ============================================================
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS team_passport_meta (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_id INTEGER,
+            season_id INTEGER,
+            style TEXT,
+            dna TEXT,
+            strengths TEXT,
+            weaknesses TEXT,
+            class TEXT,
+            version TEXT,
+            source TEXT,
+            updated_at TEXT,
+            FOREIGN KEY (team_id) REFERENCES teams(id),
+            FOREIGN KEY (season_id) REFERENCES seasons(id),
+            UNIQUE(team_id, season_id)
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -755,7 +777,7 @@ class FAJDatabase:
             "expert_predictions", "journal", "learning_memory",
             "model_parameters", "xg_memory", "match_snapshots",
             "migrations", "gold_dataset", "learning_records", "learning_events",
-            "audit_log", "model_parameters_learning"
+            "audit_log", "model_parameters_learning", "team_passport_meta"
         ]
         result = {}
         for table in tables:
@@ -854,6 +876,16 @@ class FAJDatabase:
     def create_round(self, season_id, number, date_start="", date_end=""):
         conn = get_connection()
         cursor = conn.cursor()
+        
+        # Защита от дублей — проверяем, существует ли уже такой тур
+        cursor.execute(
+            "SELECT id FROM rounds WHERE season_id = ? AND round_number = ?",
+            (season_id, number)
+        )
+        existing = cursor.fetchone()
+        if existing:
+            return existing[0]
+        
         cursor.execute("""
             INSERT INTO rounds (season_id, round_number, date_start, date_end, created_at)
             VALUES (?,?,?,?,?)
@@ -1644,6 +1676,47 @@ class FAJDatabase:
             data.get('learning_action'),
             data.get('delta'),
             data.get('confidence'),
+            datetime.now().isoformat()
+        ))
+
+        conn.commit()
+        conn.close()
+
+    # =================================
+    # TEAM PASSPORT META — LEARNING LAYER
+    # =================================
+
+    def save_passport_meta(self, team_id, season_id, passport_data):
+        """
+        Сохраняет мета-информацию паспорта команды
+
+        passport_data = {
+            'style': 'Контроль + позиционная атака',
+            'dna': 'Команда, которая выигрывает классом',
+            'strengths': ['качество состава', 'индивидуальное мастерство'],
+            'weaknesses': ['зависимость от лидеров'],
+            'class': 'Чемпионский претендент',
+            'version': 'RPL_2026.07',
+            'source': 'FAJ Expert Layer'
+        }
+        """
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            INSERT OR REPLACE INTO team_passport_meta
+            (team_id, season_id, style, dna, strengths, weaknesses, class, version, source, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            team_id,
+            season_id,
+            passport_data.get("style", ""),
+            passport_data.get("dna", ""),
+            ", ".join(passport_data.get("strengths", [])),
+            ", ".join(passport_data.get("weaknesses", [])),
+            passport_data.get("class", ""),
+            passport_data.get("version", "1.0"),
+            passport_data.get("source", "FAJ Expert Layer"),
             datetime.now().isoformat()
         ))
 
