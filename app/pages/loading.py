@@ -103,19 +103,6 @@ def render():
                     for rec in report['recommendations']:
                         st.write(f"- {rec['priority']} {rec['title']}")
 
-    st.divider()
-
-    # =========================================================
-    # ДОПОЛНИТЕЛЬНО
-    # =========================================================
-    st.subheader("ℹ️ Информация")
-
-    gold_all = db.get_gold_all()
-    if gold_all:
-        st.write("**Все записи gold_dataset:**")
-        for g in gold_all:
-            st.write(f"- {g['home_team']} — {g['away_team']} | FAJ: {g['faj_score']} | Факт: {g['actual_score'] or '—'} | {g['status']}")
-
 
 if __name__ == "__main__":
     render()
