@@ -7,6 +7,12 @@ FAJ Platform v10.0 - Главный навигатор
 
 import streamlit as st
 
+# =====================================================
+# STARTUP — АВТОМАТИЧЕСКАЯ МИГРАЦИЯ
+# =====================================================
+from app.startup import run_startup_checks
+run_startup_checks()
+
 
 st.set_page_config(
     page_title="FAJ Platform 10.0",
