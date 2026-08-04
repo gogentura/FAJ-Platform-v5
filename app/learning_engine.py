@@ -5,6 +5,7 @@ FAJ Learning Engine
 Анализ ошибок и формирование рекомендаций
 """
 
+from datetime import datetime  # ← ДОБАВЛЕНО
 from app.database import FAJDatabase
 
 
@@ -101,8 +102,6 @@ def get_learning_report():
 
 
 if __name__ == "__main__":
-    from datetime import datetime
-
     report = get_learning_report()
 
     print("\n" + "=" * 60)
