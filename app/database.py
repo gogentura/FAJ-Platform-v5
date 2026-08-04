@@ -5,27 +5,16 @@
 FAJ Platform v11.2.1 + Learning Layer
 Database Engine — ЕДИНЫЙ ФАЙЛ БАЗЫ ДАННЫХ 🔒
 
-Таблицы (25 основных + 5 Learning Layer):
-- teams, seasons, rounds, matches, match_predictions
-- match_events, players, player_events
-- team_base, team_dynamic, team_identity, tactical_matchup, player_impact
-- team_competition_profile, team_events, team_history
-- predictions, prediction_scores, prediction_distributions
-- expert_predictions, journal, learning_memory
-- model_parameters, xg_memory, match_snapshots
-- gold_dataset, learning_records, learning_events, audit_log, migrations
-
-БАЗА: SQLite
-СТАТУС: 🔒 ЗАМОРОЖЕНА + Learning Layer
+Схема: v11.2.1
 """
 
 import sqlite3
 import os
 from datetime import datetime
 
-
 DATA_DIR = "data"
 DB_FILE = os.path.join(DATA_DIR, "faj.db")
+DB_SCHEMA_VERSION = "11.2.1"
 
 
 def get_connection():
@@ -35,12 +24,43 @@ def get_connection():
     return conn
 
 
+def get_schema_version():
+    """Возвращает текущую версию схемы БД"""
+    if not os.path.exists(DB_FILE):
+        return None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT version FROM schema_version ORDER BY id DESC LIMIT 1")
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None
+    except:
+        return None
+
+
+def set_schema_version(version):
+    """Записывает версию схемы в БД"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS schema_version (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            version TEXT NOT NULL,
+            applied_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
+    conn.commit()
+    conn.close()
+
+
 def init_database():
     conn = get_connection()
     cursor = conn.cursor()
 
     # ===============================
-    # 1. TEAMS
+    # TEAMS
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS teams (
@@ -58,7 +78,7 @@ def init_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_team_lookup ON teams(name, league)")
 
     # ===============================
-    # 2. SEASONS
+    # SEASONS
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS seasons (
@@ -73,7 +93,7 @@ def init_database():
     """)
 
     # ===============================
-    # 3. ROUNDS
+    # ROUNDS
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS rounds (
@@ -89,7 +109,7 @@ def init_database():
     """)
 
     # ===============================
-    # 4. MATCHES
+    # MATCHES
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS matches (
@@ -112,7 +132,7 @@ def init_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_matches_teams ON matches(home_team_id, away_team_id)")
 
     # ===============================
-    # 5. MATCH PREDICTIONS
+    # MATCH PREDICTIONS
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS match_predictions (
@@ -131,7 +151,7 @@ def init_database():
     """)
 
     # ===============================
-    # 6. MATCH EVENTS
+    # MATCH EVENTS
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS match_events (
@@ -149,7 +169,7 @@ def init_database():
     """)
 
     # ===============================
-    # 7. PLAYERS
+    # PLAYERS
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS players (
@@ -166,7 +186,7 @@ def init_database():
     """)
 
     # ===============================
-    # 8. PLAYER EVENTS
+    # PLAYER EVENTS
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS player_events (
@@ -182,7 +202,7 @@ def init_database():
     """)
 
     # ===============================
-    # 9. TEAM BASE
+    # TEAM BASE
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS team_base (
@@ -210,12 +230,13 @@ def init_database():
             updated_after_match INTEGER,
             updated_at TEXT,
             FOREIGN KEY(team_id) REFERENCES teams(id),
-            FOREIGN KEY(season_id) REFERENCES seasons(id)
+            FOREIGN KEY(season_id) REFERENCES seasons(id),
+            UNIQUE(team_id, season_id)
         )
     """)
 
     # ===============================
-    # 10. TEAM DYNAMIC
+    # TEAM DYNAMIC
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS team_dynamic (
@@ -246,12 +267,13 @@ def init_database():
             passport_confidence REAL DEFAULT 0.4,
             updated_at TEXT,
             FOREIGN KEY(team_id) REFERENCES teams(id),
-            FOREIGN KEY(season_id) REFERENCES seasons(id)
+            FOREIGN KEY(season_id) REFERENCES seasons(id),
+            UNIQUE(team_id, season_id)
         )
     """)
 
     # ===============================
-    # 11. TEAM IDENTITY
+    # TEAM IDENTITY
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS team_identity (
@@ -271,7 +293,7 @@ def init_database():
     """)
 
     # ===============================
-    # 12. TACTICAL MATCHUP
+    # TACTICAL MATCHUP
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS tactical_matchup (
@@ -291,7 +313,7 @@ def init_database():
     """)
 
     # ===============================
-    # 13. PLAYER IMPACT
+    # PLAYER IMPACT
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS player_impact (
@@ -311,7 +333,7 @@ def init_database():
     """)
 
     # ===============================
-    # 14. TEAM COMPETITION PROFILE
+    # TEAM COMPETITION PROFILE
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS team_competition_profile (
@@ -328,7 +350,7 @@ def init_database():
     """)
 
     # ===============================
-    # 15. TEAM EVENTS
+    # TEAM EVENTS
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS team_events (
@@ -345,7 +367,7 @@ def init_database():
     """)
 
     # ===============================
-    # 16. TEAM HISTORY
+    # TEAM HISTORY
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS team_history (
@@ -364,7 +386,7 @@ def init_database():
     """)
 
     # ===============================
-    # 17. PREDICTIONS
+    # PREDICTIONS
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS predictions (
@@ -379,6 +401,8 @@ def init_database():
             over35 REAL,
             btts REAL,
             confidence INTEGER,
+            prediction_source TEXT DEFAULT 'FAJ Engine',
+            prediction_hash TEXT,
             prediction_status TEXT DEFAULT 'active',
             created_at TEXT,
             FOREIGN KEY(match_id) REFERENCES matches(id)
@@ -386,7 +410,7 @@ def init_database():
     """)
 
     # ===============================
-    # 18. PREDICTION SCORES
+    # PREDICTION SCORES
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS prediction_scores (
@@ -400,7 +424,7 @@ def init_database():
     """)
 
     # ===============================
-    # 19. PREDICTION DISTRIBUTIONS
+    # PREDICTION DISTRIBUTIONS
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS prediction_distributions (
@@ -414,7 +438,7 @@ def init_database():
     """)
 
     # ===============================
-    # 20. EXPERT PREDICTIONS
+    # EXPERT PREDICTIONS
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS expert_predictions (
@@ -430,7 +454,7 @@ def init_database():
     """)
 
     # ===============================
-    # 21. JOURNAL
+    # JOURNAL
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS journal (
@@ -448,7 +472,7 @@ def init_database():
     """)
 
     # ===============================
-    # 22. LEARNING MEMORY
+    # LEARNING MEMORY
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS learning_memory (
@@ -470,7 +494,7 @@ def init_database():
     """)
 
     # ===============================
-    # 23. MODEL PARAMETERS
+    # MODEL PARAMETERS
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS model_parameters (
@@ -486,7 +510,7 @@ def init_database():
     """)
 
     # ===============================
-    # 24. XG MEMORY
+    # XG MEMORY
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS xg_memory (
@@ -504,7 +528,7 @@ def init_database():
     """)
 
     # ===============================
-    # 25. MATCH SNAPSHOTS
+    # MATCH SNAPSHOTS
     # ===============================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS match_snapshots (
@@ -535,10 +559,10 @@ def init_database():
     """)
 
     # ============================================================
-    # LEARNING LAYER TABLES (v12)
+    # LEARNING LAYER TABLES
     # ============================================================
 
-    # 26. MIGRATIONS — журнал миграций
+    # MIGRATIONS
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS migrations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -551,7 +575,7 @@ def init_database():
         )
     """)
 
-    # 27. GOLD_DATASET — эталонная база
+    # GOLD_DATASET
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS gold_dataset (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -559,8 +583,6 @@ def init_database():
             home_team TEXT,
             away_team TEXT,
             match_date TEXT,
-
-            -- Прогноз FAJ
             model_version TEXT,
             faj_score TEXT,
             faj_xg_home REAL,
@@ -575,12 +597,8 @@ def init_database():
             faj_pir_away REAL,
             faj_style_home TEXT,
             faj_style_away TEXT,
-
-            -- Эксперт
             expert_score TEXT,
             expert_reasoning TEXT,
-
-            -- Факт (после матча)
             actual_score TEXT,
             actual_xg_home REAL,
             actual_xg_away REAL,
@@ -589,20 +607,19 @@ def init_database():
             actual_total_35 INTEGER,
             actual_home_goals INTEGER,
             actual_away_goals INTEGER,
-
-            -- Статус
             status TEXT DEFAULT 'pending',
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-
             FOREIGN KEY (match_id) REFERENCES matches(id)
         )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_gold_match ON gold_dataset(match_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_gold_status ON gold_dataset(status)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_gold_version ON gold_dataset(model_version)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_gold_teams ON gold_dataset(home_team, away_team)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_gold_date ON gold_dataset(match_date)")
 
-    # 28. LEARNING_RECORDS — память ошибок
+    # LEARNING_RECORDS
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS learning_records (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -610,36 +627,25 @@ def init_database():
             match_id INTEGER,
             home_team TEXT,
             away_team TEXT,
-
-            -- Прогноз и факт
             faj_score TEXT,
             actual_score TEXT,
             faj_xg_home REAL,
             faj_xg_away REAL,
             actual_xg_home REAL,
             actual_xg_away REAL,
-
-            -- Ошибки
             error_score INTEGER,
             error_xg REAL,
             error_btts INTEGER,
             error_total_25 INTEGER,
             error_total_35 INTEGER,
-
-            -- Классификация
             error_type TEXT,
             cause_type TEXT,
             error_severity INTEGER,
             error_detail TEXT,
-
-            -- Рекомендации
             recommendation TEXT,
             corrected_weights TEXT,
-
-            -- Статус
             status TEXT DEFAULT 'new',
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-
             FOREIGN KEY (gold_id) REFERENCES gold_dataset(id),
             FOREIGN KEY (match_id) REFERENCES matches(id)
         )
@@ -648,8 +654,9 @@ def init_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_learning_type ON learning_records(error_type)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_learning_cause ON learning_records(cause_type)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_learning_status ON learning_records(status)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_learning_match ON learning_records(match_id)")
 
-    # 29. LEARNING_EVENTS — события обучения
+    # LEARNING_EVENTS
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS learning_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -660,28 +667,20 @@ def init_database():
             away_team_id INTEGER,
             home_team TEXT,
             away_team TEXT,
-
-            -- Данные
             faj_score TEXT,
             actual_score TEXT,
             faj_xg_home REAL,
             faj_xg_away REAL,
             actual_xg_home REAL,
             actual_xg_away REAL,
-
-            -- Ошибка
             error_magnitude REAL,
             error_type TEXT,
             cause_type TEXT,
             error_severity INTEGER,
-
-            -- Обучение
             learning_action TEXT,
             delta TEXT,
             confidence REAL,
-
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-
             FOREIGN KEY (match_id) REFERENCES matches(id),
             FOREIGN KEY (season_id) REFERENCES seasons(id),
             FOREIGN KEY (home_team_id) REFERENCES teams(id),
@@ -691,7 +690,7 @@ def init_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_match ON learning_events(match_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_team ON learning_events(home_team_id, away_team_id)")
 
-    # 30. AUDIT_LOG — журнал аудита
+    # AUDIT_LOG
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS audit_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -703,13 +702,12 @@ def init_database():
             summary TEXT,
             recommendations TEXT,
             status TEXT DEFAULT 'pending',
-
             FOREIGN KEY (match_id) REFERENCES matches(id),
             FOREIGN KEY (gold_id) REFERENCES gold_dataset(id)
         )
     """)
 
-    # 31. MODEL_PARAMETERS_LEARNING — параметры для обучения
+    # MODEL_PARAMETERS_LEARNING
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS model_parameters_learning (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -728,9 +726,7 @@ def init_database():
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_params_version ON model_parameters_learning(model_version)")
 
-    # ============================================================
-    # 32. TEAM PASSPORT META (новая таблица)
-    # ============================================================
+    # TEAM_PASSPORT_META
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS team_passport_meta (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -750,21 +746,31 @@ def init_database():
         )
     """)
 
+    # ============================================================
+    # SCHEMA VERSION
+    # ============================================================
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS schema_version (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            version TEXT NOT NULL,
+            applied_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     conn.commit()
     conn.close()
 
+    # Записываем версию схемы
+    set_schema_version(DB_SCHEMA_VERSION)
+
 
 class FAJDatabase:
-
     def __init__(self):
         init_database()
 
     def _get_connection(self):
         return get_connection()
 
-    # =================================
-    # СТАТУС
-    # =================================
     def get_status(self):
         conn = get_connection()
         cursor = conn.cursor()
@@ -786,29 +792,40 @@ class FAJDatabase:
                 result[table] = cursor.fetchone()[0]
             except:
                 result[table] = 0
+        # Получаем версию схемы
+        schema_version = get_schema_version()
         conn.close()
         return {
             "database": "SQLite",
             "file": DB_FILE,
             "status": "ACTIVE",
+            "schema_version": schema_version,
             "tables": result
         }
 
-    # =================================
-    # TEAMS
-    # =================================
     def add_team(self, name, league, country="", api_id=None,
                  team_type="club", competition_group=None):
         conn = get_connection()
         cursor = conn.cursor()
+
         cursor.execute("""
-            INSERT OR IGNORE INTO teams
+            INSERT INTO teams
             (name, league, country, api_id, team_type, competition_group, created_at)
-            VALUES (?,?,?,?,?,?,?)
-        """, (name, league, country, api_id, team_type, competition_group,
-              datetime.now().isoformat()))
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(name, league) DO UPDATE SET
+                country = excluded.country,
+                api_id = excluded.api_id,
+                team_type = excluded.team_type,
+                competition_group = excluded.competition_group
+        """, (
+            name, league, country, api_id, team_type, competition_group,
+            datetime.now().isoformat()
+        ))
+
+        cursor.execute("SELECT id FROM teams WHERE name = ? AND league = ?", (name, league))
+        team_id = cursor.fetchone()[0]
+
         conn.commit()
-        team_id = cursor.lastrowid
         conn.close()
         return team_id
 
@@ -839,9 +856,6 @@ class FAJDatabase:
         conn.close()
         return row
 
-    # =================================
-    # SEASONS
-    # =================================
     def create_season(self, name, league, year, competition_type="league", status="active"):
         conn = get_connection()
         cursor = conn.cursor()
@@ -870,14 +884,9 @@ class FAJDatabase:
         conn.close()
         return row[0] if row else None
 
-    # =================================
-    # ROUNDS
-    # =================================
     def create_round(self, season_id, number, date_start="", date_end=""):
         conn = get_connection()
         cursor = conn.cursor()
-        
-        # Защита от дублей — проверяем, существует ли уже такой тур
         cursor.execute(
             "SELECT id FROM rounds WHERE season_id = ? AND round_number = ?",
             (season_id, number)
@@ -885,7 +894,6 @@ class FAJDatabase:
         existing = cursor.fetchone()
         if existing:
             return existing[0]
-        
         cursor.execute("""
             INSERT INTO rounds (season_id, round_number, date_start, date_end, created_at)
             VALUES (?,?,?,?,?)
@@ -906,9 +914,6 @@ class FAJDatabase:
         conn.close()
         return data
 
-    # =================================
-    # MATCHES
-    # =================================
     def add_match(self, round_id, home_team_id, away_team_id,
                   date="", competition="RPL"):
         conn = get_connection()
@@ -945,9 +950,6 @@ class FAJDatabase:
         conn.close()
         return data
 
-    # =================================
-    # MATCH PREDICTIONS
-    # =================================
     def save_match_prediction(self, match_id, xg_home, xg_away,
                               lambda_home=None, lambda_away=None,
                               home_advantage=1.0, prediction_type="standard",
@@ -977,9 +979,6 @@ class FAJDatabase:
         conn.close()
         return row
 
-    # =================================
-    # TEAM BASE
-    # =================================
     def get_base(self, team_id, season_id):
         conn = get_connection()
         cursor = conn.cursor()
@@ -999,6 +998,11 @@ class FAJDatabase:
             'finishing', 'goalkeeper', 'discipline', 'coach_factor',
             'squad_quality', 'bench_quality', 'home_advantage'
         ]
+
+        update_data = {k: v for k, v in kwargs.items() if k in allowed}
+        if not update_data:
+            return
+
         existing = self.get_base(team_id, season_id)
         conn = get_connection()
         cursor = conn.cursor()
@@ -1006,51 +1010,64 @@ class FAJDatabase:
         if existing:
             fields = []
             values = []
-            for key in allowed:
-                if key in kwargs:
-                    fields.append(f"{key} = ?")
-                    values.append(kwargs[key])
+            for key, value in update_data.items():
+                fields.append(f"{key} = ?")
+                values.append(value)
+
             values.append(datetime.now().isoformat())
             values.append(team_id)
             values.append(season_id)
-            cursor.execute(f"""
+
+            query = f"""
                 UPDATE team_base
                 SET {', '.join(fields)}, updated_at = ?
                 WHERE team_id = ? AND season_id = ?
-            """, values)
+            """
+            cursor.execute(query, values)
         else:
+            defaults = {
+                'attack': 50, 'defense': 50, 'control': 50,
+                'press': 50, 'tempo': 50, 'transition': 50,
+                'set_pieces': 50, 'counter_attack': 50, 'build_up': 50,
+                'finishing': 50, 'goalkeeper': 50, 'discipline': 50,
+                'coach_factor': 50, 'squad_quality': 50, 'bench_quality': 50,
+                'home_advantage': 1.0
+            }
+            defaults.update(update_data)
+
             cursor.execute("""
-                INSERT INTO team_base (team_id, season_id, attack, defense, control,
+                INSERT INTO team_base (
+                    team_id, season_id, attack, defense, control,
                     press, tempo, transition, set_pieces, counter_attack, build_up,
-                    finishing, goalkeeper, discipline, coach_factor, squad_quality,
-                    bench_quality, home_advantage, passport_version, updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)
+                    finishing, goalkeeper, discipline, coach_factor,
+                    squad_quality, bench_quality, home_advantage,
+                    passport_version, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 team_id, season_id,
-                kwargs.get('attack', 50),
-                kwargs.get('defense', 50),
-                kwargs.get('control', 50),
-                kwargs.get('press', 50),
-                kwargs.get('tempo', 50),
-                kwargs.get('transition', 50),
-                kwargs.get('set_pieces', 50),
-                kwargs.get('counter_attack', 50),
-                kwargs.get('build_up', 50),
-                kwargs.get('finishing', 50),
-                kwargs.get('goalkeeper', 50),
-                kwargs.get('discipline', 50),
-                kwargs.get('coach_factor', 50),
-                kwargs.get('squad_quality', 50),
-                kwargs.get('bench_quality', 50),
-                kwargs.get('home_advantage', 1.0),
+                defaults.get('attack', 50),
+                defaults.get('defense', 50),
+                defaults.get('control', 50),
+                defaults.get('press', 50),
+                defaults.get('tempo', 50),
+                defaults.get('transition', 50),
+                defaults.get('set_pieces', 50),
+                defaults.get('counter_attack', 50),
+                defaults.get('build_up', 50),
+                defaults.get('finishing', 50),
+                defaults.get('goalkeeper', 50),
+                defaults.get('discipline', 50),
+                defaults.get('coach_factor', 50),
+                defaults.get('squad_quality', 50),
+                defaults.get('bench_quality', 50),
+                defaults.get('home_advantage', 1.0),
+                1,
                 datetime.now().isoformat()
             ))
+
         conn.commit()
         conn.close()
 
-    # =================================
-    # TEAM DYNAMIC
-    # =================================
     def get_dynamic(self, team_id, season_id):
         conn = get_connection()
         cursor = conn.cursor()
@@ -1073,6 +1090,11 @@ class FAJDatabase:
             'travel_distance', 'rotation_index', 'last_base_correction_match',
             'passport_confidence'
         ]
+
+        update_data = {k: v for k, v in kwargs.items() if k in allowed}
+        if not update_data:
+            return
+
         existing = self.get_dynamic(team_id, season_id)
         conn = get_connection()
         cursor = conn.cursor()
@@ -1080,28 +1102,31 @@ class FAJDatabase:
         if existing:
             fields = []
             values = []
-            for key in allowed:
-                if key in kwargs:
-                    fields.append(f"{key} = ?")
-                    values.append(kwargs[key])
+            for key, value in update_data.items():
+                fields.append(f"{key} = ?")
+                values.append(value)
+
             values.append(datetime.now().isoformat())
             values.append(team_id)
             values.append(season_id)
-            cursor.execute(f"""
+
+            query = f"""
                 UPDATE team_dynamic
                 SET {', '.join(fields)}, updated_at = ?
                 WHERE team_id = ? AND season_id = ?
-            """, values)
+            """
+            cursor.execute(query, values)
         else:
             cursor.execute("""
-                INSERT INTO team_dynamic (team_id, season_id, form, fitness, morale,
+                INSERT INTO team_dynamic (
+                    team_id, season_id, form, fitness, morale,
                     fatigue, injury_index, coach_confidence, last5_points,
                     last5_strength_points, last5_results, last5_strength_results,
                     last5_xg, last5_xga, last5_goals, last5_conceded,
                     last5_performance, average_performance, current_streak,
                     days_rest, travel_distance, rotation_index,
-                    last_base_correction_match, passport_confidence, updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    last_base_correction_match, passport_confidence, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 team_id, season_id,
                 kwargs.get('form', 50),
@@ -1128,12 +1153,10 @@ class FAJDatabase:
                 kwargs.get('passport_confidence', 0.4),
                 datetime.now().isoformat()
             ))
+
         conn.commit()
         conn.close()
 
-    # =================================
-    # TEAM IDENTITY
-    # =================================
     def get_identity(self, team_id, season_id):
         conn = get_connection()
         cursor = conn.cursor()
@@ -1147,6 +1170,11 @@ class FAJDatabase:
 
     def update_identity(self, team_id, season_id, **kwargs):
         allowed = ['style', 'tempo', 'pressing', 'transition', 'risk_level']
+
+        update_data = {k: v for k, v in kwargs.items() if k in allowed}
+        if not update_data:
+            return
+
         conn = get_connection()
         cursor = conn.cursor()
         existing = self.get_identity(team_id, season_id)
@@ -1154,17 +1182,19 @@ class FAJDatabase:
         if existing:
             fields = []
             values = []
-            for key in allowed:
-                if key in kwargs:
-                    fields.append(f"{key} = ?")
-                    values.append(kwargs[key])
+            for key, value in update_data.items():
+                fields.append(f"{key} = ?")
+                values.append(value)
+
             values.append(team_id)
             values.append(season_id)
-            cursor.execute(f"""
+
+            query = f"""
                 UPDATE team_identity
                 SET {', '.join(fields)}
                 WHERE team_id = ? AND season_id = ?
-            """, values)
+            """
+            cursor.execute(query, values)
         else:
             cursor.execute("""
                 INSERT INTO team_identity
@@ -1179,12 +1209,10 @@ class FAJDatabase:
                 kwargs.get('risk_level', 'medium'),
                 datetime.now().isoformat()
             ))
+
         conn.commit()
         conn.close()
 
-    # =================================
-    # TACTICAL MATCHUP
-    # =================================
     def get_tactical_matchup(self, team_id, season_id):
         conn = get_connection()
         cursor = conn.cursor()
@@ -1198,6 +1226,11 @@ class FAJDatabase:
 
     def update_tactical_matchup(self, team_id, season_id, **kwargs):
         allowed = ['vs_high_press', 'vs_low_block', 'vs_counter_attack', 'vs_possession', 'vs_direct']
+
+        update_data = {k: v for k, v in kwargs.items() if k in allowed}
+        if not update_data:
+            return
+
         conn = get_connection()
         cursor = conn.cursor()
         existing = self.get_tactical_matchup(team_id, season_id)
@@ -1205,18 +1238,20 @@ class FAJDatabase:
         if existing:
             fields = []
             values = []
-            for key in allowed:
-                if key in kwargs:
-                    fields.append(f"{key} = ?")
-                    values.append(kwargs[key])
+            for key, value in update_data.items():
+                fields.append(f"{key} = ?")
+                values.append(value)
+
             values.append(datetime.now().isoformat())
             values.append(team_id)
             values.append(season_id)
-            cursor.execute(f"""
+
+            query = f"""
                 UPDATE tactical_matchup
                 SET {', '.join(fields)}, updated_at = ?
                 WHERE team_id = ? AND season_id = ?
-            """, values)
+            """
+            cursor.execute(query, values)
         else:
             cursor.execute("""
                 INSERT INTO tactical_matchup
@@ -1231,25 +1266,26 @@ class FAJDatabase:
                 kwargs.get('vs_direct', 0.0),
                 datetime.now().isoformat()
             ))
+
         conn.commit()
         conn.close()
 
-    # =================================
-    # PREDICTIONS
-    # =================================
     def save_prediction(self, match_id, model_version, algorithm,
                         home_win, draw, away_win,
                         over25=0.0, over35=0.0, btts=0.0,
-                        confidence=50):
+                        confidence=50, prediction_source="FAJ Engine", prediction_hash=None):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO predictions
             (match_id, model_version, algorithm, home_win, draw, away_win,
-             over25, over35, btts, confidence, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)
-        """, (match_id, model_version, algorithm, home_win, draw, away_win,
-              over25, over35, btts, confidence, datetime.now().isoformat()))
+             over25, over35, btts, confidence, prediction_source, prediction_hash, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            match_id, model_version, algorithm, home_win, draw, away_win,
+            over25, over35, btts, confidence, prediction_source, prediction_hash,
+            datetime.now().isoformat()
+        ))
         conn.commit()
         pred_id = cursor.lastrowid
         conn.close()
@@ -1299,9 +1335,6 @@ class FAJDatabase:
         conn.close()
         return data
 
-    # =================================
-    # EXPERT PREDICTIONS
-    # =================================
     def save_expert_prediction(self, match_id, expert_name, score,
                                comment="", confidence=50):
         conn = get_connection()
@@ -1314,9 +1347,6 @@ class FAJDatabase:
         conn.commit()
         conn.close()
 
-    # =================================
-    # JOURNAL
-    # =================================
     def add_journal_entry(self, match_id, faj_prediction, expert_prediction,
                           actual_result, error_type, error_score, analysis=""):
         conn = get_connection()
@@ -1331,9 +1361,6 @@ class FAJDatabase:
         conn.commit()
         conn.close()
 
-    # =================================
-    # MODEL PARAMETERS
-    # =================================
     def get_model_parameters(self, model_version=None):
         conn = get_connection()
         conn.row_factory = sqlite3.Row
@@ -1362,41 +1389,9 @@ class FAJDatabase:
         conn.commit()
         conn.close()
 
-    # =================================
-    # GOLD DATASET — LEARNING LAYER
-    # =================================
-
     def add_to_gold(self, data):
-        """
-        Добавляет запись в gold_dataset
-
-        data = {
-            'match_id': 1,
-            'home_team': 'Краснодар',
-            'away_team': 'Зенит',
-            'match_date': '30.07.2026',
-            'model_version': '1.0',
-            'faj_score': '1:2',
-            'faj_xg_home': 1.25,
-            'faj_xg_away': 1.65,
-            'faj_btts': 1,
-            'faj_total_25': 1,
-            'faj_total_35': 0,
-            'faj_confidence': 68,
-            'faj_rating_home': 90.0,
-            'faj_rating_away': 91.5,
-            'faj_pir_home': 7.8,
-            'faj_pir_away': 8.3,
-            'faj_style_home': 'владение, высокий прессинг',
-            'faj_style_away': 'контроль центра, быстрые переходы',
-            'expert_score': '1:2',
-            'expert_reasoning': 'разница качества состава',
-            'status': 'pending'
-        }
-        """
         conn = get_connection()
         cursor = conn.cursor()
-
         cursor.execute("""
             INSERT INTO gold_dataset (
                 match_id, home_team, away_team, match_date,
@@ -1433,30 +1428,14 @@ class FAJDatabase:
             data.get('status', 'pending'),
             datetime.now().isoformat()
         ))
-
         conn.commit()
         gold_id = cursor.lastrowid
         conn.close()
         return gold_id
 
     def update_gold_actual(self, gold_id, actual_data):
-        """
-        Обновляет фактические данные в gold_dataset
-
-        actual_data = {
-            'actual_score': '2:2',
-            'actual_xg_home': 1.80,
-            'actual_xg_away': 1.90,
-            'actual_btts': 1,
-            'actual_total_25': 1,
-            'actual_total_35': 1,
-            'actual_home_goals': 2,
-            'actual_away_goals': 2
-        }
-        """
         conn = get_connection()
         cursor = conn.cursor()
-
         cursor.execute("""
             UPDATE gold_dataset SET
                 actual_score = ?,
@@ -1482,54 +1461,44 @@ class FAJDatabase:
             datetime.now().isoformat(),
             gold_id
         ))
-
         conn.commit()
         conn.close()
 
     def get_gold_by_match(self, match_id):
-        """Получает запись gold_dataset по match_id"""
         conn = get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-
         cursor.execute("""
             SELECT * FROM gold_dataset WHERE match_id = ?
             ORDER BY created_at DESC LIMIT 1
         """, (match_id,))
-
         result = cursor.fetchone()
         conn.close()
         return result
 
     def get_gold_pending(self):
-        """Получает все записи со статусом pending или completed (не аудированные)"""
         conn = get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-
         cursor.execute("""
             SELECT * FROM gold_dataset
             WHERE status IN ('pending', 'completed')
             ORDER BY match_date DESC
         """)
-
         results = cursor.fetchall()
         conn.close()
         return results
 
     def get_gold_all(self):
-        """Получает все записи gold_dataset"""
         conn = get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-
         cursor.execute("SELECT * FROM gold_dataset ORDER BY id DESC")
         results = cursor.fetchall()
         conn.close()
         return results
 
     def get_gold_count(self):
-        """Количество записей в gold_dataset"""
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM gold_dataset")
@@ -1537,15 +1506,9 @@ class FAJDatabase:
         conn.close()
         return count
 
-    # =================================
-    # LEARNING RECORDS — LEARNING LAYER
-    # =================================
-
     def add_learning_record(self, data):
-        """Добавляет запись в learning_records"""
         conn = get_connection()
         cursor = conn.cursor()
-
         cursor.execute("""
             INSERT INTO learning_records (
                 gold_id, match_id, home_team, away_team,
@@ -1580,18 +1543,15 @@ class FAJDatabase:
             data.get('status', 'new'),
             datetime.now().isoformat()
         ))
-
         conn.commit()
         record_id = cursor.lastrowid
         conn.close()
         return record_id
 
     def get_learning_records(self, status=None):
-        """Получает записи learning_records"""
         conn = get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-
         if status:
             cursor.execute("""
                 SELECT * FROM learning_records
@@ -1600,13 +1560,11 @@ class FAJDatabase:
             """, (status,))
         else:
             cursor.execute("SELECT * FROM learning_records ORDER BY created_at DESC")
-
         results = cursor.fetchall()
         conn.close()
         return results
 
     def get_learning_count(self):
-        """Количество записей в learning_records"""
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM learning_records")
@@ -1615,10 +1573,8 @@ class FAJDatabase:
         return count
 
     def update_learning_status(self, record_id, status, recommendation=None):
-        """Обновляет статус и рекомендацию"""
         conn = get_connection()
         cursor = conn.cursor()
-
         if recommendation:
             cursor.execute("""
                 UPDATE learning_records
@@ -1631,19 +1587,12 @@ class FAJDatabase:
                 SET status = ?
                 WHERE id = ?
             """, (status, record_id))
-
         conn.commit()
         conn.close()
 
-    # =================================
-    # LEARNING EVENTS — LEARNING LAYER
-    # =================================
-
     def add_learning_event(self, data):
-        """Добавляет событие обучения"""
         conn = get_connection()
         cursor = conn.cursor()
-
         cursor.execute("""
             INSERT INTO learning_events (
                 match_id, season_id, round_number,
@@ -1678,35 +1627,32 @@ class FAJDatabase:
             data.get('confidence'),
             datetime.now().isoformat()
         ))
-
         conn.commit()
         conn.close()
-
-    # =================================
-    # TEAM PASSPORT META — LEARNING LAYER
-    # =================================
 
     def save_passport_meta(self, team_id, season_id, passport_data):
         """
         Сохраняет мета-информацию паспорта команды
-
-        passport_data = {
-            'style': 'Контроль + позиционная атака',
-            'dna': 'Команда, которая выигрывает классом',
-            'strengths': ['качество состава', 'индивидуальное мастерство'],
-            'weaknesses': ['зависимость от лидеров'],
-            'class': 'Чемпионский претендент',
-            'version': 'RPL_2026.07',
-            'source': 'FAJ Expert Layer'
-        }
+        Использует INSERT ... ON CONFLICT DO UPDATE вместо REPLACE
         """
         conn = get_connection()
         cursor = conn.cursor()
 
         cursor.execute("""
-            INSERT OR REPLACE INTO team_passport_meta
-            (team_id, season_id, style, dna, strengths, weaknesses, class, version, source, updated_at)
+            INSERT INTO team_passport_meta (
+                team_id, season_id, style, dna, strengths, weaknesses,
+                class, version, source, updated_at
+            )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(team_id, season_id) DO UPDATE SET
+                style = excluded.style,
+                dna = excluded.dna,
+                strengths = excluded.strengths,
+                weaknesses = excluded.weaknesses,
+                class = excluded.class,
+                version = excluded.version,
+                source = excluded.source,
+                updated_at = excluded.updated_at
         """, (
             team_id,
             season_id,
@@ -1723,32 +1669,21 @@ class FAJDatabase:
         conn.commit()
         conn.close()
 
-    # =================================
-    # LEARNING LAYER — СТАТИСТИКА
-    # =================================
-
     def get_learning_status(self):
-        """Получает статус Learning Layer"""
         conn = get_connection()
         cursor = conn.cursor()
-
         cursor.execute("SELECT COUNT(*) FROM gold_dataset")
         gold_count = cursor.fetchone()[0]
-
         cursor.execute("SELECT COUNT(*) FROM learning_records")
         learning_count = cursor.fetchone()[0]
-
         cursor.execute("SELECT COUNT(*) FROM learning_events")
         events_count = cursor.fetchone()[0]
-
         cursor.execute("""
             SELECT COUNT(*) FROM learning_records
             WHERE status = 'new' AND error_severity >= 4
         """)
         critical = cursor.fetchone()[0]
-
         conn.close()
-
         return {
             'gold_dataset': gold_count,
             'learning_records': learning_count,
@@ -1763,3 +1698,4 @@ if __name__ == "__main__":
     print(f"✅ FAJ Database: {status['status']}")
     print(f"   📊 Всего таблиц: {len(status['tables'])}")
     print(f"   📁 Файл: {status['file']}")
+    print(f"   📌 Версия схемы: {status.get('schema_version', 'не определена')}")
