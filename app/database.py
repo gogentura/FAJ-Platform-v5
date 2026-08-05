@@ -1618,6 +1618,82 @@ class FAJDatabase:
             'critical_errors': critical
         }
 
+    # ============================================================
+    # SAVE PREDICTION (НОВЫЙ МЕТОД)
+    # ============================================================
+
+    def save_prediction_result(
+        self,
+        prediction_id: str,
+        home_team: str,
+        away_team: str,
+        league: str,
+        xg_home: float,
+        xg_away: float,
+        home_win: float,
+        draw: float,
+        away_win: float,
+        faj_score: str,
+        confidence: float,
+        risk_level: str,
+        model_agreement: float,
+        pipeline_version: str
+    ) -> bool:
+        """
+        Сохранение результата прогноза
+
+        Args:
+            prediction_id: ID прогноза
+            home_team: команда хозяев
+            away_team: команда гостей
+            league: лига
+            xg_home: xG хозяев
+            xg_away: xG гостей
+            home_win: вероятность победы хозяев
+            draw: вероятность ничьей
+            away_win: вероятность победы гостей
+            faj_score: финальный счёт
+            confidence: уверенность
+            risk_level: уровень риска
+            model_agreement: согласованность моделей
+            pipeline_version: версия Pipeline
+
+        Returns:
+            bool: успешно ли сохранено
+        """
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                INSERT INTO faj_decisions (
+                    final_score,
+                    final_probability,
+                    confidence,
+                    risk_level,
+                    model_agreement,
+                    reason,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                faj_score,
+                0.0,
+                confidence,
+                risk_level,
+                model_agreement,
+                f"FAJ Decision: {home_team} vs {away_team} ({league})",
+                datetime.now().isoformat()
+            ))
+
+            conn.commit()
+            conn.close()
+            logger.info(f"Prediction result saved: {prediction_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Save prediction result error: {e}")
+            return False
+
 
 if __name__ == "__main__":
     db = FAJDatabase()
