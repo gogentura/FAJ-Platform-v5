@@ -7,6 +7,7 @@ FAJ Platform v12.0
 Config
 
 Единый центр управления всей платформой.
+Все параметры модели в одном месте.
 =====================================================
 """
 
@@ -22,8 +23,9 @@ class Config:
 
     PLATFORM_VERSION = "12.0"
     CORE_VERSION = "7.3"
-    PIPELINE_VERSION = "1.2"
+    PIPELINE_VERSION = "1.9"           # синхронизировано с prediction_pipeline.py
     MODEL_VERSION = "12.0"
+    PASSPORT_VERSION = "1.4"
 
     # ============================================================
     # XG ENGINE
@@ -32,12 +34,17 @@ class Config:
     XG_MIN = 0.10
     XG_MAX = 4.00
     XG_LEAGUE_MEAN = 1.35
+    XG_SCALE = 2.5
     HOME_ADVANTAGE = 1.08
 
-    SEASON_PHASE_START = 0.90
-    SEASON_PHASE_EARLY = 0.95
-    SEASON_PHASE_MID = 1.00
-    SEASON_PHASE_END = 1.05
+    # ============================================================
+    # SEASON FACTORS (коэффициенты, а не даты)
+    # ============================================================
+
+    SEASON_FACTOR_START = 0.90
+    SEASON_FACTOR_EARLY = 0.95
+    SEASON_FACTOR_MID = 1.00
+    SEASON_FACTOR_END = 1.05
 
     # ============================================================
     # POISSON
@@ -61,6 +68,56 @@ class Config:
     AGREEMENT_WEIGHT_AWAY = 0.30
 
     # ============================================================
+    # FAJ RATING
+    # ============================================================
+
+    RATING_MIN = 0
+    RATING_MAX = 100
+    PLAYER_WEIGHT = 0.20
+    TEAM_WEIGHT = 0.80
+
+    # Веса для расчёта FAJ Rating
+    RATING_WEIGHTS = {
+        "attack": 0.18,
+        "defense": 0.18,
+        "control": 0.15,
+        "efficiency": 0.12,
+        "mentality": 0.10,
+        "tempo": 0.07,
+        "press": 0.05,
+        "transition": 0.05,
+        "coach": 0.05,
+        "form": 0.05
+    }
+
+    # ============================================================
+    # TOURNAMENT DNA
+    # ============================================================
+
+    TOURNAMENT_FACTORS = {
+        "RPL": {
+            "goal_factor": 0.95,
+            "physicality": 1.05,
+            "tempo": 0.90
+        },
+        "EPL": {
+            "goal_factor": 1.05,
+            "physicality": 1.00,
+            "tempo": 1.10
+        },
+        "La Liga": {
+            "goal_factor": 1.00,
+            "technical": 1.10,
+            "tempo": 0.95
+        },
+        "UCL": {
+            "goal_factor": 1.05,
+            "experience": 1.10,
+            "tempo": 1.00
+        }
+    }
+
+    # ============================================================
     # DEFAULTS
     # ============================================================
 
@@ -78,8 +135,8 @@ class Config:
     # LEARNING LAYER
     # ============================================================
 
-    SAVE_TO_GOLD_DATASET = True
-    SAVE_LEARNING_RECORDS = True
+    ENABLE_LEARNING_DATASET = True
+    ENABLE_ERROR_ANALYSIS = True
 
     # ============================================================
     # LOGGING
@@ -97,15 +154,21 @@ class Config:
         return datetime.strptime(cls.SEASON_START, "%Y-%m-%d")
 
     @classmethod
-    def get_season_phase(cls, days: int) -> float:
+    def get_season_factor(cls, days: int) -> float:
+        """Возвращает коэффициент фазы сезона по количеству дней"""
         if days < 30:
-            return cls.SEASON_PHASE_START
+            return cls.SEASON_FACTOR_START
         elif days < 90:
-            return cls.SEASON_PHASE_EARLY
+            return cls.SEASON_FACTOR_EARLY
         elif days < 210:
-            return cls.SEASON_PHASE_MID
+            return cls.SEASON_FACTOR_MID
         else:
-            return cls.SEASON_PHASE_END
+            return cls.SEASON_FACTOR_END
+
+    @classmethod
+    def get_tournament_factors(cls, league: str) -> dict:
+        """Возвращает коэффициенты турнира"""
+        return cls.TOURNAMENT_FACTORS.get(league, cls.TOURNAMENT_FACTORS["RPL"])
 
 
 config = Config()
