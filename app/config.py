@@ -23,7 +23,7 @@ class Config:
 
     PLATFORM_VERSION = "12.0"
     CORE_VERSION = "7.3"
-    PIPELINE_VERSION = "1.9"           # синхронизировано с prediction_pipeline.py
+    PIPELINE_VERSION = "1.9"
     MODEL_VERSION = "12.0"
     PASSPORT_VERSION = "1.4"
 
@@ -60,6 +60,35 @@ class Config:
     MONTE_CARLO_REPRODUCIBLE = True
 
     # ============================================================
+    # MODEL WEIGHTS (FAJ RATING)
+    # ============================================================
+
+    ATTACK_WEIGHT = 0.18
+    DEFENSE_WEIGHT = 0.18
+    CONTROL_WEIGHT = 0.15
+    EFFICIENCY_WEIGHT = 0.12
+    MENTALITY_WEIGHT = 0.10
+    TEMPO_WEIGHT = 0.07
+    PRESS_WEIGHT = 0.05
+    TRANSITION_WEIGHT = 0.05
+    COACH_WEIGHT = 0.05
+    FORM_WEIGHT = 0.05
+
+    # Словарь для удобного доступа
+    RATING_WEIGHTS = {
+        "attack": ATTACK_WEIGHT,
+        "defense": DEFENSE_WEIGHT,
+        "control": CONTROL_WEIGHT,
+        "efficiency": EFFICIENCY_WEIGHT,
+        "mentality": MENTALITY_WEIGHT,
+        "tempo": TEMPO_WEIGHT,
+        "press": PRESS_WEIGHT,
+        "transition": TRANSITION_WEIGHT,
+        "coach": COACH_WEIGHT,
+        "form": FORM_WEIGHT
+    }
+
+    # ============================================================
     # MODEL AGREEMENT
     # ============================================================
 
@@ -73,22 +102,6 @@ class Config:
 
     RATING_MIN = 0
     RATING_MAX = 100
-    PLAYER_WEIGHT = 0.20
-    TEAM_WEIGHT = 0.80
-
-    # Веса для расчёта FAJ Rating
-    RATING_WEIGHTS = {
-        "attack": 0.18,
-        "defense": 0.18,
-        "control": 0.15,
-        "efficiency": 0.12,
-        "mentality": 0.10,
-        "tempo": 0.07,
-        "press": 0.05,
-        "transition": 0.05,
-        "coach": 0.05,
-        "form": 0.05
-    }
 
     # ============================================================
     # TOURNAMENT DNA
@@ -155,7 +168,6 @@ class Config:
 
     @classmethod
     def get_season_factor(cls, days: int) -> float:
-        """Возвращает коэффициент фазы сезона по количеству дней"""
         if days < 30:
             return cls.SEASON_FACTOR_START
         elif days < 90:
@@ -167,8 +179,11 @@ class Config:
 
     @classmethod
     def get_tournament_factors(cls, league: str) -> dict:
-        """Возвращает коэффициенты турнира"""
         return cls.TOURNAMENT_FACTORS.get(league, cls.TOURNAMENT_FACTORS["RPL"])
+
+    @classmethod
+    def get_rating_weights(cls) -> dict:
+        return cls.RATING_WEIGHTS
 
 
 config = Config()
