@@ -1,504 +1,259 @@
-# =====================================================
-# FAJ Platform v6.9.3
-# app/core/confidence_engine.py
-#
-# FAJ Confidence Calibration Engine
-#
-# Calculates final prediction confidence
-#
-# Input:
-#   xG
-#   FAJ Rating
-#   Data Quality
-#   Season Phase
-#
-# Output:
-#   confidence %
-#   risk
-#   category
-# =====================================================
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
+"""
+=====================================================
+FAJ Platform v12.0
+Confidence Engine v1.3
 
+РОЛЬ:
+    Оценка уверенности в прогнозе.
+
+ФАКТОРЫ (v1.3):
+    35% Probability spread (разброс вероятностей)
+    20% Passport quality (качество данных)
+    15% Monte Carlo stability (стабильность симуляции)
+    15% Rating difference (разница рейтингов)
+    10% Season phase (фаза сезона)
+    5%  Context (травмы, форма, мотивация)
+
+ИЗМЕНЕНИЯ v1.3:
+    - context_score: нет данных = штраф (0.4 вместо 0.5)
+    - passport_quality: минимальный порог снижен (0.2 + avg*0.8)
+    - mc_stability: если нет Monte Carlo → 0.3 (штраф)
+=====================================================
+"""
+
+import math
 import logging
+from typing import Dict, Any, Optional
 
+from app.core.match_context import MatchContext
 
 logger = logging.getLogger(__name__)
 
 
-
-
-
-# =====================================================
-# SAFE FLOAT
-# =====================================================
-
-
-def safe_float(
-
-    value,
-
-    default=0.0
-
-):
-
-    try:
-
-        if value is None:
-
-            return default
-
-
-        return float(value)
-
-
-    except Exception:
-
-        return default
-
-
-
-
-
-
-
-# =====================================================
-# CONFIDENCE ENGINE
-# =====================================================
-
-
 class ConfidenceEngine:
+    """
+    Расчёт уверенности прогноза
+    """
 
+    VERSION = "1.3"
 
-    VERSION = "6.9.3"
+    # Веса факторов (живут в коде)
+    WEIGHTS = {
+        "probability_spread": 0.35,
+        "passport_quality": 0.20,
+        "monte_carlo_stability": 0.15,
+        "rating_difference": 0.15,
+        "season_phase": 0.10,
+        "context": 0.05
+    }
 
-
-
-
-    # =============================================
-    # MAIN CALCULATION
-    # =============================================
-
+    def __init__(self):
+        self.version = self.VERSION
+        logger.info(f"Confidence Engine v{self.VERSION} initialized")
 
     def calculate(
-
         self,
-
-        xg_home=0,
-
-        xg_away=0,
-
-        rating_home=0,
-
-        rating_away=0,
-
-        quality_home=1,
-
-        quality_away=1,
-
-        season_phase="start",
-
-        home_advantage=True
-
-    ):
-
-
-        try:
-
-
-
-            xg_home = safe_float(
-                xg_home
-            )
-
-
-            xg_away = safe_float(
-                xg_away
-            )
-
-
-            rating_home = safe_float(
-                rating_home
-            )
-
-
-            rating_away = safe_float(
-                rating_away
-            )
-
-
-
-            quality_home = safe_float(
-                quality_home,
-                1
-            )
-
-
-            quality_away = safe_float(
-                quality_away,
-                1
-            )
-
-
-
-            # =====================================
-            # BASE
-            # =====================================
-
-
-            base = 35.0
-
-
-
-            # =====================================
-            # xG DIFFERENCE
-            # =====================================
-
-
-            xg_diff = abs(
-
-                xg_home - xg_away
-
-            )
-
-
-
-            xg_bonus = min(
-
-                xg_diff * 18,
-
-                15
-
-            )
-
-
-
-            # =====================================
-            # RATING DIFFERENCE
-            # =====================================
-
-
-            rating_diff = abs(
-
-                rating_home - rating_away
-
-            )
-
-
-
-            rating_bonus = min(
-
-                rating_diff * 0.7,
-
-                12
-
-            )
-
-
-
-
-            # =====================================
-            # DATA QUALITY
-            # =====================================
-
-
-            quality = (
-
-                quality_home +
-
-                quality_away
-
-            ) / 2
-
-
-
-            quality_bonus = (
-
-                quality * 10
-
-            )
-
-
-
-            if quality > 1:
-
-                quality_bonus = (
-
-                    quality / 100
-
-                ) * 10
-
-
-
-
-
-            # =====================================
-            # HOME ADVANTAGE
-            # =====================================
-
-
-            home_bonus = 3 if home_advantage else 0
-
-
-
-
-
-            # =====================================
-            # SEASON PHASE
-            # =====================================
-
-
-            phase_penalty = 0
-
-
-
-            if season_phase == "start":
-
-                phase_penalty = -5
-
-
-
-            elif season_phase == "mid":
-
-                phase_penalty = 0
-
-
-
-            elif season_phase == "end":
-
-                phase_penalty = 2
-
-
-
-
-
-            # =====================================
-            # FINAL
-            # =====================================
-
-
-            confidence = (
-
-                base
-
-                +
-
-                xg_bonus
-
-                +
-
-                rating_bonus
-
-                +
-
-                quality_bonus
-
-                +
-
-                home_bonus
-
-                +
-
-                phase_penalty
-
-            )
-
-
-
-            # limits
-
-
-            confidence = max(
-
-                20,
-
-                min(
-
-                    confidence,
-
-                    90
-
-                )
-
-            )
-
-
-
-            risk = self.risk(
-
-                confidence
-
-            )
-
-
-            category = self.category(
-
-                confidence
-
-            )
-
-
-
-            return {
-
-
-                "confidence":
-                    round(
-                        confidence,
-                        1
-                    ),
-
-
-                "risk":
-                    risk,
-
-
-                "category":
-                    category,
-
-
-                "engine_version":
-                    self.VERSION
-
-
-            }
-
-
-
-        except Exception as e:
-
-
-            logger.error(
-
-                "Confidence Engine error: %s",
-
-                e,
-
-                exc_info=True
-
-            )
-
-
-            return {
-
-
-                "confidence":0,
-
-                "risk":"Высокий",
-
-                "category":"D",
-
-                "engine_version":
-                    self.VERSION
-
-            }
-
-
-
-
-
-
-
-# =====================================================
-# RISK
-# =====================================================
-
-
-    def risk(
-
-        self,
-
-        confidence
-
-    ):
-
-
-        if confidence >= 70:
-
-            return "Низкий"
-
-
-
-        elif confidence >= 50:
-
-            return "Средний"
-
-
-
-        elif confidence >= 35:
-
-            return "Высокий"
-
-
-
+        raw_prediction: Dict[str, Any],
+        calibrated: Dict[str, Any],
+        context: Optional[MatchContext] = None
+    ) -> Dict[str, Any]:
+        """
+        Расчёт уверенности
+
+        Args:
+            raw_prediction: сырой прогноз
+            calibrated: скорректированные вероятности
+            context: контекст матча (MatchContext)
+
+        Returns:
+            Dict с уверенностью
+        """
+        # 1. Probability spread (35%)
+        spread_score = self._calculate_spread_score(calibrated)
+
+        # 2. Passport quality (20%)
+        quality_score = self._calculate_quality_score(raw_prediction)
+
+        # 3. Monte Carlo stability (15%)
+        mc_stability = self._calculate_mc_stability(raw_prediction, calibrated)
+
+        # 4. Rating difference (15%)
+        rating_score = self._calculate_rating_score(raw_prediction)
+
+        # 5. Season phase (10%)
+        season_score = self._calculate_season_score(raw_prediction)
+
+        # 6. Context (5%)
+        context_score = self._calculate_context_score(context)
+
+        # Взвешенная сумма
+        overall = (
+            spread_score * self.WEIGHTS["probability_spread"] +
+            quality_score * self.WEIGHTS["passport_quality"] +
+            mc_stability * self.WEIGHTS["monte_carlo_stability"] +
+            rating_score * self.WEIGHTS["rating_difference"] +
+            season_score * self.WEIGHTS["season_phase"] +
+            context_score * self.WEIGHTS["context"]
+        )
+
+        overall = round(max(0.0, min(1.0, overall)), 3)
+
+        # Уровень
+        if overall >= 0.75:
+            level = "HIGH"
+        elif overall >= 0.50:
+            level = "MEDIUM"
         else:
+            level = "LOW"
 
-            return "Очень высокий"
+        return {
+            "overall": overall,
+            "level": level,
+            "components": {
+                "spread_score": round(spread_score, 3),
+                "quality_score": round(quality_score, 3),
+                "mc_stability": round(mc_stability, 3),
+                "rating_score": round(rating_score, 3),
+                "season_score": round(season_score, 3),
+                "context_score": round(context_score, 3)
+            }
+        }
 
+    # ============================================================
+    # PRIVATE METHODS
+    # ============================================================
 
-
-
-
-
-
-# =====================================================
-# CATEGORY
-# =====================================================
-
-
-    def category(
-
+    def _calculate_spread_score(
         self,
+        calibrated: Dict[str, Any]
+    ) -> float:
+        """Оценка на основе разброса вероятностей"""
+        home = calibrated.get("home", 0.33)
+        draw = calibrated.get("draw", 0.33)
+        away = calibrated.get("away", 0.33)
 
-        confidence
+        max_prob = max(home, draw, away)
+        # 0.33 → 0.5, 0.5 → 0.8, 0.8 → 1.0
+        score = 0.5 + (max_prob - 0.33) * 1.5
+        return max(0.0, min(1.0, score))
 
-    ):
+    def _calculate_quality_score(
+        self,
+        raw: Dict[str, Any]
+    ) -> float:
+        """Оценка на основе качества паспортов"""
+        home_q = raw.get("passport", {}).get("home_quality", 0)
+        away_q = raw.get("passport", {}).get("away_quality", 0)
+        avg = (home_q + away_q) / 2
 
+        # Минимальный порог: даже при avg=0 даём 0.2
+        return 0.2 + avg * 0.8
 
-        if confidence >= 70:
+    def _calculate_mc_stability(
+        self,
+        raw: Dict[str, Any],
+        calibrated: Dict[str, Any]
+    ) -> float:
+        """
+        Оценка на основе стабильности Monte Carlo
+        Сравнивает Poisson и Monte Carlo результаты
+        """
+        mc = raw.get("monte_carlo", {})
 
-            return "A"
+        # Если нет Monte Carlo — штраф
+        if not mc or not isinstance(mc, dict):
+            return 0.3
 
+        # Проверяем наличие ключей
+        if "home_win" not in mc or "draw" not in mc or "away_win" not in mc:
+            return 0.3
 
+        # Poisson вероятности (из calibrated)
+        poisson_home = calibrated.get("home", 0.33)
+        poisson_draw = calibrated.get("draw", 0.33)
+        poisson_away = calibrated.get("away", 0.33)
 
-        elif confidence >= 55:
+        # Monte Carlo вероятности
+        mc_home = mc.get("home_win", 0.33)
+        mc_draw = mc.get("draw", 0.33)
+        mc_away = mc.get("away_win", 0.33)
 
-            return "B"
+        # Средняя разница между Poisson и MC
+        diff_home = abs(poisson_home - mc_home)
+        diff_draw = abs(poisson_draw - mc_draw)
+        diff_away = abs(poisson_away - mc_away)
+        avg_diff = (diff_home + diff_draw + diff_away) / 3
 
+        # Чем меньше разница, тем выше стабильность
+        # 0 → 1.0, 0.1 → 0.8, 0.2 → 0.5, 0.3 → 0.2
+        stability = 1.0 - min(avg_diff * 3, 1.0)
+        return max(0.0, min(1.0, stability))
 
+    def _calculate_rating_score(
+        self,
+        raw: Dict[str, Any]
+    ) -> float:
+        """Оценка на основе разницы рейтингов"""
+        home = raw.get("rating", {}).get("home", 1500)
+        away = raw.get("rating", {}).get("away", 1500)
 
-        elif confidence >= 40:
+        diff = abs(home - away)
+        # 0 → 0.5, 100 → 0.7, 200 → 0.9, 300 → 1.0
+        score = 0.5 + (diff / 300) * 0.5
+        return max(0.5, min(1.0, score))
 
-            return "C"
+    def _calculate_season_score(
+        self,
+        raw: Dict[str, Any]
+    ) -> float:
+        """Оценка на основе фазы сезона"""
+        phase = raw.get("season_phase", "mid")
+        phases = {
+            "start": 0.6,
+            "early": 0.7,
+            "mid": 0.9,
+            "end": 0.85
+        }
+        return phases.get(phase, 0.8)
 
+    def _calculate_context_score(
+        self,
+        context: Optional[MatchContext]
+    ) -> float:
+        """Оценка на основе контекста матча"""
+        if not context:
+            # Нет данных = штраф (не среднее значение)
+            return 0.4
 
-
+        # Преобразуем в словарь если нужно
+        if hasattr(context, "to_dict"):
+            ctx = context.to_dict()
         else:
+            ctx = context
 
-            return "D"
+        squad_stability = ctx.get("squad_stability", 0.7)
+        injuries = ctx.get("injuries", 0.0)
+        fatigue = ctx.get("fatigue", 0.0)
+        coach_factor = ctx.get("coach_factor", 0.7)
+        motivation = ctx.get("motivation", 0.7)
+
+        # Чем выше injuries/fatigue, тем ниже уверенность
+        penalty = (injuries * 0.5 + fatigue * 0.3)
+
+        score = (
+            squad_stability * 0.3 +
+            coach_factor * 0.25 +
+            motivation * 0.25 +
+            (1 - min(penalty, 1.0)) * 0.2
+        )
+
+        return max(0.0, min(1.0, score))
 
 
-
-
-
-
-
-# =====================================================
-# PUBLIC API
-# =====================================================
-
-
-def calculate_confidence(
-
-    **kwargs
-
-):
-
-
+if __name__ == "__main__":
     engine = ConfidenceEngine()
-
-
-    return engine.calculate(
-
-        **kwargs
-
-    )
+    print(f"Confidence Engine v{engine.VERSION}")
+    print(f"Weights: {engine.WEIGHTS}")
