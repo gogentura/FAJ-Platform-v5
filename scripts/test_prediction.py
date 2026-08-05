@@ -4,239 +4,259 @@
 """
 =====================================================
 FAJ Platform v12.0
-Diagnostic Test — ПЕРВЫЙ ЗАПУСК FAJ
+Test Prediction (ГЛАВНЫЙ)
 
-Проверяет:
-    1. Загрузку паспорта команды
-    2. Расчёт FAJ Rating
-    3. Работу PredictionPipeline
-    4. Полный прогноз
+Проверяет полную цепочку:
+    PredictionManager → PassportManager → Pipeline → Database
 
-БЕЗ Streamlit, БЕЗ Telegram, БЕЗ API
+Включая крайние случаи:
+    - несуществующие команды
+    - одинаковые команды
+    - пустые имена
+    - None
+    - пробелы
 =====================================================
 """
 
 import sys
 import os
-import json
-from datetime import datetime
-
-# Добавляем путь к проекту
+import time
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from app.prediction.prediction_manager import get_prediction_manager
 from app.database import FAJDatabase
-from app.passports.passport_manager import PassportManager, get_passport_manager
-from app.core.prediction_pipeline import PredictionPipeline
-from app.core.prediction_pipeline import PipelineInput
+from app.config import config
 
 
-def print_separator(char="=", length=60):
-    print(char * length)
+def check_result_structure(prediction: dict) -> bool:
+    """Проверка структуры результата (обязательные + желательные)"""
+    required = ["score", "xg", "probability", "confidence", "risk"]
+    optional = ["prediction_id", "score_probability", "btts", "over_2_5", "model_agreement", "version", "processing_time_ms"]
+
+    for key in required:
+        if key not in prediction:
+            print(f"  ❌ Отсутствует обязательное поле: {key}")
+            return False
+
+    for key in optional:
+        if key not in prediction:
+            print(f"  ⚠️ Отсутствует желательное поле: {key}")
+
+    return True
 
 
-def print_section(title):
-    print_separator()
-    print(f"  {title}")
-    print_separator()
-
-
-def test_passport_loading(pm: PassportManager, team_name: str):
-    """Тест загрузки паспорта"""
-    print(f"\n📋 Загрузка паспорта: {team_name}")
-    print("-" * 40)
-
-    passport = pm.get_passport_by_name(team_name)
-
-    if not passport:
-        print(f"  ❌ Паспорт не найден для {team_name}")
-        return None
-
-    # Основные параметры
-    print(f"  ✅ Паспорт загружен")
-    print(f"  📊 Attack: {passport.get('attack', 'N/A')}")
-    print(f"  📊 Defense: {passport.get('defense', 'N/A')}")
-    print(f"  📊 Control: {passport.get('control', 'N/A')}")
-    print(f"  📊 Form: {passport.get('form', 'N/A')}")
-    print(f"  📊 Squad Quality: {passport.get('squad_quality', 'N/A')}")
-
-    # FAJ Rating
-    rating = pm.calculate_rating(passport)
-    print(f"  ⭐ FAJ Rating: {rating}")
-
-    return passport
-
-
-def test_prediction_pipeline(
-    pipeline: PredictionPipeline,
-    home_passport: dict,
-    away_passport: dict,
-    home_rating: float,
-    away_rating: float,
+def test_prediction(
     home_team: str,
-    away_team: str
-):
-    """Тест PredictionPipeline"""
-    print(f"\n📋 Запуск PredictionPipeline: {home_team} vs {away_team}")
+    away_team: str,
+    league: str = "RPL",
+    verbose: bool = False,
+    expect_error: bool = False
+) -> bool:
+    pm = get_prediction_manager()
+    db = FAJDatabase()
+
+    display_home = home_team if home_team is not None else "None"
+    display_away = away_team if away_team is not None else "None"
+    print(f"\n📋 Прогноз: {display_home} vs {display_away} ({league})")
     print("-" * 40)
+
+    start_time = time.time()
 
     try:
-        result = pipeline.run(
-            home_passport=home_passport,
-            away_passport=away_passport,
-            home_rating=home_rating,
-            away_rating=away_rating,
+        result = pm.predict(
             home_team=home_team,
-            away_team=away_team
+            away_team=away_team,
+            league=league
         )
-
-        if result.get("status") == "error":
-            print(f"  ❌ Ошибка Pipeline: {result.get('message')}")
-            return None
-
-        return result
-
     except Exception as e:
-        print(f"  ❌ Исключение: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
+        if expect_error:
+            print(f"  ✅ Ожидаемая ошибка: {e}")
+            return True
+        else:
+            print(f"  ❌ Неожиданное исключение: {e}")
+            return False
+
+    elapsed_ms = (time.time() - start_time) * 1000
+
+    if expect_error:
+        if result.get("status") == "error":
+            print(f"  ✅ Ожидаемая ошибка: {result.get('message')}")
+            return True
+        else:
+            print(f"  ❌ Ожидалась ошибка, но прогноз выполнен")
+            return False
+
+    if result.get("status") == "error":
+        print(f"  ❌ Ошибка: {result.get('message')}")
+        return False
+
+    prediction = result.get("prediction", {})
+    if not prediction:
+        prediction = result
+
+    # 1. Структура
+    if not check_result_structure(prediction):
+        return False
+
+    # 2. Проверки
+    score = prediction.get("score", "")
+    if not score:
+        print("  ❌ Счёт не должен быть пустым")
+        return False
+
+    xg = prediction.get("xg", {})
+    home_xg = xg.get("home", 0)
+    away_xg = xg.get("away", 0)
+
+    if not (0.1 <= home_xg <= 4.0):
+        print(f"  ❌ xG хозяев вне допустимого диапазона: {home_xg}")
+        return False
+
+    if not (0.1 <= away_xg <= 4.0):
+        print(f"  ❌ xG гостей вне допустимого диапазона: {away_xg}")
+        return False
+
+    probs = prediction.get("probability", {})
+    home_prob = probs.get("home", 0)
+    draw_prob = probs.get("draw", 0)
+    away_prob = probs.get("away", 0)
+
+    total = home_prob + draw_prob + away_prob
+    if not (0.99 <= total <= 1.01):
+        print(f"  ❌ Сумма вероятностей должна быть 1.0, получено {total:.3f}")
+        return False
+
+    confidence = prediction.get("confidence", {})
+    overall = confidence.get("overall", 0)
+    if not (0 <= overall <= 1):
+        print(f"  ❌ Уверенность вне допустимого диапазона: {overall}")
+        return False
+
+    btts = prediction.get("btts", 0)
+    if not (0 <= btts <= 1):
+        print(f"  ❌ BTTS вне допустимого диапазона: {btts}")
+        return False
+
+    over_2_5 = prediction.get("over_2_5", 0)
+    if not (0 <= over_2_5 <= 1):
+        print(f"  ❌ Over 2.5 вне допустимого диапазона: {over_2_5}")
+        return False
+
+    agreement = prediction.get("model_agreement", {})
+    agreement_score = agreement.get("score", 0)
+    if not (0 <= agreement_score <= 1):
+        print(f"  ❌ Model Agreement вне допустимого диапазона: {agreement_score}")
+        return False
+
+    print("  ✅ Прогноз получен")
+
+    if verbose:
+        print(f"\n  📊 Результат:")
+        print(f"     Счёт: {score}")
+        print(f"     xG: {home_xg:.2f} : {away_xg:.2f}")
+        print(f"     П1: {home_prob*100:.1f}%")
+        print(f"     X:  {draw_prob*100:.1f}%")
+        print(f"     П2: {away_prob*100:.1f}%")
+        print(f"     Уверенность: {confidence.get('level', 'N/A')} ({overall*100:.1f}%)")
+        print(f"     Время: {elapsed_ms:.0f} мс")
+
+    # Время: <500 отлично, 500-3000 предупреждение, >3000 ошибка
+    if elapsed_ms > 3000:
+        print(f"  ❌ Время расчёта: {elapsed_ms:.0f} мс (превышен лимит 3000 мс)")
+        return False
+    elif elapsed_ms > 500:
+        print(f"  ⚠️ Время расчёта: {elapsed_ms:.0f} мс (медленно)")
+
+    # Проверка сохранения в БД (только если включено)
+    if config.SAVE_TO_GOLD_DATASET:
+        prediction_id = prediction.get("prediction_id", "")
+        if prediction_id:
+            try:
+                exists = db.prediction_exists(prediction_id)
+                if exists:
+                    print("  ✅ Прогноз сохранён в БД")
+                else:
+                    print("  ⚠️ Прогноз не найден в БД")
+            except Exception as e:
+                print(f"  ⚠️ Ошибка проверки БД: {e}")
+    else:
+        print("  ℹ️ Сохранение прогнозов отключено (SAVE_TO_GOLD_DATASET=False)")
+
+    return True
 
 
-def print_prediction_result(result: dict):
-    """Вывод результата прогноза"""
-    print(f"\n📊 РЕЗУЛЬТАТ ПРОГНОЗА")
-    print_separator()
+def test_edge_cases(prediction_manager) -> bool:
+    """Тест крайних случаев"""
+    print("\n📋 Тест крайних случаев")
+    print("-" * 40)
 
-    # Основная информация
-    print(f"\n  🆔 Prediction ID: {result.get('prediction_id', 'N/A')}")
-    print(f"  ⏱️  Время расчёта: {result.get('processing_time_ms', 0):.2f} мс")
-    print(f"  📦 Версия: {result.get('version', 'N/A')}")
+    cases = [
+        ("НесуществующаяКоманда", "Спартак", True, "несуществующая команда"),
+        ("Зенит", "Зенит", True, "одинаковые команды"),
+        ("", "Спартак", True, "пустое имя"),
+        ("Зенит", "", True, "пустое имя"),
+        ("", "", True, "пустые имена"),
+        ("   ", "Спартак", True, "пробелы"),
+        ("Зенит", "   ", True, "пробелы"),
+        (None, "Спартак", True, "None"),
+        ("Зенит", None, True, "None"),
+    ]
 
-    # Счёт
-    print(f"\n  🏆 Счёт: {result.get('score', 'N/A')}")
-    print(f"     Вероятность: {result.get('score_probability', 0) * 100:.1f}%")
+    all_ok = True
+    for home, away, expect_error, desc in cases:
+        print(f"\n  📋 {desc}: '{home}' vs '{away}'")
+        ok = test_prediction(home, away, expect_error=expect_error)
+        if ok:
+            print(f"    ✅ OK")
+        else:
+            print(f"    ❌ FAIL")
+            all_ok = False
 
-    # xG
-    xg = result.get("xg", {})
-    print(f"\n  ⚽ xG: {xg.get('home', 0):.2f} : {xg.get('away', 0):.2f}")
-
-    # Вероятности
-    probs = result.get("probability", {})
-    print(f"\n  📊 Вероятности:")
-    print(f"     Победа хозяев: {probs.get('home', 0) * 100:.1f}%")
-    print(f"     Ничья:         {probs.get('draw', 0) * 100:.1f}%")
-    print(f"     Победа гостей: {probs.get('away', 0) * 100:.1f}%")
-
-    # Рынки
-    print(f"\n  📊 Рынки:")
-    print(f"     BTTS (обе забьют): {result.get('btts', 0) * 100:.1f}%")
-    print(f"     Тотал > 2.5:      {result.get('over_2_5', 0) * 100:.1f}%")
-
-    # Уверенность и риск
-    confidence = result.get("confidence", {})
-    risk = result.get("risk", {})
-    print(f"\n  📊 Качество прогноза:")
-    print(f"     Уверенность: {confidence.get('level', 'N/A')} ({confidence.get('overall', 0) * 100:.1f}%)")
-    print(f"     Риск:        {risk.get('level', 'N/A')} ({risk.get('score', 0)})")
-
-    # Согласованность моделей
-    agreement = result.get("model_agreement", {})
-    print(f"\n  📊 Согласованность моделей: {agreement.get('level', 'N/A')} ({agreement.get('score', 0) * 100:.1f}%)")
+    return all_ok
 
 
 def main():
-    """Главный тест"""
-    print_section("⚽ FAJ Platform v12.0 — ДИАГНОСТИЧЕСКИЙ ТЕСТ")
-    print(f"  Дата: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("\n" + "=" * 60)
+    print("⚽ FAJ Platform v12.0 — TEST PREDICTION (ГЛАВНЫЙ)")
+    print("=" * 60)
 
-    # ============================================================
-    # 1. ИНИЦИАЛИЗАЦИЯ
-    # ============================================================
-    print_section("1. ИНИЦИАЛИЗАЦИЯ КОМПОНЕНТОВ")
+    pm = get_prediction_manager()
 
-    print("  🔧 Инициализация базы данных...")
-    db = FAJDatabase()
-    print("  ✅ База данных готова")
+    # 1. Обычные тесты
+    test_cases = [
+        ("Зенит", "Спартак"),
+        ("ЦСКА", "Краснодар"),
+        ("Динамо", "Ростов")
+    ]
 
-    print("  🔧 Инициализация PassportManager...")
-    pm = get_passport_manager()
-    print(f"  ✅ PassportManager v{pm.VERSION} готов")
+    results = []
+    for home, away in test_cases:
+        ok = test_prediction(home, away, verbose=True)
+        results.append((f"{home} vs {away}", ok))
 
-    print("  🔧 Инициализация PredictionPipeline...")
-    pipeline = PredictionPipeline()
-    print(f"  ✅ PredictionPipeline v{pipeline.VERSION} готов")
+    # 2. Крайние случаи
+    edge_ok = test_edge_cases(pm)
 
-    # ============================================================
-    # 2. ЗАГРУЗКА ПАСПОРТОВ
-    # ============================================================
-    print_section("2. ЗАГРУЗКА ПАСПОРТОВ")
+    print("\n" + "-" * 40)
+    print("📊 ИТОГОВЫЙ РЕЗУЛЬТАТ:")
 
-    home_team = "Зенит"
-    away_team = "Спартак"
+    passed = sum(1 for _, ok in results if ok)
 
-    home_passport = test_passport_loading(pm, home_team)
-    if not home_passport:
-        print("\n❌ Тест прерван: не найден паспорт хозяев")
-        return
+    for name, ok in results:
+        icon = "✅" if ok else "❌"
+        print(f"  {icon} {name}")
 
-    away_passport = test_passport_loading(pm, away_team)
-    if not away_passport:
-        print("\n❌ Тест прерван: не найден паспорт гостей")
-        return
+    icon = "✅" if edge_ok else "❌"
+    print(f"  {icon} Крайние случаи")
 
-    # ============================================================
-    # 3. FAJ RATING
-    # ============================================================
-    print_section("3. FAJ RATING")
+    print(f"\n  Успешно: {passed}/{len(results)} (обычные) + {'✅' if edge_ok else '❌'} (крайние)")
 
-    home_rating = pm.calculate_rating(home_passport)
-    away_rating = pm.calculate_rating(away_passport)
+    if passed == len(results) and edge_ok:
+        print("\n  🎯 FAJ v12 готов к работе с реальными матчами!")
+    else:
+        print("\n  ⚠️ Есть проблемы, требуется проверка")
 
-    print(f"\n  ⭐ {home_team}: {home_rating}")
-    print(f"  ⭐ {away_team}: {away_rating}")
-
-    # ============================================================
-    # 4. ЗАПУСК PIPELINE
-    # ============================================================
-    print_section("4. ЗАПУСК PREDICTION PIPELINE")
-
-    result = test_prediction_pipeline(
-        pipeline=pipeline,
-        home_passport=home_passport,
-        away_passport=away_passport,
-        home_rating=home_rating,
-        away_rating=away_rating,
-        home_team=home_team,
-        away_team=away_team
-    )
-
-    if not result:
-        print("\n❌ Тест прерван: ошибка в Pipeline")
-        return
-
-    # ============================================================
-    # 5. РЕЗУЛЬТАТ
-    # ============================================================
-    print_section("5. РЕЗУЛЬТАТ ПРОГНОЗА")
-    print_prediction_result(result)
-
-    # ============================================================
-    # 6. ВЕРДИКТ
-    # ============================================================
-    print_section("6. ВЕРДИКТ")
-
-    print("\n  ✅ FAJ Core работает корректно!")
-    print("  ✅ PassportManager загружает паспорта")
-    print("  ✅ PredictionPipeline считает прогноз")
-    print("  ✅ xG, Poisson, Monte Carlo работают")
-    print("  ✅ Confidence и Risk рассчитываются")
-
-    print(f"\n  📊 Итоговый прогноз: {result.get('score', 'N/A')}")
-    print(f"  📊 Уверенность: {result.get('confidence', {}).get('level', 'N/A')}")
-    print(f"  📊 Риск: {result.get('risk', {}).get('level', 'N/A')}")
-
-    print_separator()
-    print("  🎯 FAJ v12 готов к работе с реальными матчами!")
+    print("=" * 60)
 
 
 if __name__ == "__main__":
