@@ -4,249 +4,73 @@
 """
 =====================================================
 FAJ Platform v12.0
-FAJ Core Engine
+FAJ Core Engine v7.3
 
-Главный управляющий слой платформы
-
-Pipeline:
-
-Match
- ↓
-Passport Loader
- ↓
-Prediction Engine
- ↓
-xG Model
- ↓
-Poisson Model
- ↓
-Confidence
- ↓
-Calibration
- ↓
-Risk
- ↓
-Final Prediction
- ↓
-Journal / Learning
-
+РОЛЬ:
+    Тонкий фасад над Prediction Pipeline.
+    Единая точка входа для всей платформы.
 =====================================================
 """
 
-
+import logging
+from typing import Dict, Any, Optional
 from datetime import datetime
 
+from app.config import config
+from app.core.prediction_pipeline import PredictionPipeline
+from app.core.match_context import MatchContext
 
-from app.core.prediction_engine import PredictionEngine
-from app.core.final_prediction import FinalPrediction
-from app.core.confidence_engine import ConfidenceEngine
-from app.core.calibration_engine import CalibrationEngine
-from app.core.risk_engine import RiskEngine
-
-
-from app.storage.journal import Journal
+logger = logging.getLogger(__name__)
 
 
 class FAJCore:
+    VERSION = config.CORE_VERSION
+    PLATFORM_VERSION = config.PLATFORM_VERSION
 
-
-    VERSION = "12.0"
-
-
-    def __init__(self):
-
+    def __init__(self, pipeline: Optional[PredictionPipeline] = None):
         self.version = self.VERSION
+        self.platform_version = self.PLATFORM_VERSION
+        self.pipeline = pipeline or PredictionPipeline()
+        logger.info(f"FAJ Core v{self.VERSION} initialized")
 
-
-        self.prediction_engine = PredictionEngine()
-
-        self.final_prediction = FinalPrediction()
-
-        self.confidence_engine = ConfidenceEngine()
-
-        self.calibration_engine = CalibrationEngine()
-
-        self.risk_engine = RiskEngine()
-
-        self.journal = Journal()
-
-
-
-    # =================================================
-    # MAIN API
-    # =================================================
-
+    def predict(
+        self,
+        home_team: str,
+        away_team: str,
+        league: str = "RPL",
+        context: Optional[MatchContext] = None
+    ) -> Dict[str, Any]:
+        return self.predict_match(home_team, away_team, league, context)
 
     def predict_match(
         self,
-        home_team,
-        away_team,
-        league="RPL"
-    ):
-
-
+        home_team: str,
+        away_team: str,
+        league: str = "RPL",
+        context: Optional[MatchContext] = None
+    ) -> Dict[str, Any]:
         try:
-
-
-            # 1. Основной расчёт
-
-            prediction = self.prediction_engine.predict(
-                home_team,
-                away_team,
-                league
-            )
-
-
-
-            # 2. Confidence
-
-            confidence = self.confidence_engine.calculate(
-                prediction
-            )
-
-
-            prediction["confidence"] = confidence
-
-
-
-            # 3. Calibration
-
-            prediction = self.calibration_engine.adjust(
-                prediction
-            )
-
-
-
-            # 4. Risk
-
-            risk = self.risk_engine.calculate(
-                prediction
-            )
-
-
-            prediction["risk"] = risk
-
-
-
-            # 5. Финальный формат
-
-            result = self.final_prediction.build(
-                prediction
-            )
-
-
-
-            # 6. Время
-
-            result["timestamp"] = (
-                datetime.now()
-                .strftime("%Y-%m-%d %H:%M:%S")
-            )
-
-
-            result["version"] = self.VERSION
-
-
-
-            # 7. Журнал
-
-            self.journal.save_prediction(
-                result
-            )
-
-
-            return {
-
-                "status":
-                    "success",
-
-                "data":
-                    result
-
-            }
-
-
-
+            return self.pipeline.run(home_team, away_team, league, context)
         except Exception as e:
+            logger.exception(f"Prediction failed: {e}")
+            return {"status": "error", "message": str(e), "timestamp": datetime.now().isoformat()}
 
-
-            return {
-
-                "status":
-                    "error",
-
-                "message":
-                    str(e)
-
-            }
-
-
-
-
-    # =================================================
-    # STATUS
-    # =================================================
-
-
-    def status(self):
-
-
+    def status(self) -> Dict[str, Any]:
+        pipeline_status = self.pipeline.status() if hasattr(self.pipeline, "status") else {}
         return {
-
-
-            "platform":
-                "FAJ Platform",
-
-
-            "version":
-                self.VERSION,
-
-
-            "engine":
-                "Prediction Engine v12",
-
-
-            "status":
-                "READY"
-
-
-
+            "core": "FAJ Core Engine",
+            "core_version": self.VERSION,
+            "platform_version": self.PLATFORM_VERSION,
+            "pipeline_version": pipeline_status.get("version", "unknown"),
+            "status": "READY",
+            "pipeline": pipeline_status
         }
 
-
-
-    # =================================================
-    # TEST
-    # =================================================
-
-
-    def test(self):
-
-
-        return self.predict_match(
-
-            "Зенит",
-
-            "Спартак",
-
-            "RPL"
-
-        )
-
-
+    def test(self) -> Dict[str, Any]:
+        return self.predict_match("Зенит", "Спартак", "RPL")
 
 
 if __name__ == "__main__":
-
-
     core = FAJCore()
-
-
-    print(
-        core.status()
-    )
-
-
-    print(
-        core.test()
-    )
+    print(core.status())
+    print(core.test())
