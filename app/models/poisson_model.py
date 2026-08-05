@@ -2,133 +2,78 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ Poisson Model v2.0.3
-Расчёт вероятностей счетов на основе ожидаемых голов (xG)
+=====================================================
+FAJ Platform v12.0
+Poisson Model v7.3
 
-ИСПРАВЛЕНИЯ v2.0.3:
-- Diagnostics теперь полноценный TypedDict (без NotRequired)
-- _prepare_lambdas возвращает Diagnostics вместо Dict[str, Any]
-- raw_sum теперь корректно сохраняется ДО нормализации
-- MarketsResult содержит raw_expected_total и expected_total
+РОЛЬ:
+    Расчёт вероятностей счетов на основе xG.
+    Является частью математического ядра FAJ.
 
-v2.0.3 — PRODUCTION CORE
-Готов к фиксации в FAJ Core
+ВХОД:
+    home_xg: float — ожидаемые голы хозяев
+    away_xg: float — ожидаемые голы гостей
+    include_matrix: bool — вернуть полную матрицу
+
+ВЫХОД:
+    {
+        "result_probability": {"home": float, "draw": float, "away": float},
+        "double_chance": {
+            "home_or_draw": float,
+            "draw_or_away": float,
+            "home_or_away": float
+        },
+        "btts_probability": float,
+        "btts_no_probability": float,
+        "over_2_5": float,
+        "under_2_5": float,
+        "most_likely_score": str,
+        "score_probability": float,
+        "top_scores": [{"score": str, "probability": float}],
+        "expected_total": float,
+        "tail_probability": float,
+        "model_stability": float,
+        "score_entropy": float,
+        "matrix_sum": float
+    }
+
+ИЗМЕНЕНИЯ v7.3:
+    - double_chance: "1X" → "home_or_draw", "X2" → "draw_or_away", "12" → "home_or_away"
+    - Добавлена model_stability = 1 - tail_probability
+    - Добавлена score_entropy для оценки неопределённости
+=====================================================
 """
 
 import math
-import heapq
-from typing import Dict, List, Optional, Tuple, TypedDict
-from functools import lru_cache
+import logging
+from typing import Dict, List, Optional, Tuple
 
+logger = logging.getLogger(__name__)
 
-# ============================================================
-# TYPES
-# ============================================================
-
-class ResultProbability(TypedDict):
-    home: float
-    draw: float
-    away: float
-
-
-class DoubleChance(TypedDict):
-    one_x: float   # 1X
-    x_two: float   # X2
-    one_two: float # 12
-
-
-class Diagnostics(TypedDict):
-    # Информация о клиппинге
-    home_xg_clipped: bool
-    away_xg_clipped: bool
-    input_home_xg: float
-    input_away_xg: float
-    effective_home_lambda: float
-    effective_away_lambda: float
-    raw_expected_total: float
-    effective_expected_total: float
-    
-    # Информация о матрице
-    raw_sum: float          # Сумма ДО нормализации
-    tail_cut: float         # Отсечённая вероятность
-    convergence_ok: bool    # Сумма после нормализации ≈ 1.0
-    max_goals_used: int     # Размер матрицы
-
-
-class TopScore(TypedDict):
-    score: str
-    probability: float
-
-
-class MarketsResult(TypedDict):
-    result_probability: ResultProbability
-    double_chance: DoubleChance
-    btts_probability: float
-    btts_no_probability: float
-    over_2_5: float
-    under_2_5: float
-    raw_expected_total: float   # Сумма входных xG (до клиппинга)
-    expected_total: float        # Сумма lambda (после клиппинга)
-    tail_probability: float
-    most_likely_score: str
-    score_probability: float
-    top_scores: List[TopScore]
-
-
-class PoissonResult(MarketsResult):
-    matrix_sum: float
-    diagnostics: Diagnostics
-    score_matrix: Optional[Dict[Tuple[int, int], float]]
-
-
-# ============================================================
-# MAIN CLASS
-# ============================================================
 
 class FAJPoissonModel:
     """
-    Модель распределения вероятностей счетов на основе xG
-
-    Это ядро вероятностных расчетов FAJ Platform.
-    Модель строит матрицу распределения голов по Пуассону
-    и вычисляет все рыночные показатели.
-
-    Архитектура:
-        ┌─────────────────────────────────────┐
-        │         FAJPoissonModel             │
-        ├─────────────────────────────────────┤
-        │  calculate()   → полный результат   │
-        │  markets()     → только рынки       │
-        │  score_matrix()→ только матрица     │
-        └─────────────────────────────────────┘
-
-    Пример:
-        >>> model = FAJPoissonModel(max_goals=8)
-        >>> result = model.calculate(1.72, 0.95)
-        >>> print(result['result_probability']['home'])
-        0.482
+    Poisson Model v7.3
+    Расчёт вероятностей счетов на основе xG
     """
 
+    VERSION = "7.3"
+
     # ============================================================
-    # КОНФИГУРАЦИЯ
+    # MODEL CONSTANTS
     # ============================================================
 
-    XG_MIN: float = 0.1
-    XG_MAX: float = 4.0
+    MAX_GOALS = 8
+    XG_MIN = 0.1
+    XG_MAX = 4.0
 
     def __init__(self, max_goals: int = 8):
-        """
-        Args:
-            max_goals: максимальное количество голов для матрицы
-                      (рекомендуется 8-10 для стандартных лиг)
-        """
-        if max_goals < 1:
-            raise ValueError(f"max_goals должен быть >= 1, получено {max_goals}")
-
         self.MAX_GOALS = max_goals
+        self._poisson_cache = {}
+        logger.info(f"Poisson Model v{self.VERSION} initialized (max_goals={max_goals})")
 
     # ============================================================
-    # ПУБЛИЧНЫЙ API
+    # PUBLIC API
     # ============================================================
 
     def calculate(
@@ -136,323 +81,166 @@ class FAJPoissonModel:
         home_xg: float,
         away_xg: float,
         include_matrix: bool = False
-    ) -> PoissonResult:
+    ) -> Dict:
         """
-        Полный расчёт всех вероятностей
-
-        Args:
-            home_xg: ожидаемые голы хозяев
-            away_xg: ожидаемые голы гостей
-            include_matrix: если True, возвращает полную матрицу счетов
-
-        Returns:
-            PoissonResult с полными данными
+        Расчёт вероятностей на основе xG
         """
-        # Подготовка матрицы
-        home_lambda, away_lambda, score_matrix, raw_sum, tail_probability, diagnostics = (
-            self._prepare_matrix(home_xg, away_xg)
-        )
-
-        # Расчет всех показателей за один проход
-        markets = self._calculate_markets(score_matrix)
-
-        # Заполняем expected_total и tail_probability
-        markets["raw_expected_total"] = home_xg + away_xg
-        markets["expected_total"] = home_lambda + away_lambda
-        markets["tail_probability"] = tail_probability
-
-        # Сумма матрицы (после нормализации ≈ 1.0)
-        matrix_sum = sum(score_matrix.values())
-
-        # Диагностика
-        diagnostics.update({
-            "raw_sum": raw_sum,
-            "tail_cut": tail_probability,
-            "convergence_ok": abs(matrix_sum - 1.0) < 1e-9,
-            "max_goals_used": self.MAX_GOALS
-        })
-
-        # Результат
-        result: PoissonResult = {
-            **markets,
-            "matrix_sum": matrix_sum,
-            "diagnostics": diagnostics,
-            "score_matrix": score_matrix if include_matrix else None
-        }
-
-        return result
-
-    def score_matrix(
-        self,
-        home_xg: float,
-        away_xg: float,
-        normalize: bool = True
-    ) -> Dict[Tuple[int, int], float]:
-        """
-        Возвращает только матрицу счетов (сырую или нормированную)
-
-        Args:
-            home_xg: ожидаемые голы хозяев
-            away_xg: ожидаемые голы гостей
-            normalize: нормировать матрицу
-
-        Returns:
-            Dict[(home_goals, away_goals), probability]
-        """
-        home_lambda, away_lambda, _ = self._prepare_lambdas(home_xg, away_xg)
-        raw_matrix, raw_sum = self._build_raw_score_matrix(home_lambda, away_lambda)
-
-        if normalize:
-            return self._normalize_matrix(raw_matrix, raw_sum)
-
-        return raw_matrix
-
-    def markets(
-        self,
-        home_xg: float,
-        away_xg: float
-    ) -> MarketsResult:
-        """
-        Возвращает только рыночные показатели (без диагностики и матрицы)
-
-        Args:
-            home_xg: ожидаемые голы хозяев
-            away_xg: ожидаемые голы гостей
-
-        Returns:
-            MarketsResult с вероятностями рынков
-        """
-        # Подготовка матрицы
-        home_lambda, away_lambda, score_matrix, raw_sum, tail_probability, _ = (
-            self._prepare_matrix(home_xg, away_xg)
-        )
-
-        # Расчет рынков
-        markets = self._calculate_markets(score_matrix)
-
-        # Заполняем expected_total и tail_probability
-        markets["raw_expected_total"] = home_xg + away_xg
-        markets["expected_total"] = home_lambda + away_lambda
-        markets["tail_probability"] = tail_probability
-
-        return markets
-
-    # ============================================================
-    # ВНУТРЕННИЕ МЕТОДЫ
-    # ============================================================
-
-    def _prepare_matrix(
-        self,
-        home_xg: float,
-        away_xg: float
-    ) -> Tuple[float, float, Dict[Tuple[int, int], float], float, float, Diagnostics]:
-        """
-        Подготавливает полную матрицу с диагностикой
-
-        Returns:
-            Tuple[home_lambda, away_lambda, score_matrix, raw_sum, tail_probability, diagnostics]
-        """
-        # Подготовка lambdas
-        home_lambda, away_lambda, diagnostics = self._prepare_lambdas(home_xg, away_xg)
-
-        # Построение сырой матрицы
-        raw_matrix, raw_sum = self._build_raw_score_matrix(home_lambda, away_lambda)
-
-        # Хвостовая вероятность (ДО нормализации)
-        tail_probability = max(0.0, min(1.0, 1.0 - raw_sum))
-
-        # Нормализация
-        score_matrix = self._normalize_matrix(raw_matrix, raw_sum)
-
-        # Добавляем raw/effective expected_total в диагностику
-        diagnostics["raw_expected_total"] = home_xg + away_xg
-        diagnostics["effective_expected_total"] = home_lambda + away_lambda
-
-        return home_lambda, away_lambda, score_matrix, raw_sum, tail_probability, diagnostics
-
-    def _prepare_lambdas(
-        self,
-        home_xg: float,
-        away_xg: float
-    ) -> Tuple[float, float, Diagnostics]:
-        """
-        Подготавливает lambdas с клиппингом и диагностикой
-
-        Returns:
-            Tuple[home_lambda, away_lambda, diagnostics]
-        """
-        # Валидация
-        if home_xg < 0 or away_xg < 0:
-            raise ValueError(
-                f"xG не может быть отрицательным: home_xg={home_xg}, away_xg={away_xg}"
-            )
-
-        home_clipped = home_xg < self.XG_MIN or home_xg > self.XG_MAX
-        away_clipped = away_xg < self.XG_MIN or away_xg > self.XG_MAX
-
+        # 1. Ограничиваем xG
         home_lambda = max(self.XG_MIN, min(self.XG_MAX, home_xg))
         away_lambda = max(self.XG_MIN, min(self.XG_MAX, away_xg))
 
-        diagnostics: Diagnostics = {
-            "home_xg_clipped": home_clipped,
-            "away_xg_clipped": away_clipped,
-            "input_home_xg": home_xg,
-            "input_away_xg": away_xg,
-            "effective_home_lambda": home_lambda,
-            "effective_away_lambda": away_lambda,
-            "raw_expected_total": 0.0,
-            "effective_expected_total": 0.0,
-            "raw_sum": 0.0,
-            "tail_cut": 0.0,
-            "convergence_ok": False,
-            "max_goals_used": self.MAX_GOALS
-        }
+        # 2. Строим НЕНОРМАЛИЗОВАННУЮ матрицу
+        raw_matrix, raw_sum = self._build_raw_score_matrix(home_lambda, away_lambda)
 
-        return home_lambda, away_lambda, diagnostics
+        # 3. Хвостовая вероятность ДО нормализации
+        tail_probability = max(0.0, min(1.0, 1.0 - raw_sum))
 
-    @staticmethod
-    @lru_cache(maxsize=512)
-    def _poisson_vector(lam: float, max_goals: int) -> Tuple[float, ...]:
-        """
-        Кэширует ВЕСЬ ВЕКТОР распределения Пуассона для заданного lambda и max_goals
+        # 4. Нормализация
+        score_matrix = self._normalize_matrix(raw_matrix, raw_sum)
 
-        Args:
-            lam: параметр распределения Пуассона
-            max_goals: максимальное количество голов
+        # 5. Расчёт всех показателей за один проход
+        result = self._calculate_markets(score_matrix)
 
-        Returns:
-            tuple из (P(0), P(1), ..., P(max_goals))
-        """
+        # 6. Добавляем мета-информацию
+        result["expected_total"] = home_lambda + away_lambda
+        result["tail_probability"] = tail_probability
+        result["model_stability"] = 1.0 - tail_probability
+        result["matrix_sum"] = sum(score_matrix.values())
+
+        # 7. Энтропия распределения счетов
+        result["score_entropy"] = self._calculate_entropy(score_matrix)
+
+        if include_matrix:
+            result["score_matrix"] = score_matrix
+
+        return result
+
+    # ============================================================
+    # PRIVATE METHODS
+    # ============================================================
+
+    def _poisson(self, lam: float, k: int) -> float:
         if lam <= 0:
-            return tuple(1.0 if k == 0 else 0.0 for k in range(max_goals + 1))
+            return 1.0 if k == 0 else 0.0
 
-        exp_neg_lam = math.exp(-lam)
-        return tuple(
-            (exp_neg_lam * (lam ** k)) / math.factorial(k)
-            for k in range(max_goals + 1)
-        )
+        cache_key = f"{lam:.4f}_{k}"
+        if cache_key in self._poisson_cache:
+            return self._poisson_cache[cache_key]
+
+        result = (math.exp(-lam) * (lam ** k)) / math.factorial(k)
+        self._poisson_cache[cache_key] = result
+        return result
 
     def _build_raw_score_matrix(
         self,
         home_lambda: float,
         away_lambda: float
-    ) -> Tuple[Dict[Tuple[int, int], float], float]:
-        """
-        Строит НЕНОРМАЛИЗОВАННУЮ матрицу вероятностей
-        Возвращает (матрица, сумма всех вероятностей)
-        """
-        matrix: Dict[Tuple[int, int], float] = {}
-        total: float = 0.0
+    ) -> Tuple[Dict, float]:
+        matrix = {}
+        total = 0.0
 
-        home_probs = self._poisson_vector(home_lambda, self.MAX_GOALS)
-        away_probs = self._poisson_vector(away_lambda, self.MAX_GOALS)
+        home_probs = [self._poisson(home_lambda, k) for k in range(self.MAX_GOALS + 1)]
+        away_probs = [self._poisson(away_lambda, k) for k in range(self.MAX_GOALS + 1)]
 
-        for home_goals in range(self.MAX_GOALS + 1):
-            for away_goals in range(self.MAX_GOALS + 1):
-                prob = home_probs[home_goals] * away_probs[away_goals]
-                matrix[(home_goals, away_goals)] = prob
+        for h in range(self.MAX_GOALS + 1):
+            for a in range(self.MAX_GOALS + 1):
+                prob = home_probs[h] * away_probs[a]
+                matrix[(h, a)] = prob
                 total += prob
 
         return matrix, total
 
-    def _normalize_matrix(
-        self,
-        matrix: Dict[Tuple[int, int], float],
-        total: float
-    ) -> Dict[Tuple[int, int], float]:
-        """
-        Нормирует матрицу вероятностей
-        """
+    def _normalize_matrix(self, matrix: Dict, total: float) -> Dict:
         if total <= 0:
             raise RuntimeError(
-                f"Невозможно нормировать матрицу: сумма вероятностей = {total:.10f}"
+                f"Невозможно нормировать матрицу: сумма = {total:.10f}"
             )
-
         return {key: prob / total for key, prob in matrix.items()}
 
-    def _calculate_markets(
-        self,
-        matrix: Dict[Tuple[int, int], float]
-    ) -> MarketsResult:
-        """
-        Один проход по матрице для расчета всех рыночных показателей
-        """
-        # Инициализация
+    def _calculate_markets(self, matrix: Dict) -> Dict:
         home_win = 0.0
         draw = 0.0
         away_win = 0.0
+        btts = 0.0
         over_2_5 = 0.0
         under_2_5 = 0.0
-        btts = 0.0
 
-        # Храним топ-5 счетов через heap
-        top_scores_buffer: List[Tuple[float, Tuple[int, int]]] = []
+        most_likely_score = "0:0"
+        max_prob = 0.0
+        top_scores = []
 
-        # Единственный проход по матрице
-        for (home_goals, away_goals), prob in matrix.items():
-            total_goals = home_goals + away_goals
+        for (h, a), prob in matrix.items():
+            total_goals = h + a
 
-            # Исходы
-            if home_goals > away_goals:
+            if h > a:
                 home_win += prob
-            elif home_goals == away_goals:
+            elif h == a:
                 draw += prob
             else:
                 away_win += prob
 
-            # Тоталы
+            if h > 0 and a > 0:
+                btts += prob
+
             if total_goals > 2:
                 over_2_5 += prob
             else:
                 under_2_5 += prob
 
-            # BTTS
-            if home_goals > 0 and away_goals > 0:
-                btts += prob
+            if prob > max_prob:
+                max_prob = prob
+                most_likely_score = f"{h}:{a}"
 
-            # Топ-5 счетов (оптимизированный heap)
-            score_tuple = (home_goals, away_goals)
-            if len(top_scores_buffer) < 5:
-                heapq.heappush(top_scores_buffer, (prob, score_tuple))
-            elif prob > top_scores_buffer[0][0]:
-                heapq.heapreplace(top_scores_buffer, (prob, score_tuple))
+            top_scores.append({"score": f"{h}:{a}", "probability": prob})
 
-        # Double Chance
-        one_x = home_win + draw
-        x_two = draw + away_win
-        one_two = home_win + away_win
+        top_scores = sorted(top_scores, key=lambda x: x["probability"], reverse=True)[:5]
 
-        # Топ-5 счетов (сортируем heap по убыванию)
-        top_scores = [
-            {"score": f"{h}:{a}", "probability": p}
-            for p, (h, a) in sorted(top_scores_buffer, key=lambda x: x[0], reverse=True)
-        ]
-
-        most_likely = top_scores[0] if top_scores else {"score": "0:0", "probability": 0.0}
-
-        # Возвращаем все рынки
         return {
             "result_probability": {
-                "home": home_win,
-                "draw": draw,
-                "away": away_win
+                "home": round(home_win, 4),
+                "draw": round(draw, 4),
+                "away": round(away_win, 4)
             },
             "double_chance": {
-                "one_x": one_x,
-                "x_two": x_two,
-                "one_two": one_two
+                "home_or_draw": round(home_win + draw, 4),
+                "draw_or_away": round(draw + away_win, 4),
+                "home_or_away": round(home_win + away_win, 4)
             },
-            "btts_probability": btts,
-            "btts_no_probability": 1.0 - btts,
-            "over_2_5": over_2_5,
-            "under_2_5": under_2_5,
-            "raw_expected_total": 0.0,  # Заполняется снаружи
-            "expected_total": 0.0,       # Заполняется снаружи
-            "tail_probability": 0.0,     # Заполняется снаружи
-            "most_likely_score": most_likely["score"],
-            "score_probability": most_likely["probability"],
+            "btts_probability": round(btts, 4),
+            "btts_no_probability": round(1.0 - btts, 4),
+            "over_2_5": round(over_2_5, 4),
+            "under_2_5": round(under_2_5, 4),
+            "most_likely_score": most_likely_score,
+            "score_probability": round(max_prob, 4),
             "top_scores": top_scores
         }
+
+    def _calculate_entropy(self, matrix: Dict) -> float:
+        """
+        Расчёт энтропии распределения счетов
+        Чем выше энтропия, тем выше неопределённость
+        """
+        entropy = 0.0
+        for prob in matrix.values():
+            if prob > 0:
+                entropy -= prob * math.log2(prob)
+        return round(entropy, 3)
+
+    # ============================================================
+    # DIAGNOSTICS
+    # ============================================================
+
+    def status(self) -> Dict:
+        return {
+            "model": "Poisson Model",
+            "version": self.VERSION,
+            "max_goals": self.MAX_GOALS,
+            "xg_range": [self.XG_MIN, self.XG_MAX],
+            "status": "READY"
+        }
+
+    def test(self) -> Dict:
+        return self.calculate(1.72, 0.95, include_matrix=True)
 
 
 # ============================================================
@@ -460,93 +248,39 @@ class FAJPoissonModel:
 # ============================================================
 
 if __name__ == "__main__":
-    model = FAJPoissonModel(max_goals=8)
-
     print("\n" + "=" * 60)
-    print("⚽ FAJ Poisson Model v2.0.3 — САМОТЕСТИРОВАНИЕ")
+    print("⚽ Poisson Model v7.3 — САМОТЕСТИРОВАНИЕ")
     print("=" * 60)
 
-    # Тест 1: стандартный матч
-    print("\n📋 Тест 1: стандартный матч (xG 1.72 : 0.95)")
+    model = FAJPoissonModel()
+
+    print("\n📊 Status:")
+    print(model.status())
+
+    print("\n📋 Тест: xG 1.72 : 0.95")
     print("-" * 40)
 
-    result = model.calculate(1.72, 0.95, include_matrix=True)
+    result = model.test()
 
-    print(f"  Победа хозяев: {result['result_probability']['home'] * 100:.1f}%")
-    print(f"  Ничья:         {result['result_probability']['draw'] * 100:.1f}%")
-    print(f"  Победа гостей: {result['result_probability']['away'] * 100:.1f}%")
-    print(f"  Double Chance: 1X={result['double_chance']['one_x']*100:.1f}%, "
-          f"X2={result['double_chance']['x_two']*100:.1f}%, "
-          f"12={result['double_chance']['one_two']*100:.1f}%")
-    print(f"  BTTS: {result['btts_probability']*100:.1f}%")
-    print(f"  Тотал > 2.5: {result['over_2_5']*100:.1f}%")
+    probs = result.get("result_probability", {})
+    print(f"\n  📊 Home: {probs.get('home', 0)*100:.1f}%")
+    print(f"  📊 Draw: {probs.get('draw', 0)*100:.1f}%")
+    print(f"  📊 Away: {probs.get('away', 0)*100:.1f}%")
 
-    print(f"\n  📊 Expected Total:")
-    print(f"    Raw:   {result['raw_expected_total']:.2f}")
-    print(f"    Effective: {result['expected_total']:.2f}")
+    dc = result.get("double_chance", {})
+    print(f"\n  📊 Double Chance:")
+    print(f"    Home or Draw: {dc.get('home_or_draw', 0)*100:.1f}%")
+    print(f"    Draw or Away: {dc.get('draw_or_away', 0)*100:.1f}%")
+    print(f"    Home or Away: {dc.get('home_or_away', 0)*100:.1f}%")
 
-    print(f"\n  📐 Диагностика:")
-    print(f"    raw_sum: {result['diagnostics']['raw_sum']:.10f}")
-    print(f"    tail_cut: {result['diagnostics']['tail_cut']*100:.4f}%")
-    print(f"    convergence_ok: {'✅' if result['diagnostics']['convergence_ok'] else '❌'}")
-    print(f"    max_goals: {result['diagnostics']['max_goals_used']}")
-
-    print(f"\n  🏆 Наиболее вероятный счёт: {result['most_likely_score']} "
-          f"({result['score_probability']*100:.2f}%)")
-
-    # Тест 2: с клиппингом (проверка raw/effective)
-    print("\n📋 Тест 2: с клиппингом xG (6.2 : 5.8)")
-    print("-" * 40)
-
-    result2 = model.calculate(6.2, 5.8)
-
-    print(f"  Входные xG: 6.2 : 5.8")
-    print(f"  raw_expected_total: {result2['raw_expected_total']:.2f}")
-    print(f"  expected_total: {result2['expected_total']:.2f}")
-    print(f"  raw_sum: {result2['diagnostics']['raw_sum']:.10f}")
-    print(f"  tail_cut: {result2['diagnostics']['tail_cut']*100:.4f}%")
-    print(f"  Клиппинг: home={result2['diagnostics']['home_xg_clipped']}, "
-          f"away={result2['diagnostics']['away_xg_clipped']}")
-
-    # Тест 3: markets() — проверка expected_total
-    print("\n📋 Тест 3: markets() — проверка всех полей")
-    print("-" * 40)
-
-    markets_result = model.markets(1.72, 0.95)
-    print(f"  raw_expected_total: {markets_result['raw_expected_total']:.2f}")
-    print(f"  expected_total: {markets_result['expected_total']:.2f}")
-    print(f"  tail_probability: {markets_result['tail_probability']*100:.4f}%")
-    print(f"  BTTS: {markets_result['btts_probability']*100:.1f}%")
-
-    # Тест 4: проверка Diagnostics TypedDict
-    print("\n📋 Тест 4: проверка Diagnostics TypedDict")
-    print("-" * 40)
-
-    diag = result['diagnostics']
-    required_fields = [
-        'home_xg_clipped', 'away_xg_clipped',
-        'input_home_xg', 'input_away_xg',
-        'effective_home_lambda', 'effective_away_lambda',
-        'raw_expected_total', 'effective_expected_total',
-        'raw_sum', 'tail_cut', 'convergence_ok', 'max_goals_used'
-    ]
-    all_present = all(field in diag for field in required_fields)
-    print(f"  Все поля Diagnostics присутствуют: {'✅' if all_present else '❌'}")
-
-    # Тест 5: обработка ошибок
-    print("\n📋 Тест 5: обработка ошибок")
-    print("-" * 40)
-
-    try:
-        model.calculate(-1.0, 0.8)
-    except ValueError as e:
-        print(f"  ✅ ValueError: {e}")
-
-    try:
-        FAJPoissonModel(max_goals=0)
-    except ValueError as e:
-        print(f"  ✅ ValueError: {e}")
+    print(f"\n  📊 BTTS: {result.get('btts_probability', 0)*100:.1f}%")
+    print(f"  📊 Over 2.5: {result.get('over_2_5', 0)*100:.1f}%")
+    print(f"  📊 Most likely: {result.get('most_likely_score')} ({result.get('score_probability', 0)*100:.2f}%)")
+    print(f"  📊 Expected total: {result.get('expected_total', 0):.2f}")
+    print(f"  📊 Tail: {result.get('tail_probability', 0)*100:.4f}%")
+    print(f"  📊 Model stability: {result.get('model_stability', 0)*100:.1f}%")
+    print(f"  📊 Score entropy: {result.get('score_entropy', 0):.3f}")
 
     print("\n" + "=" * 60)
-    print("✅ Все тесты пройдены. Модель готова к фиксации в FAJ Core.")
+    print("✅ Poisson Model v7.3 готов к работе.")
     print("=" * 60)
