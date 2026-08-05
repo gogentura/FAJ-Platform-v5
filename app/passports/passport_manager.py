@@ -3,1085 +3,578 @@
 
 """
 =====================================================
-FAJ Platform v12.0
-Passport Manager v2.3.3 (SQLite Edition)
+FAJ Platform v11.3
+Passport Manager v1.3 (ФИНАЛЬНАЯ ВЕРСИЯ)
 
 РОЛЬ:
-    Управление паспортами команд через SQLite.
-    Хранитель памяти FAJ Platform.
+    Управление паспортами команд.
+    Создание, обновление, версионирование.
 
-ИЗМЕНЕНИЯ v2.3.3:
-    - Полная совместимость с SQLite (без PostgreSQL)
-    - row_value() helper для безопасного чтения
-    - Добавлен save_learning_event() для learning_history
-    - Исправлена сезонность (season в запросах)
-    - Исправлен _load_from_db() для SQLite Row
-    - Исправлен get_all_passports() для tuple-строк
+ИЗМЕНЕНИЯ v1.3:
+    - Правильная сортировка версий (CAST AS FLOAT)
+    - FAJ Rating через результаты (Passport + Results + Opponent + Form)
+    - Confidence через количество матчей и свежесть данных
+    - xG в обучение
+    - Добавлен injury_factor и key_player_loss
+    - Добавлен Tournament DNA
+    - Добавлена проверка миграции базы данных
 =====================================================
 """
 
 import logging
-from typing import Dict, Any, Optional, List
-from datetime import datetime
-from dataclasses import dataclass, field, asdict
+import re
+from typing import Dict, Any, Optional
+from datetime import datetime, timedelta
 
-from app.database import get_db
+from app.database import FAJDatabase
 
 logger = logging.getLogger(__name__)
 
 
-# ============================================================
-# SQLITE HELPER
-# ============================================================
-
-def row_value(row, key: str, default=None):
-    """
-    Универсальное чтение SQLite Row
-    Поддерживает как dict-подобные row, так и tuple
-    """
-    if row is None:
-        return default
-
-    try:
-        if hasattr(row, 'keys'):
-            return row[key] if key in row.keys() else default
-        elif hasattr(row, '__getitem__') and not hasattr(row, 'keys'):
-            if hasattr(row, 'description'):
-                for idx, desc in enumerate(row.description):
-                    if desc[0] == key:
-                        return row[idx]
-            return default
-        else:
-            return default
-    except Exception:
-        return default
-
-
-# ============================================================
-# DATA CLASSES
-# ============================================================
-
-@dataclass
-class PassportMetadata:
-    passport_version: int = 1
-    manager_version: str = "2.3.3"
-
-    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
-    updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
-    source_update_date: Optional[str] = None
-    last_validation_date: Optional[str] = None
-
-    season: str = "2026/27"
-    passport_status: str = "ACTIVE"
-
-    data_confidence: float = 0.0
-    api_confidence: float = 0.0
-    expert_confidence: float = 0.0
-
-    matches_analyzed: int = 0
-    last_match_date: Optional[str] = None
-
-    source_name: str = "manual"
-    update_type: str = "initial"
-
-
-@dataclass
-class TeamPassport:
-    team_id: int
-    team_name: str
-    league: str
-
-    attack: float = 70.0
-    defense: float = 70.0
-    control: float = 70.0
-    efficiency: float = 70.0
-    mentality: float = 70.0
-    tempo: float = 70.0
-    press: float = 70.0
-    transition: float = 70.0
-
-    coach: float = 70.0
-    squad_strength: float = 70.0
-    form: float = 70.0
-
-    xg_for: float = 1.35
-    xg_against: float = 1.35
-
-    injury_index: float = 0.0
-    fatigue_index: float = 0.0
-    transfer_index: float = 0.0
-
-    style_identity: str = "balanced"
-    predictability: float = 70.0
-    big_match_factor: float = 70.0
-    home_strength: float = 70.0
-    away_strength: float = 70.0
-    tournament_factor: float = 70.0
-    opposition_quality: float = 70.0
-
-    metadata: PassportMetadata = field(default_factory=PassportMetadata)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
-
-    def get_rating(self) -> float:
-        return calculate_faj_rating_from_passport(self)
-
-    def get_quality(self) -> float:
-        return calculate_passport_quality(self)
-
-
-# ============================================================
-# MAIN CLASS
-# ============================================================
-
 class PassportManager:
-    VERSION = "2.3.3"
+    """
+    Passport Manager v1.3 (ФИНАЛЬНАЯ ВЕРСИЯ)
+    Управление паспортами команд
+    """
 
-    RATING_WEIGHTS = {
-        "attack": 0.15,
-        "defense": 0.15,
-        "control": 0.10,
-        "efficiency": 0.10,
-        "mentality": 0.10,
-        "tempo": 0.05,
-        "press": 0.05,
-        "transition": 0.05,
-        "coach": 0.05,
-        "form": 0.05,
-        "predictability": 0.05,
-        "big_match_factor": 0.03,
-        "home_strength": 0.02,
-        "opposition_quality": 0.05
+    VERSION = "1.3"
+
+    # Диапазоны параметров
+    PARAM_RANGES = {
+        "attack": (0, 100),
+        "defense": (0, 100),
+        "control": (0, 100),
+        "tempo": (0, 100),
+        "press": (0, 100),
+        "transition": (0, 100),
+        "finishing": (0, 100),
+        "goalkeeper": (0, 100),
+        "discipline": (0, 100),
+        "squad_quality": (0, 100),
+        "bench_quality": (0, 100),
+        "coach_factor": (0, 100),
+        "mental": (0, 100),
+        "home_strength": (0, 100),
+        "away_strength": (0, 100),
+        "injury_factor": (0, 100),
+        "key_player_loss": (0, 100),
+        "passport_confidence": (0, 1),
+        "league_adaptation": (0, 100)
     }
 
-    STYLES = ["balanced", "attacking", "defensive", "counter", "possession", "direct"]
-    UPDATE_TYPES = ["initial", "api_update", "manual_edit", "learning_update"]
-    PASSPORT_STATUSES = ["DRAFT", "ACTIVE", "OUTDATED", "ARCHIVED"]
+    # Веса турниров (Tournament DNA)
+    TOURNAMENT_DNA = {
+        "RPL": {
+            "goal_factor": 0.95,
+            "home_advantage": 1.10,
+            "tempo": 0.90,
+            "physicality": 1.05,
+            "league_adaptation": 85
+        },
+        "EPL": {
+            "goal_factor": 1.05,
+            "home_advantage": 1.05,
+            "tempo": 1.10,
+            "physicality": 1.00,
+            "league_adaptation": 90
+        },
+        "La Liga": {
+            "goal_factor": 1.00,
+            "home_advantage": 1.08,
+            "tempo": 0.95,
+            "technical": 1.10,
+            "league_adaptation": 88
+        },
+        "UCL": {
+            "goal_factor": 1.05,
+            "home_advantage": 1.00,
+            "tempo": 1.00,
+            "experience": 1.10,
+            "league_adaptation": 92
+        }
+    }
 
-    def __init__(self):
-        self.version = self.VERSION
-        self._cache: Dict[int, TeamPassport] = {}
+    # Веса для FAJ Rating
+    RATING_WEIGHTS = {
+        "passport": 0.40,
+        "results": 0.30,
+        "opponent": 0.20,
+        "form": 0.10
+    }
+
+    def __init__(self, db: Optional[FAJDatabase] = None):
+        self.db = db or FAJDatabase()
+        self._version_cache = {}
+
+        # Проверяем наличие нужных колонок в БД
+        self._check_migration()
+
         logger.info(f"Passport Manager v{self.VERSION} initialized")
+
+    # ============================================================
+    # MIGRATION CHECK
+    # ============================================================
+
+    def _check_migration(self) -> None:
+        """Проверка наличия нужных колонок в таблице team_passports"""
+        conn = self.db._get_connection()
+        cursor = conn.cursor()
+
+        # Проверяем существование таблицы
+        cursor.execute("""
+            SELECT name FROM sqlite_master
+            WHERE type='table' AND name='team_passports'
+        """)
+        table_exists = cursor.fetchone()
+
+        if not table_exists:
+            logger.warning("Table 'team_passports' does not exist. Creating...")
+            self._create_team_passports_table()
+            conn.close()
+            return
+
+        # Проверяем наличие колонок
+        cursor.execute("PRAGMA table_info(team_passports)")
+        columns = [row[1] for row in cursor.fetchall()]
+
+        required_columns = [
+            'faj_rating', 'passport_confidence', 'injury_factor',
+            'key_player_loss', 'league_adaptation'
+        ]
+
+        missing_columns = [col for col in required_columns if col not in columns]
+
+        if missing_columns:
+            logger.warning(f"Missing columns: {missing_columns}. Adding...")
+            for col in missing_columns:
+                col_type = "REAL"
+                if col in ['injury_factor', 'key_player_loss', 'league_adaptation']:
+                    col_type = "REAL DEFAULT 50"
+                cursor.execute(f"ALTER TABLE team_passports ADD COLUMN {col} {col_type}")
+
+        conn.commit()
+        conn.close()
+        logger.info("Migration check completed")
+
+    def _create_team_passports_table(self) -> None:
+        """Создание таблицы team_passports, если её нет"""
+        conn = self.db._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS team_passports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                team_id INTEGER,
+                season_id INTEGER,
+                attack REAL DEFAULT 50,
+                defense REAL DEFAULT 50,
+                control REAL DEFAULT 50,
+                tempo REAL DEFAULT 50,
+                press REAL DEFAULT 50,
+                transition REAL DEFAULT 50,
+                finishing REAL DEFAULT 50,
+                goalkeeper REAL DEFAULT 50,
+                discipline REAL DEFAULT 50,
+                squad_quality REAL DEFAULT 50,
+                bench_quality REAL DEFAULT 50,
+                coach_factor REAL DEFAULT 50,
+                mental REAL DEFAULT 50,
+                home_strength REAL DEFAULT 50,
+                away_strength REAL DEFAULT 50,
+                injury_factor REAL DEFAULT 50,
+                key_player_loss REAL DEFAULT 50,
+                league_adaptation REAL DEFAULT 80,
+                passport_confidence REAL DEFAULT 0.5,
+                faj_rating REAL DEFAULT 0.0,
+                version TEXT,
+                source TEXT,
+                created_at TEXT,
+                FOREIGN KEY(team_id) REFERENCES teams(id),
+                FOREIGN KEY(season_id) REFERENCES seasons(id),
+                UNIQUE(team_id, season_id, version)
+            )
+        """)
+
+        conn.commit()
+        conn.close()
+        logger.info("Table 'team_passports' created")
 
     # ============================================================
     # GET
     # ============================================================
 
-    def get_passport(self, team_id: int, season: Optional[str] = None) -> Optional[TeamPassport]:
-        if team_id in self._cache:
-            return self._cache[team_id]
-
-        passport = self._load_from_db(team_id, season)
-        if passport:
-            self._cache[team_id] = passport
-        return passport
-
-    def get_passport_by_name(self, team_name: str, season: Optional[str] = None) -> Optional[TeamPassport]:
-        conn = get_db()
+    def get_current_passport(self, team_id: int, season_id: int) -> Optional[Dict[str, Any]]:
+        conn = self.db._get_connection()
         cursor = conn.cursor()
 
-        cursor.execute("SELECT id FROM teams WHERE name = ?", (team_name,))
-        row = cursor.fetchone()
-
-        if not row:
-            conn.close()
-            return None
-
-        team_id = row[0] if isinstance(row, (tuple, list)) else row.get("id", 0)
-        conn.close()
-
-        return self.get_passport(team_id, season)
-
-    def get_all_passports(self, league: Optional[str] = None, season: Optional[str] = None) -> List[Dict[str, Any]]:
-        conn = get_db()
-        cursor = conn.cursor()
-
-        query = """
-            SELECT t.id, t.name, t.league,
-                   p.season, p.passport_status,
-                   p.attack, p.defense, p.control, p.form,
-                   p.xg_for, p.xg_against,
-                   p.passport_quality, p.faj_rating,
-                   p.data_confidence, p.passport_version,
-                   p.updated_at, p.matches_analyzed,
-                   p.source_name, p.update_type,
-                   p.last_validation_date
-            FROM teams t
-            LEFT JOIN team_passports p ON t.id = p.team_id
-            WHERE 1=1
-        """
-        params = []
-
-        if league:
-            query += " AND t.league = ?"
-            params.append(league)
-
-        if season:
-            query += " AND p.season = ?"
-            params.append(season)
-
-        query += " ORDER BY p.faj_rating DESC"
-
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
-        conn.close()
-
-        result = []
-        for row in rows:
-            if isinstance(row, (tuple, list)):
-                data = {
-                    "id": row[0],
-                    "name": row[1],
-                    "league": row[2],
-                    "season": row[3],
-                    "passport_status": row[4],
-                    "attack": row[5],
-                    "defense": row[6],
-                    "control": row[7],
-                    "form": row[8],
-                    "xg_for": row[9],
-                    "xg_against": row[10],
-                    "passport_quality": row[11],
-                    "faj_rating": row[12],
-                    "data_confidence": row[13],
-                    "passport_version": row[14],
-                    "updated_at": row[15],
-                    "matches_analyzed": row[16],
-                    "source_name": row[17],
-                    "update_type": row[18],
-                    "last_validation_date": row[19]
-                }
-            else:
-                data = dict(row)
-
-            quality = data.get("passport_quality", 0.0)
-            if quality >= 0.8:
-                data["status"] = "FULL"
-            elif quality >= 0.5:
-                data["status"] = "PARTIAL"
-            else:
-                data["status"] = "MINIMAL"
-
-            result.append(data)
-
-        return result
-
-    def get_passport_history(self, team_id: int, limit: int = 10) -> List[Dict[str, Any]]:
-        conn = get_db()
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT *
-            FROM passport_history
-            WHERE team_id = ?
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (team_id, limit)
-        )
+            FROM team_passports
+            WHERE team_id = ? AND season_id = ?
+            ORDER BY CAST(REPLACE(version, 'v', '') AS FLOAT) DESC
+            LIMIT 1
+        """, (team_id, season_id))
 
-        rows = cursor.fetchall()
+        row = cursor.fetchone()
         conn.close()
 
-        result = []
-        for row in rows:
-            if isinstance(row, (tuple, list)):
-                result.append({})
-            else:
-                result.append(dict(row))
+        if row:
+            return dict(row)
+        return None
 
-        return result
-
-    def get_versions(self, team_id: int, limit: int = 10) -> List[Dict[str, Any]]:
-        conn = get_db()
+    def get_passport_history(self, team_id: int, season_id: int, limit: int = 10) -> list:
+        conn = self.db._get_connection()
         cursor = conn.cursor()
 
-        cursor.execute(
-            """
-            SELECT version, attack, defense, control, form,
-                   faj_rating, passport_quality,
-                   change_reason, created_at
-            FROM passport_history
-            WHERE team_id = ?
-            ORDER BY version DESC
+        cursor.execute("""
+            SELECT *
+            FROM team_passports
+            WHERE team_id = ? AND season_id = ?
+            ORDER BY CAST(REPLACE(version, 'v', '') AS FLOAT) DESC
             LIMIT ?
-            """,
-            (team_id, limit)
-        )
+        """, (team_id, season_id, limit))
 
         rows = cursor.fetchall()
         conn.close()
 
-        result = []
-        for row in rows:
-            if isinstance(row, (tuple, list)):
-                data = {
-                    "version": row[0],
-                    "attack": row[1],
-                    "defense": row[2],
-                    "control": row[3],
-                    "form": row[4],
-                    "faj_rating": row[5],
-                    "passport_quality": row[6],
-                    "change_reason": row[7],
-                    "created_at": row[8]
-                }
-            else:
-                data = dict(row)
-            result.append(data)
+        return [dict(row) for row in rows]
 
-        return result
+    def get_passport_versions(self, team_id: int, season_id: int) -> list:
+        conn = self.db._get_connection()
+        cursor = conn.cursor()
 
-    def compare_versions(
+        cursor.execute("""
+            SELECT version
+            FROM team_passports
+            WHERE team_id = ? AND season_id = ?
+            ORDER BY CAST(REPLACE(version, 'v', '') AS FLOAT) DESC
+        """, (team_id, season_id))
+
+        rows = cursor.fetchall()
+        conn.close()
+
+        return [row[0] for row in rows]
+
+    # ============================================================
+    # CREATE
+    # ============================================================
+
+    def create_passport(
         self,
         team_id: int,
-        version_old: int,
-        version_new: int
-    ) -> Dict[str, Any]:
-        conn = get_db()
+        season_id: int,
+        data: Dict[str, Any],
+        source: str = "manual"
+    ) -> Optional[Dict[str, Any]]:
+        conn = self.db._get_connection()
         cursor = conn.cursor()
 
-        cursor.execute(
-            """
-            SELECT version, attack, defense, control, form,
-                   faj_rating, passport_quality, change_reason, created_at
-            FROM passport_history
-            WHERE team_id = ? AND version IN (?, ?)
-            ORDER BY version
-            """,
-            (team_id, version_old, version_new)
+        # Определяем следующую версию
+        next_version = self._get_next_version(team_id, season_id)
+
+        # Кламп всех параметров
+        clamped_data = self._clamp_params(data)
+
+        # Рассчитываем FAJ Rating
+        faj_rating = self._calculate_faj_rating(
+            clamped_data,
+            data.get('results_strength', 0),
+            data.get('opponent_strength', 0),
+            data.get('form', 0)
         )
 
-        rows = cursor.fetchall()
-        conn.close()
-
-        if len(rows) != 2:
-            return {"error": "Версии не найдены"}
-
-        old_data = rows[0] if isinstance(rows[0], (tuple, list)) else dict(rows[0])
-        new_data = rows[1] if isinstance(rows[1], (tuple, list)) else dict(rows[1])
-
-        if isinstance(old_data, (tuple, list)):
-            old = {
-                "version": old_data[0],
-                "attack": old_data[1],
-                "defense": old_data[2],
-                "control": old_data[3],
-                "form": old_data[4],
-                "faj_rating": old_data[5],
-                "passport_quality": old_data[6],
-                "change_reason": old_data[7],
-                "created_at": old_data[8]
-            }
-            new = {
-                "version": new_data[0],
-                "attack": new_data[1],
-                "defense": new_data[2],
-                "control": new_data[3],
-                "form": new_data[4],
-                "faj_rating": new_data[5],
-                "passport_quality": new_data[6],
-                "change_reason": new_data[7],
-                "created_at": new_data[8]
-            }
-        else:
-            old = old_data
-            new = new_data
-
-        changes = {}
-        for field in ["attack", "defense", "control", "form", "faj_rating"]:
-            old_val = old.get(field, 0)
-            new_val = new.get(field, 0)
-            diff = round(new_val - old_val, 1)
-            changes[field] = {
-                "old": old_val,
-                "new": new_val,
-                "diff": diff
-            }
-
-        return {
-            "team_id": team_id,
-            "version_old": version_old,
-            "version_new": version_new,
-            "changes": changes,
-            "reason": new.get("change_reason", "Обновление паспорта"),
-            "date": new.get("created_at")
-        }
-
-    def compare_passports(
-        self,
-        old_passport: TeamPassport,
-        new_passport: TeamPassport
-    ) -> Dict[str, Any]:
-        changes = {}
-        fields = ["attack", "defense", "control", "form"]
-
-        for field in fields:
-            old_val = getattr(old_passport, field, 0)
-            new_val = getattr(new_passport, field, 0)
-            diff = round(new_val - old_val, 1)
-            changes[field] = {
-                "old": old_val,
-                "new": new_val,
-                "diff": diff
-            }
-
-        old_rating = old_passport.get_rating()
-        new_rating = new_passport.get_rating()
-        changes["faj_rating"] = {
-            "old": old_rating,
-            "new": new_rating,
-            "diff": round(new_rating - old_rating, 1)
-        }
-
-        return {
-            "team_name": new_passport.team_name,
-            "version_old": old_passport.metadata.passport_version,
-            "version_new": new_passport.metadata.passport_version,
-            "changes": changes
-        }
-
-    def get_recent_updates(self, limit: int = 20) -> List[Dict[str, Any]]:
-        conn = get_db()
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
-            SELECT t.name, p.season, p.passport_version, p.passport_status,
-                   p.updated_at, p.faj_rating, p.passport_quality,
-                   p.source_name, p.update_type,
-                   p.change_reason, p.last_validation_date
-            FROM team_passports p
-            JOIN teams t ON p.team_id = t.id
-            ORDER BY p.updated_at DESC
-            LIMIT ?
-            """,
-            (limit,)
+        # Рассчитываем Confidence
+        passport_confidence = self._calculate_confidence(
+            clamped_data,
+            data.get('matches_count', 0),
+            data.get('created_at', datetime.now().isoformat())
         )
 
-        rows = cursor.fetchall()
+        cursor.execute("""
+            INSERT INTO team_passports (
+                team_id, season_id,
+                attack, defense, control, tempo, press, transition,
+                finishing, goalkeeper, discipline,
+                squad_quality, bench_quality, coach_factor,
+                mental, home_strength, away_strength,
+                injury_factor, key_player_loss,
+                league_adaptation,
+                passport_confidence, faj_rating,
+                version, source, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            team_id, season_id,
+            clamped_data.get('attack', 50.0),
+            clamped_data.get('defense', 50.0),
+            clamped_data.get('control', 50.0),
+            clamped_data.get('tempo', 50.0),
+            clamped_data.get('press', 50.0),
+            clamped_data.get('transition', 50.0),
+            clamped_data.get('finishing', 50.0),
+            clamped_data.get('goalkeeper', 50.0),
+            clamped_data.get('discipline', 50.0),
+            clamped_data.get('squad_quality', 50.0),
+            clamped_data.get('bench_quality', 50.0),
+            clamped_data.get('coach_factor', 50.0),
+            clamped_data.get('mental', 50.0),
+            clamped_data.get('home_strength', 50.0),
+            clamped_data.get('away_strength', 50.0),
+            clamped_data.get('injury_factor', 50.0),
+            clamped_data.get('key_player_loss', 50.0),
+            clamped_data.get('league_adaptation', 80.0),
+            passport_confidence,
+            faj_rating,
+            next_version,
+            source,
+            datetime.now().isoformat()
+        ))
+
+        conn.commit()
         conn.close()
 
-        result = []
-        for row in rows:
-            if isinstance(row, (tuple, list)):
-                data = {
-                    "name": row[0],
-                    "season": row[1],
-                    "passport_version": row[2],
-                    "passport_status": row[3],
-                    "updated_at": row[4],
-                    "faj_rating": row[5],
-                    "passport_quality": row[6],
-                    "source_name": row[7],
-                    "update_type": row[8],
-                    "change_reason": row[9],
-                    "last_validation_date": row[10]
-                }
-            else:
-                data = dict(row)
-            result.append(data)
-
-        return result
+        logger.info(f"Passport created: team_id={team_id}, version={next_version}, rating={faj_rating}")
+        return self.get_current_passport(team_id, season_id)
 
     # ============================================================
-    # SAVE / UPDATE
+    # UPDATE
     # ============================================================
-
-    def save_passport(self, passport: TeamPassport) -> bool:
-        try:
-            quality = passport.get_quality()
-            rating = passport.get_rating()
-
-            conn = get_db()
-            cursor = conn.cursor()
-
-            cursor.execute(
-                "SELECT team_id FROM team_passports WHERE team_id = ? AND season = ?",
-                (passport.team_id, passport.metadata.season)
-            )
-            exists = cursor.fetchone() is not None
-
-            if exists:
-                cursor.execute(
-                    """
-                    UPDATE team_passports SET
-                        passport_status=?,
-                        attack=?, defense=?, control=?, efficiency=?,
-                        mentality=?, tempo=?, press=?, transition=?,
-                        coach=?, squad_strength=?, form=?,
-                        xg_for=?, xg_against=?,
-                        injury_index=?, fatigue_index=?, transfer_index=?,
-                        style_identity=?,
-                        predictability=?, big_match_factor=?,
-                        home_strength=?, away_strength=?,
-                        tournament_factor=?, opposition_quality=?,
-                        passport_quality=?, faj_rating=?,
-                        matches_analyzed=?, data_confidence=?,
-                        api_confidence=?, expert_confidence=?,
-                        passport_version=?, manager_version=?,
-                        source_name=?, update_type=?,
-                        source_update_date=?, last_match_date=?,
-                        last_validation_date=?,
-                        updated_at=?
-                    WHERE team_id = ? AND season = ?
-                    """,
-                    (
-                        passport.metadata.passport_status,
-                        passport.attack, passport.defense, passport.control, passport.efficiency,
-                        passport.mentality, passport.tempo, passport.press, passport.transition,
-                        passport.coach, passport.squad_strength, passport.form,
-                        passport.xg_for, passport.xg_against,
-                        passport.injury_index, passport.fatigue_index, passport.transfer_index,
-                        passport.style_identity,
-                        passport.predictability, passport.big_match_factor,
-                        passport.home_strength, passport.away_strength,
-                        passport.tournament_factor, passport.opposition_quality,
-                        quality, rating,
-                        passport.metadata.matches_analyzed, passport.metadata.data_confidence,
-                        passport.metadata.api_confidence, passport.metadata.expert_confidence,
-                        passport.metadata.passport_version, self.VERSION,
-                        passport.metadata.source_name, passport.metadata.update_type,
-                        passport.metadata.source_update_date, passport.metadata.last_match_date,
-                        passport.metadata.last_validation_date,
-                        passport.metadata.updated_at,
-                        passport.team_id,
-                        passport.metadata.season
-                    )
-                )
-            else:
-                cursor.execute(
-                    """
-                    INSERT INTO team_passports (
-                        team_id, season, passport_status,
-                        attack, defense, control, efficiency,
-                        mentality, tempo, press, transition,
-                        coach, squad_strength, form,
-                        xg_for, xg_against,
-                        injury_index, fatigue_index, transfer_index,
-                        style_identity,
-                        predictability, big_match_factor,
-                        home_strength, away_strength,
-                        tournament_factor, opposition_quality,
-                        passport_quality, faj_rating,
-                        matches_analyzed, data_confidence,
-                        api_confidence, expert_confidence,
-                        passport_version, manager_version,
-                        source_name, update_type,
-                        source_update_date, last_match_date,
-                        last_validation_date,
-                        created_at, updated_at
-                    ) VALUES (
-                        ?, ?, ?,
-                        ?, ?, ?, ?,
-                        ?, ?, ?, ?,
-                        ?, ?, ?,
-                        ?, ?,
-                        ?, ?, ?,
-                        ?,
-                        ?, ?,
-                        ?, ?,
-                        ?, ?,
-                        ?, ?,
-                        ?, ?,
-                        ?, ?,
-                        ?, ?,
-                        ?, ?,
-                        ?, ?,
-                        ?, ?,
-                        ?, ?,
-                        ?, ?
-                    )
-                    """,
-                    (
-                        passport.team_id,
-                        passport.metadata.season,
-                        passport.metadata.passport_status,
-                        passport.attack, passport.defense, passport.control, passport.efficiency,
-                        passport.mentality, passport.tempo, passport.press, passport.transition,
-                        passport.coach, passport.squad_strength, passport.form,
-                        passport.xg_for, passport.xg_against,
-                        passport.injury_index, passport.fatigue_index, passport.transfer_index,
-                        passport.style_identity,
-                        passport.predictability, passport.big_match_factor,
-                        passport.home_strength, passport.away_strength,
-                        passport.tournament_factor, passport.opposition_quality,
-                        quality, rating,
-                        passport.metadata.matches_analyzed, passport.metadata.data_confidence,
-                        passport.metadata.api_confidence, passport.metadata.expert_confidence,
-                        passport.metadata.passport_version, self.VERSION,
-                        passport.metadata.source_name, passport.metadata.update_type,
-                        passport.metadata.source_update_date, passport.metadata.last_match_date,
-                        passport.metadata.last_validation_date,
-                        passport.metadata.created_at, passport.metadata.updated_at
-                    )
-                )
-
-            conn.commit()
-            conn.close()
-
-            self._cache[passport.team_id] = passport
-            return True
-
-        except Exception as e:
-            logger.error(f"Save passport error: {e}")
-            return False
 
     def update_passport(
         self,
-        passport: TeamPassport,
-        change_reason: Optional[str] = None
-    ) -> Optional[TeamPassport]:
-        try:
-            old_passport = self.get_passport(passport.team_id, passport.metadata.season)
+        team_id: int,
+        season_id: int,
+        changes: Dict[str, Any],
+        source: str = "learning",
+        opponent_rating: float = 1.0,
+        tournament: str = "RPL",
+        matches_count: int = 0
+    ) -> Optional[Dict[str, Any]]:
+        current = self.get_current_passport(team_id, season_id)
 
-            new_version = 1
-            if old_passport:
-                new_version = old_passport.metadata.passport_version + 1
-                old_passport.metadata.passport_status = "ARCHIVED"
-                self.save_passport(old_passport)
+        if not current:
+            logger.warning(f"No current passport for team {team_id}")
+            return self.create_passport(team_id, season_id, changes, source)
 
-            passport.metadata.passport_version = new_version
-            passport.metadata.passport_status = "ACTIVE"
-            passport.metadata.updated_at = datetime.now().isoformat()
-            passport.metadata.last_validation_date = datetime.now().isoformat()
+        # Применяем изменения с медленным обучением
+        weighted_changes = self._apply_weighted_changes(changes, opponent_rating, tournament)
 
-            if not self.save_passport(passport):
-                return None
+        new_data = current.copy()
+        for key, value in weighted_changes.items():
+            if key in new_data and key in self.PARAM_RANGES:
+                old_value = new_data[key]
+                # Медленное обучение: 90% старого + 10% нового сигнала
+                new_data[key] = self._clamp(old_value * 0.9 + value * 0.1, key)
 
-            self._save_history(passport, old_passport, change_reason)
+        # Обновляем confidence
+        new_data['passport_confidence'] = self._calculate_confidence(
+            new_data,
+            matches_count + 1,
+            new_data.get('created_at', datetime.now().isoformat())
+        )
 
-            self._cache[passport.team_id] = passport
+        # Обновляем FAJ Rating
+        new_data['faj_rating'] = self._calculate_faj_rating(
+            new_data,
+            changes.get('results_strength', 0),
+            changes.get('opponent_strength', opponent_rating),
+            changes.get('form', 0)
+        )
 
-            logger.info(
-                f"Passport updated: {passport.team_name} "
-                f"(v{new_version}, {passport.metadata.season}, {passport.metadata.passport_status})"
-            )
+        return self.create_passport(team_id, season_id, new_data, source)
 
-            return passport
-
-        except Exception as e:
-            logger.error(f"Update passport error: {e}")
-            return None
-
-    # ============================================================
-    # HISTORY
-    # ============================================================
-
-    def _save_history(
-        self,
-        passport: TeamPassport,
-        old_passport: Optional[TeamPassport],
-        change_reason: Optional[str] = None
-    ) -> bool:
-        try:
-            conn = get_db()
-            cursor = conn.cursor()
-
-            reason = change_reason or f"Обновление паспорта (v{passport.metadata.passport_version})"
-
-            cursor.execute(
-                """
-                INSERT INTO passport_history (
-                    team_id, version,
-                    attack, defense, control, form,
-                    faj_rating, passport_quality,
-                    change_reason, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    passport.team_id,
-                    passport.metadata.passport_version,
-                    passport.attack,
-                    passport.defense,
-                    passport.control,
-                    passport.form,
-                    passport.get_rating(),
-                    passport.get_quality(),
-                    reason,
-                    datetime.now().isoformat()
-                )
-            )
-
-            conn.commit()
-            conn.close()
-
-            return True
-
-        except Exception as e:
-            logger.error(f"Save history error: {e}")
-            return False
-
-    # ============================================================
-    # LEARNING HISTORY
-    # ============================================================
-
-    def save_learning_event(
+    def update_after_match(
         self,
         team_id: int,
-        event_type: str,
-        old_value: float,
-        new_value: float,
-        reason: str,
-        field_name: Optional[str] = None
-    ) -> bool:
-        """
-        Сохранение события обучения в learning_history
+        season_id: int,
+        match_data: Dict[str, Any],
+        opponent_rating: float = 1.0,
+        tournament: str = "RPL",
+        matches_count: int = 0
+    ) -> Optional[Dict[str, Any]]:
+        current = self.get_current_passport(team_id, season_id)
 
-        Args:
-            team_id: ID команды
-            event_type: тип события (rating, attack, defense, etc.)
-            old_value: старое значение
-            new_value: новое значение
-            reason: причина изменения
-            field_name: название поля (опционально)
-
-        Returns:
-            bool: успешно ли сохранено
-        """
-        try:
-            conn = get_db()
-            cursor = conn.cursor()
-
-            cursor.execute(
-                """
-                INSERT INTO learning_history (
-                    team_id, event_type, field_name,
-                    old_value, new_value, reason, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    team_id,
-                    event_type,
-                    field_name or event_type,
-                    old_value,
-                    new_value,
-                    reason,
-                    datetime.now().isoformat()
-                )
-            )
-
-            conn.commit()
-            conn.close()
-
-            logger.info(f"Learning event saved: {event_type} for team {team_id}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Save learning event error: {e}")
-            return False
-
-    def get_learning_events(
-        self,
-        team_id: Optional[int] = None,
-        limit: int = 50
-    ) -> List[Dict[str, Any]]:
-        """Получение событий обучения"""
-        conn = get_db()
-        cursor = conn.cursor()
-
-        if team_id:
-            cursor.execute(
-                """
-                SELECT *
-                FROM learning_history
-                WHERE team_id = ?
-                ORDER BY created_at DESC
-                LIMIT ?
-                """,
-                (team_id, limit)
-            )
-        else:
-            cursor.execute(
-                """
-                SELECT *
-                FROM learning_history
-                ORDER BY created_at DESC
-                LIMIT ?
-                """,
-                (limit,)
-            )
-
-        rows = cursor.fetchall()
-        conn.close()
-
-        result = []
-        for row in rows:
-            if isinstance(row, (tuple, list)):
-                result.append({})
-            else:
-                result.append(dict(row))
-
-        return result
-
-    # ============================================================
-    # STATUS & DIAGNOSTICS
-    # ============================================================
-
-    def passport_status(self, team_id: int, season: Optional[str] = None) -> Dict[str, Any]:
-        passport = self.get_passport(team_id, season)
-        if not passport:
-            return {"exists": False, "message": "Паспорт не найден"}
-
-        quality = passport.get_quality()
-        rating = passport.get_rating()
-
-        if quality >= 0.8:
-            status = "FULL"
-        elif quality >= 0.5:
-            status = "PARTIAL"
-        else:
-            status = "MINIMAL"
-
-        return {
-            "exists": True,
-            "team_name": passport.team_name,
-            "season": passport.metadata.season,
-            "passport_status": passport.metadata.passport_status,
-            "status": status,
-            "quality": quality,
-            "rating": rating,
-            "version": passport.metadata.passport_version,
-            "style": passport.style_identity,
-            "source": passport.metadata.source_name,
-            "update_type": passport.metadata.update_type,
-            "matches_analyzed": passport.metadata.matches_analyzed,
-            "data_confidence": passport.metadata.data_confidence,
-            "api_confidence": passport.metadata.api_confidence,
-            "expert_confidence": passport.metadata.expert_confidence,
-            "last_updated": passport.metadata.updated_at,
-            "last_validated": passport.metadata.last_validation_date,
-            "last_match": passport.metadata.last_match_date
-        }
-
-    def dashboard_summary(self, season: Optional[str] = None) -> Dict[str, Any]:
-        passports = self.get_all_passports(season=season)
-
-        if not passports:
-            return {
-                "teams": 0,
-                "average_rating": 0,
-                "full_passports": 0,
-                "partial_passports": 0,
-                "active_passports": 0,
-                "updated": datetime.now().isoformat()
-            }
-
-        ratings = [p.get("faj_rating", 0) for p in passports if p.get("faj_rating")]
-        avg_rating = round(sum(ratings) / len(ratings), 1) if ratings else 0
-
-        full = sum(1 for p in passports if p.get("status") == "FULL")
-        partial = sum(1 for p in passports if p.get("status") == "PARTIAL")
-        active = sum(1 for p in passports if p.get("passport_status") == "ACTIVE")
-
-        return {
-            "teams": len(passports),
-            "average_rating": avg_rating,
-            "full_passports": full,
-            "partial_passports": partial,
-            "active_passports": active,
-            "updated": datetime.now().isoformat()
-        }
-
-    def get_rating(self, team_id: int, season: Optional[str] = None) -> Optional[float]:
-        passport = self.get_passport(team_id, season)
-        return passport.get_rating() if passport else None
-
-    def get_quality(self, team_id: int, season: Optional[str] = None) -> Optional[float]:
-        passport = self.get_passport(team_id, season)
-        return passport.get_quality() if passport else None
-
-    def clear_cache(self) -> None:
-        self._cache.clear()
-        logger.info("Cache cleared")
-
-    # ============================================================
-    # PRIVATE METHODS
-    # ============================================================
-
-    def _load_from_db(self, team_id: int, season: Optional[str] = None) -> Optional[TeamPassport]:
-        try:
-            conn = get_db()
-            cursor = conn.cursor()
-
-            if season:
-                cursor.execute(
-                    """
-                    SELECT t.id, t.name, t.league,
-                           p.season, p.passport_status,
-                           p.attack, p.defense, p.control, p.efficiency,
-                           p.mentality, p.tempo, p.press, p.transition,
-                           p.coach, p.squad_strength, p.form,
-                           p.xg_for, p.xg_against,
-                           p.injury_index, p.fatigue_index, p.transfer_index,
-                           p.style_identity,
-                           p.predictability, p.big_match_factor,
-                           p.home_strength, p.away_strength,
-                           p.tournament_factor, p.opposition_quality,
-                           p.passport_quality, p.faj_rating,
-                           p.matches_analyzed, p.data_confidence,
-                           p.api_confidence, p.expert_confidence,
-                           p.passport_version, p.manager_version,
-                           p.source_name, p.update_type,
-                           p.source_update_date, p.last_match_date,
-                           p.last_validation_date,
-                           p.created_at, p.updated_at
-                    FROM teams t
-                    LEFT JOIN team_passports p ON t.id = p.team_id
-                    WHERE t.id = ? AND p.season = ?
-                    """,
-                    (team_id, season)
-                )
-            else:
-                cursor.execute(
-                    """
-                    SELECT t.id, t.name, t.league,
-                           p.season, p.passport_status,
-                           p.attack, p.defense, p.control, p.efficiency,
-                           p.mentality, p.tempo, p.press, p.transition,
-                           p.coach, p.squad_strength, p.form,
-                           p.xg_for, p.xg_against,
-                           p.injury_index, p.fatigue_index, p.transfer_index,
-                           p.style_identity,
-                           p.predictability, p.big_match_factor,
-                           p.home_strength, p.away_strength,
-                           p.tournament_factor, p.opposition_quality,
-                           p.passport_quality, p.faj_rating,
-                           p.matches_analyzed, p.data_confidence,
-                           p.api_confidence, p.expert_confidence,
-                           p.passport_version, p.manager_version,
-                           p.source_name, p.update_type,
-                           p.source_update_date, p.last_match_date,
-                           p.last_validation_date,
-                           p.created_at, p.updated_at
-                    FROM teams t
-                    LEFT JOIN team_passports p ON t.id = p.team_id
-                    WHERE t.id = ?
-                    ORDER BY p.created_at DESC
-                    LIMIT 1
-                    """,
-                    (team_id,)
-                )
-
-            row = cursor.fetchone()
-            conn.close()
-
-            if not row:
-                return None
-
-            passport_version = row_value(row, "passport_version", 1)
-            manager_version = row_value(row, "manager_version", self.VERSION)
-            created_at = row_value(row, "created_at", datetime.now().isoformat())
-            updated_at = row_value(row, "updated_at", datetime.now().isoformat())
-            source_update_date = row_value(row, "source_update_date")
-            last_validation_date = row_value(row, "last_validation_date")
-            passport_season = row_value(row, "season", "2026/27")
-            passport_status = row_value(row, "passport_status", "ACTIVE")
-            data_confidence = row_value(row, "data_confidence", 0.0)
-            api_confidence = row_value(row, "api_confidence", 0.0)
-            expert_confidence = row_value(row, "expert_confidence", 0.0)
-            matches_analyzed = row_value(row, "matches_analyzed", 0)
-            last_match_date = row_value(row, "last_match_date")
-            source_name = row_value(row, "source_name", "manual")
-            update_type = row_value(row, "update_type", "initial")
-
-            metadata = PassportMetadata(
-                passport_version=passport_version,
-                manager_version=manager_version,
-                created_at=created_at,
-                updated_at=updated_at,
-                source_update_date=source_update_date,
-                last_validation_date=last_validation_date,
-                season=passport_season,
-                passport_status=passport_status,
-                data_confidence=data_confidence,
-                api_confidence=api_confidence,
-                expert_confidence=expert_confidence,
-                matches_analyzed=matches_analyzed,
-                last_match_date=last_match_date,
-                source_name=source_name,
-                update_type=update_type
-            )
-
-            return TeamPassport(
-                team_id=row_value(row, "id", team_id),
-                team_name=row_value(row, "name", ""),
-                league=row_value(row, "league", ""),
-                attack=row_value(row, "attack", 70.0),
-                defense=row_value(row, "defense", 70.0),
-                control=row_value(row, "control", 70.0),
-                efficiency=row_value(row, "efficiency", 70.0),
-                mentality=row_value(row, "mentality", 70.0),
-                tempo=row_value(row, "tempo", 70.0),
-                press=row_value(row, "press", 70.0),
-                transition=row_value(row, "transition", 70.0),
-                coach=row_value(row, "coach", 70.0),
-                squad_strength=row_value(row, "squad_strength", 70.0),
-                form=row_value(row, "form", 70.0),
-                xg_for=row_value(row, "xg_for", 1.35),
-                xg_against=row_value(row, "xg_against", 1.35),
-                injury_index=row_value(row, "injury_index", 0.0),
-                fatigue_index=row_value(row, "fatigue_index", 0.0),
-                transfer_index=row_value(row, "transfer_index", 0.0),
-                style_identity=row_value(row, "style_identity", "balanced"),
-                predictability=row_value(row, "predictability", 70.0),
-                big_match_factor=row_value(row, "big_match_factor", 70.0),
-                home_strength=row_value(row, "home_strength", 70.0),
-                away_strength=row_value(row, "away_strength", 70.0),
-                tournament_factor=row_value(row, "tournament_factor", 70.0),
-                opposition_quality=row_value(row, "opposition_quality", 70.0),
-                metadata=metadata
-            )
-
-        except Exception as e:
-            logger.error(f"Load from DB error: {e}")
+        if not current:
             return None
 
+        changes = self._calculate_match_changes(match_data)
 
-# ============================================================
-# HELPER FUNCTIONS
-# ============================================================
+        if changes:
+            return self.update_passport(
+                team_id,
+                season_id,
+                changes,
+                source="match_update",
+                opponent_rating=opponent_rating,
+                tournament=tournament,
+                matches_count=matches_count
+            )
 
-def calculate_faj_rating_from_passport(passport: TeamPassport) -> float:
-    weights = PassportManager.RATING_WEIGHTS
+        return current
 
-    rating = (
-        passport.attack * weights["attack"] +
-        passport.defense * weights["defense"] +
-        passport.control * weights["control"] +
-        passport.efficiency * weights["efficiency"] +
-        passport.mentality * weights["mentality"] +
-        passport.tempo * weights["tempo"] +
-        passport.press * weights["press"] +
-        passport.transition * weights["transition"] +
-        passport.coach * weights["coach"] +
-        passport.form * weights["form"] +
-        passport.predictability * weights["predictability"] +
-        passport.big_match_factor * weights["big_match_factor"] +
-        passport.home_strength * weights["home_strength"] +
-        passport.opposition_quality * weights["opposition_quality"]
-    )
+    # ============================================================
+    # PRIVATE
+    # ============================================================
 
-    return round(rating, 1)
+    def _clamp(self, value: float, key: str) -> float:
+        if key in self.PARAM_RANGES:
+            min_val, max_val = self.PARAM_RANGES[key]
+            return max(min_val, min(max_val, value))
+        return max(0, min(100, value))
 
+    def _clamp_params(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        result = {}
+        for key, value in data.items():
+            if key in self.PARAM_RANGES:
+                result[key] = self._clamp(value, key)
+            else:
+                result[key] = value
+        return result
 
-def calculate_passport_quality(passport: TeamPassport) -> float:
-    fields = [
-        "attack", "defense", "control", "efficiency",
-        "mentality", "tempo", "press", "transition",
-        "coach", "squad_strength", "form",
-        "xg_for", "xg_against"
-    ]
+    def _get_next_version(self, team_id: int, season_id: int) -> str:
+        versions = self.get_passport_versions(team_id, season_id)
 
-    filled = 0
-    for field in fields:
-        value = getattr(passport, field, None)
-        if value is not None and value != 0:
-            filled += 1
+        if not versions:
+            return "v1.0"
 
-    return round(filled / len(fields), 2)
+        numbers = []
+        for v in versions:
+            match = re.search(r'v(\d+)', v)
+            if match:
+                numbers.append(int(match.group(1)))
+
+        if not numbers:
+            return "v1.0"
+
+        next_num = max(numbers) + 1
+        return f"v{next_num}.0"
+
+    def _apply_weighted_changes(
+        self,
+        changes: Dict[str, Any],
+        opponent_rating: float,
+        tournament: str
+    ) -> Dict[str, Any]:
+        tournament_dna = self.TOURNAMENT_DNA.get(tournament, self.TOURNAMENT_DNA["RPL"])
+        base_weight = opponent_rating * tournament_dna.get('goal_factor', 1.0)
+
+        weighted = {}
+        for key, value in changes.items():
+            if key in self.PARAM_RANGES:
+                weighted[key] = value * base_weight
+            else:
+                weighted[key] = value
+
+        return weighted
+
+    def _calculate_match_changes(self, match_data: Dict[str, Any]) -> Dict[str, Any]:
+        changes = {}
+
+        goals_for = match_data.get('goals_for', 0)
+        goals_against = match_data.get('goals_against', 0)
+        xg_for = match_data.get('xg_for', goals_for)
+        xg_against = match_data.get('xg_against', goals_against)
+
+        # Атака: 60% xG + 40% голы
+        attack_signal = (xg_for - 1.35) * 0.6 + (goals_for - 1.35) * 0.4
+        changes['attack'] = attack_signal * 0.5
+
+        # Оборона: 60% xG против + 40% пропущенные
+        defense_signal = (1.35 - xg_against) * 0.6 + (1.35 - goals_against) * 0.4
+        changes['defense'] = defense_signal * 0.5
+
+        # Реализация (finishing): разница между голами и xG
+        finishing_signal = goals_for - xg_for
+        changes['finishing'] = finishing_signal * 0.3
+
+        # Менталитет
+        if match_data.get('is_win', False):
+            changes['mental'] = 1.0
+            changes['injury_factor'] = 0.5
+        elif match_data.get('is_draw', False):
+            changes['mental'] = 0.3
+        else:
+            changes['mental'] = -0.5
+            changes['injury_factor'] = -0.3
+
+        return changes
+
+    def _calculate_confidence(
+        self,
+        passport: Dict[str, Any],
+        matches_count: int,
+        created_at: str
+    ) -> float:
+        """Расчёт уверенности: Data Quality + Match Count + Freshness"""
+        required_fields = [
+            'attack', 'defense', 'control', 'tempo',
+            'press', 'transition', 'finishing',
+            'squad_quality', 'coach_factor'
+        ]
+
+        filled = 0
+        for field in required_fields:
+            if passport.get(field) is not None and passport.get(field) != 0:
+                filled += 1
+
+        data_quality = filled / len(required_fields)
+
+        # Чем больше матчей, тем выше уверенность
+        matches_factor = min(0.4, matches_count * 0.004)
+
+        # Свежесть данных (чем старше, тем ниже уверенность)
+        try:
+            created = datetime.fromisoformat(created_at)
+            days_old = (datetime.now() - created).days
+            freshness_factor = max(0.0, 1.0 - (days_old / 180))  # 180 дней = полное старение
+        except:
+            freshness_factor = 0.8
+
+        # Базовая уверенность от качества данных
+        base_confidence = 0.2 + data_quality * 0.4
+
+        return min(1.0, base_confidence + matches_factor * freshness_factor)
+
+    def _calculate_faj_rating(
+        self,
+        passport: Dict[str, Any],
+        results_strength: float = 0,
+        opponent_strength: float = 0,
+        form: float = 0
+    ) -> float:
+        """
+        FAJ Rating:
+        40% Passport + 30% Results + 20% Opponent + 10% Form
+        """
+        passport_weights = {
+            'attack': 0.18,
+            'defense': 0.18,
+            'control': 0.10,
+            'tempo': 0.08,
+            'press': 0.08,
+            'transition': 0.06,
+            'finishing': 0.06,
+            'squad_quality': 0.10,
+            'coach_factor': 0.06,
+            'mental': 0.06,
+            'home_strength': 0.02,
+            'league_adaptation': 0.02
+        }
+
+        passport_score = 0
+        for key, weight in passport_weights.items():
+            passport_score += passport.get(key, 50) * weight
+
+        passport_score = passport_score / 100
+
+        # Итоговый рейтинг (0-100)
+        rating = (
+            passport_score * 100 * self.RATING_WEIGHTS["passport"] +
+            results_strength * self.RATING_WEIGHTS["results"] +
+            opponent_strength * self.RATING_WEIGHTS["opponent"] +
+            form * self.RATING_WEIGHTS["form"]
+        )
+
+        return round(max(0, min(100, rating)), 1)
 
 
 # ============================================================
@@ -1091,32 +584,8 @@ def calculate_passport_quality(passport: TeamPassport) -> float:
 _default_manager: Optional[PassportManager] = None
 
 
-def get_passport_manager() -> PassportManager:
+def get_passport_manager(db: Optional[FAJDatabase] = None) -> PassportManager:
     global _default_manager
     if _default_manager is None:
-        _default_manager = PassportManager()
+        _default_manager = PassportManager(db)
     return _default_manager
-
-
-# ============================================================
-# SELF-TEST
-# ============================================================
-
-if __name__ == "__main__":
-    print("\n" + "=" * 60)
-    print("⚽ Passport Manager v2.3.3 — САМОТЕСТИРОВАНИЕ")
-    print("=" * 60)
-
-    manager = get_passport_manager()
-
-    print(f"\n📊 Version: {manager.VERSION}")
-    print(f"📊 Rating Weights: {manager.RATING_WEIGHTS}")
-
-    print("\n📋 Dashboard Summary:")
-    summary = manager.dashboard_summary()
-    print(f"  Команды: {summary.get('teams', 0)}")
-    print(f"  Средний рейтинг: {summary.get('average_rating', 0)}")
-
-    print("\n" + "=" * 60)
-    print("✅ Passport Manager v2.3.3 готов к работе.")
-    print("=" * 60)
