@@ -1,470 +1,171 @@
-# =====================================================
-# FAJ Platform v6.6
-# app/core/calibration_engine.py
-#
-# FAJ Calibration Engine v1.0
-#
-# Model vs Expert vs Reality
-# =====================================================
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
+"""
+=====================================================
+FAJ Platform v12.0
+Calibration Engine v1.3
+
+РОЛЬ:
+    Корректировка вероятностей на основе исторических данных.
+    Не меняет модель, а исправляет систематические ошибки.
+
+ПРИНЦИП FAJ:
+    ✅ Коэффициенты живут в коде (базовые)
+    ✅ Обновляются через Learning Layer (БД)
+    ❌ НЕТ JSON-конфигов
+
+ИЗМЕНЕНИЯ v1.3:
+    - Добавлена валидация коэффициентов (0.5 - 1.5)
+    - Безопасное обновление коэффициентов (partial update)
+=====================================================
+"""
 
 import logging
-
-
-from datetime import datetime
-
-
-from app.database import get_db
-
-
+from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
 
-
-
-
-# =====================================================
-# RESULT NORMALIZE
-# =====================================================
-
-
-def normalize_score(
-    home_score,
-    away_score
-):
-
-    return f"{home_score}-{away_score}"
-
-
-
-
-
-# =====================================================
-# COMPARE WINNER
-# =====================================================
-
-
-def check_winner(
-    predicted,
-    actual
-):
-
-
-    if not predicted:
-
-        return False
-
-
-    if not actual:
-
-        return False
-
-
-
-    return predicted == actual
-
-
-
-
-
-
-
-# =====================================================
-# SCORE DIFFERENCE
-# =====================================================
-
-
-def score_error(
-    predicted,
-    actual
-):
-
-
-    if not predicted or not actual:
-
-        return 99
-
-
-
-    try:
-
-        p = predicted.split("-")
-
-        a = actual.split("-")
-
-
-
-        return abs(
-            int(p[0]) - int(a[0])
-        ) + abs(
-            int(p[1]) - int(a[1])
-        )
-
-
-    except:
-
-
-        return 99
-
-
-
-
-
-
-# =====================================================
-# ERROR TYPE
-# =====================================================
-
-
-def detect_error(
-    prediction,
-    fact
-):
-
-
-    errors = []
-
-
-
-    if not check_winner(
-
-        prediction.get(
-            "winner_prediction"
-        ),
-
-        fact.get(
-            "winner"
-
-        )
-
-    ):
-
-
-        errors.append(
-
-            "Ошибка определения победителя"
-
-        )
-
-
-
-
-
-    if score_error(
-
-        prediction.get(
-            "expected_score"
-        ),
-
-        fact.get(
-            "result"
-        )
-
-    ) > 2:
-
-
-        errors.append(
-
-            "Ошибка точного счёта"
-
-        )
-
-
-
-
-
-    xg_home = float(
-
-        prediction.get(
-            "xg_home",
-            0
-        )
-
-    )
-
-
-    xg_away = float(
-
-        prediction.get(
-            "xg_away",
-            0
-        )
-
-    )
-
-
-
-    if abs(
-        xg_home - xg_away
-    ) < 0.3:
-
-
-        errors.append(
-
-            "FAJ недооценил разницу команд"
-
-        )
-
-
-
-    if not errors:
-
-
-        errors.append(
-
-            "Прогноз точный"
-
-        )
-
-
-
-    return errors
-
-
-
-
-
-
-
-# =====================================================
-# CALIBRATE MATCH
-# =====================================================
-
-
-def calibrate_match(
-    fixture_id
-):
-
-
-    conn = get_db()
-
-
-    try:
-
-
-        cur = conn.cursor()
-
-
-
-        cur.execute(
-
+class CalibrationEngine:
+    """
+    Калибровка вероятностей FAJ
+    """
+
+    VERSION = "1.3"
+
+    # Базовые коэффициенты (живут в коде)
+    # Обновляются через Learning Layer
+    DEFAULT_COEFFICIENTS = {
+        "home_bias": 0.97,
+        "draw_bias": 1.02,
+        "away_bias": 1.01
+    }
+
+    # Допустимый диапазон коэффициентов
+    COEFFICIENT_MIN = 0.5
+    COEFFICIENT_MAX = 1.5
+
+    def __init__(self):
+        self.version = self.VERSION
+        self.coefficients = self.DEFAULT_COEFFICIENTS.copy()
+        logger.info(f"Calibration Engine v{self.VERSION} initialized")
+
+    def adjust(
+        self,
+        raw_prediction: Dict[str, Any],
+        coefficients: Optional[Dict[str, float]] = None
+    ) -> Dict[str, Any]:
         """
+        Калибровка вероятностей
 
-        SELECT
+        Args:
+            raw_prediction: сырой прогноз от Poisson
+            coefficients: опциональные коэффициенты (из Learning Layer)
 
-        p.*,
-
-        f.result,
-
-        f.winner
-
-
-        FROM predictions p
-
-
-        JOIN fixtures f
-
-        ON p.fixture_id=f.id
-
-
-        WHERE p.fixture_id=%s
-
-
-        """,
-
-        (
-
-            fixture_id,
-
-        )
-
-        )
-
-
-
-        row = cur.fetchone()
-
-
-
-        if not row:
-
-
-            return None
-
-
-
-        data = dict(row)
-
-
-
-        errors = detect_error(
-
-            data,
-
-            data
-
-        )
-
-
-
-
-
-        cur.execute(
-
+        Returns:
+            Dict с скорректированными вероятностями
         """
+        # Безопасное обновление коэффициентов
+        coeffs = self.coefficients.copy()
+        if coefficients:
+            # Валидация переданных коэффициентов
+            validated = self._validate_coefficients(coefficients)
+            coeffs.update(validated)
 
-        INSERT INTO calibration_log
+        raw_probs = raw_prediction.get("probability", {})
+        home = raw_probs.get("home", 0.33)
+        draw = raw_probs.get("draw", 0.33)
+        away = raw_probs.get("away", 0.33)
 
-        (
+        # Применяем калибровку
+        calibrated_home = home * coeffs.get("home_bias", 1.0)
+        calibrated_draw = draw * coeffs.get("draw_bias", 1.0)
+        calibrated_away = away * coeffs.get("away_bias", 1.0)
 
-        fixture_id,
-
-        errors,
-
-        created
-
-
-        )
-
-
-        VALUES
-
-        (%s,%s,NOW())
-
-
-        """,
-
-        (
-
-        fixture_id,
-
-        str(errors)
-
-        )
-
-        )
-
-
-
-        conn.commit()
-
-
+        # Нормализация (сумма должна быть 1.0)
+        total = calibrated_home + calibrated_draw + calibrated_away
+        if total > 0:
+            calibrated_home /= total
+            calibrated_draw /= total
+            calibrated_away /= total
 
         return {
-
-
-            "fixture_id":
-
-            fixture_id,
-
-
-            "errors":
-
-            errors
-
-
+            "home": round(calibrated_home, 4),
+            "draw": round(calibrated_draw, 4),
+            "away": round(calibrated_away, 4),
+            "applied": True,
+            "coefficients_used": coeffs
         }
 
+    def _validate_coefficients(
+        self,
+        coefficients: Dict[str, float]
+    ) -> Dict[str, float]:
+        """
+        Валидация коэффициентов
+
+        Args:
+            coefficients: словарь коэффициентов для проверки
+
+        Returns:
+            Dict с отфильтрованными валидными коэффициентами
+
+        Raises:
+            ValueError: если коэффициент вне допустимого диапазона
+        """
+        valid = {}
+        for key, value in coefficients.items():
+            if key in self.DEFAULT_COEFFICIENTS:
+                if not (self.COEFFICIENT_MIN <= value <= self.COEFFICIENT_MAX):
+                    raise ValueError(
+                        f"Invalid calibration coefficient '{key}': {value}. "
+                        f"Must be between {self.COEFFICIENT_MIN} and {self.COEFFICIENT_MAX}"
+                    )
+                valid[key] = value
+            else:
+                logger.warning(f"Unknown calibration coefficient '{key}', ignoring")
+        return valid
+
+    def update_coefficients(
+        self,
+        new_coefficients: Dict[str, float]
+    ) -> None:
+        """
+        Безопасное обновление коэффициентов (вызывается Learning Layer)
+
+        Args:
+            new_coefficients: новые коэффициенты (частичные или полные)
+        """
+        validated = self._validate_coefficients(new_coefficients)
+        self.coefficients.update(validated)
+        logger.info(f"Calibration coefficients updated: {validated}")
+
+    def get_coefficients(self) -> Dict[str, float]:
+        """Получить текущие коэффициенты"""
+        return self.coefficients.copy()
+
+    def reset_coefficients(self) -> None:
+        """Сброс к базовым коэффициентам"""
+        self.coefficients = self.DEFAULT_COEFFICIENTS.copy()
+        logger.info("Calibration coefficients reset to default")
 
 
-    except Exception as e:
+if __name__ == "__main__":
+    engine = CalibrationEngine()
+    print(f"Calibration Engine v{engine.VERSION}")
+    print(f"Default coefficients: {engine.DEFAULT_COEFFICIENTS}")
+    print(f"Current coefficients: {engine.get_coefficients()}")
+    print(f"Range: {engine.COEFFICIENT_MIN} - {engine.COEFFICIENT_MAX}")
 
-
-        conn.rollback()
-
-
-        logger.error(
-
-            "Calibration error: %s",
-
-            e,
-
-            exc_info=True
-
-        )
-
-
-        return None
-
-
-
-    finally:
-
-
-        conn.close()
-
-
-
-
-
-
-# =====================================================
-# CALIBRATE ALL FINISHED
-# =====================================================
-
-
-def calibrate_finished_matches():
-
-
-    conn = get_db()
-
+    # Тест валидации
+    try:
+        engine.update_coefficients({"home_bias": 0.5, "draw_bias": 1.0})
+        print("✅ Valid coefficients accepted")
+    except ValueError as e:
+        print(f"❌ {e}")
 
     try:
-
-
-        cur = conn.cursor()
-
-
-
-        cur.execute(
-
-        """
-
-        SELECT id
-
-        FROM fixtures
-
-        WHERE status='finished'
-
-        """
-
-        )
-
-
-        matches = cur.fetchall()
-
-
-
-        results = []
-
-
-
-        for match in matches:
-
-
-            result = calibrate_match(
-
-                match["id"]
-
-            )
-
-
-            if result:
-
-                results.append(
-
-                    result
-
-                )
-
-
-
-        return results
-
-
-
-    finally:
-
-
-        conn.close()
+        engine.update_coefficients({"home_bias": 2.0})
+    except ValueError as e:
+        print(f"✅ Invalid coefficient rejected: {e}")
