@@ -5,7 +5,7 @@
 FAJ Platform v11.2.1 + Learning Layer
 Database Engine — ЕДИНЫЙ ФАЙЛ БАЗЫ ДАННЫХ 🔒
 
-Схема: v11.2.1
+Схема: v11.3.0 (автоматическое обновление)
 """
 
 import sqlite3
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 DATA_DIR = "data"
 DB_FILE = os.path.join(DATA_DIR, "faj.db")
-DB_SCHEMA_VERSION = "11.2.1"
+DB_SCHEMA_VERSION = "11.3.0"  # ← ИЗМЕНЕНО
 
 
 def get_connection():
@@ -57,7 +57,281 @@ def set_schema_version(version):
     conn.close()
 
 
+def run_migration_to_v11_3_0():
+    """Миграция v11.2.1 → v11.3.0 (12 новых таблиц)"""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    logger.info("🚀 Запуск миграции v11.2.1 → v11.3.0...")
+
+    # ============================================================
+    # 1. prediction_features
+    # ============================================================
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS prediction_features (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_id INTEGER,
+            home_attack REAL,
+            home_defense REAL,
+            home_form REAL,
+            home_rating REAL,
+            home_xg REAL,
+            home_injury_factor REAL,
+            away_attack REAL,
+            away_defense REAL,
+            away_form REAL,
+            away_rating REAL,
+            away_xg REAL,
+            away_injury_factor REAL,
+            tournament_modifier REAL,
+            coach_factor REAL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(match_id) REFERENCES matches(id)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_features_match ON prediction_features(match_id)")
+
+    # ============================================================
+    # 2. pipeline_logs
+    # ============================================================
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pipeline_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_id INTEGER,
+            stage TEXT NOT NULL,
+            module TEXT,
+            execution_time REAL,
+            success INTEGER DEFAULT 1,
+            error_message TEXT,
+            version TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(match_id) REFERENCES matches(id)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_match ON pipeline_logs(match_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_stage ON pipeline_logs(stage)")
+
+    # ============================================================
+    # 3. model_results
+    # ============================================================
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS model_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_id INTEGER,
+            model_name TEXT NOT NULL,
+            result_type TEXT DEFAULT 'winner',
+            prediction TEXT,
+            probability REAL,
+            home_goals REAL,
+            away_goals REAL,
+            home_probability REAL,
+            draw_probability REAL,
+            away_probability REAL,
+            xg_home REAL,
+            xg_away REAL,
+            model_version TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(match_id) REFERENCES matches(id)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_match ON model_results(match_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_name ON model_results(model_name)")
+
+    # ============================================================
+    # 4. model_agreement
+    # ============================================================
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS model_agreement (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_id INTEGER,
+            xg_result_id INTEGER,
+            poisson_result_id INTEGER,
+            montecarlo_result_id INTEGER,
+            expert_result_id INTEGER,
+            agreement_percent REAL,
+            conflict_level TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(match_id) REFERENCES matches(id)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_agreement_match ON model_agreement(match_id)")
+
+    # ============================================================
+    # 5. confidence_history
+    # ============================================================
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS confidence_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_id INTEGER,
+            data_quality REAL,
+            passport_quality REAL,
+            model_agreement REAL,
+            prediction_stability REAL,
+            final_confidence REAL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(match_id) REFERENCES matches(id)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_confidence_match ON confidence_history(match_id)")
+
+    # ============================================================
+    # 6. prediction_risk
+    # ============================================================
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS prediction_risk (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_id INTEGER,
+            risk_type TEXT NOT NULL,
+            risk_value REAL,
+            description TEXT,
+            severity INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(match_id) REFERENCES matches(id)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_risk_match ON prediction_risk(match_id)")
+
+    # ============================================================
+    # 7. faj_decisions
+    # ============================================================
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS faj_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_id INTEGER,
+            home_score INTEGER,
+            away_score INTEGER,
+            final_score TEXT,
+            final_probability REAL,
+            confidence REAL,
+            risk_level TEXT,
+            model_agreement REAL,
+            expert_used INTEGER DEFAULT 0,
+            expert_weight REAL DEFAULT 0,
+            reason TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(match_id) REFERENCES matches(id)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_decisions_match ON faj_decisions(match_id)")
+
+    # ============================================================
+    # 8. decision_explanations
+    # ============================================================
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS decision_explanations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_id INTEGER,
+            factor TEXT NOT NULL,
+            impact REAL,
+            description TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(decision_id) REFERENCES faj_decisions(id)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_explanations_decision ON decision_explanations(decision_id)")
+
+    # ============================================================
+    # 9. passport_versions
+    # ============================================================
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS passport_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_id INTEGER,
+            season_id INTEGER,
+            version INTEGER,
+            version_type TEXT DEFAULT 'basic',
+            attack INTEGER,
+            defense INTEGER,
+            control INTEGER,
+            form INTEGER,
+            rating REAL,
+            change_reason TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(team_id) REFERENCES teams(id),
+            FOREIGN KEY(season_id) REFERENCES seasons(id)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_passport_versions_team ON passport_versions(team_id, season_id)")
+
+    # ============================================================
+    # 10. faj_rating_history
+    # ============================================================
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS faj_rating_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_id INTEGER,
+            season_id INTEGER,
+            rating REAL,
+            attack_rating REAL,
+            defense_rating REAL,
+            form_rating REAL,
+            mental_rating REAL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(team_id) REFERENCES teams(id),
+            FOREIGN KEY(season_id) REFERENCES seasons(id)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_rating_team ON faj_rating_history(team_id, season_id)")
+
+    # ============================================================
+    # 11. monte_carlo_runs
+    # ============================================================
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS monte_carlo_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_id INTEGER,
+            simulation_count INTEGER,
+            home_win REAL,
+            draw REAL,
+            away_win REAL,
+            mean_home_goals REAL,
+            mean_away_goals REAL,
+            variance REAL,
+            most_likely_score TEXT,
+            random_seed INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(match_id) REFERENCES matches(id)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mc_match ON monte_carlo_runs(match_id)")
+
+    # ============================================================
+    # 12. data_quality
+    # ============================================================
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS data_quality (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_id INTEGER,
+            passport_complete REAL,
+            missing_fields INTEGER,
+            freshness REAL,
+            confidence REAL,
+            source_count INTEGER DEFAULT 0,
+            last_update TEXT,
+            status TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(match_id) REFERENCES matches(id)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_quality_match ON data_quality(match_id)")
+
+    # ============================================================
+    # Обновляем версию схемы
+    # ============================================================
+    cursor.execute("""
+        INSERT INTO schema_version (version) VALUES ('11.3.0')
+    """)
+
+    conn.commit()
+    conn.close()
+
+    logger.info("✅ Миграция v11.2.1 → v11.3.0 завершена!")
+    logger.info("   📊 Добавлено 12 новых таблиц")
+    logger.info("   📌 Новая версия схемы: 11.3.0")
+
+
 def init_database():
+    """Инициализация базы данных с автоматической миграцией"""
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -680,8 +954,16 @@ def init_database():
 
     conn.commit()
     conn.close()
-    set_schema_version(DB_SCHEMA_VERSION)
-    logger.info(f"✅ База данных инициализирована. Версия схемы: {DB_SCHEMA_VERSION}")
+
+    # ============================================================
+    # АВТОМАТИЧЕСКАЯ МИГРАЦИЯ
+    # ============================================================
+    current_version = get_schema_version()
+    if current_version != DB_SCHEMA_VERSION:
+        logger.info(f"🔄 Обновление базы с {current_version} до {DB_SCHEMA_VERSION}")
+        run_migration_to_v11_3_0()
+    else:
+        logger.info(f"✅ База уже на версии {DB_SCHEMA_VERSION}")
 
 
 class FAJDatabase:
@@ -1641,25 +1923,6 @@ class FAJDatabase:
     ) -> bool:
         """
         Сохранение результата прогноза
-
-        Args:
-            prediction_id: ID прогноза
-            home_team: команда хозяев
-            away_team: команда гостей
-            league: лига
-            xg_home: xG хозяев
-            xg_away: xG гостей
-            home_win: вероятность победы хозяев
-            draw: вероятность ничьей
-            away_win: вероятность победы гостей
-            faj_score: финальный счёт
-            confidence: уверенность
-            risk_level: уровень риска
-            model_agreement: согласованность моделей
-            pipeline_version: версия Pipeline
-
-        Returns:
-            bool: успешно ли сохранено
         """
         try:
             conn = self._get_connection()
