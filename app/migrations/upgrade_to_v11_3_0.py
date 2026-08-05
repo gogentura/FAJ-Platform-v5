@@ -13,7 +13,7 @@ FAJ Platform v11.2.1 → v11.3.0
     4. model_agreement        - согласованность моделей
     5. confidence_history     - история уверенности
     6. prediction_risk        - риски прогноза
-    7. faj_decisions          - решение FAJ (связи)
+    7. faj_decisions          - решение FAJ
     8. decision_explanations  - почему принято решение
     9. passport_versions      - история паспортов
     10. faj_rating_history    - история рейтингов
@@ -21,9 +21,7 @@ FAJ Platform v11.2.1 → v11.3.0
     12. data_quality          - качество данных
 
 ИЗМЕНЕНИЯ:
-    - faj_decisions: добавлены home_score, away_score
-    - model_results: добавлен result_type
-
+    - faj_decisions: убраны FOREIGN KEY (кроме match_id)
 =====================================================
 """
 
@@ -103,7 +101,7 @@ def upgrade_to_v11_3_0():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_stage ON pipeline_logs(stage)")
 
     # ============================================================
-    # 3. model_results - результаты отдельных моделей (С result_type)
+    # 3. model_results - результаты отдельных моделей
     # ============================================================
     logger.info("  📋 Создание model_results...")
     cursor.execute("""
@@ -144,11 +142,7 @@ def upgrade_to_v11_3_0():
             agreement_percent REAL,
             conflict_level TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(match_id) REFERENCES matches(id),
-            FOREIGN KEY(xg_result_id) REFERENCES model_results(id),
-            FOREIGN KEY(poisson_result_id) REFERENCES model_results(id),
-            FOREIGN KEY(montecarlo_result_id) REFERENCES model_results(id),
-            FOREIGN KEY(expert_result_id) REFERENCES model_results(id)
+            FOREIGN KEY(match_id) REFERENCES matches(id)
         )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_agreement_match ON model_agreement(match_id)")
@@ -191,16 +185,13 @@ def upgrade_to_v11_3_0():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_risk_match ON prediction_risk(match_id)")
 
     # ============================================================
-    # 7. faj_decisions - решение FAJ (С home_score, away_score)
+    # 7. faj_decisions - решение FAJ (БЕЗ FOREIGN KEY)
     # ============================================================
     logger.info("  📋 Создание faj_decisions...")
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS faj_decisions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             match_id INTEGER,
-            model_agreement_id INTEGER,
-            confidence_id INTEGER,
-            risk_id INTEGER,
             home_score INTEGER,
             away_score INTEGER,
             final_score TEXT,
@@ -212,10 +203,7 @@ def upgrade_to_v11_3_0():
             expert_weight REAL DEFAULT 0,
             reason TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(match_id) REFERENCES matches(id),
-            FOREIGN KEY(model_agreement_id) REFERENCES model_agreement(id),
-            FOREIGN KEY(confidence_id) REFERENCES confidence_history(id),
-            FOREIGN KEY(risk_id) REFERENCES prediction_risk(id)
+            FOREIGN KEY(match_id) REFERENCES matches(id)
         )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_decisions_match ON faj_decisions(match_id)")
@@ -375,7 +363,6 @@ def rollback_to_v11_2_1():
 
 
 def get_schema_version():
-    """Получение текущей версии схемы"""
     if not os.path.exists(DB_FILE):
         return None
     try:
@@ -390,7 +377,6 @@ def get_schema_version():
 
 
 def check_migration_status():
-    """Проверка статуса миграции"""
     conn = get_connection()
     cursor = conn.cursor()
 
