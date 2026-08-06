@@ -2,23 +2,25 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ Platform v11.2.1 + Learning Layer
+FAJ Platform v12.0 — ФИНАЛЬНАЯ СХЕМА
 Database Engine — ЕДИНЫЙ ФАЙЛ БАЗЫ ДАННЫХ 🔒
 
-Схема: v11.3.0 (автоматическое обновление)
+Схема: v12.0
 """
 
 import sqlite3
 import os
 from datetime import datetime
 import logging
+from typing import Dict, Any, List, Optional
+import json
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 DATA_DIR = "data"
 DB_FILE = os.path.join(DATA_DIR, "faj.db")
-DB_SCHEMA_VERSION = "11.3.0"  # ← ИЗМЕНЕНО
+DB_SCHEMA_VERSION = "12.0"
 
 
 def get_connection():
@@ -55,6 +57,25 @@ def set_schema_version(version):
     cursor.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
     conn.commit()
     conn.close()
+
+
+def ensure_column(table_name: str, column_name: str, column_type: str) -> None:
+    """Добавляет колонку в таблицу, если её нет"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        if column_name not in columns:
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
+            logger.info(f"✅ Добавлена колонка {column_name} в таблицу {table_name}")
+        
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning(f"Не удалось добавить колонку {column_name}: {e}")
 
 
 def run_migration_to_v11_3_0():
@@ -351,9 +372,11 @@ def run_migration_to_v11_3_0():
 
 
 def init_database():
-    """Инициализация базы данных с автоматической миграцией"""
+    """Инициализация базы данных с финальной схемой v12.0"""
     conn = get_connection()
     cursor = conn.cursor()
+
+    logger.info("🚀 Инициализация базы данных FAJ v12.0...")
 
     # ===============================
     # OSNOVNYE TABLICY (25)
@@ -410,6 +433,16 @@ def init_database():
             status TEXT DEFAULT 'scheduled',
             actual_home INTEGER,
             actual_away INTEGER,
+            home_xg REAL,
+            away_xg REAL,
+            home_possession INTEGER,
+            away_possession INTEGER,
+            home_shots INTEGER,
+            away_shots INTEGER,
+            home_shots_on_target INTEGER,
+            away_shots_on_target INTEGER,
+            parser_source TEXT,
+            updated_at TEXT,
             created_at TEXT,
             FOREIGN KEY(round_id) REFERENCES rounds(id),
             FOREIGN KEY(home_team_id) REFERENCES teams(id),
@@ -822,6 +855,69 @@ def init_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_passports_team ON team_passports(team_id, season_id)")
 
     # ============================================================
+    # ТАБЛИЦА: team_passport_meta (ЭКСПЕРТНЫЙ СЛОЙ)
+    # ============================================================
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS team_passport_meta (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_id INTEGER,
+            season_id INTEGER,
+            style TEXT,
+            dna TEXT,
+            strengths TEXT,
+            weaknesses TEXT,
+            class TEXT,
+            version TEXT,
+            source TEXT,
+            updated_at TEXT,
+            FOREIGN KEY (team_id) REFERENCES teams(id),
+            FOREIGN KEY (season_id) REFERENCES seasons(id),
+            UNIQUE(team_id, season_id)
+        )
+    """)
+
+    # ============================================================
+    # ТАБЛИЦА: prediction_validation (НОВАЯ)
+    # ============================================================
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS prediction_validation (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_id INTEGER,
+            predicted_score TEXT,
+            actual_score TEXT,
+            predicted_home_xg REAL,
+            actual_home_xg REAL,
+            predicted_away_xg REAL,
+            actual_away_xg REAL,
+            prediction_error REAL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(match_id) REFERENCES matches(id)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_validation_match ON prediction_validation(match_id)")
+
+    # ============================================================
+    # ТАБЛИЦА: team_form_history (НОВАЯ)
+    # ============================================================
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS team_form_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_id INTEGER,
+            round INTEGER,
+            rating_before REAL,
+            rating_after REAL,
+            form REAL,
+            last5_points INTEGER,
+            last5_xg REAL,
+            last5_xga REAL,
+            goal_difference INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(team_id) REFERENCES teams(id)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_form_team ON team_form_history(team_id)")
+
+    # ============================================================
     # LEARNING LAYER TABLES (v12)
     # ============================================================
 
@@ -984,25 +1080,6 @@ def init_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_params_version ON model_parameters_learning(model_version)")
 
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS team_passport_meta (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            team_id INTEGER,
-            season_id INTEGER,
-            style TEXT,
-            dna TEXT,
-            strengths TEXT,
-            weaknesses TEXT,
-            class TEXT,
-            version TEXT,
-            source TEXT,
-            updated_at TEXT,
-            FOREIGN KEY (team_id) REFERENCES teams(id),
-            FOREIGN KEY (season_id) REFERENCES seasons(id),
-            UNIQUE(team_id, season_id)
-        )
-    """)
-
-    cursor.execute("""
         CREATE TABLE IF NOT EXISTS schema_version (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             version TEXT NOT NULL,
@@ -1014,7 +1091,21 @@ def init_database():
     conn.close()
 
     # ============================================================
-    # АВТОМАТИЧЕСКАЯ МИГРАЦИЯ
+    # АВТОМАТИЧЕСКАЯ МИГРАЦИЯ (добавление колонок)
+    # ============================================================
+    ensure_column("matches", "home_xg", "REAL")
+    ensure_column("matches", "away_xg", "REAL")
+    ensure_column("matches", "home_possession", "INTEGER")
+    ensure_column("matches", "away_possession", "INTEGER")
+    ensure_column("matches", "home_shots", "INTEGER")
+    ensure_column("matches", "away_shots", "INTEGER")
+    ensure_column("matches", "home_shots_on_target", "INTEGER")
+    ensure_column("matches", "away_shots_on_target", "INTEGER")
+    ensure_column("matches", "parser_source", "TEXT")
+    ensure_column("matches", "updated_at", "TEXT")
+
+    # ============================================================
+    # АВТОМАТИЧЕСКАЯ МИГРАЦИЯ v11.3.0
     # ============================================================
     current_version = get_schema_version()
     if current_version != DB_SCHEMA_VERSION:
@@ -1033,11 +1124,9 @@ class FAJDatabase:
     # ============================================================
 
     def get_connection(self):
-        """Публичный метод получения соединения"""
         return get_connection()
 
     def _get_connection(self):
-        """Внутренний метод (для обратной совместимости)"""
         return get_connection()
 
     # ============================================================
@@ -1048,11 +1137,9 @@ class FAJDatabase:
         conn = get_connection()
         cursor = conn.cursor()
 
-        # Получаем список таблиц
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
         tables = [row[0] for row in cursor.fetchall()]
 
-        # Считаем записи в каждой таблице
         result = {}
         for table in tables:
             try:
@@ -1077,22 +1164,14 @@ class FAJDatabase:
     # ============================================================
 
     def save_diagnostic(self, data: Dict[str, Any]) -> int:
-        """Сохранение диагностики в БД"""
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
 
             cursor.execute("""
                 INSERT INTO diagnostic_history (
-                    timestamp,
-                    elapsed_seconds,
-                    passed,
-                    warned,
-                    failed,
-                    total,
-                    critical_fail,
-                    status,
-                    details_json
+                    timestamp, elapsed_seconds, passed, warned,
+                    failed, total, critical_fail, status, details_json
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 data.get("timestamp"),
@@ -1116,16 +1195,13 @@ class FAJDatabase:
             return 0
 
     def get_diagnostics(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """Получение истории диагностик"""
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
 
             cursor.execute("""
-                SELECT *
-                FROM diagnostic_history
-                ORDER BY id DESC
-                LIMIT ?
+                SELECT * FROM diagnostic_history
+                ORDER BY id DESC LIMIT ?
             """, (limit,))
 
             rows = cursor.fetchall()
@@ -1148,7 +1224,6 @@ class FAJDatabase:
                 }
                 if row["details_json"]:
                     try:
-                        import json
                         entry["details"] = json.loads(row["details_json"])
                     except:
                         pass
@@ -1161,27 +1236,21 @@ class FAJDatabase:
             return []
 
     def prediction_exists(self, prediction_id: str) -> bool:
-        """Проверка существования прогноза в БД"""
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
-
-            cursor.execute("""
-                SELECT COUNT(*) FROM faj_decisions WHERE id = ?
-            """, (prediction_id,))
-
+            cursor.execute("SELECT COUNT(*) FROM faj_decisions WHERE id = ?", (prediction_id,))
             count = cursor.fetchone()[0]
             conn.close()
-
             return count > 0
-
         except Exception as e:
             logger.error(f"Prediction exists error: {e}")
             return False
 
-    # ------------------------------------------------------------
+    # ============================================================
     # TEAMS
-    # ------------------------------------------------------------
+    # ============================================================
+
     def add_team(self, name, league, country="", api_id=None,
                  team_type="club", competition_group=None):
         conn = get_connection()
@@ -1232,9 +1301,10 @@ class FAJDatabase:
         conn.close()
         return row
 
-    # ------------------------------------------------------------
+    # ============================================================
     # SEASONS
-    # ------------------------------------------------------------
+    # ============================================================
+
     def create_season(self, name, league, year, competition_type="league", status="active"):
         conn = get_connection()
         cursor = conn.cursor()
@@ -1263,9 +1333,10 @@ class FAJDatabase:
         conn.close()
         return row[0] if row else None
 
-    # ------------------------------------------------------------
+    # ============================================================
     # ROUNDS
-    # ------------------------------------------------------------
+    # ============================================================
+
     def create_round(self, season_id, number, date_start="", date_end=""):
         conn = get_connection()
         cursor = conn.cursor()
@@ -1296,9 +1367,10 @@ class FAJDatabase:
         conn.close()
         return data
 
-    # ------------------------------------------------------------
+    # ============================================================
     # MATCHES
-    # ------------------------------------------------------------
+    # ============================================================
+
     def add_match(self, round_id, home_team_id, away_team_id,
                   date="", competition="RPL"):
         conn = get_connection()
@@ -1324,6 +1396,44 @@ class FAJDatabase:
         conn.commit()
         conn.close()
 
+    def update_match_stats(self, match_id: int, stats: Dict[str, Any]) -> bool:
+        """Обновление статистики матча (xG, possession, shots и т.д.)"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE matches SET
+                    home_xg = ?,
+                    away_xg = ?,
+                    home_possession = ?,
+                    away_possession = ?,
+                    home_shots = ?,
+                    away_shots = ?,
+                    home_shots_on_target = ?,
+                    away_shots_on_target = ?,
+                    parser_source = ?,
+                    updated_at = ?
+                WHERE id = ?
+            """, (
+                stats.get('home_xg'),
+                stats.get('away_xg'),
+                stats.get('home_possession'),
+                stats.get('away_possession'),
+                stats.get('home_shots'),
+                stats.get('away_shots'),
+                stats.get('home_shots_on_target'),
+                stats.get('away_shots_on_target'),
+                stats.get('parser_source'),
+                datetime.now().isoformat(),
+                match_id
+            ))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Update match stats error: {e}")
+            return False
+
     def get_matches(self, round_id=None):
         conn = get_connection()
         cursor = conn.cursor()
@@ -1335,9 +1445,10 @@ class FAJDatabase:
         conn.close()
         return data
 
-    # ------------------------------------------------------------
+    # ============================================================
     # MATCH PREDICTIONS
-    # ------------------------------------------------------------
+    # ============================================================
+
     def save_match_prediction(self, match_id, xg_home, xg_away,
                               lambda_home=None, lambda_away=None,
                               home_advantage=1.0, prediction_type="standard",
@@ -1367,9 +1478,10 @@ class FAJDatabase:
         conn.close()
         return row
 
-    # ------------------------------------------------------------
+    # ============================================================
     # TEAM BASE
-    # ------------------------------------------------------------
+    # ============================================================
+
     def get_base(self, team_id, season_id):
         conn = get_connection()
         cursor = conn.cursor()
@@ -1452,9 +1564,10 @@ class FAJDatabase:
         conn.commit()
         conn.close()
 
-    # ------------------------------------------------------------
+    # ============================================================
     # TEAM DYNAMIC
-    # ------------------------------------------------------------
+    # ============================================================
+
     def get_dynamic(self, team_id, season_id):
         conn = get_connection()
         cursor = conn.cursor()
@@ -1538,9 +1651,10 @@ class FAJDatabase:
         conn.commit()
         conn.close()
 
-    # ------------------------------------------------------------
+    # ============================================================
     # TEAM IDENTITY
-    # ------------------------------------------------------------
+    # ============================================================
+
     def get_identity(self, team_id, season_id):
         conn = get_connection()
         cursor = conn.cursor()
@@ -1591,9 +1705,10 @@ class FAJDatabase:
         conn.commit()
         conn.close()
 
-    # ------------------------------------------------------------
+    # ============================================================
     # TACTICAL MATCHUP
-    # ------------------------------------------------------------
+    # ============================================================
+
     def get_tactical_matchup(self, team_id, season_id):
         conn = get_connection()
         cursor = conn.cursor()
@@ -1645,9 +1760,10 @@ class FAJDatabase:
         conn.commit()
         conn.close()
 
-    # ------------------------------------------------------------
+    # ============================================================
     # PREDICTIONS
-    # ------------------------------------------------------------
+    # ============================================================
+
     def save_prediction(self, match_id, model_version, algorithm,
                         home_win, draw, away_win,
                         over25=0.0, over35=0.0, btts=0.0,
@@ -1713,9 +1829,10 @@ class FAJDatabase:
         conn.close()
         return data
 
-    # ------------------------------------------------------------
+    # ============================================================
     # EXPERT PREDICTIONS
-    # ------------------------------------------------------------
+    # ============================================================
+
     def save_expert_prediction(self, match_id, expert_name, score,
                                comment="", confidence=50):
         conn = get_connection()
@@ -1728,9 +1845,10 @@ class FAJDatabase:
         conn.commit()
         conn.close()
 
-    # ------------------------------------------------------------
+    # ============================================================
     # JOURNAL
-    # ------------------------------------------------------------
+    # ============================================================
+
     def add_journal_entry(self, match_id, faj_prediction, expert_prediction,
                           actual_result, error_type, error_score, analysis=""):
         conn = get_connection()
@@ -1745,9 +1863,10 @@ class FAJDatabase:
         conn.commit()
         conn.close()
 
-    # ------------------------------------------------------------
+    # ============================================================
     # MODEL PARAMETERS
-    # ------------------------------------------------------------
+    # ============================================================
+
     def get_model_parameters(self, model_version=None):
         conn = get_connection()
         conn.row_factory = sqlite3.Row
@@ -1776,9 +1895,10 @@ class FAJDatabase:
         conn.commit()
         conn.close()
 
-    # ------------------------------------------------------------
+    # ============================================================
     # LEARNING LAYER
-    # ------------------------------------------------------------
+    # ============================================================
+
     def add_to_gold(self, data):
         conn = get_connection()
         cursor = conn.cursor()
@@ -2076,7 +2196,7 @@ class FAJDatabase:
         }
 
     # ============================================================
-    # SAVE PREDICTION (НОВЫЙ МЕТОД)
+    # SAVE PREDICTION RESULT
     # ============================================================
 
     def save_prediction_result(
@@ -2096,9 +2216,6 @@ class FAJDatabase:
         model_agreement: float,
         pipeline_version: str
     ) -> bool:
-        """
-        Сохранение результата прогноза
-        """
         try:
             conn = self._get_connection()
             cursor = conn.cursor()
@@ -2131,6 +2248,82 @@ class FAJDatabase:
         except Exception as e:
             logger.error(f"Save prediction result error: {e}")
             return False
+
+    # ============================================================
+    # PREDICTION VALIDATION (НОВЫЙ МЕТОД)
+    # ============================================================
+
+    def save_prediction_validation(self, data: Dict[str, Any]) -> int:
+        """Сохранение результата сравнения прогноза с фактом"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO prediction_validation (
+                match_id, predicted_score, actual_score,
+                predicted_home_xg, actual_home_xg,
+                predicted_away_xg, actual_away_xg,
+                prediction_error, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            data.get('match_id'),
+            data.get('predicted_score'),
+            data.get('actual_score'),
+            data.get('predicted_home_xg'),
+            data.get('actual_home_xg'),
+            data.get('predicted_away_xg'),
+            data.get('actual_away_xg'),
+            data.get('prediction_error'),
+            datetime.now().isoformat()
+        ))
+        conn.commit()
+        row_id = cursor.lastrowid
+        conn.close()
+        return row_id
+
+    # ============================================================
+    # TEAM FORM HISTORY (НОВЫЙ МЕТОД)
+    # ============================================================
+
+    def save_team_form(self, data: Dict[str, Any]) -> int:
+        """Сохранение истории формы команды"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO team_form_history (
+                team_id, round, rating_before, rating_after,
+                form, last5_points, last5_xg, last5_xga,
+                goal_difference, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            data.get('team_id'),
+            data.get('round'),
+            data.get('rating_before'),
+            data.get('rating_after'),
+            data.get('form'),
+            data.get('last5_points'),
+            data.get('last5_xg'),
+            data.get('last5_xga'),
+            data.get('goal_difference'),
+            datetime.now().isoformat()
+        ))
+        conn.commit()
+        row_id = cursor.lastrowid
+        conn.close()
+        return row_id
+
+    def get_team_form_history(self, team_id: int, limit: int = 10) -> List[Dict[str, Any]]:
+        """Получение истории формы команды"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM team_form_history
+            WHERE team_id = ?
+            ORDER BY round DESC
+            LIMIT ?
+        """, (team_id, limit))
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
 
 
 if __name__ == "__main__":
