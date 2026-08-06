@@ -13,7 +13,7 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from app.config import config, PLATFORM_VERSION, CORE_VERSION, PIPELINE_VERSION
+from app.config import config
 from app.database import get_connection, FAJDatabase
 from app.migrations.learning import ensure_learning_layer
 from app.sync_engine import SyncEngine
@@ -24,7 +24,7 @@ from app.passports.passport_manager import get_passport_manager
 # НАСТРОЙКА СТРАНИЦЫ
 # ============================================================
 st.set_page_config(
-    page_title=f"FAJ Platform v{PLATFORM_VERSION}",
+    page_title=f"FAJ Platform v{config.PLATFORM_VERSION}",
     page_icon="⚽",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -51,7 +51,7 @@ if 'prediction_result' not in st.session_state:
 # ============================================================
 with st.sidebar:
     st.title("⚽ FAJ")
-    st.caption(f"v{PLATFORM_VERSION}")
+    st.caption(f"v{config.PLATFORM_VERSION}")
     st.divider()
     
     # === НАВИГАЦИЯ ===
@@ -95,7 +95,7 @@ with st.sidebar:
         st.caption(f"⚠️ Статус: {str(e)[:30]}")
 
 # ============================================================
-# РОУТИНГ (БЕЗ return ВНЕ ФУНКЦИЙ!)
+# РОУТИНГ
 # ============================================================
 try:
     # ============================================================
@@ -103,7 +103,7 @@ try:
     # ============================================================
     if st.session_state.page == 'home':
         st.title("🏠 FAJ Platform v12")
-        st.caption(f"Ядро v{CORE_VERSION} · Pipeline v{PIPELINE_VERSION}")
+        st.caption(f"Ядро v{config.CORE_VERSION} · Pipeline v{config.PIPELINE_VERSION}")
         
         st.divider()
         
@@ -150,7 +150,7 @@ try:
     # ============================================================
     elif st.session_state.page == 'predictions':
         st.title("📊 Прогнозы матчей")
-        st.caption("FAJ Prediction Engine v12.0")
+        st.caption(f"FAJ Prediction Engine v{config.PIPELINE_VERSION}")
         
         # --- ЗАГРУЗКА КОМАНД ---
         try:
@@ -376,9 +376,9 @@ try:
             
             # ВЕРСИИ
             st.subheader("📌 Версии компонентов")
-            st.write(f"**Платформа:** v{PLATFORM_VERSION}")
-            st.write(f"**Ядро:** v{CORE_VERSION}")
-            st.write(f"**Pipeline:** v{PIPELINE_VERSION}")
+            st.write(f"**Платформа:** v{config.PLATFORM_VERSION}")
+            st.write(f"**Ядро:** v{config.CORE_VERSION}")
+            st.write(f"**Pipeline:** v{config.PIPELINE_VERSION}")
             st.write(f"**Prediction Manager:** v{get_prediction_manager().VERSION}")
             
             st.divider()
@@ -398,7 +398,7 @@ except Exception as e:
 # ============================================================
 st.divider()
 st.caption(
-    f"⚽ FAJ Platform v{PLATFORM_VERSION} · "
-    f"Core v{CORE_VERSION} · "
+    f"⚽ FAJ Platform v{config.PLATFORM_VERSION} · "
+    f"Core v{config.CORE_VERSION} · "
     f"{datetime.now().strftime('%d.%m.%Y %H:%M')}"
 )
