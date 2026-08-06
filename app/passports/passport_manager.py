@@ -222,6 +222,45 @@ class PassportManager:
             return dict(row)
         return None
 
+    def get_current_passport_by_name(self, team_name: str, season_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        """
+        Получение текущего паспорта команды по имени
+        
+        Args:
+            team_name: название команды
+            season_id: ID сезона (опционально)
+            
+        Returns:
+            Dict с паспортом или None
+        """
+        # Получаем team_id по имени
+        conn = self.db._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT id FROM teams WHERE name = ?", (team_name,))
+        row = cursor.fetchone()
+        
+        if not row:
+            conn.close()
+            logger.warning(f"Team not found: {team_name}")
+            return None
+            
+        team_id = row[0]
+        conn.close()
+        
+        # Если season_id не указан, берём текущий
+        if season_id is None:
+            seasons = self.db.get_seasons()
+            if seasons:
+                # Берём последний сезон
+                season_id = max([s['id'] for s in seasons])
+            else:
+                logger.warning("No seasons found")
+                return None
+        
+        # Получаем паспорт
+        return self.get_current_passport(team_id, season_id)
+
     def get_passport_history(self, team_id: int, season_id: int, limit: int = 10) -> list:
         conn = self.db._get_connection()
         cursor = conn.cursor()
