@@ -40,6 +40,7 @@ Prediction Pipeline v1.9
         "confidence": {"overall": float, "level": str},
         "risk": {"score": float, "level": str},
         "model_agreement": {"score": float, "level": str},
+        "diagnostic": {...},  # ← ДОБАВЛЕНО
         "version": str,
         "processing_time_ms": float
     }
@@ -116,13 +117,34 @@ class PredictionPipeline:
             away_xg = max(config.XG_MIN, min(config.XG_MAX, xg_result.get("away_xg", config.XG_LEAGUE_MEAN)))
 
             # =========================================================
-            # 2. POISSON MODEL
+            # 2. ПОЛУЧАЕМ КОМПОНЕНТЫ ДЛЯ ДИАГНОСТИКИ
+            # =========================================================
+            components = xg_result.get("components", {})
+            diagnostic = {
+                "raw_xg_home": round(xg_result.get("home_xg", home_xg), 3),
+                "raw_xg_away": round(xg_result.get("away_xg", away_xg), 3),
+                "home_attack_factor": components.get("home_attack_factor", 1.0),
+                "away_attack_factor": components.get("away_attack_factor", 1.0),
+                "home_defense_factor": components.get("home_defense_factor", 1.0),
+                "away_defense_factor": components.get("away_defense_factor", 1.0),
+                "home_keeper_factor": components.get("home_keeper_factor", 1.0),
+                "away_keeper_factor": components.get("away_keeper_factor", 1.0),
+                "control_factor": components.get("control_factor", 1.0),
+                "home_advantage": config.HOME_ADVANTAGE,
+                "home_form": components.get("home_form", 1.0),
+                "away_form": components.get("away_form", 1.0),
+                "home_rating": round(home_rating, 1),
+                "away_rating": round(away_rating, 1)
+            }
+
+            # =========================================================
+            # 3. POISSON MODEL
             # =========================================================
             poisson_result = self.poisson_model.calculate(home_xg, away_xg, include_matrix=False)
             probs = poisson_result.get("result_probability", {})
 
             # =========================================================
-            # 3. MONTE CARLO
+            # 4. MONTE CARLO
             # =========================================================
             seed = self._build_seed(home_team, away_team, home_rating, away_rating, home_xg, away_xg)
             mc_result = self.monte_carlo_model.simulate(
@@ -132,7 +154,7 @@ class PredictionPipeline:
             )
 
             # =========================================================
-            # 4. MODEL AGREEMENT
+            # 5. MODEL AGREEMENT
             # =========================================================
             agreement_score = self._calculate_model_agreement(poisson_result, mc_result)
             model_agreement = {
@@ -141,7 +163,7 @@ class PredictionPipeline:
             }
 
             # =========================================================
-            # 5. RAW PREDICTION
+            # 6. RAW PREDICTION
             # =========================================================
             raw_prediction = {
                 "match": {
@@ -167,7 +189,7 @@ class PredictionPipeline:
             }
 
             # =========================================================
-            # 6. CALIBRATION
+            # 7. CALIBRATION
             # =========================================================
             calibrated = self.calibration_engine.adjust(raw_prediction)
 
@@ -183,7 +205,7 @@ class PredictionPipeline:
                 away_prob /= total
 
             # =========================================================
-            # 7. CONFIDENCE
+            # 8. CONFIDENCE
             # =========================================================
             confidence_result = self.confidence_engine.calculate(
                 raw_prediction=raw_prediction,
@@ -191,7 +213,7 @@ class PredictionPipeline:
             )
 
             # =========================================================
-            # 8. RISK
+            # 9. RISK
             # =========================================================
             risk_result = self.risk_engine.calculate(
                 raw_prediction=raw_prediction,
@@ -200,7 +222,16 @@ class PredictionPipeline:
             )
 
             # =========================================================
-            # 9. РЕЗУЛЬТАТ
+            # 10. РАСШИРЕННЫЕ МЕТРИКИ (ТОП-5 СЧЕТОВ, BTTS, ТОТАЛЫ)
+            # =========================================================
+            extended = self._calculate_extended_metrics(
+                home_xg=home_xg,
+                away_xg=away_xg,
+                score_probs=poisson_result.get("score_probabilities", {})
+            )
+
+            # =========================================================
+            # 11. РЕЗУЛЬТАТ
             # =========================================================
             score = poisson_result.get("most_likely_score", "0:0")
             score_prob = poisson_result.get("score_probability", 0)
@@ -230,6 +261,8 @@ class PredictionPipeline:
                     "level": risk_result.get("level", "MEDIUM")
                 },
                 "model_agreement": model_agreement,
+                "extended": extended,
+                "diagnostic": diagnostic,  # ← ДОБАВЛЕНО
                 "version": self.VERSION,
                 "processing_time_ms": round((time.perf_counter() - start_time) * 1000, 2)
             }
@@ -263,6 +296,77 @@ class PredictionPipeline:
             return "MEDIUM"
         else:
             return "LOW"
+
+    def _calculate_extended_metrics(self, home_xg: float, away_xg: float, score_probs: Dict[str, float]) -> Dict[str, Any]:
+        """Расчёт расширенных метрик для UI"""
+        # Топ-5 счетов
+        top_scores = self._get_top_scores(score_probs, 5)
+        
+        # BTTS (Обе забьют)
+        btts_prob = 0.0
+        for score_str, prob in score_probs.items():
+            home, away = score_str.split('-')
+            if int(home) > 0 and int(away) > 0:
+                btts_prob += prob
+        btts_prob = min(btts_prob, 1.0)
+        
+        # Тоталы
+        over_25 = 0.0
+        over_35 = 0.0
+        for score_str, prob in score_probs.items():
+            home, away = score_str.split('-')
+            total = int(home) + int(away)
+            if total > 2.5:
+                over_25 += prob
+            if total > 3.5:
+                over_35 += prob
+        over_25 = min(over_25, 1.0)
+        over_35 = min(over_35, 1.0)
+        
+        # Самый вероятный счёт
+        most_likely = top_scores[0] if top_scores else {'home': 0, 'away': 0, 'prob': 0}
+        
+        return {
+            "top_scores": top_scores,
+            "most_likely_score": {
+                "home": most_likely.get('home', 0),
+                "away": most_likely.get('away', 0),
+                "prob": most_likely.get('prob', 0)
+            },
+            "btts": {
+                "yes": round(btts_prob, 4),
+                "no": round(1 - btts_prob, 4)
+            },
+            "total": {
+                "over_2_5": round(over_25, 4),
+                "under_2_5": round(1 - over_25, 4),
+                "over_3_5": round(over_35, 4),
+                "under_3_5": round(1 - over_35, 4)
+            }
+        }
+
+    def _get_top_scores(self, score_probs: Dict[str, float], n: int = 5) -> list:
+        """Получает топ-N самых вероятных счетов"""
+        sorted_scores = sorted(
+            score_probs.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )
+        
+        top = []
+        for i, (score_str, prob) in enumerate(sorted_scores[:n]):
+            if prob < 0.001:
+                break
+            home, away = score_str.split('-')
+            top.append({
+                'rank': i + 1,
+                'home': int(home),
+                'away': int(away),
+                'prob': round(prob, 4),
+                'prob_percent': f"{prob * 100:.2f}%"
+            })
+        
+        return top
 
 
 # ============================================================
