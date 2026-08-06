@@ -12,7 +12,9 @@ from app.passports.rpl_2026_27 import RPL_PASSPORTS_2026_27, normalize_team_name
 from datetime import datetime
 import os
 import shutil
+import logging
 
+logger = logging.getLogger(__name__)
 
 # ============================================================
 # КОНФИГУРАЦИЯ ЛИГ
@@ -109,7 +111,7 @@ class SyncEngine:
         return season_id
 
     # ============================================================
-    # PASSPORT SYNC (FAJ v12 COMPATIBILITY) — НОВЫЙ МЕТОД
+    # PASSPORT SYNC (FAJ v12 COMPATIBILITY)
     # ============================================================
     def sync_passports(self, league="РПЛ"):
         """
@@ -133,7 +135,7 @@ class SyncEngine:
             }
 
     # ------------------------------------------------------------
-    # PASSPORT LOADER
+    # PASSPORT LOADER — ИСПРАВЛЕНА НОРМАЛИЗАЦИЯ
     # ------------------------------------------------------------
     def load_passports(self, league="РПЛ"):
         """Загружает паспорта из вшитых данных в SQLite (с разделением по слоям)"""
@@ -142,8 +144,16 @@ class SyncEngine:
         updated = 0
 
         for team in teams:
-            passport = self.passports.get(team['name'])
+            # НОРМАЛИЗУЕМ ИМЯ ДЛЯ ПОИСКА В ПАСПОРТАХ
+            team_name_normalized = normalize_team_name(team['name'])
+            passport = self.passports.get(team_name_normalized)
+            
+            # Если не нашли по нормализованному, пробуем по оригинальному
             if not passport:
+                passport = self.passports.get(team['name'])
+            
+            if not passport:
+                logger.warning(f"Паспорт не найден для команды: {team['name']}")
                 continue
 
             # 1. BASE
@@ -215,6 +225,7 @@ class SyncEngine:
 
             updated += 1
 
+        logger.info(f"Загружено паспортов: {updated} из {len(teams)}")
         return {
             "status": "success",
             "updated": updated,
@@ -229,6 +240,7 @@ class SyncEngine:
         teams = list(self.passports.keys())
         created = 0
         updated = 0
+        
         for name in teams:
             existing_id = self.db.get_team_id(name, league)
             if existing_id:
@@ -237,8 +249,10 @@ class SyncEngine:
                 team_id = self.db.add_team(name, league=league, country="Россия")
                 if team_id:
                     created += 1
+                    
         self._get_or_create_season(league)
         passport_count = self.load_passports(league)
+        
         return {
             "status": "success",
             "created": created,
@@ -276,6 +290,7 @@ class SyncEngine:
         matches = self.db.get_matches()
         finished = [m for m in matches if m['status'] == 'finished']
         count = 0
+        
         for m in finished:
             gold = self.db.get_gold_by_match(m['id'])
             if gold and not gold['actual_score']:
@@ -302,6 +317,7 @@ class SyncEngine:
                         'status': 'completed'
                     })
                     count += 1
+                    
         return {
             "status": "success",
             "loaded": count
