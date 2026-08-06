@@ -784,6 +784,44 @@ def init_database():
     """)
 
     # ============================================================
+    # ТАБЛИЦА: team_passports (ОСНОВНАЯ ДЛЯ ПАСПОРТОВ)
+    # ============================================================
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS team_passports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_id INTEGER,
+            season_id INTEGER,
+            attack REAL DEFAULT 50,
+            defense REAL DEFAULT 50,
+            control REAL DEFAULT 50,
+            tempo REAL DEFAULT 50,
+            press REAL DEFAULT 50,
+            transition REAL DEFAULT 50,
+            finishing REAL DEFAULT 50,
+            goalkeeper REAL DEFAULT 50,
+            discipline REAL DEFAULT 50,
+            squad_quality REAL DEFAULT 50,
+            bench_quality REAL DEFAULT 50,
+            coach_factor REAL DEFAULT 50,
+            mental REAL DEFAULT 50,
+            home_strength REAL DEFAULT 50,
+            away_strength REAL DEFAULT 50,
+            injury_factor REAL DEFAULT 50,
+            key_player_loss REAL DEFAULT 50,
+            league_adaptation REAL DEFAULT 80,
+            passport_confidence REAL DEFAULT 0.5,
+            faj_rating REAL DEFAULT 0.0,
+            version TEXT,
+            source TEXT,
+            created_at TEXT,
+            FOREIGN KEY(team_id) REFERENCES teams(id),
+            FOREIGN KEY(season_id) REFERENCES seasons(id),
+            UNIQUE(team_id, season_id, version)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_passports_team ON team_passports(team_id, season_id)")
+
+    # ============================================================
     # LEARNING LAYER TABLES (v12)
     # ============================================================
 
