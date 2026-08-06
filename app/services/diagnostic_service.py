@@ -13,6 +13,7 @@ Diagnostic Service
 import json
 import time
 import math
+import os
 from typing import Dict, Any, List, Optional, Callable
 from datetime import datetime
 from dataclasses import dataclass
@@ -71,6 +72,7 @@ class DiagnosticService:
         # Реестр проверок (веса берутся из config)
         self._checks: List[Check] = [
             Check("Database", self._check_database, "critical"),
+            Check("SQLite Integrity", self._check_sqlite_integrity, "critical"),
             Check("Passports", self._check_passports, "major"),
             Check("Pipeline", self._check_pipeline, "major"),
             Check("Prediction", self._check_prediction, "critical"),
@@ -121,6 +123,9 @@ class DiagnosticService:
 
     def check_database(self) -> Dict[str, Any]:
         return self._check_database()
+
+    def check_sqlite_integrity(self) -> Dict[str, Any]:
+        return self._check_sqlite_integrity()
 
     def check_passports(self) -> Dict[str, Any]:
         return self._check_passports()
@@ -343,6 +348,70 @@ class DiagnosticService:
         except Exception as e:
             return {
                 "name": "Database",
+                "status": "fail",
+                "severity": "critical",
+                "duration_ms": round((time.time() - start) * 1000, 1),
+                "error": str(e)
+            }
+
+    def _check_sqlite_integrity(self) -> Dict[str, Any]:
+        """Проверка целостности SQLite базы данных"""
+        start = time.time()
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor()
+
+            # PRAGMA integrity_check
+            cursor.execute("PRAGMA integrity_check")
+            row = cursor.fetchone()
+            integrity_result = row[0] if row else "unknown"
+
+            # PRAGMA foreign_key_check
+            cursor.execute("PRAGMA foreign_key_check")
+            fk_errors = cursor.fetchall()
+
+            # Размер базы
+            db_file = self.db._get_connection().__self__.execute(
+                "PRAGMA database_list"
+            ).fetchone()
+            if db_file and len(db_file) > 2:
+                db_path = db_file[2] if len(db_file) > 2 else None
+            else:
+                db_path = None
+
+            db_size_mb = 0
+            if db_path and os.path.exists(db_path):
+                db_size_mb = os.path.getsize(db_path) / (1024 * 1024)
+
+            conn.close()
+
+            status = "pass"
+            issues = []
+
+            if integrity_result != "ok":
+                status = "fail"
+                issues.append(f"Integrity check: {integrity_result}")
+
+            if fk_errors:
+                status = "warn"
+                issues.append(f"Foreign key errors: {len(fk_errors)}")
+
+            return {
+                "name": "SQLite Integrity",
+                "status": status,
+                "severity": "critical",
+                "duration_ms": round((time.time() - start) * 1000, 1),
+                "details": {
+                    "integrity": integrity_result,
+                    "foreign_key_errors": len(fk_errors),
+                    "size_mb": round(db_size_mb, 2),
+                    "issues": issues if issues else None
+                }
+            }
+
+        except Exception as e:
+            return {
+                "name": "SQLite Integrity",
                 "status": "fail",
                 "severity": "critical",
                 "duration_ms": round((time.time() - start) * 1000, 1),
