@@ -13,11 +13,14 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# ============================================================
+# ИСПРАВЛЕННЫЙ ИМПОРТ — ТОЛЬКО config
+# ============================================================
 from app.config import config
 from app.database import get_connection, FAJDatabase
 from app.migrations.learning import ensure_learning_layer
 from app.sync_engine import SyncEngine
-from app.prediction.prediction_manager import get_prediction_manager
+from app.core.prediction_manager import get_prediction_manager
 from app.passports.passport_manager import get_passport_manager
 
 # ============================================================
