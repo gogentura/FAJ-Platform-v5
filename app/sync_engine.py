@@ -189,15 +189,24 @@ class SyncEngine:
                     passport_confidence=dynamic_initial.get("passport_confidence", 0.4)
                 )
 
-            # 4. EXPERT
+            # 4. EXPERT — ПРЕОБРАЗУЕМ DICT В СТРОКИ
             expert = passport.get("EXPERT", {})
+            
+            # Преобразуем dict в строки для SQLite
+            strengths = expert.get("strengths", {})
+            weaknesses = expert.get("weaknesses", {})
+            
+            # Превращаем dict в строку вида "key:value, key2:value2"
+            strengths_str = ", ".join([f"{k}:{v}" for k, v in strengths.items()]) if strengths else ""
+            weaknesses_str = ", ".join([f"{k}:{v}" for k, v in weaknesses.items()]) if weaknesses else ""
+            
             self.db.save_passport_meta(
                 team['id'], season_id,
                 {
                     "style": identity.get("style", ""),
                     "dna": expert.get("dna", ""),
-                    "strengths": expert.get("strengths", {}),
-                    "weaknesses": expert.get("weaknesses", {}),
+                    "strengths": strengths_str,
+                    "weaknesses": weaknesses_str,
                     "class": expert.get("class", ""),
                     "version": passport.get("version", "1.0"),
                     "source": passport.get("author", "FAJ Expert Layer")
