@@ -3,7 +3,6 @@
 
 """
 FAJ Platform v12.0 — ПОЛНАЯ БОЕВАЯ ВЕРСИЯ
-Интеграция: PredictionManager + DiagnosticService + SyncEngine
 """
 
 import streamlit as st
@@ -11,7 +10,6 @@ import sys
 import os
 import pandas as pd
 from datetime import datetime
-from typing import Dict, Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -21,7 +19,6 @@ from app.migrations.learning import ensure_learning_layer
 from app.sync_engine import SyncEngine
 from app.prediction.prediction_manager import get_prediction_manager
 from app.passports.passport_manager import get_passport_manager
-from app.core.prediction_pipeline import get_prediction_pipeline
 
 # ============================================================
 # НАСТРОЙКА СТРАНИЦЫ
@@ -66,9 +63,6 @@ with st.sidebar:
         st.session_state.page = 'predictions'
         st.session_state.prediction_result = None
     
-    if st.button("🔬 Диагностика", use_container_width=True):
-        st.session_state.page = 'diagnostic'
-    
     if st.button("🔄 Синхронизация", use_container_width=True):
         st.session_state.page = 'sync'
     
@@ -101,7 +95,7 @@ with st.sidebar:
         st.caption(f"⚠️ Статус: {str(e)[:30]}")
 
 # ============================================================
-# РОУТИНГ
+# РОУТИНГ (БЕЗ return ВНЕ ФУНКЦИЙ!)
 # ============================================================
 try:
     # ============================================================
@@ -109,246 +103,186 @@ try:
     # ============================================================
     if st.session_state.page == 'home':
         st.title("🏠 FAJ Platform v12")
-        st.caption(f"Ядро v{CORE_VERSION} · Pipeline v{PIPELINE_VERSION} · Менеджер v{get_prediction_manager().VERSION}")
+        st.caption(f"Ядро v{CORE_VERSION} · Pipeline v{PIPELINE_VERSION}")
         
         st.divider()
         
         # СТАТУС
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        teams = cursor.execute("SELECT COUNT(*) FROM teams").fetchone()[0]
-        matches = cursor.execute("SELECT COUNT(*) FROM matches").fetchone()[0]
-        gold = cursor.execute("SELECT COUNT(*) FROM gold_dataset").fetchone()[0]
-        learning = cursor.execute("SELECT COUNT(*) FROM learning_records").fetchone()[0]
-        diagnostic = cursor.execute("SELECT COUNT(*) FROM diagnostic_history").fetchone()[0]
-        conn.close()
-        
-        col1, col2, col3, col4, col5 = st.columns(5)
-        with col1:
-            st.metric("🏟️ Команды", teams)
-        with col2:
-            st.metric("📋 Матчи", matches)
-        with col3:
-            st.metric("💎 Gold", gold)
-        with col4:
-            st.metric("🧠 Learning", learning)
-        with col5:
-            st.metric("🔬 Диагностика", diagnostic)
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            
+            teams = cursor.execute("SELECT COUNT(*) FROM teams").fetchone()[0]
+            matches = cursor.execute("SELECT COUNT(*) FROM matches").fetchone()[0]
+            gold = cursor.execute("SELECT COUNT(*) FROM gold_dataset").fetchone()[0]
+            learning = cursor.execute("SELECT COUNT(*) FROM learning_records").fetchone()[0]
+            conn.close()
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("🏟️ Команды", teams)
+            with col2:
+                st.metric("📋 Матчи", matches)
+            with col3:
+                st.metric("💎 Gold", gold)
+            with col4:
+                st.metric("🧠 Learning", learning)
+        except:
+            st.warning("⚠️ Не удалось загрузить статус БД")
         
         st.divider()
         
         # БЫСТРЫЙ СТАРТ
         st.subheader("🚀 Быстрый старт")
         
-        if teams == 0:
-            st.warning("⚠️ Нет данных. Перейдите в 'Синхронизация' → 'Обновить систему'")
-            
-            if st.button("🔄 Перейти к синхронизации", use_container_width=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("📊 Сделать прогноз", use_container_width=True, type="primary"):
+                st.session_state.page = 'predictions'
+                st.rerun()
+        with col2:
+            if st.button("🔄 Синхронизация", use_container_width=True):
                 st.session_state.page = 'sync'
                 st.rerun()
-        elif matches == 0:
-            st.warning("⚠️ Нет матчей. Загрузите данные через синхронизацию")
-            
-            if st.button("🔄 Перейти к синхронизации", use_container_width=True):
-                st.session_state.page = 'sync'
-                st.rerun()
-        else:
-            st.success("✅ Система полностью готова к работе!")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("📊 Сделать прогноз", use_container_width=True, type="primary"):
-                    st.session_state.page = 'predictions'
-                    st.rerun()
-            with col2:
-                if st.button("🔬 Запустить диагностику", use_container_width=True):
-                    st.session_state.page = 'diagnostic'
-                    st.rerun()
-        
-        # ИНФОРМАЦИЯ О СИСТЕМЕ
-        st.divider()
-        st.subheader("📌 О системе")
-        
-        st.markdown(f"""
-        - **Платформа:** FAJ Platform v{PLATFORM_VERSION}
-        - **Ядро:** FAJ Core v{CORE_VERSION}
-        - **Pipeline:** v{PIPELINE_VERSION}
-        - **Prediction Manager:** v{get_prediction_manager().VERSION}
-        - **Passport Manager:** v{get_passport_manager().VERSION}
-        - **Модель xG:** v{config.MODEL_VERSION}
-        - **Итераций Monte Carlo:** {config.MONTE_CARLO_ITERATIONS}
-        """)
     
     # ============================================================
-    # ПРОГНОЗЫ — ПОЛНАЯ ИНТЕГРАЦИЯ
+    # ПРОГНОЗЫ
     # ============================================================
     elif st.session_state.page == 'predictions':
         st.title("📊 Прогнозы матчей")
         st.caption("FAJ Prediction Engine v12.0")
         
         # --- ЗАГРУЗКА КОМАНД ---
-        conn = get_connection()
-        teams_df = pd.read_sql("SELECT id, name FROM teams ORDER BY name", conn)
-        conn.close()
+        try:
+            conn = get_connection()
+            teams_df = pd.read_sql("SELECT id, name FROM teams ORDER BY name", conn)
+            conn.close()
+        except:
+            teams_df = pd.DataFrame()
         
         if teams_df.empty:
-            st.warning("⚠️ В базе нет команд. Сначала загрузите данные.")
+            st.warning("⚠️ В базе нет команд. Сначала загрузите данные через 'Синхронизацию'.")
             
             if st.button("🔄 Перейти к синхронизации"):
                 st.session_state.page = 'sync'
                 st.rerun()
-            return
-        
-        # --- ИНТЕРФЕЙС ---
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            team1 = st.selectbox("🏠 Хозяева", teams_df['name'].tolist(), key="home_team")
-        
-        with col2:
-            team2 = st.selectbox("✈️ Гости", teams_df['name'].tolist(), key="away_team")
-        
-        # --- ДОПОЛНИТЕЛЬНЫЕ ПАРАМЕТРЫ ---
-        with st.expander("⚙️ Дополнительные параметры"):
-            league = st.selectbox(
-                "Турнир",
-                ["RPL", "EPL", "La Liga", "Bundesliga", "Serie A", "UCL", "UEL"],
-                index=0
-            )
+        else:
+            # --- ИНТЕРФЕЙС ---
+            col1, col2 = st.columns(2)
             
-            match_type = st.selectbox(
-                "Тип матча",
-                ["league", "cup", "friendly", "playoff"],
-                index=0
-            )
-        
-        # --- КНОПКА ПРОГНОЗА ---
-        if st.button("🔮 Сделать прогноз", type="primary", use_container_width=True):
-            if team1 == team2:
-                st.error("❌ Команды не могут совпадать!")
-                st.session_state.prediction_result = None
-            else:
-                with st.spinner("🧠 Вычисление прогноза..."):
-                    try:
-                        # ПОЛУЧАЕМ МЕНЕДЖЕР
-                        pm = get_prediction_manager()
-                        
-                        # ВЫПОЛНЯЕМ ПРОГНОЗ
-                        result = pm.predict(
-                            home_team=team1,
-                            away_team=team2,
-                            league=league,
-                            match_type=match_type
-                        )
-                        
-                        # СОХРАНЯЕМ В СЕССИЮ
-                        st.session_state.prediction_result = result
-                        
-                        if result.get('status') == 'error':
-                            st.error(f"❌ Ошибка: {result.get('message')}")
-                        else:
-                            st.success("✅ Прогноз успешно выполнен!")
+            with col1:
+                team1 = st.selectbox("🏠 Хозяева", teams_df['name'].tolist(), key="home_team")
+            
+            with col2:
+                team2 = st.selectbox("✈️ Гости", teams_df['name'].tolist(), key="away_team")
+            
+            # --- ДОПОЛНИТЕЛЬНЫЕ ПАРАМЕТРЫ ---
+            with st.expander("⚙️ Дополнительные параметры"):
+                league = st.selectbox(
+                    "Турнир",
+                    ["RPL", "EPL", "La Liga", "Bundesliga", "Serie A", "UCL"],
+                    index=0
+                )
+            
+            # --- КНОПКА ПРОГНОЗА ---
+            if st.button("🔮 Сделать прогноз", type="primary", use_container_width=True):
+                if team1 == team2:
+                    st.error("❌ Команды не могут совпадать!")
+                    st.session_state.prediction_result = None
+                else:
+                    with st.spinner("🧠 Вычисление прогноза..."):
+                        try:
+                            pm = get_prediction_manager()
+                            result = pm.predict(
+                                home_team=team1,
+                                away_team=team2,
+                                league=league
+                            )
+                            st.session_state.prediction_result = result
                             
-                    except Exception as e:
-                        st.error(f"❌ Критическая ошибка: {e}")
-                        st.session_state.prediction_result = None
-        
-        # --- ОТОБРАЖЕНИЕ РЕЗУЛЬТАТА ---
-        if st.session_state.prediction_result:
-            result = st.session_state.prediction_result
+                            if result.get('status') == 'error':
+                                st.error(f"❌ Ошибка: {result.get('message')}")
+                            else:
+                                st.success("✅ Прогноз выполнен!")
+                                st.rerun()
+                                
+                        except Exception as e:
+                            st.error(f"❌ Ошибка: {e}")
+                            st.session_state.prediction_result = None
             
-            if result.get('status') != 'error':
-                st.divider()
-                st.subheader("📊 Результат прогноза")
+            # --- ОТОБРАЖЕНИЕ РЕЗУЛЬТАТА ---
+            if st.session_state.prediction_result:
+                result = st.session_state.prediction_result
                 
-                # ОСНОВНЫЕ ПОКАЗАТЕЛИ
-                col1, col2, col3, col4 = st.columns(4)
-                
-                with col1:
-                    st.metric(
-                        "🏠 Хозяева",
-                        f"{result.get('xg', {}).get('home', 0):.2f}",
-                        delta=f"xG {result.get('xg', {}).get('home', 0):.2f}"
-                    )
-                
-                with col2:
-                    st.metric(
-                        "✈️ Гости",
-                        f"{result.get('xg', {}).get('away', 0):.2f}",
-                        delta=f"xG {result.get('xg', {}).get('away', 0):.2f}"
-                    )
-                
-                with col3:
-                    st.metric(
-                        "🎯 Прогноз",
-                        result.get('score', '0:0'),
-                        delta=f"FAJ Score"
-                    )
-                
-                with col4:
-                    conf = result.get('confidence', {})
-                    st.metric(
-                        "📊 Уверенность",
-                        f"{conf.get('overall', 0.5):.1%}",
-                        delta=f"Уровень {conf.get('level', 'MEDIUM')}"
-                    )
-                
-                # ВЕРОЯТНОСТИ
-                st.subheader("📈 Распределение вероятностей")
-                
-                prob = result.get('probability', {})
-                prob_df = pd.DataFrame({
-                    'Исход': ['Победа хозяев', 'Ничья', 'Победа гостей'],
-                    'Вероятность': [
-                        prob.get('home', 0),
-                        prob.get('draw', 0),
-                        prob.get('away', 0)
-                    ]
-                })
-                
-                st.bar_chart(prob_df.set_index('Исход'))
-                
-                # ДЕТАЛИ
-                with st.expander("📋 Детали прогноза"):
-                    col1, col2 = st.columns(2)
+                if result.get('status') != 'error':
+                    st.divider()
+                    st.subheader(f"📊 {result.get('home_team', '')} vs {result.get('away_team', '')}")
+                    
+                    # ОСНОВНЫЕ ПОКАЗАТЕЛИ
+                    col1, col2, col3 = st.columns(3)
                     
                     with col1:
-                        st.write("**xG Модель**")
-                        st.json(result.get('xg', {}))
-                        
-                        st.write("**Poisson**")
-                        st.json(result.get('poisson', {}))
+                        xg = result.get('xg', {})
+                        st.metric("🏠 xG Хозяев", f"{xg.get('home', 0):.2f}")
                     
                     with col2:
-                        st.write("**Monte Carlo**")
-                        mc = result.get('monte_carlo', {})
-                        st.write(f"Итераций: {mc.get('iterations', 0)}")
-                        st.write(f"Сходимость: {mc.get('convergence', 0):.3f}")
+                        st.metric("🎯 Прогноз", result.get('score', '0:0'))
+                    
+                    with col3:
+                        xg = result.get('xg', {})
+                        st.metric("✈️ xG Гостей", f"{xg.get('away', 0):.2f}")
+                    
+                    # ВЕРОЯТНОСТИ
+                    st.subheader("📈 Распределение вероятностей")
+                    
+                    prob = result.get('probability', {})
+                    prob_df = pd.DataFrame({
+                        'Исход': ['Победа хозяев', 'Ничья', 'Победа гостей'],
+                        'Вероятность': [
+                            prob.get('home', 0),
+                            prob.get('draw', 0),
+                            prob.get('away', 0)
+                        ]
+                    })
+                    st.bar_chart(prob_df.set_index('Исход'))
+                    
+                    # РАСШИРЕННЫЕ МЕТРИКИ
+                    extended = result.get('extended', {})
+                    if extended:
+                        st.subheader("📋 Расширенные метрики")
                         
-                        st.write("**Риск**")
-                        risk = result.get('risk', {})
-                        st.write(f"Уровень: {risk.get('level', 'UNKNOWN')}")
-                        st.write(f"Скор: {risk.get('score', 0):.2f}")
+                        col1, col2 = st.columns(2)
                         
-                        st.write("**Модели**")
-                        st.write(f"Pipeline: v{result.get('pipeline_version', 'unknown')}")
-                        st.write(f"Модель xG: v{result.get('model_version', 'unknown')}")
-            else:
-                st.error(f"❌ Ошибка прогноза: {result.get('message')}")
-    
-    # ============================================================
-    # ДИАГНОСТИКА
-    # ============================================================
-    elif st.session_state.page == 'diagnostic':
-        try:
-            from app.pages.diagnostic import main as diagnostic_main
-            diagnostic_main()
-        except ImportError as e:
-            st.error(f"❌ Страница диагностики не найдена: {e}")
-            st.info("Создайте файл app/pages/diagnostic.py")
-        except Exception as e:
-            st.error(f"❌ Ошибка диагностики: {e}")
+                        with col1:
+                            st.write("**Обе забьют (BTTS)**")
+                            btts = extended.get('btts', {})
+                            st.metric("Да", f"{btts.get('yes', 0):.1%}")
+                            st.metric("Нет", f"{btts.get('no', 0):.1%}")
+                        
+                        with col2:
+                            st.write("**Тоталы**")
+                            total = extended.get('total', {})
+                            st.metric("Тотал > 2.5", f"{total.get('over_2_5', 0):.1%}")
+                            st.metric("Тотал > 3.5", f"{total.get('over_3_5', 0):.1%}")
+                        
+                        # ТОП-5 СЧЕТОВ
+                        st.subheader("🎯 Топ-5 точных счетов")
+                        
+                        top_scores = extended.get('top_scores', [])
+                        if top_scores:
+                            scores_data = []
+                            for score in top_scores:
+                                scores_data.append({
+                                    "№": score.get('rank', 0),
+                                    "Счёт": f"{score.get('home', 0)}:{score.get('away', 0)}",
+                                    "Вероятность": score.get('prob_percent', '0%')
+                                })
+                            scores_df = pd.DataFrame(scores_data)
+                            st.table(scores_df.set_index("№"))
+                    
+                    # ДЕТАЛИ
+                    with st.expander("📋 Детали прогноза"):
+                        st.json(result)
     
     # ============================================================
     # СИНХРОНИЗАЦИЯ
@@ -358,18 +292,19 @@ try:
         st.caption("Загрузка и обновление данных")
         
         sync = SyncEngine()
-        status = sync.get_status()
         
-        # СТАТУС
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("🏟️ Команды", status.get('teams', 0))
-        with col2:
-            st.metric("📋 Матчи", status.get('matches', 0))
-        with col3:
-            st.metric("💎 Gold", status.get('gold_dataset', 0))
-        with col4:
-            st.metric("🧠 Learning", status.get('learning_records', 0))
+        try:
+            status = sync.get_status()
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("🏟️ Команды", status.get('teams', 0))
+            with col2:
+                st.metric("📋 Матчи", status.get('matches', 0))
+            with col3:
+                st.metric("💎 Gold", status.get('gold_dataset', 0))
+        except:
+            st.warning("⚠️ Не удалось получить статус")
         
         st.divider()
         
@@ -400,36 +335,6 @@ try:
                         st.rerun()
                     except Exception as e:
                         st.error(f"❌ Ошибка: {e}")
-        
-        # ДОПОЛНИТЕЛЬНЫЕ ДЕЙСТВИЯ
-        with st.expander("🔧 Дополнительные действия"):
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                if st.button("🏆 Только команды", use_container_width=True):
-                    with st.spinner("Загрузка..."):
-                        try:
-                            result = sync.sync_teams()
-                            st.success(f"✅ {result.get('loaded', 0)} команд")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ {e}")
-            
-            with col2:
-                if st.button("📊 Построить Gold Dataset", use_container_width=True):
-                    with st.spinner("Построение..."):
-                        try:
-                            result = sync.build_gold_dataset()
-                            st.success(f"✅ {result.get('loaded', 0)} записей")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ {e}")
-            
-            with col3:
-                if st.button("🧹 Очистить кэш", use_container_width=True):
-                    st.cache_data.clear()
-                    st.success("✅ Кэш очищен")
-                    st.rerun()
     
     # ============================================================
     # СИСТЕМА
@@ -451,14 +356,12 @@ try:
                 st.write(f"- teams: {tables.get('teams', 0)}")
                 st.write(f"- matches: {tables.get('matches', 0)}")
                 st.write(f"- seasons: {tables.get('seasons', 0)}")
-                st.write(f"- rounds: {tables.get('rounds', 0)}")
             
             with col2:
                 st.write("**Системные таблицы**")
                 st.write(f"- gold_dataset: {tables.get('gold_dataset', 0)}")
                 st.write(f"- learning_records: {tables.get('learning_records', 0)}")
                 st.write(f"- team_passport_meta: {tables.get('team_passport_meta', 0)}")
-                st.write(f"- diagnostic_history: {tables.get('diagnostic_history', 0)}")
             
             st.divider()
             
@@ -473,34 +376,10 @@ try:
             
             # ВЕРСИИ
             st.subheader("📌 Версии компонентов")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write(f"**Платформа:** v{PLATFORM_VERSION}")
-                st.write(f"**Ядро:** v{CORE_VERSION}")
-                st.write(f"**Pipeline:** v{PIPELINE_VERSION}")
-                st.write(f"**Модель xG:** v{config.MODEL_VERSION}")
-            
-            with col2:
-                st.write(f"**Prediction Manager:** v{get_prediction_manager().VERSION}")
-                st.write(f"**Passport Manager:** v{get_passport_manager().VERSION}")
-                st.write(f"**Passport Data:** v{config.PASSPORT_VERSION}")
-            
-            st.divider()
-            
-            # КОНФИГУРАЦИЯ
-            st.subheader("⚙️ Конфигурация")
-            
-            with st.expander("Показать настройки"):
-                st.json({
-                    "MAX_GOALS": config.MAX_GOALS,
-                    "MONTE_CARLO_ITERATIONS": config.MONTE_CARLO_ITERATIONS,
-                    "SAVE_TO_GOLD_DATASET": config.SAVE_TO_GOLD_DATASET,
-                    "DIAGNOSTIC_HISTORY_LIMIT": config.DIAGNOSTIC_HISTORY_LIMIT,
-                    "XG_MIN": config.XG_MIN,
-                    "XG_MAX": config.XG_MAX,
-                    "XG_LEAGUE_MEAN": config.XG_LEAGUE_MEAN
-                })
+            st.write(f"**Платформа:** v{PLATFORM_VERSION}")
+            st.write(f"**Ядро:** v{CORE_VERSION}")
+            st.write(f"**Pipeline:** v{PIPELINE_VERSION}")
+            st.write(f"**Prediction Manager:** v{get_prediction_manager().VERSION}")
             
             st.divider()
             st.caption(f"Обновлено: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}")
@@ -513,7 +392,6 @@ try:
 
 except Exception as e:
     st.error(f"❌ Критическая ошибка: {e}")
-    st.code(f"Трассировка: {str(e)}", language="python")
 
 # ============================================================
 # FOOTER
@@ -522,6 +400,5 @@ st.divider()
 st.caption(
     f"⚽ FAJ Platform v{PLATFORM_VERSION} · "
     f"Core v{CORE_VERSION} · "
-    f"Pipeline v{PIPELINE_VERSION} · "
     f"{datetime.now().strftime('%d.%m.%Y %H:%M')}"
 )
