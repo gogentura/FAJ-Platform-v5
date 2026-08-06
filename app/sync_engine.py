@@ -108,8 +108,32 @@ class SyncEngine:
             self.db.create_round(season_id, i)
         return season_id
 
+    # ============================================================
+    # PASSPORT SYNC (FAJ v12 COMPATIBILITY) — НОВЫЙ МЕТОД
+    # ============================================================
+    def sync_passports(self, league="РПЛ"):
+        """
+        Синхронизация паспортов команд.
+        Используется UI и Diagnostic Service.
+        Источник: встроенные FAJ паспорта.
+        Хранилище: SQLite.
+        """
+        try:
+            result = self.load_passports(league)
+            return {
+                "status": "success",
+                "league": league,
+                "updated": result.get("updated", 0),
+                "total": result.get("total", 0)
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": str(e)
+            }
+
     # ------------------------------------------------------------
-    # PASSPORT LOADER (НОВЫЙ — С РАЗДЕЛЕНИЕМ ПО СЛОЯМ)
+    # PASSPORT LOADER
     # ------------------------------------------------------------
     def load_passports(self, league="РПЛ"):
         """Загружает паспорта из вшитых данных в SQLite (с разделением по слоям)"""
@@ -189,7 +213,7 @@ class SyncEngine:
         }
 
     # ------------------------------------------------------------
-    # LEGACY SYNC (для обратной совместимости)
+    # LEGACY SYNC
     # ------------------------------------------------------------
     def sync_teams(self, league="РПЛ"):
         backup_file = self._backup_database()
@@ -216,7 +240,7 @@ class SyncEngine:
         }
 
     # ------------------------------------------------------------
-    # MATCHES (ЗАГЛУШКА ДЛЯ ТЕСТА)
+    # MATCHES
     # ------------------------------------------------------------
     def sync_matches(self, league="РПЛ"):
         return {
@@ -226,7 +250,7 @@ class SyncEngine:
         }
 
     # ------------------------------------------------------------
-    # RESULTS (ЗАГЛУШКА)
+    # RESULTS
     # ------------------------------------------------------------
     def sync_results(self, league="РПЛ"):
         return {
@@ -239,6 +263,7 @@ class SyncEngine:
     # GOLD DATASET
     # ------------------------------------------------------------
     def build_gold_dataset(self):
+        from app.config import config
         matches = self.db.get_matches()
         finished = [m for m in matches if m['status'] == 'finished']
         count = 0
@@ -260,7 +285,7 @@ class SyncEngine:
                         'home_team': home['name'],
                         'away_team': away['name'],
                         'match_date': m.get('date', ''),
-                        'model_version': 'v11.2',
+                        'model_version': config.MODEL_VERSION,
                         'faj_score': f"{m['actual_home']}:{m['actual_away']}",
                         'actual_score': f"{m['actual_home']}:{m['actual_away']}",
                         'actual_home_goals': m['actual_home'],
