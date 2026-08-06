@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ Platform v12.0 — ПОЛНАЯ БОЕВАЯ ВЕРСИЯ
+FAJ Platform v12.0 — ГЛАВНОЕ ПРИЛОЖЕНИЕ
 """
 
 import streamlit as st
@@ -14,7 +14,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # ============================================================
-# ИСПРАВЛЕННЫЙ ИМПОРТ — ТОЛЬКО config
+# ИМПОРТЫ
 # ============================================================
 from app.config import config
 from app.database import get_connection, FAJDatabase
@@ -98,7 +98,7 @@ with st.sidebar:
         st.caption(f"⚠️ Статус: {str(e)[:30]}")
 
 # ============================================================
-# РОУТИНГ
+# СТРАНИЦЫ
 # ============================================================
 try:
     # ============================================================
@@ -110,7 +110,7 @@ try:
         
         st.divider()
         
-        # СТАТУС
+        # СТАТУС БД
         try:
             conn = get_connection()
             cursor = conn.cursor()
@@ -131,7 +131,7 @@ try:
             with col4:
                 st.metric("🧠 Learning", learning)
         except:
-            st.warning("⚠️ Не удалось загрузить статус БД")
+            st.warning("⚠️ Статус БД недоступен")
         
         st.divider()
         
@@ -397,7 +397,7 @@ except Exception as e:
     st.error(f"❌ Критическая ошибка: {e}")
 
 # ============================================================
-# FOOTER
+# ФУТЕР
 # ============================================================
 st.divider()
 st.caption(
