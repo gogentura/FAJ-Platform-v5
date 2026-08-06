@@ -263,3 +263,18 @@ class PredictionPipeline:
             return "MEDIUM"
         else:
             return "LOW"
+
+
+# ============================================================
+# SINGLETON
+# ============================================================
+
+_pipeline_instance: PredictionPipeline = None
+
+
+def get_prediction_pipeline() -> PredictionPipeline:
+    """Синглтон для PredictionPipeline"""
+    global _pipeline_instance
+    if _pipeline_instance is None:
+        _pipeline_instance = PredictionPipeline()
+    return _pipeline_instance
