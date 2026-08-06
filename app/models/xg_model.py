@@ -255,6 +255,25 @@ class FAJXGModel:
         return explanation
 
 
+# ============================================================
+# АЛИАС ДЛЯ СОВМЕСТИМОСТИ
+# ============================================================
+XGModel = FAJXGModel
+
+
+# ============================================================
+# СИНГЛТОН
+# ============================================================
+_xg_model_instance = None
+
+
+def get_xg_model() -> FAJXGModel:
+    global _xg_model_instance
+    if _xg_model_instance is None:
+        _xg_model_instance = FAJXGModel()
+    return _xg_model_instance
+
+
 if __name__ == "__main__":
     model = FAJXGModel()
 
