@@ -52,37 +52,73 @@ class FAJXGModel:
     MODEL_VERSION = "FAJ_XG_v1.3"
 
     # ============================================================
-    # ПУБЛИЧНЫЙ МЕТОД
+    # ПУБЛИЧНЫЙ МЕТОД — НОВАЯ СИГНАТУРА
     # ============================================================
 
-    def calculate(self, home_profile: Dict, away_profile: Dict) -> Dict:
+    def calculate(
+        self,
+        home_passport: Dict,
+        away_passport: Dict,
+        home_rating: float = 70.0,
+        away_rating: float = 70.0
+    ) -> Dict:
         """
-        Рассчитывает xG для матча
+        Рассчитывает xG для матча на основе паспортов команд
 
-        home_profile = {
-            "attack_power": 82,
-            "defense_power": 78,
-            "control_power": 80,
-            "goalkeeper_power": 75
-        }
+        Аргументы (как ожидает Prediction Pipeline):
+            home_passport: паспорт команды хозяев
+            away_passport: паспорт команды гостей
+            home_rating: рейтинг хозяев (0-100)
+            away_rating: рейтинг гостей (0-100)
+
+        В паспорте ожидается структура:
+            {
+                "BASE": {
+                    "attack": 82,
+                    "defense": 78,
+                    "control": 80,
+                    "goalkeeper": 75,
+                    "tempo": 50,
+                    "press": 50,
+                    ...
+                },
+                "IDENTITY": {...},
+                "DYNAMIC_INITIAL": {
+                    "form": 50,
+                    "fitness": 50,
+                    "morale": 50,
+                    ...
+                },
+                "EXPERT": {...}
+            }
         """
-        # 1. Извлекаем показатели с ограничением
-        home_attack = self._clamp_value(home_profile.get("attack_power", 70), 40, 100)
-        home_defense = self._clamp_value(home_profile.get("defense_power", 70), 40, 100)
-        home_control = self._clamp_value(home_profile.get("control_power", 70), 40, 100)
-        home_goalkeeper = self._clamp_value(home_profile.get("goalkeeper_power", 70), 40, 100)
+        # 1. Извлекаем BASE и DYNAMIC_INITIAL из паспортов
+        home_base = home_passport.get("BASE", {})
+        away_base = away_passport.get("BASE", {})
+        home_dynamic = home_passport.get("DYNAMIC_INITIAL", {})
+        away_dynamic = away_passport.get("DYNAMIC_INITIAL", {})
 
-        away_attack = self._clamp_value(away_profile.get("attack_power", 70), 40, 100)
-        away_defense = self._clamp_value(away_profile.get("defense_power", 70), 40, 100)
-        away_control = self._clamp_value(away_profile.get("control_power", 70), 40, 100)
-        away_goalkeeper = self._clamp_value(away_profile.get("goalkeeper_power", 70), 40, 100)
+        # 2. Извлекаем показатели с ограничением
+        home_attack = self._clamp_value(home_base.get("attack", 70), 40, 100)
+        home_defense = self._clamp_value(home_base.get("defense", 70), 40, 100)
+        home_control = self._clamp_value(home_base.get("control", 70), 40, 100)
+        home_goalkeeper = self._clamp_value(home_base.get("goalkeeper", 70), 40, 100)
 
-        # 2. Расчёт компонентов
-        home_attack_factor = self._attack_factor(home_attack)
-        away_attack_factor = self._attack_factor(away_attack)
+        away_attack = self._clamp_value(away_base.get("attack", 70), 40, 100)
+        away_defense = self._clamp_value(away_base.get("defense", 70), 40, 100)
+        away_control = self._clamp_value(away_base.get("control", 70), 40, 100)
+        away_goalkeeper = self._clamp_value(away_base.get("goalkeeper", 70), 40, 100)
 
-        home_defense_factor = self._defense_factor(home_defense)
-        away_defense_factor = self._defense_factor(away_defense)
+        # 3. Учитываем форму из DYNAMIC_INITIAL
+        home_form = home_dynamic.get("form", 50) / 50.0
+        away_form = away_dynamic.get("form", 50) / 50.0
+
+        # 4. Расчёт компонентов
+        home_attack_factor = self._attack_factor(home_attack) * home_form
+        away_attack_factor = self._attack_factor(away_attack) * away_form
+
+        home_defense_factor = self._defense_factor(home_defense) / home_form
+        away_defense_factor = self._defense_factor(away_defense) / away_form
 
         home_keeper_factor = self._keeper_factor(home_goalkeeper)
         away_keeper_factor = self._keeper_factor(away_goalkeeper)
@@ -91,7 +127,7 @@ class FAJXGModel:
 
         home_bonus = self.HOME_ADVANTAGE
 
-        # 3. Расчёт xG
+        # 5. Расчёт xG
         home_xg_raw = (
             self.LEAGUE_MEAN_XG
             * home_attack_factor
@@ -109,11 +145,11 @@ class FAJXGModel:
             * control_factor
         )
 
-        # 4. Ограничения
+        # 6. Ограничения
         home_xg = self._clamp(home_xg_raw)
         away_xg = self._clamp(away_xg_raw)
 
-        # 5. Компоненты для объяснения
+        # 7. Компоненты для объяснения
         components = {
             "home_attack_factor": round(home_attack_factor, 3),
             "away_attack_factor": round(away_attack_factor, 3),
@@ -123,9 +159,11 @@ class FAJXGModel:
             "away_keeper_factor": round(away_keeper_factor, 3),
             "control_factor": round(control_factor, 3),
             "home_bonus": round(home_bonus, 3),
+            "home_form": round(home_form, 2),
+            "away_form": round(away_form, 2)
         }
 
-        # 6. Человеческое объяснение
+        # 8. Человеческое объяснение
         explanation = self._build_explanation(
             home_attack, home_defense, home_control, home_goalkeeper,
             away_attack, away_defense, away_control, away_goalkeeper,
@@ -133,7 +171,8 @@ class FAJXGModel:
             home_defense_factor, away_defense_factor,
             home_keeper_factor, away_keeper_factor,
             control_factor,
-            home_xg, away_xg
+            home_xg, away_xg,
+            home_form, away_form
         )
 
         return {
@@ -200,10 +239,22 @@ class FAJXGModel:
         home_defense_factor, away_defense_factor,
         home_keeper_factor, away_keeper_factor,
         control_factor,
-        home_xg, away_xg
+        home_xg, away_xg,
+        home_form=1.0, away_form=1.0
     ) -> List[str]:
         """Строит человеческое объяснение расчёта xG"""
         explanation = []
+
+        # Форма команд
+        if home_form > 1.05:
+            explanation.append(f"Отличная форма хозяев (+{((home_form-1)*100):.0f}%)")
+        elif home_form < 0.95:
+            explanation.append(f"Плохая форма хозяев ({((home_form-1)*100):.0f}%)")
+
+        if away_form > 1.05:
+            explanation.append(f"Отличная форма гостей (+{((away_form-1)*100):.0f}%)")
+        elif away_form < 0.95:
+            explanation.append(f"Плохая форма гостей ({((away_form-1)*100):.0f}%)")
 
         # Атака хозяев
         if home_attack_factor > 1.1:
@@ -277,24 +328,52 @@ def get_xg_model() -> FAJXGModel:
 if __name__ == "__main__":
     model = FAJXGModel()
 
-    # Тест 1: стандартный матч
-    home_profile = {
-        "attack_power": 82,
-        "defense_power": 78,
-        "control_power": 80,
-        "goalkeeper_power": 75
+    # Тест 1: стандартный матч с полными паспортами
+    home_passport = {
+        "BASE": {
+            "attack": 82,
+            "defense": 78,
+            "control": 80,
+            "goalkeeper": 75,
+            "tempo": 50,
+            "press": 50,
+            "transition": 50,
+            "finishing": 50
+        },
+        "DYNAMIC_INITIAL": {
+            "form": 50,
+            "fitness": 50,
+            "morale": 50,
+            "fatigue": 20,
+            "injury_index": 0,
+            "passport_confidence": 0.4
+        }
     }
 
-    away_profile = {
-        "attack_power": 74,
-        "defense_power": 81,
-        "control_power": 76,
-        "goalkeeper_power": 79
+    away_passport = {
+        "BASE": {
+            "attack": 74,
+            "defense": 81,
+            "control": 76,
+            "goalkeeper": 79,
+            "tempo": 50,
+            "press": 50,
+            "transition": 50,
+            "finishing": 50
+        },
+        "DYNAMIC_INITIAL": {
+            "form": 50,
+            "fitness": 50,
+            "morale": 50,
+            "fatigue": 20,
+            "injury_index": 0,
+            "passport_confidence": 0.4
+        }
     }
 
-    result = model.calculate(home_profile, away_profile)
+    result = model.calculate(home_passport, away_passport, home_rating=75.0, away_rating=70.0)
 
-    print("\n⚽ FAJ XG Model v1.3 — Тест 1 (стандартный)")
+    print("\n⚽ FAJ XG Model v1.3 — Тест с паспортами")
     print("=" * 60)
     print(f"xG Дома:  {result['home_xg']}")
     print(f"xG В гостях: {result['away_xg']}")
@@ -304,33 +383,4 @@ if __name__ == "__main__":
         print(f"  {key}: {value}")
     print("\n📝 Объяснение:")
     for line in result['explanation']:
-        print(f"  • {line}")
-
-    # Тест 2: доминирующий хозяин
-    print("\n" + "=" * 60)
-    print("⚽ FAJ XG Model v1.3 — Тест 2 (доминирование хозяев)")
-
-    home_profile2 = {
-        "attack_power": 95,
-        "defense_power": 85,
-        "control_power": 95,
-        "goalkeeper_power": 85
-    }
-
-    away_profile2 = {
-        "attack_power": 55,
-        "defense_power": 60,
-        "control_power": 50,
-        "goalkeeper_power": 60
-    }
-
-    result2 = model.calculate(home_profile2, away_profile2)
-
-    print(f"xG Дома:  {result2['home_xg']}")
-    print(f"xG В гостях: {result2['away_xg']}")
-    print("\n📊 Компоненты:")
-    for key, value in result2['components'].items():
-        print(f"  {key}: {value}")
-    print("\n📝 Объяснение:")
-    for line in result2['explanation']:
         print(f"  • {line}")
