@@ -2,25 +2,27 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ Platform v12.0 — ФИНАЛЬНАЯ СХЕМА
+FAJ Platform v12.1 — ФИНАЛЬНАЯ СХЕМА
 Database Engine — ЕДИНЫЙ ФАЙЛ БАЗЫ ДАННЫХ 🔒
 
-Схема: v12.0
+Схема: v12.1
 """
 
 import sqlite3
 import os
+import uuid
 from datetime import datetime
 import logging
 from typing import Dict, Any, List, Optional
 import json
+from contextlib import contextmanager
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 DATA_DIR = "data"
 DB_FILE = os.path.join(DATA_DIR, "faj.db")
-DB_SCHEMA_VERSION = "12.0"
+DB_SCHEMA_VERSION = "12.1"
 
 
 def get_connection():
@@ -30,33 +32,19 @@ def get_connection():
     return conn
 
 
-def get_schema_version():
-    if not os.path.exists(DB_FILE):
-        return None
+def ensure_table(table_name: str, create_sql: str) -> None:
+    """Создаёт таблицу, если её нет"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT version FROM schema_version ORDER BY id DESC LIMIT 1")
-        row = cursor.fetchone()
+        cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'")
+        if not cursor.fetchone():
+            cursor.execute(create_sql)
+            logger.info(f"✅ Создана таблица: {table_name}")
+        conn.commit()
         conn.close()
-        return row[0] if row else None
-    except:
-        return None
-
-
-def set_schema_version(version):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS schema_version (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            version TEXT NOT NULL,
-            applied_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    cursor.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
-    conn.commit()
-    conn.close()
+    except Exception as e:
+        logger.warning(f"Не удалось создать таблицу {table_name}: {e}")
 
 
 def ensure_column(table_name: str, column_name: str, column_type: str) -> None:
@@ -64,322 +52,120 @@ def ensure_column(table_name: str, column_name: str, column_type: str) -> None:
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        
         cursor.execute(f"PRAGMA table_info({table_name})")
         columns = [row[1] for row in cursor.fetchall()]
-        
         if column_name not in columns:
             cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
             logger.info(f"✅ Добавлена колонка {column_name} в таблицу {table_name}")
-        
         conn.commit()
         conn.close()
     except Exception as e:
         logger.warning(f"Не удалось добавить колонку {column_name}: {e}")
 
 
-def run_migration_to_v11_3_0():
-    """Миграция v11.2.1 → v11.3.0 (12 новых таблиц)"""
+def ensure_index(table_name: str, index_name: str, columns: str) -> None:
+    """Создаёт индекс, если его нет"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT name FROM sqlite_master WHERE type='index' AND name='{index_name}'")
+        if not cursor.fetchone():
+            cursor.execute(f"CREATE INDEX IF NOT EXISTS {index_name} ON {table_name} ({columns})")
+            logger.info(f"✅ Создан индекс: {index_name}")
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning(f"Не удалось создать индекс {index_name}: {e}")
+
+
+def get_schema_version():
+    if not os.path.exists(DB_FILE):
+        return None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT version FROM schema_migrations ORDER BY id DESC LIMIT 1")
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None
+    except:
+        return None
+
+
+def run_migrations():
+    """Выполняет все миграции для существующей базы"""
+    logger.info("🚀 Запуск миграций...")
+
+    # ============================================================
+    # 1. Создаём таблицу миграций
+    # ============================================================
+    ensure_table("schema_migrations", """
+        CREATE TABLE schema_migrations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            version TEXT NOT NULL UNIQUE,
+            description TEXT,
+            applied_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            success INTEGER DEFAULT 1
+        )
+    """)
+
+    # ============================================================
+    # 2. Расширение таблицы matches
+    # ============================================================
+    ensure_column("matches", "home_xg", "REAL")
+    ensure_column("matches", "away_xg", "REAL")
+    ensure_column("matches", "home_possession", "INTEGER")
+    ensure_column("matches", "away_possession", "INTEGER")
+    ensure_column("matches", "home_shots", "INTEGER")
+    ensure_column("matches", "away_shots", "INTEGER")
+    ensure_column("matches", "home_shots_on_target", "INTEGER")
+    ensure_column("matches", "away_shots_on_target", "INTEGER")
+    ensure_column("matches", "parser_source", "TEXT")
+    ensure_column("matches", "parser_version", "TEXT")
+    ensure_column("matches", "updated_at", "TEXT")
+    ensure_column("matches", "data_quality", "REAL DEFAULT 1.0")
+    ensure_column("matches", "match_uuid", "TEXT UNIQUE")
+
+    # ============================================================
+    # 3. Расширение team_dynamic
+    # ============================================================
+    ensure_column("team_dynamic", "last_sync", "TEXT")
+
+    # ============================================================
+    # 4. Новые индексы
+    # ============================================================
+    ensure_index("matches", "idx_matches_status", "status")
+    ensure_index("matches", "idx_matches_date", "date")
+    ensure_index("matches", "idx_matches_home_away", "home_team_id, away_team_id")
+    ensure_index("matches", "idx_matches_uuid", "match_uuid")
+    ensure_index("prediction_validation", "idx_validation_match", "match_id")
+    ensure_index("team_form_history", "idx_form_team_season", "team_id, season_id")
+    ensure_index("team_form_history", "idx_form_team_date", "team_id, created_at")
+
+    # ============================================================
+    # 5. Запись миграции
+    # ============================================================
     conn = get_connection()
     cursor = conn.cursor()
-
-    logger.info("🚀 Запуск миграции v11.2.1 → v11.3.0...")
-
-    # ============================================================
-    # 1. prediction_features
-    # ============================================================
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS prediction_features (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            match_id INTEGER,
-            home_attack REAL,
-            home_defense REAL,
-            home_form REAL,
-            home_rating REAL,
-            home_xg REAL,
-            home_injury_factor REAL,
-            away_attack REAL,
-            away_defense REAL,
-            away_form REAL,
-            away_rating REAL,
-            away_xg REAL,
-            away_injury_factor REAL,
-            tournament_modifier REAL,
-            coach_factor REAL,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(match_id) REFERENCES matches(id)
-        )
+        INSERT OR IGNORE INTO schema_migrations (version, description, success)
+        VALUES ('12.1', 'Initial migration v12.1', 1)
     """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_features_match ON prediction_features(match_id)")
-
-    # ============================================================
-    # 2. pipeline_logs
-    # ============================================================
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS pipeline_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            match_id INTEGER,
-            stage TEXT NOT NULL,
-            module TEXT,
-            execution_time REAL,
-            success INTEGER DEFAULT 1,
-            error_message TEXT,
-            version TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(match_id) REFERENCES matches(id)
-        )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_match ON pipeline_logs(match_id)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_stage ON pipeline_logs(stage)")
-
-    # ============================================================
-    # 3. model_results
-    # ============================================================
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS model_results (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            match_id INTEGER,
-            model_name TEXT NOT NULL,
-            result_type TEXT DEFAULT 'winner',
-            prediction TEXT,
-            probability REAL,
-            home_goals REAL,
-            away_goals REAL,
-            home_probability REAL,
-            draw_probability REAL,
-            away_probability REAL,
-            xg_home REAL,
-            xg_away REAL,
-            model_version TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(match_id) REFERENCES matches(id)
-        )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_match ON model_results(match_id)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_name ON model_results(model_name)")
-
-    # ============================================================
-    # 4. model_agreement
-    # ============================================================
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS model_agreement (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            match_id INTEGER,
-            xg_result_id INTEGER,
-            poisson_result_id INTEGER,
-            montecarlo_result_id INTEGER,
-            expert_result_id INTEGER,
-            agreement_percent REAL,
-            conflict_level TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(match_id) REFERENCES matches(id)
-        )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_agreement_match ON model_agreement(match_id)")
-
-    # ============================================================
-    # 5. confidence_history
-    # ============================================================
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS confidence_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            match_id INTEGER,
-            data_quality REAL,
-            passport_quality REAL,
-            model_agreement REAL,
-            prediction_stability REAL,
-            final_confidence REAL,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(match_id) REFERENCES matches(id)
-        )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_confidence_match ON confidence_history(match_id)")
-
-    # ============================================================
-    # 6. prediction_risk
-    # ============================================================
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS prediction_risk (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            match_id INTEGER,
-            risk_type TEXT NOT NULL,
-            risk_value REAL,
-            description TEXT,
-            severity INTEGER DEFAULT 1,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(match_id) REFERENCES matches(id)
-        )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_risk_match ON prediction_risk(match_id)")
-
-    # ============================================================
-    # 7. faj_decisions
-    # ============================================================
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS faj_decisions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            match_id INTEGER,
-            home_score INTEGER,
-            away_score INTEGER,
-            final_score TEXT,
-            final_probability REAL,
-            confidence REAL,
-            risk_level TEXT,
-            model_agreement REAL,
-            expert_used INTEGER DEFAULT 0,
-            expert_weight REAL DEFAULT 0,
-            reason TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(match_id) REFERENCES matches(id)
-        )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_decisions_match ON faj_decisions(match_id)")
-
-    # ============================================================
-    # 8. decision_explanations
-    # ============================================================
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS decision_explanations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            decision_id INTEGER,
-            factor TEXT NOT NULL,
-            impact REAL,
-            description TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(decision_id) REFERENCES faj_decisions(id)
-        )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_explanations_decision ON decision_explanations(decision_id)")
-
-    # ============================================================
-    # 9. passport_versions
-    # ============================================================
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS passport_versions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            team_id INTEGER,
-            season_id INTEGER,
-            version INTEGER,
-            version_type TEXT DEFAULT 'basic',
-            attack INTEGER,
-            defense INTEGER,
-            control INTEGER,
-            form INTEGER,
-            rating REAL,
-            change_reason TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(team_id) REFERENCES teams(id),
-            FOREIGN KEY(season_id) REFERENCES seasons(id)
-        )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_passport_versions_team ON passport_versions(team_id, season_id)")
-
-    # ============================================================
-    # 10. faj_rating_history
-    # ============================================================
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS faj_rating_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            team_id INTEGER,
-            season_id INTEGER,
-            rating REAL,
-            attack_rating REAL,
-            defense_rating REAL,
-            form_rating REAL,
-            mental_rating REAL,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(team_id) REFERENCES teams(id),
-            FOREIGN KEY(season_id) REFERENCES seasons(id)
-        )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_rating_team ON faj_rating_history(team_id, season_id)")
-
-    # ============================================================
-    # 11. monte_carlo_runs
-    # ============================================================
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS monte_carlo_runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            match_id INTEGER,
-            simulation_count INTEGER,
-            home_win REAL,
-            draw REAL,
-            away_win REAL,
-            mean_home_goals REAL,
-            mean_away_goals REAL,
-            variance REAL,
-            most_likely_score TEXT,
-            random_seed INTEGER,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(match_id) REFERENCES matches(id)
-        )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mc_match ON monte_carlo_runs(match_id)")
-
-    # ============================================================
-    # 12. data_quality
-    # ============================================================
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS data_quality (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            match_id INTEGER,
-            passport_complete REAL,
-            missing_fields INTEGER,
-            freshness REAL,
-            confidence REAL,
-            source_count INTEGER DEFAULT 0,
-            last_update TEXT,
-            status TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(match_id) REFERENCES matches(id)
-        )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_quality_match ON data_quality(match_id)")
-
-    # ============================================================
-    # DIAGNOSTIC TABLE
-    # ============================================================
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS diagnostic_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT,
-            elapsed_seconds REAL,
-            passed INTEGER,
-            warned INTEGER,
-            failed INTEGER,
-            total INTEGER,
-            critical_fail INTEGER,
-            status TEXT,
-            details_json TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_diagnostic_timestamp ON diagnostic_history(timestamp)")
-
-    # ============================================================
-    # Обновляем версию схемы
-    # ============================================================
-    cursor.execute("""
-        INSERT INTO schema_version (version) VALUES ('11.3.0')
-    """)
-
     conn.commit()
     conn.close()
 
-    logger.info("✅ Миграция v11.2.1 → v11.3.0 завершена!")
-    logger.info("   📊 Добавлено 12 новых таблиц + diagnostic_history")
-    logger.info("   📌 Новая версия схемы: 11.3.0")
+    logger.info("✅ Миграции завершены")
 
 
 def init_database():
-    """Инициализация базы данных с финальной схемой v12.0"""
+    """Инициализация базы данных с финальной схемой v12.1"""
     conn = get_connection()
     cursor = conn.cursor()
 
-    logger.info("🚀 Инициализация базы данных FAJ v12.0...")
+    logger.info("🚀 Инициализация базы данных FAJ v12.1...")
 
     # ===============================
-    # OSNOVNYE TABLICY (25)
+    # OSNOVNYE TABLICY
     # ===============================
 
     cursor.execute("""
@@ -428,6 +214,7 @@ def init_database():
             round_id INTEGER,
             home_team_id INTEGER,
             away_team_id INTEGER,
+            match_uuid TEXT UNIQUE,
             date TEXT,
             competition TEXT,
             status TEXT DEFAULT 'scheduled',
@@ -442,6 +229,8 @@ def init_database():
             home_shots_on_target INTEGER,
             away_shots_on_target INTEGER,
             parser_source TEXT,
+            parser_version TEXT,
+            data_quality REAL DEFAULT 1.0,
             updated_at TEXT,
             created_at TEXT,
             FOREIGN KEY(round_id) REFERENCES rounds(id),
@@ -568,6 +357,7 @@ def init_database():
             rotation_index INTEGER DEFAULT 0,
             last_base_correction_match INTEGER DEFAULT 0,
             passport_confidence REAL DEFAULT 0.4,
+            last_sync TEXT,
             updated_at TEXT,
             FOREIGN KEY(team_id) REFERENCES teams(id),
             FOREIGN KEY(season_id) REFERENCES seasons(id),
@@ -763,13 +553,14 @@ def init_database():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS model_parameters (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_name TEXT,
             model_version TEXT,
             category TEXT,
-            parameter TEXT,
-            value REAL,
+            parameter_name TEXT NOT NULL,
+            parameter_value REAL,
             description TEXT,
             updated_at TEXT,
-            UNIQUE(model_version, parameter)
+            UNIQUE(model_version, parameter_name)
         )
     """)
 
@@ -889,7 +680,21 @@ def init_database():
             actual_home_xg REAL,
             predicted_away_xg REAL,
             actual_away_xg REAL,
-            prediction_error REAL,
+            predicted_winner TEXT,
+            actual_winner TEXT,
+            predicted_probability_home REAL,
+            predicted_probability_draw REAL,
+            predicted_probability_away REAL,
+            score_probability REAL,
+            confidence REAL,
+            risk REAL,
+            predicted_btts INTEGER,
+            actual_btts INTEGER,
+            predicted_over25 INTEGER,
+            actual_over25 INTEGER,
+            model_version TEXT,
+            passport_version TEXT,
+            parser_version TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(match_id) REFERENCES matches(id)
         )
@@ -903,22 +708,33 @@ def init_database():
         CREATE TABLE IF NOT EXISTS team_form_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             team_id INTEGER,
+            season_id INTEGER,
             round INTEGER,
+            match_id INTEGER,
+            opponent_team_id INTEGER,
             rating_before REAL,
             rating_after REAL,
             form REAL,
+            matches_count INTEGER,
+            win_rate REAL,
+            draw_rate REAL,
+            loss_rate REAL,
             last5_points INTEGER,
             last5_xg REAL,
             last5_xga REAL,
             goal_difference INTEGER,
+            form_source TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(team_id) REFERENCES teams(id)
+            FOREIGN KEY(team_id) REFERENCES teams(id),
+            FOREIGN KEY(season_id) REFERENCES seasons(id),
+            FOREIGN KEY(match_id) REFERENCES matches(id),
+            FOREIGN KEY(opponent_team_id) REFERENCES teams(id)
         )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_form_team ON team_form_history(team_id)")
 
     # ============================================================
-    # LEARNING LAYER TABLES (v12)
+    # LEARNING LAYER TABLES
     # ============================================================
 
     cursor.execute("""
@@ -1062,28 +878,12 @@ def init_database():
     """)
 
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS model_parameters_learning (
+        CREATE TABLE IF NOT EXISTS schema_migrations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            model_version TEXT NOT NULL,
-            parameter_group TEXT,
-            parameter_name TEXT NOT NULL,
-            parameter_value REAL,
-            min_value REAL,
-            max_value REAL,
+            version TEXT NOT NULL UNIQUE,
             description TEXT,
-            source TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(model_version, parameter_name)
-        )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_params_version ON model_parameters_learning(model_version)")
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS schema_version (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            version TEXT NOT NULL,
-            applied_at TEXT DEFAULT CURRENT_TIMESTAMP
+            applied_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            success INTEGER DEFAULT 1
         )
     """)
 
@@ -1091,28 +891,11 @@ def init_database():
     conn.close()
 
     # ============================================================
-    # АВТОМАТИЧЕСКАЯ МИГРАЦИЯ (добавление колонок)
+    # ЗАПУСК МИГРАЦИЙ
     # ============================================================
-    ensure_column("matches", "home_xg", "REAL")
-    ensure_column("matches", "away_xg", "REAL")
-    ensure_column("matches", "home_possession", "INTEGER")
-    ensure_column("matches", "away_possession", "INTEGER")
-    ensure_column("matches", "home_shots", "INTEGER")
-    ensure_column("matches", "away_shots", "INTEGER")
-    ensure_column("matches", "home_shots_on_target", "INTEGER")
-    ensure_column("matches", "away_shots_on_target", "INTEGER")
-    ensure_column("matches", "parser_source", "TEXT")
-    ensure_column("matches", "updated_at", "TEXT")
+    run_migrations()
 
-    # ============================================================
-    # АВТОМАТИЧЕСКАЯ МИГРАЦИЯ v11.3.0
-    # ============================================================
-    current_version = get_schema_version()
-    if current_version != DB_SCHEMA_VERSION:
-        logger.info(f"🔄 Обновление базы с {current_version} до {DB_SCHEMA_VERSION}")
-        run_migration_to_v11_3_0()
-    else:
-        logger.info(f"✅ База уже на версии {DB_SCHEMA_VERSION}")
+    logger.info(f"✅ База данных инициализирована. Версия: {DB_SCHEMA_VERSION}")
 
 
 class FAJDatabase:
@@ -1128,6 +911,23 @@ class FAJDatabase:
 
     def _get_connection(self):
         return get_connection()
+
+    # ============================================================
+    # TRANSACTION
+    # ============================================================
+
+    @contextmanager
+    def transaction(self):
+        """Контекстный менеджер транзакций"""
+        conn = self._get_connection()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     # ============================================================
     # STATUS
@@ -1371,17 +1171,108 @@ class FAJDatabase:
     # MATCHES
     # ============================================================
 
-    def add_match(self, round_id, home_team_id, away_team_id,
-                  date="", competition="RPL"):
-        conn = get_connection()
+    def upsert_match(self, data: Dict[str, Any]) -> int:
+        """Создаёт или обновляет матч по match_uuid"""
+        conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO matches (round_id, home_team_id, away_team_id, date, competition, created_at)
-            VALUES (?,?,?,?,?,?)
-        """, (round_id, home_team_id, away_team_id, date, competition,
-              datetime.now().isoformat()))
+
+        # Генерируем uuid если нет
+        match_uuid = data.get('match_uuid') or str(uuid.uuid4())
+
+        # Проверяем существование
+        cursor.execute("SELECT id FROM matches WHERE match_uuid = ?", (match_uuid,))
+        existing = cursor.fetchone()
+
+        if existing:
+            match_id = existing[0]
+            # Обновляем
+            cursor.execute("""
+                UPDATE matches SET
+                    round_id = ?,
+                    home_team_id = ?,
+                    away_team_id = ?,
+                    date = ?,
+                    competition = ?,
+                    status = ?,
+                    actual_home = ?,
+                    actual_away = ?,
+                    home_xg = ?,
+                    away_xg = ?,
+                    home_possession = ?,
+                    away_possession = ?,
+                    home_shots = ?,
+                    away_shots = ?,
+                    home_shots_on_target = ?,
+                    away_shots_on_target = ?,
+                    parser_source = ?,
+                    parser_version = ?,
+                    data_quality = ?,
+                    updated_at = ?
+                WHERE id = ?
+            """, (
+                data.get('round_id'),
+                data.get('home_team_id'),
+                data.get('away_team_id'),
+                data.get('date'),
+                data.get('competition', 'RPL'),
+                data.get('status', 'scheduled'),
+                data.get('actual_home'),
+                data.get('actual_away'),
+                data.get('home_xg'),
+                data.get('away_xg'),
+                data.get('home_possession'),
+                data.get('away_possession'),
+                data.get('home_shots'),
+                data.get('away_shots'),
+                data.get('home_shots_on_target'),
+                data.get('away_shots_on_target'),
+                data.get('parser_source'),
+                data.get('parser_version'),
+                data.get('data_quality', 1.0),
+                datetime.now().isoformat(),
+                match_id
+            ))
+        else:
+            # Вставляем
+            cursor.execute("""
+                INSERT INTO matches (
+                    round_id, home_team_id, away_team_id, match_uuid,
+                    date, competition, status,
+                    actual_home, actual_away,
+                    home_xg, away_xg,
+                    home_possession, away_possession,
+                    home_shots, away_shots,
+                    home_shots_on_target, away_shots_on_target,
+                    parser_source, parser_version,
+                    data_quality, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                data.get('round_id'),
+                data.get('home_team_id'),
+                data.get('away_team_id'),
+                match_uuid,
+                data.get('date'),
+                data.get('competition', 'RPL'),
+                data.get('status', 'scheduled'),
+                data.get('actual_home'),
+                data.get('actual_away'),
+                data.get('home_xg'),
+                data.get('away_xg'),
+                data.get('home_possession'),
+                data.get('away_possession'),
+                data.get('home_shots'),
+                data.get('away_shots'),
+                data.get('home_shots_on_target'),
+                data.get('away_shots_on_target'),
+                data.get('parser_source'),
+                data.get('parser_version'),
+                data.get('data_quality', 1.0),
+                datetime.now().isoformat(),
+                datetime.now().isoformat()
+            ))
+            match_id = cursor.lastrowid
+
         conn.commit()
-        match_id = cursor.lastrowid
         conn.close()
         return match_id
 
@@ -1397,7 +1288,6 @@ class FAJDatabase:
         conn.close()
 
     def update_match_stats(self, match_id: int, stats: Dict[str, Any]) -> bool:
-        """Обновление статистики матча (xG, possession, shots и т.д.)"""
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
@@ -1412,6 +1302,8 @@ class FAJDatabase:
                     home_shots_on_target = ?,
                     away_shots_on_target = ?,
                     parser_source = ?,
+                    parser_version = ?,
+                    data_quality = ?,
                     updated_at = ?
                 WHERE id = ?
             """, (
@@ -1424,6 +1316,8 @@ class FAJDatabase:
                 stats.get('home_shots_on_target'),
                 stats.get('away_shots_on_target'),
                 stats.get('parser_source'),
+                stats.get('parser_version'),
+                stats.get('data_quality', 1.0),
                 datetime.now().isoformat(),
                 match_id
             ))
@@ -1444,6 +1338,14 @@ class FAJDatabase:
         data = cursor.fetchall()
         conn.close()
         return data
+
+    def get_match_by_uuid(self, match_uuid: str) -> Optional[Dict[str, Any]]:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM matches WHERE match_uuid = ?", (match_uuid,))
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
 
     # ============================================================
     # MATCH PREDICTIONS
@@ -1588,7 +1490,7 @@ class FAJDatabase:
             'last5_goals', 'last5_conceded', 'last5_performance',
             'average_performance', 'current_streak', 'days_rest',
             'travel_distance', 'rotation_index', 'last_base_correction_match',
-            'passport_confidence'
+            'passport_confidence', 'last_sync'
         ]
         update_data = {k: v for k, v in kwargs.items() if k in allowed}
         if not update_data:
@@ -1620,8 +1522,9 @@ class FAJDatabase:
                     last5_xg, last5_xga, last5_goals, last5_conceded,
                     last5_performance, average_performance, current_streak,
                     days_rest, travel_distance, rotation_index,
-                    last_base_correction_match, passport_confidence, updated_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    last_base_correction_match, passport_confidence, last_sync,
+                    updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 team_id, season_id,
                 kwargs.get('form', 50),
@@ -1646,6 +1549,7 @@ class FAJDatabase:
                 kwargs.get('rotation_index', 0),
                 kwargs.get('last_base_correction_match', 0),
                 kwargs.get('passport_confidence', 0.4),
+                kwargs.get('last_sync'),
                 datetime.now().isoformat()
             ))
         conn.commit()
@@ -1875,25 +1779,81 @@ class FAJDatabase:
             cursor.execute("""
                 SELECT * FROM model_parameters
                 WHERE model_version = ?
-                ORDER BY category, parameter
+                ORDER BY category, parameter_name
             """, (model_version,))
         else:
-            cursor.execute("SELECT * FROM model_parameters ORDER BY model_version, category, parameter")
+            cursor.execute("SELECT * FROM model_parameters ORDER BY model_version, category, parameter_name")
         data = cursor.fetchall()
         conn.close()
         return data
 
-    def set_model_parameter(self, model_version, category, parameter, value, description=""):
+    def set_model_parameter(self, model_version, category, parameter, value, description="", group_name=None):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
             INSERT OR REPLACE INTO model_parameters
-            (model_version, category, parameter, value, description, updated_at)
-            VALUES (?,?,?,?,?,?)
-        """, (model_version, category, parameter, value, description,
-              datetime.now().isoformat()))
+            (group_name, model_version, category, parameter_name, parameter_value, description, updated_at)
+            VALUES (?,?,?,?,?,?,?)
+        """, (
+            group_name or category,
+            model_version,
+            category,
+            parameter,
+            value,
+            description,
+            datetime.now().isoformat()
+        ))
         conn.commit()
         conn.close()
+
+    def save_parameter(self, group_name: str, parameter_name: str, parameter_value: float,
+                       version: str = None, description: str = "") -> bool:
+        """Сохраняет параметр модели"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO model_parameters
+                (group_name, parameter_name, parameter_value, version, description, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                group_name,
+                parameter_name,
+                parameter_value,
+                version or DB_SCHEMA_VERSION,
+                description,
+                datetime.now().isoformat()
+            ))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Save parameter error: {e}")
+            return False
+
+    def get_parameter(self, group_name: str, parameter_name: str, version: str = None) -> Optional[float]:
+        """Получает параметр модели"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            if version:
+                cursor.execute("""
+                    SELECT parameter_value FROM model_parameters
+                    WHERE group_name = ? AND parameter_name = ? AND version = ?
+                    ORDER BY updated_at DESC LIMIT 1
+                """, (group_name, parameter_name, version))
+            else:
+                cursor.execute("""
+                    SELECT parameter_value FROM model_parameters
+                    WHERE group_name = ? AND parameter_name = ?
+                    ORDER BY updated_at DESC LIMIT 1
+                """, (group_name, parameter_name))
+            row = cursor.fetchone()
+            conn.close()
+            return row[0] if row else None
+        except Exception as e:
+            logger.error(f"Get parameter error: {e}")
+            return None
 
     # ============================================================
     # LEARNING LAYER
@@ -2262,8 +2222,13 @@ class FAJDatabase:
                 match_id, predicted_score, actual_score,
                 predicted_home_xg, actual_home_xg,
                 predicted_away_xg, actual_away_xg,
-                prediction_error, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                predicted_winner, actual_winner,
+                predicted_probability_home, predicted_probability_draw, predicted_probability_away,
+                score_probability, confidence, risk,
+                predicted_btts, actual_btts,
+                predicted_over25, actual_over25,
+                model_version, passport_version, parser_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             data.get('match_id'),
             data.get('predicted_score'),
@@ -2272,8 +2237,21 @@ class FAJDatabase:
             data.get('actual_home_xg'),
             data.get('predicted_away_xg'),
             data.get('actual_away_xg'),
-            data.get('prediction_error'),
-            datetime.now().isoformat()
+            data.get('predicted_winner'),
+            data.get('actual_winner'),
+            data.get('predicted_probability_home'),
+            data.get('predicted_probability_draw'),
+            data.get('predicted_probability_away'),
+            data.get('score_probability'),
+            data.get('confidence'),
+            data.get('risk'),
+            data.get('predicted_btts'),
+            data.get('actual_btts'),
+            data.get('predicted_over25'),
+            data.get('actual_over25'),
+            data.get('model_version'),
+            data.get('passport_version'),
+            data.get('parser_version')
         ))
         conn.commit()
         row_id = cursor.lastrowid
@@ -2290,21 +2268,30 @@ class FAJDatabase:
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO team_form_history (
-                team_id, round, rating_before, rating_after,
-                form, last5_points, last5_xg, last5_xga,
-                goal_difference, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                team_id, season_id, round, match_id, opponent_team_id,
+                rating_before, rating_after, form,
+                matches_count, win_rate, draw_rate, loss_rate,
+                last5_points, last5_xg, last5_xga, goal_difference,
+                form_source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             data.get('team_id'),
+            data.get('season_id'),
             data.get('round'),
+            data.get('match_id'),
+            data.get('opponent_team_id'),
             data.get('rating_before'),
             data.get('rating_after'),
             data.get('form'),
+            data.get('matches_count'),
+            data.get('win_rate'),
+            data.get('draw_rate'),
+            data.get('loss_rate'),
             data.get('last5_points'),
             data.get('last5_xg'),
             data.get('last5_xga'),
             data.get('goal_difference'),
-            datetime.now().isoformat()
+            data.get('form_source', 'parser')
         ))
         conn.commit()
         row_id = cursor.lastrowid
