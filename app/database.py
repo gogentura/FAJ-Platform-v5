@@ -316,6 +316,26 @@ def run_migration_to_v11_3_0():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_quality_match ON data_quality(match_id)")
 
     # ============================================================
+    # DIAGNOSTIC TABLE
+    # ============================================================
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS diagnostic_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            elapsed_seconds REAL,
+            passed INTEGER,
+            warned INTEGER,
+            failed INTEGER,
+            total INTEGER,
+            critical_fail INTEGER,
+            status TEXT,
+            details_json TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_diagnostic_timestamp ON diagnostic_history(timestamp)")
+
+    # ============================================================
     # Обновляем версию схемы
     # ============================================================
     cursor.execute("""
@@ -326,7 +346,7 @@ def run_migration_to_v11_3_0():
     conn.close()
 
     logger.info("✅ Миграция v11.2.1 → v11.3.0 завершена!")
-    logger.info("   📊 Добавлено 12 новых таблиц")
+    logger.info("   📊 Добавлено 12 новых таблиц + diagnostic_history")
     logger.info("   📌 Новая версия схемы: 11.3.0")
 
 
@@ -970,23 +990,31 @@ class FAJDatabase:
     def __init__(self):
         init_database()
 
-    def _get_connection(self):
+    # ============================================================
+    # PUBLIC CONNECTION
+    # ============================================================
+
+    def get_connection(self):
+        """Публичный метод получения соединения"""
         return get_connection()
+
+    def _get_connection(self):
+        """Внутренний метод (для обратной совместимости)"""
+        return get_connection()
+
+    # ============================================================
+    # STATUS
+    # ============================================================
 
     def get_status(self):
         conn = get_connection()
         cursor = conn.cursor()
-        tables = [
-            "teams", "seasons", "rounds", "matches", "match_predictions",
-            "match_events", "players", "player_events", "team_base",
-            "team_dynamic", "team_identity", "tactical_matchup", "player_impact",
-            "team_competition_profile", "team_events", "team_history",
-            "predictions", "prediction_scores", "prediction_distributions",
-            "expert_predictions", "journal", "learning_memory",
-            "model_parameters", "xg_memory", "match_snapshots",
-            "migrations", "gold_dataset", "learning_records", "learning_events",
-            "audit_log", "model_parameters_learning", "team_passport_meta"
-        ]
+
+        # Получаем список таблиц
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = [row[0] for row in cursor.fetchall()]
+
+        # Считаем записи в каждой таблице
         result = {}
         for table in tables:
             try:
@@ -994,8 +1022,10 @@ class FAJDatabase:
                 result[table] = cursor.fetchone()[0]
             except:
                 result[table] = 0
+
         schema_version = get_schema_version()
         conn.close()
+
         return {
             "database": "SQLite",
             "file": DB_FILE,
@@ -1003,6 +1033,113 @@ class FAJDatabase:
             "schema_version": schema_version,
             "tables": result
         }
+
+    # ============================================================
+    # DIAGNOSTIC
+    # ============================================================
+
+    def save_diagnostic(self, data: Dict[str, Any]) -> int:
+        """Сохранение диагностики в БД"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                INSERT INTO diagnostic_history (
+                    timestamp,
+                    elapsed_seconds,
+                    passed,
+                    warned,
+                    failed,
+                    total,
+                    critical_fail,
+                    status,
+                    details_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                data.get("timestamp"),
+                data.get("elapsed_seconds"),
+                data.get("passed", 0),
+                data.get("warned", 0),
+                data.get("failed", 0),
+                data.get("total", 0),
+                data.get("critical_fail", 0),
+                data.get("status", "unknown"),
+                data.get("details_json", "{}")
+            ))
+
+            conn.commit()
+            row_id = cursor.lastrowid
+            conn.close()
+            return row_id
+
+        except Exception as e:
+            logger.error(f"Save diagnostic error: {e}")
+            return 0
+
+    def get_diagnostics(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Получение истории диагностик"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT *
+                FROM diagnostic_history
+                ORDER BY id DESC
+                LIMIT ?
+            """, (limit,))
+
+            rows = cursor.fetchall()
+            conn.close()
+
+            result = []
+            for row in rows:
+                entry = {
+                    "id": row["id"],
+                    "timestamp": row["timestamp"],
+                    "elapsed_seconds": row["elapsed_seconds"],
+                    "summary": {
+                        "passed": row["passed"],
+                        "warned": row["warned"],
+                        "failed": row["failed"],
+                        "total": row["total"],
+                        "critical_fail": row["critical_fail"],
+                        "status": row["status"]
+                    }
+                }
+                if row["details_json"]:
+                    try:
+                        import json
+                        entry["details"] = json.loads(row["details_json"])
+                    except:
+                        pass
+                result.append(entry)
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Get diagnostics error: {e}")
+            return []
+
+    def prediction_exists(self, prediction_id: str) -> bool:
+        """Проверка существования прогноза в БД"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT COUNT(*) FROM faj_decisions WHERE id = ?
+            """, (prediction_id,))
+
+            count = cursor.fetchone()[0]
+            conn.close()
+
+            return count > 0
+
+        except Exception as e:
+            logger.error(f"Prediction exists error: {e}")
+            return False
 
     # ------------------------------------------------------------
     # TEAMS
