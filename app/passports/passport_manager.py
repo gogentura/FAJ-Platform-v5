@@ -3,21 +3,16 @@
 
 """
 =====================================================
-FAJ Platform v11.3
-Passport Manager v1.3 (ФИНАЛЬНАЯ ВЕРСИЯ)
+FAJ Platform v12.0
+Passport Manager v1.4 (ФИНАЛЬНАЯ ВЕРСИЯ)
 
 РОЛЬ:
     Управление паспортами команд.
     Создание, обновление, версионирование.
 
-ИЗМЕНЕНИЯ v1.3:
-    - Правильная сортировка версий (CAST AS FLOAT)
-    - FAJ Rating через результаты (Passport + Results + Opponent + Form)
-    - Confidence через количество матчей и свежесть данных
-    - xG в обучение
-    - Добавлен injury_factor и key_player_loss
-    - Добавлен Tournament DNA
-    - Добавлена проверка миграции базы данных
+ИЗМЕНЕНИЯ v1.4:
+    - Добавлен метод get_current_passport_by_name()
+    - Полная совместимость с Prediction Manager
 =====================================================
 """
 
@@ -33,11 +28,11 @@ logger = logging.getLogger(__name__)
 
 class PassportManager:
     """
-    Passport Manager v1.3 (ФИНАЛЬНАЯ ВЕРСИЯ)
+    Passport Manager v1.4
     Управление паспортами команд
     """
 
-    VERSION = "1.3"
+    VERSION = "1.4"
 
     # Диапазоны параметров
     PARAM_RANGES = {
@@ -293,6 +288,46 @@ class PassportManager:
         conn.close()
 
         return [row[0] for row in rows]
+
+    # ============================================================
+    # CALCULATE RATING
+    # ============================================================
+
+    def calculate_rating(self, passport: Dict[str, Any]) -> float:
+        """
+        Расчёт FAJ Rating на основе паспорта
+        
+        Args:
+            passport: словарь с параметрами паспорта
+            
+        Returns:
+            float: рейтинг от 0 до 100
+        """
+        passport_weights = {
+            'attack': 0.18,
+            'defense': 0.18,
+            'control': 0.10,
+            'tempo': 0.08,
+            'press': 0.08,
+            'transition': 0.06,
+            'finishing': 0.06,
+            'squad_quality': 0.10,
+            'coach_factor': 0.06,
+            'mental': 0.06,
+            'home_strength': 0.02,
+            'league_adaptation': 0.02
+        }
+
+        passport_score = 0
+        for key, weight in passport_weights.items():
+            passport_score += passport.get(key, 50) * weight
+
+        passport_score = passport_score / 100
+
+        # Итоговый рейтинг (0-100)
+        rating = passport_score * 100
+
+        return round(max(0, min(100, rating)), 1)
 
     # ============================================================
     # CREATE
