@@ -370,14 +370,12 @@ class DiagnosticService:
             cursor.execute("PRAGMA foreign_key_check")
             fk_errors = cursor.fetchall()
 
-            # Размер базы
-            db_file = self.db._get_connection().__self__.execute(
-                "PRAGMA database_list"
-            ).fetchone()
-            if db_file and len(db_file) > 2:
-                db_path = db_file[2] if len(db_file) > 2 else None
-            else:
-                db_path = None
+            # Размер базы — ИСПРАВЛЕНО
+            cursor.execute("PRAGMA database_list")
+            db_row = cursor.fetchone()
+            db_path = None
+            if db_row and len(db_row) > 2:
+                db_path = db_row[2]
 
             db_size_mb = 0
             if db_path and os.path.exists(db_path):
