@@ -16,7 +16,7 @@ import random
 import logging
 from typing import Dict, Any, Optional
 
-from config.faj_config import config
+from app.config import config
 
 logger = logging.getLogger(__name__)
 
