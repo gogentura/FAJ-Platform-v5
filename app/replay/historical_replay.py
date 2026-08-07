@@ -3,6 +3,9 @@
 
 """
 Historical Replay v1.0 — минимальная машина времени для FAJ
+
+Цель: взять JSON тура → прогнать через Prediction Manager → сравнить с фактом
+Никаких избыточных слоёв.
 """
 
 import json
@@ -38,6 +41,7 @@ class HistoricalReplay:
         self.current_tour = 0
 
     def _load_tour_data(self, tour: int) -> Dict:
+        """Загружает данные тура из JSON"""
         file_path = self.data_dir / f"rpl_2026_27_tour{tour}.json"
         if not file_path.exists():
             logger.warning(f"⚠️ Файл не найден: {file_path}")
@@ -50,6 +54,7 @@ class HistoricalReplay:
             return None
 
     def _prepare_matches_for_prediction(self, tour_data: Dict) -> List[Dict]:
+        """Подготавливает матчи для прогноза (без результатов)"""
         matches = []
         for match in tour_data.get('matches', []):
             matches.append({
@@ -63,6 +68,7 @@ class HistoricalReplay:
         return matches
 
     def _get_results(self, tour_data: Dict) -> List[Dict]:
+        """Извлекает реальные результаты из данных тура"""
         results = []
         for match in tour_data.get('matches', []):
             if match.get('home_goals') is not None and match.get('away_goals') is not None:
@@ -78,16 +84,78 @@ class HistoricalReplay:
         return results
 
     def _run_predictions(self, matches: List[Dict]) -> List[Dict]:
+        """Запускает прогнозы для всех матчей с диагностикой паспортов"""
         predictions = []
+        
         for match in matches:
             try:
                 home_team = match.get('home_team')
                 away_team = match.get('away_team')
+                
                 if not home_team or not away_team:
                     continue
-                result = self.pm.predict(home_team=home_team, away_team=away_team, league="RPL")
+                
+                # ============================================================
+                # ДИАГНОСТИКА ПАСПОРТОВ
+                # ============================================================
+                logger.info(f"🔍 Проверка паспортов: {home_team} vs {away_team}")
+                
+                try:
+                    home_passport = self.pm.passport_manager.get_current_passport_by_name(home_team)
+                    away_passport = self.pm.passport_manager.get_current_passport_by_name(away_team)
+                    
+                    if home_passport:
+                        home_base = home_passport.get("BASE", {})
+                        home_rating = home_passport.get("faj_rating", "N/A")
+                        logger.info(
+                            f"   ✅ {home_team} паспорт найден: "
+                            f"rating={home_rating}, "
+                            f"attack={home_base.get('attack', 'N/A')}, "
+                            f"defense={home_base.get('defense', 'N/A')}, "
+                            f"control={home_base.get('control', 'N/A')}"
+                        )
+                    else:
+                        logger.error(f"   ❌ {home_team}: паспорт НЕ НАЙДЕН")
+                    
+                    if away_passport:
+                        away_base = away_passport.get("BASE", {})
+                        away_rating = away_passport.get("faj_rating", "N/A")
+                        logger.info(
+                            f"   ✅ {away_team} паспорт найден: "
+                            f"rating={away_rating}, "
+                            f"attack={away_base.get('attack', 'N/A')}, "
+                            f"defense={away_base.get('defense', 'N/A')}, "
+                            f"control={away_base.get('control', 'N/A')}"
+                        )
+                    else:
+                        logger.error(f"   ❌ {away_team}: паспорт НЕ НАЙДЕН")
+                        
+                except Exception as e:
+                    logger.error(f"   ❌ Ошибка проверки паспортов: {e}")
+                
+                # ============================================================
+                # ПРОГНОЗ
+                # ============================================================
+                result = self.pm.predict(
+                    home_team=home_team,
+                    away_team=away_team,
+                    league="RPL"
+                )
+                
                 if hasattr(result, "__dict__"):
                     result = result.__dict__
+                
+                # ============================================================
+                # ДИАГНОСТИКА РЕЗУЛЬТАТА
+                # ============================================================
+                xg = result.get("xg", {})
+                logger.info(
+                    f"   📊 {home_team} vs {away_team} → "
+                    f"xG {xg.get('home', 0):.2f} : {xg.get('away', 0):.2f}, "
+                    f"score={result.get('score', 'N/A')}, "
+                    f"confidence={result.get('confidence', {}).get('overall', 0):.3f}"
+                )
+                
                 predictions.append({
                     "home_team": home_team,
                     "away_team": away_team,
@@ -97,23 +165,29 @@ class HistoricalReplay:
                     "timestamp": datetime.now().isoformat()
                 })
             except Exception as e:
-                logger.error(f"❌ Ошибка прогноза: {e}")
+                logger.error(f"❌ Ошибка прогноза для {match.get('home_team')} vs {match.get('away_team')}: {e}")
+        
         return predictions
 
     def _compare_predictions(self, predictions: List[Dict], results: List[Dict]) -> List[Dict]:
+        """Сравнивает прогнозы с реальными результатами"""
         comparison = []
+        
         for pred in predictions:
             home_team = pred.get('home_team')
             away_team = pred.get('away_team')
+            
             actual = None
             for r in results:
                 if r.get('home_team') == home_team and r.get('away_team') == away_team:
                     actual = r
                     break
+            
             if not actual:
                 continue
             
             pred_data = pred.get('prediction', {})
+            
             actual_home = actual.get('home_goals', 0)
             actual_away = actual.get('away_goals', 0)
             actual_score = f"{actual_home}:{actual_away}"
@@ -154,7 +228,6 @@ class HistoricalReplay:
             actual_over25 = 1 if actual_total > 2.5 else 0
             over25_correct = 1 if (pred_over25 >= 0.5 and actual_over25 == 1) or (pred_over25 < 0.5 and actual_over25 == 0) else 0
             
-            # xG — только если есть реальные данные
             home_xg_actual = actual.get('home_xg')
             away_xg_actual = actual.get('away_xg')
             if home_xg_actual is not None and away_xg_actual is not None:
@@ -181,9 +254,11 @@ class HistoricalReplay:
                 "confidence": pred_data.get('confidence', {}).get('overall', 0),
                 "risk": pred_data.get('risk', {}).get('score', 0)
             })
+        
         return comparison
 
     def _save_predictions(self, predictions: List[Dict], tour: int):
+        """Сохраняет прогнозы в JSON"""
         file_path = self.predictions_dir / f"tour{tour}_predictions.json"
         data = {
             "tour": tour,
@@ -195,6 +270,7 @@ class HistoricalReplay:
         logger.info(f"✅ Прогнозы сохранены: {file_path}")
 
     def _save_comparison(self, comparison: List[Dict], tour: int):
+        """Сохраняет сравнение в JSON"""
         file_path = self.training_dir / f"comparison_tour{tour}.json"
         data = {
             "tour": tour,
@@ -206,7 +282,9 @@ class HistoricalReplay:
         logger.info(f"✅ Сравнение сохранено: {file_path}")
 
     def run_tour(self, tour: int) -> Dict:
+        """Полный цикл одного тура"""
         logger.info(f"🔄 Запуск Historical Replay для тура {tour}")
+
         tour_data = self._load_tour_data(tour)
         if not tour_data:
             return {"status": "error", "message": f"Тур {tour} не найден"}
@@ -232,7 +310,6 @@ class HistoricalReplay:
         btts_correct = sum(1 for c in comparison if c['btts_correct'])
         over25_correct = sum(1 for c in comparison if c['over25_correct'])
         
-        # xG — только если есть данные
         xg_values = [c['xg_error'] for c in comparison if c['xg_error'] is not None]
         total_xg_error = sum(xg_values)
         xg_error_count = len(xg_values)
