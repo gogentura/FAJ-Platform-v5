@@ -153,6 +153,51 @@ if st.session_state.page == 'home':
         if st.button("🔬 Match Lab", use_container_width=True):
             st.session_state.page = 'match_analysis'
             st.rerun()
+    
+    # ============================================================
+    # HISTORICAL REPLAY
+    # ============================================================
+    st.divider()
+    st.subheader("🕰 Historical Replay")
+    st.caption("Проверка FAJ на исторических матчах")
+    
+    if st.button(
+        "▶️ Запустить Replay тура 1",
+        use_container_width=True,
+        type="primary"
+    ):
+        with st.spinner("⏳ FAJ считает исторический тур..."):
+            try:
+                from app.replay.historical_replay import HistoricalReplay
+                replay = HistoricalReplay()
+                result = replay.run_tour(1)
+                
+                if result.get("status") == "success":
+                    st.success("✅ Тур 1 завершён")
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric(
+                            "🎯 Исходы",
+                            f"{result.get('result_accuracy', 0)}%"
+                        )
+                    with col2:
+                        st.metric(
+                            "🎯 Счёт",
+                            f"{result.get('score_accuracy', 0)}%"
+                        )
+                    with col3:
+                        st.metric(
+                            "📊 xG Error",
+                            f"{result.get('avg_xg_error', 0):.2f}"
+                        )
+                    
+                    with st.expander("📋 Детальный отчёт"):
+                        st.json(result)
+                else:
+                    st.error(f"❌ Ошибка: {result.get('message', 'Неизвестная ошибка')}")
+            except Exception as e:
+                st.error(f"❌ Ошибка Replay: {e}")
 
 # ----- ПРОГНОЗЫ -----
 elif st.session_state.page == 'predictions':
@@ -215,28 +260,18 @@ elif st.session_state.page == 'predictions':
                 st.divider()
                 st.subheader(f"📊 {result.get('home_team', '')} vs {result.get('away_team', '')}")
                 
-                # ============================================================
-                # ОСНОВНЫЕ ПОКАЗАТЕЛИ (xG и счёт)
-                # ============================================================
                 col1, col2, col3 = st.columns(3)
-                
                 with col1:
                     xg = result.get('xg', {})
                     st.metric("🏠 xG Хозяев", f"{xg.get('home', 0):.2f}")
-                
                 with col2:
                     st.metric("🎯 Прогноз", result.get('score', '0:0'))
                     st.caption(f"Вероятность: {result.get('score_probability', 0):.1%}")
-                
                 with col3:
                     xg = result.get('xg', {})
                     st.metric("✈️ xG Гостей", f"{xg.get('away', 0):.2f}")
                 
-                # ============================================================
-                # ВЕРОЯТНОСТИ ИСХОДОВ
-                # ============================================================
                 st.subheader("📈 Распределение вероятностей")
-                
                 prob = result.get('probability', {})
                 prob_df = pd.DataFrame({
                     'Исход': ['Победа хозяев', 'Ничья', 'Победа гостей'],
@@ -248,34 +283,24 @@ elif st.session_state.page == 'predictions':
                 })
                 st.bar_chart(prob_df.set_index('Исход'))
                 
-                # ============================================================
-                # РАСШИРЕННЫЕ МЕТРИКИ (ТОП-5, BTTS, ТОТАЛЫ)
-                # ============================================================
                 extended = result.get('extended', {})
-                
                 if extended:
                     st.subheader("📋 Расширенные метрики")
-                    
-                    # --- BTTS и Тоталы ---
                     col1, col2 = st.columns(2)
-                    
                     with col1:
                         st.write("**⚽ Обе забьют (BTTS)**")
                         btts = extended.get('btts', {})
                         st.metric("Да", f"{btts.get('yes', 0):.1%}")
                         st.metric("Нет", f"{btts.get('no', 0):.1%}")
-                    
                     with col2:
                         st.write("**📊 Тоталы**")
                         total = extended.get('total', {})
                         st.metric("Тотал > 2.5", f"{total.get('over_2_5', 0):.1%}")
                         st.metric("Тотал > 3.5", f"{total.get('over_3_5', 0):.1%}")
                     
-                    # --- ТОП-5 ТОЧНЫХ СЧЕТОВ ---
-                    st.subheader("🎯 Топ-5 точных счетов")
-                    
                     top_scores = extended.get('top_scores', [])
                     if top_scores:
+                        st.subheader("🎯 Топ-5 точных счетов")
                         scores_data = []
                         for score in top_scores:
                             scores_data.append({
@@ -283,33 +308,8 @@ elif st.session_state.page == 'predictions':
                                 "Счёт": f"{score.get('home', 0)}:{score.get('away', 0)}",
                                 "Вероятность": score.get('prob_percent', '0%')
                             })
-                        scores_df = pd.DataFrame(scores_data)
-                        st.table(scores_df.set_index("№"))
-                    else:
-                        st.info("ℹ️ Данные по топ-5 счетов недоступны")
+                        st.table(pd.DataFrame(scores_data).set_index("№"))
                 
-                # ============================================================
-                # УВЕРЕННОСТЬ И РИСК
-                # ============================================================
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    conf = result.get('confidence', {})
-                    st.metric(
-                        "📊 Уверенность",
-                        f"{conf.get('overall', 0):.1%}",
-                        delta=f"Уровень {conf.get('level', 'N/A')}"
-                    )
-                
-                with col2:
-                    risk = result.get('risk', {})
-                    st.metric(
-                        "⚠️ Риск",
-                        f"{risk.get('score', 0):.1f}",
-                        delta=f"Уровень {risk.get('level', 'N/A')}"
-                    )
-                
-                # --- ДЕТАЛИ (JSON) ---
                 with st.expander("📋 Детали прогноза (JSON)"):
                     st.json(result)
 
