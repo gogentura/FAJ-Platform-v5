@@ -130,7 +130,7 @@ class HistoricalReplay:
         return predictions
 
     # ============================================================
-    # СРАВНЕНИЕ
+    # СРАВНЕНИЕ (ИСПРАВЛЕНО)
     # ============================================================
 
     def _compare_predictions(self, predictions: List[Dict], results: List[Dict]) -> List[Dict]:
@@ -198,8 +198,18 @@ class HistoricalReplay:
             actual_over25 = 1 if actual_total > 2.5 else 0
             over25_correct = 1 if (pred_over25 >= 0.5 and actual_over25 == 1) or (pred_over25 < 0.5 and actual_over25 == 0) else 0
             
-            # xG ошибка
-            xg_error = abs(pred_home - actual.get('home_xg', 0)) + abs(pred_away - actual.get('away_xg', 0))
+            # ============================================================
+            # xG ошибка (ИСПРАВЛЕНО — проверка на None)
+            # ============================================================
+            home_xg_actual = actual.get('home_xg')
+            away_xg_actual = actual.get('away_xg')
+            
+            if home_xg_actual is None:
+                home_xg_actual = 0
+            if away_xg_actual is None:
+                away_xg_actual = 0
+            
+            xg_error = abs(pred_home - home_xg_actual) + abs(pred_away - away_xg_actual)
             
             comparison.append({
                 "home_team": home_team,
@@ -212,8 +222,8 @@ class HistoricalReplay:
                 "result_correct": result_correct,
                 "xg_home_pred": round(pred_home, 2),
                 "xg_away_pred": round(pred_away, 2),
-                "xg_home_actual": actual.get('home_xg', 0),
-                "xg_away_actual": actual.get('away_xg', 0),
+                "xg_home_actual": home_xg_actual,
+                "xg_away_actual": away_xg_actual,
                 "xg_error": round(xg_error, 2),
                 "btts_correct": btts_correct,
                 "over25_correct": over25_correct,
@@ -289,6 +299,9 @@ class HistoricalReplay:
 
         # 6. Считаем статистику
         total = len(comparison)
+        if total == 0:
+            return {"status": "error", "message": "Нет данных для сравнения"}
+
         result_correct = sum(1 for c in comparison if c['result_correct'])
         score_correct = sum(1 for c in comparison if c['score_correct'])
         btts_correct = sum(1 for c in comparison if c['btts_correct'])
