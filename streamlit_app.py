@@ -163,8 +163,16 @@ if st.session_state.page == 'home':
     st.subheader("🕰 Historical Replay")
     st.caption("Проверка FAJ на исторических матчах")
     
+    # ВЫБОР ТУРА
+    tour = st.selectbox(
+        "Выберите тур",
+        [1, 2],
+        index=0,
+        key="replay_tour"
+    )
+    
     if st.button(
-        "▶️ Запустить Replay тура 1",
+        f"▶️ Запустить Replay тура {tour}",
         use_container_width=True,
         type="primary"
     ):
@@ -172,10 +180,10 @@ if st.session_state.page == 'home':
             try:
                 from app.replay.historical_replay import HistoricalReplay
                 replay = HistoricalReplay()
-                result = replay.run_tour(1)
+                result = replay.run_tour(tour)
                 
                 if result.get("status") == "success":
-                    st.success("✅ Тур 1 завершён")
+                    st.success(f"✅ Тур {tour} завершён")
                     
                     col1, col2, col3 = st.columns(3)
                     with col1:
