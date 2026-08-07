@@ -9,7 +9,9 @@ import streamlit as st
 import sys
 import os
 import pandas as pd
+import json
 from datetime import datetime
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -187,13 +189,28 @@ if st.session_state.page == 'home':
                             f"{result.get('score_accuracy', 0)}%"
                         )
                     with col3:
-                        st.metric(
-                            "📊 xG Error",
-                            f"{result.get('avg_xg_error', 0):.2f}"
-                        )
+                        xg_error = result.get('avg_xg_error')
+                        if xg_error is not None:
+                            st.metric("📊 xG Error", f"{xg_error:.2f}")
+                        else:
+                            st.metric("📊 xG Error", "Нет данных")
                     
                     with st.expander("📋 Детальный отчёт"):
                         st.json(result)
+                        
+                        # КНОПКА КОПИРОВАНИЯ JSON
+                        report_text = json.dumps(
+                            result,
+                            ensure_ascii=False,
+                            indent=2
+                        )
+                        st.download_button(
+                            label="📋 Скопировать отчёт JSON",
+                            data=report_text,
+                            file_name=f"FAJ_tour_{result.get('tour', 1)}_report.json",
+                            mime="application/json",
+                            use_container_width=True
+                        )
                 else:
                     st.error(f"❌ Ошибка: {result.get('message', 'Неизвестная ошибка')}")
             except Exception as e:
