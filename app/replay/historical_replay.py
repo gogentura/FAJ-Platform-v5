@@ -130,7 +130,7 @@ class HistoricalReplay:
         return predictions
 
     # ============================================================
-    # СРАВНЕНИЕ (ИСПРАВЛЕНО)
+    # СРАВНЕНИЕ (ИСПРАВЛЕНО — xG с проверкой на None)
     # ============================================================
 
     def _compare_predictions(self, predictions: List[Dict], results: List[Dict]) -> List[Dict]:
@@ -199,7 +199,7 @@ class HistoricalReplay:
             over25_correct = 1 if (pred_over25 >= 0.5 and actual_over25 == 1) or (pred_over25 < 0.5 and actual_over25 == 0) else 0
             
             # ============================================================
-            # xG ошибка (ИСПРАВЛЕНО — проверка на None)
+            # xG ошибка — проверка на None
             # ============================================================
             home_xg_actual = actual.get('home_xg')
             away_xg_actual = actual.get('away_xg')
