@@ -56,8 +56,8 @@ class Config:
     # MONTE CARLO
     # ============================================================
 
-    MONTE_CARLO_XG_MIN = 0.1       # ← ДОБАВЛЕНО
-    MONTE_CARLO_XG_MAX = 6.0       # ← ДОБАВЛЕНО
+    MONTE_CARLO_XG_MIN = 0.1
+    MONTE_CARLO_XG_MAX = 6.0
     MONTE_CARLO_ITERATIONS = 10000
     MONTE_CARLO_REPRODUCIBLE = True
 
@@ -65,7 +65,7 @@ class Config:
     # SAVE OPTIONS
     # ============================================================
 
-    SAVE_TO_GOLD_DATASET = True     # ← ДОБАВЛЕНО
+    SAVE_TO_GOLD_DATASET = False     # ← ИЗМЕНЕНО НА False
 
     # ============================================================
     # MODEL WEIGHTS (FAJ RATING)
