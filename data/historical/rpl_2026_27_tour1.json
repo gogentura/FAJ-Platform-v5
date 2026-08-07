@@ -1,0 +1,63 @@
+{
+  "season": "2026/27",
+  "season_id": 1,
+  "tour": 1,
+  "matches": [
+    {
+      "home_team": "ЦСКА",
+      "away_team": "Балтика",
+      "date": "2026-07-24",
+      "home_goals": 2,
+      "away_goals": 1
+    },
+    {
+      "home_team": "Динамо Москва",
+      "away_team": "Крылья Советов",
+      "date": "2026-07-25",
+      "home_goals": 0,
+      "away_goals": 0
+    },
+    {
+      "home_team": "Акрон",
+      "away_team": "Зенит",
+      "date": "2026-07-25",
+      "home_goals": 0,
+      "away_goals": 5
+    },
+    {
+      "home_team": "Факел",
+      "away_team": "Динамо Махачкала",
+      "date": "2026-07-25",
+      "home_goals": 1,
+      "away_goals": 2
+    },
+    {
+      "home_team": "Спартак",
+      "away_team": "Родина",
+      "date": "2026-07-25",
+      "home_goals": 3,
+      "away_goals": 0
+    },
+    {
+      "home_team": "Оренбург",
+      "away_team": "Ростов",
+      "date": "2026-07-26",
+      "home_goals": 2,
+      "away_goals": 1
+    },
+    {
+      "home_team": "Локомотив",
+      "away_team": "Ахмат",
+      "date": "2026-07-26",
+      "home_goals": 1,
+      "away_goals": 1
+    },
+    {
+      "home_team": "Рубин",
+      "away_team": "Краснодар",
+      "date": "2026-07-26",
+      "home_goals": 1,
+      "away_goals": 3
+    }
+  ]
+}
