@@ -2,19 +2,21 @@
 # -*- coding: utf-8 -*-
 
 """
-Historical Replay v1.3 — машина времени для FAJ
+Historical Replay v1.4 — машина времени для FAJ
 
-Исправления v1.3:
-1. Replay Guard — глобальный защитник
-2. Passport Timeline — автоматическая загрузка предыдущих снимков
-3. Версии модели в прогнозах
-4. Усиленный run_season с отчётом
-5. Исправление SQLite через адаптер БД
+Исправления v1.4:
+1. Replay Context Injection — передача паспортов в Prediction Manager
+2. Prediction Audit Trail — полный контекст прогноза
+3. Исправление run_season — корректный подсчёт очков
+4. Безопасное получение версий через getattr
+5. Replay ID для каждого запуска
+6. Расширенная блокировка Replay Guard
 """
 
 import json
 import logging
 import hashlib
+import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
 from datetime import datetime
@@ -31,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 class HistoricalReplay:
     """
-    Historical Replay v1.3 — машина времени для FAJ
+    Historical Replay v1.4 — машина времени для FAJ
     """
 
     def __init__(self, db: Optional[FAJDatabase] = None):
@@ -53,35 +55,61 @@ class HistoricalReplay:
         
         self.current_tour = 0
         
-        # Версии модели
-        self.model_version = config.PLATFORM_VERSION
-        self.weights_version = config.CORE_VERSION
-        self.passport_version = config.PASSPORT_VERSION
+        # Безопасное получение версий
+        self.model_version = getattr(config, 'PLATFORM_VERSION', 'unknown')
+        self.weights_version = getattr(config, 'CORE_VERSION', 'unknown')
+        self.passport_version = getattr(config, 'PASSPORT_VERSION', 'unknown')
+        
+        # Генерация уникального ID запуска
+        self.replay_id = f"RPL_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        
+        # Контекст тура
+        self._replay_context = {
+            "tour": None,
+            "passports": {},
+            "cutoff_date": None,
+            "replay_id": self.replay_id
+        }
+
+    # ============================================================
+    # REPLAY CONTEXT INJECTION
+    # ============================================================
+
+    def _set_replay_context(self, tour: int, passports: Dict, cutoff_date: str = None):
+        """Устанавливает контекст для Prediction Manager"""
+        self._replay_context = {
+            "tour": tour,
+            "passports": passports,
+            "cutoff_date": cutoff_date or datetime.now().isoformat(),
+            "replay_id": self.replay_id
+        }
+        # Передаём контекст в Prediction Manager
+        self.pm.set_replay_context(self._replay_context)
+        logger.info(f"📝 Replay Context установлен для тура {tour} (ID: {self.replay_id})")
+
+    def _clear_replay_context(self):
+        """Очищает контекст после тура"""
+        self._replay_context = {"tour": None, "passports": {}, "cutoff_date": None, "replay_id": self.replay_id}
+        self.pm.clear_replay_context()
+        logger.info("🧹 Replay Context очищен")
 
     # ============================================================
     # REPLAY LOCK (через Replay Guard)
     # ============================================================
 
     def _acquire_replay_lock(self, tour: int) -> bool:
-        """Блокирует доступ через Replay Guard"""
-        return self.guard.lock(tour)
+        return self.guard.lock(tour, replay_id=self.replay_id)
 
     def _release_replay_lock(self):
-        """Снимает блокировку через Replay Guard"""
         self.guard.unlock()
 
     # ============================================================
-    # PASSPORT TIME MACHINE (с логикой предыдущего тура)
+    # PASSPORT TIME MACHINE
     # ============================================================
 
     def _load_passport_for_replay(self, tour: int) -> Dict:
-        """
-        Загружает правильный снимок паспортов для тура:
-        - Тур 1: initial_snapshot
-        - Тур N: после предыдущего тура
-        """
+        """Загружает правильный снимок паспортов для тура"""
         if tour == 1:
-            # Пробуем загрузить initial_snapshot
             initial_path = self.passports_dir / "initial_snapshot.json"
             if initial_path.exists():
                 try:
@@ -92,13 +120,11 @@ class HistoricalReplay:
                 except:
                     pass
             
-            # Если нет initial — создаём из текущей БД
             logger.info("📸 initial_snapshot не найден, создаю из текущих паспортов")
             snapshot = self._capture_full_passports()
             self._save_passport_snapshot(snapshot, 0, "initial")
             return snapshot
         
-        # Тур N — загружаем after предыдущего тура
         previous_tour = tour - 1
         prev_path = self.passports_dir / f"snapshot_tour{previous_tour}_after.json"
         if prev_path.exists():
@@ -110,8 +136,7 @@ class HistoricalReplay:
             except:
                 pass
         
-        # Если нет — используем current
-        logger.warning(f"⚠️ Снимок после тура {previous_tour} не найден, использую текущие паспорта")
+        logger.warning(f"⚠️ Снимок после тура {previous_tour} не найден")
         return self._capture_full_passports()
 
     # ============================================================
@@ -122,9 +147,10 @@ class HistoricalReplay:
         """Полный цикл одного тура"""
         self.current_tour = tour
         
-        logger.info(f"🔄 Запуск Historical Replay для тура {tour}")
+        logger.info(f"🔄 Запуск Historical Replay для тура {tour} (ID: {self.replay_id})")
 
         results = {
+            "replay_id": self.replay_id,
             "tour": tour,
             "status": "success",
             "timestamp": datetime.now().isoformat(),
@@ -133,17 +159,19 @@ class HistoricalReplay:
             "passport_version": self.passport_version,
             "matches_processed": 0,
             "predictions_saved": 0,
-            "comparison_done": 0
+            "comparison_done": 0,
+            "score_points": 0,
+            "max_score_points": 0
         }
 
         try:
             # ============================================================
-            # 1. БЛОКИРУЕМ ДОСТУП К РЕЗУЛЬТАТАМ
+            # 1. БЛОКИРУЕМ ДОСТУП
             # ============================================================
             self._acquire_replay_lock(tour)
 
             # ============================================================
-            # 2. Загружаем календарь тура
+            # 2. Загружаем календарь
             # ============================================================
             logger.info(f"📡 Загрузка календаря тура {tour}...")
             fixtures = self._load_tour_fixtures(tour)
@@ -162,14 +190,20 @@ class HistoricalReplay:
             results["matches_processed"] = saved
 
             # ============================================================
-            # 4. Загружаем исторический снимок паспортов (с логикой тура)
+            # 4. Загружаем исторический снимок паспортов
             # ============================================================
             logger.info("📸 Загрузка исторического снимка паспортов...")
             passport_snapshot = self._load_passport_for_replay(tour)
+            cutoff_date = fixtures[0].get('date') if fixtures else None
             logger.info(f"   ✅ Загружено {len(passport_snapshot)} паспортов")
 
             # ============================================================
-            # 5. Делаем прогнозы
+            # 5. УСТАНАВЛИВАЕМ КОНТЕКСТ В PREDICTION MANAGER
+            # ============================================================
+            self._set_replay_context(tour, passport_snapshot, cutoff_date)
+
+            # ============================================================
+            # 6. Делаем прогнозы
             # ============================================================
             logger.info("🔮 Запуск Prediction Engine...")
             predictions = self._run_predictions(fixtures)
@@ -177,19 +211,24 @@ class HistoricalReplay:
             results["predictions_saved"] = len(predictions)
 
             # ============================================================
-            # 6. Снимаем блокировку
+            # 7. Очищаем контекст
+            # ============================================================
+            self._clear_replay_context()
+
+            # ============================================================
+            # 8. Снимаем блокировку
             # ============================================================
             self._release_replay_lock()
 
             # ============================================================
-            # 7. Загружаем результаты
+            # 9. Загружаем результаты
             # ============================================================
             logger.info("📊 Загрузка реальных результатов...")
             actual_results = self._load_tour_results(tour)
             self._update_matches_with_results(actual_results)
 
             # ============================================================
-            # 8. Сравниваем прогнозы с фактом
+            # 10. Сравниваем прогнозы с фактом
             # ============================================================
             logger.info("⚖️ Сравнение прогнозов с фактом...")
             comparison = self._compare_predictions_improved(predictions, actual_results)
@@ -197,25 +236,34 @@ class HistoricalReplay:
             results["comparison_done"] = len(comparison)
 
             # ============================================================
-            # 9. Обновляем модель через Learning Engine
+            # 11. Считаем очки
+            # ============================================================
+            total_score_points = sum(c.get('score_points', 0) for c in comparison)
+            max_score_points = len(comparison) * 3
+            results["score_points"] = total_score_points
+            results["max_score_points"] = max_score_points
+
+            # ============================================================
+            # 12. Обновляем модель через Learning Engine
             # ============================================================
             logger.info("🧠 Запуск Learning Engine...")
             learning_result = self._run_learning_engine(comparison, tour)
             self._save_replay_journal(tour, learning_result)
 
             # ============================================================
-            # 10. Сохраняем снимок паспортов ПОСЛЕ тура
+            # 13. Сохраняем снимок паспортов ПОСЛЕ тура
             # ============================================================
             logger.info("📸 Сохранение снимка паспортов после тура...")
             passport_snapshot = self._capture_full_passports()
             self._save_passport_snapshot(passport_snapshot, tour, "after")
 
-            logger.info(f"✅ Тур {tour} завершён!")
+            logger.info(f"✅ Тур {tour} завершён! (ID: {self.replay_id})")
 
         except Exception as e:
             logger.error(f"❌ Ошибка в туре {tour}: {e}")
             results["status"] = "error"
             results["error"] = str(e)
+            self._clear_replay_context()
             self._release_replay_lock()
 
         return results
@@ -247,9 +295,10 @@ class HistoricalReplay:
                     "season": data.get('season', '2026/27'),
                     "season_id": data.get('season_id', 1),
                     "source": "historical_replay",
-                    "source_version": "1.3",
+                    "source_version": "1.4",
                     "data_cutoff": match.get('date'),
-                    "visibility": "before_match"
+                    "visibility": "before_match",
+                    "replay_id": self.replay_id
                 }
                 validated = self.adapter.validate_match(fixture)
                 if validated:
@@ -287,8 +336,9 @@ class HistoricalReplay:
                         "season": data.get('season', '2026/27'),
                         "season_id": data.get('season_id', 1),
                         "source": "historical_replay",
-                        "source_version": "1.3",
-                        "visibility": "after_match"
+                        "source_version": "1.4",
+                        "visibility": "after_match",
+                        "replay_id": self.replay_id
                     }
                     results.append(result)
             
@@ -298,7 +348,7 @@ class HistoricalReplay:
             return []
 
     # ============================================================
-    # СОХРАНЕНИЕ В БД (через адаптер)
+    # СОХРАНЕНИЕ В БД
     # ============================================================
 
     def _save_fixtures(self, fixtures: List[Dict]) -> int:
@@ -324,11 +374,11 @@ class HistoricalReplay:
         return updated
 
     # ============================================================
-    # ПОЛНЫЙ СНИМОК ПАСПОРТОВ (через адаптер)
+    # ПОЛНЫЙ СНИМОК ПАСПОРТОВ
     # ============================================================
 
     def _capture_full_passports(self) -> Dict:
-        """Создание полного снимка паспортов через адаптер БД"""
+        """Создание полного снимка паспортов через FAJDatabase"""
         try:
             teams = self.db.get_teams(league="РПЛ")
             passports = {}
@@ -337,12 +387,9 @@ class HistoricalReplay:
                 team_name = team['name']
                 season_id = 1
                 
-                # Используем методы FAJDatabase (адаптер БД)
                 base = self.db.get_base(team_id, season_id)
                 dynamic = self.db.get_dynamic(team_id, season_id)
                 identity = self.db.get_identity(team_id, season_id)
-                
-                # Получаем основной паспорт через метод
                 passport = self.db._get_team_passport(team_id, season_id)
                 
                 passports[team_name] = {
@@ -360,6 +407,7 @@ class HistoricalReplay:
         """Сохранение снимка паспортов"""
         file_path = self.passports_dir / f"snapshot_tour{tour}_{stage}.json"
         data = {
+            "replay_id": self.replay_id,
             "tour": tour,
             "stage": stage,
             "timestamp": datetime.now().isoformat(),
@@ -371,11 +419,11 @@ class HistoricalReplay:
         logger.info(f"✅ Снимок паспортов сохранён: {file_path}")
 
     # ============================================================
-    # ПРОГНОЗЫ (с версиями)
+    # ПРОГНОЗЫ
     # ============================================================
 
     def _run_predictions(self, fixtures: List[Dict]) -> List[Dict]:
-        """Запуск прогнозов с сохранением версий модели"""
+        """Запуск прогнозов с контекстом"""
         predictions = []
         
         for fixture in fixtures:
@@ -396,21 +444,26 @@ class HistoricalReplay:
                     result = result.__dict__
                 
                 pred_uuid = hashlib.md5(
-                    f"{home_team}_{away_team}_{self.current_tour}_{datetime.now().isoformat()}".encode()
+                    f"{home_team}_{away_team}_{self.current_tour}_{self.replay_id}_{datetime.now().isoformat()}".encode()
                 ).hexdigest()[:16]
                 
                 predictions.append({
                     "prediction_id": pred_uuid,
+                    "replay_id": self.replay_id,
                     "home_team": home_team,
                     "away_team": away_team,
                     "round": fixture.get('round'),
                     "date": fixture.get('date'),
                     "data_cutoff": fixture.get('data_cutoff'),
                     "visibility": fixture.get('visibility', 'before_match'),
-                    # ВЕРСИИ МОДЕЛИ
                     "model_version": self.model_version,
                     "weights_version": self.weights_version,
                     "passport_version": self.passport_version,
+                    "replay_context": {
+                        "tour": self._replay_context.get('tour'),
+                        "cutoff_date": self._replay_context.get('cutoff_date'),
+                        "passports_count": len(self._replay_context.get('passports', {}))
+                    },
                     "prediction": result,
                     "timestamp": datetime.now().isoformat()
                 })
@@ -420,7 +473,7 @@ class HistoricalReplay:
         return predictions
 
     # ============================================================
-    # СРАВНЕНИЕ (EXACT / DIFFERENCE_1 / MISS)
+    # СРАВНЕНИЕ
     # ============================================================
 
     def _compare_predictions_improved(self, predictions: List[Dict], actual_results: List[Dict]) -> List[Dict]:
@@ -492,6 +545,7 @@ class HistoricalReplay:
             
             comparison.append({
                 "prediction_id": pred.get('prediction_id'),
+                "replay_id": pred.get('replay_id'),
                 "home_team": home_team,
                 "away_team": away_team,
                 "predicted_score": predicted_score,
@@ -516,10 +570,10 @@ class HistoricalReplay:
                 "over25_correct": 1 if (pred_over25 >= 0.5 and actual_over25 == 1) or (pred_over25 < 0.5 and actual_over25 == 0) else 0,
                 "confidence": pred_data.get('confidence', {}).get('overall', 0),
                 "risk": pred_data.get('risk', {}).get('score', 0),
-                # ВЕРСИИ МОДЕЛИ
                 "model_version": pred.get('model_version'),
                 "weights_version": pred.get('weights_version'),
-                "passport_version": pred.get('passport_version')
+                "passport_version": pred.get('passport_version'),
+                "replay_context": pred.get('replay_context')
             })
         
         return comparison
@@ -529,7 +583,7 @@ class HistoricalReplay:
     # ============================================================
 
     def _run_learning_engine(self, comparison: List[Dict], tour: int) -> Dict:
-        """Запуск Learning Engine (заглушка для v1.3)"""
+        """Запуск Learning Engine с корректным подсчётом очков"""
         if not comparison:
             return {"status": "no_data", "tour": tour}
         
@@ -540,9 +594,9 @@ class HistoricalReplay:
         
         total_score_points = sum(c.get('score_points', 0) for c in comparison)
         max_score_points = total_matches * 3
-        score_accuracy = total_score_points / max_score_points * 100 if max_score_points > 0 else 0
         
         result_accuracy = correct_results / total_matches * 100 if total_matches > 0 else 0
+        score_accuracy = total_score_points / max_score_points * 100 if max_score_points > 0 else 0
         btts_accuracy = correct_btts / total_matches * 100 if total_matches > 0 else 0
         over25_accuracy = correct_over25 / total_matches * 100 if total_matches > 0 else 0
         
@@ -555,17 +609,21 @@ class HistoricalReplay:
         
         logger.info(f"📊 Результаты тура {tour}:")
         logger.info(f"   🏆 Исходы: {correct_results}/{total_matches} ({result_accuracy:.1f}%)")
-        logger.info(f"   🎯 Счета: EXACT={exact_count}, DIFF_1={diff1_count}, MISS={miss_count}")
+        logger.info(f"   🎯 Счета: {total_score_points}/{max_score_points} ({score_accuracy:.1f}%)")
+        logger.info(f"   🎯 EXACT={exact_count}, DIFF_1={diff1_count}, MISS={miss_count}")
         logger.info(f"   ⚽ BTTS: {correct_btts}/{total_matches} ({btts_accuracy:.1f}%)")
         logger.info(f"   📈 Тотал: {correct_over25}/{total_matches} ({over25_accuracy:.1f}%)")
         logger.info(f"   📊 xG Error: {avg_xg_error:.2f}")
         
         return {
             "status": "success",
+            "replay_id": self.replay_id,
             "tour": tour,
             "total_matches": total_matches,
             "result_accuracy": round(result_accuracy, 1),
             "score_accuracy": round(score_accuracy, 1),
+            "score_points": total_score_points,
+            "max_score_points": max_score_points,
             "btts_accuracy": round(btts_accuracy, 1),
             "over25_accuracy": round(over25_accuracy, 1),
             "avg_xg_error": round(avg_xg_error, 3),
@@ -585,10 +643,16 @@ class HistoricalReplay:
         """Сохранение прогнозов в JSON"""
         file_path = self.predictions_dir / f"tour{tour}_predictions.json"
         data = {
+            "replay_id": self.replay_id,
             "tour": tour,
             "timestamp": datetime.now().isoformat(),
             "replay_locked": self.guard.is_locked(),
             "model_version": self.model_version,
+            "replay_context": {
+                "tour": self._replay_context.get('tour'),
+                "cutoff_date": self._replay_context.get('cutoff_date'),
+                "replay_id": self.replay_id
+            },
             "predictions": predictions
         }
         with open(file_path, 'w', encoding='utf-8') as f:
@@ -599,6 +663,7 @@ class HistoricalReplay:
         """Сохранение сравнения в JSON"""
         file_path = self.training_dir / f"comparison_tour{tour}.json"
         data = {
+            "replay_id": self.replay_id,
             "tour": tour,
             "timestamp": datetime.now().isoformat(),
             "model_version": self.model_version,
@@ -621,6 +686,7 @@ class HistoricalReplay:
                 pass
         
         entry = {
+            "replay_id": self.replay_id,
             "tour": tour,
             "timestamp": datetime.now().isoformat(),
             "model_version": self.model_version,
@@ -637,16 +703,19 @@ class HistoricalReplay:
     # ============================================================
 
     def run_season(self, tours: List[int]) -> Dict:
-        """Запуск полного сезона с отчётом"""
-        logger.info(f"🏆 Запуск полного сезона: {len(tours)} туров")
+        """Запуск полного сезона с корректным подсчётом очков"""
+        logger.info(f"🏆 Запуск полного сезона: {len(tours)} туров (ID: {self.replay_id})")
         
         results = {
+            "replay_id": self.replay_id,
             "season": "2026/27",
             "league": "РПЛ",
             "model_version": self.model_version,
             "tours_count": len(tours),
             "tours": [],
             "total_matches": 0,
+            "total_score_points": 0,
+            "total_max_score_points": 0,
             "season_accuracy": {
                 "result": 0,
                 "score": 0,
@@ -663,12 +732,12 @@ class HistoricalReplay:
         total_matches = 0
         total_result_correct = 0
         total_score_points = 0
+        total_max_score_points = 0
         total_btts_correct = 0
         total_over25_correct = 0
         exact_total = 0
         diff1_total = 0
         miss_total = 0
-        max_score_points = 0
         
         for tour in tours:
             result = self.run_tour(tour)
@@ -676,6 +745,8 @@ class HistoricalReplay:
             
             if result.get("comparison_done", 0) > 0:
                 total_matches += result["comparison_done"]
+                total_score_points += result.get("score_points", 0)
+                total_max_score_points += result.get("max_score_points", 0)
                 
                 # Собираем статистику из журнала
                 journal_path = self.replay_dir / "replay_log.json"
@@ -684,27 +755,30 @@ class HistoricalReplay:
                         with open(journal_path, 'r', encoding='utf-8') as f:
                             journal = json.load(f)
                         for entry in journal:
-                            if entry.get('tour') == tour:
+                            if entry.get('tour') == tour and entry.get('replay_id') == self.replay_id:
                                 learning = entry.get('learning', {})
-                                total_result_correct += (learning.get('result_accuracy', 0) * learning.get('total_matches', 0)) / 100
-                                total_score_points += (learning.get('score_accuracy', 0) * learning.get('total_matches', 0)) / 100
-                                total_btts_correct += (learning.get('btts_accuracy', 0) * learning.get('total_matches', 0)) / 100
-                                total_over25_correct += (learning.get('over25_accuracy', 0) * learning.get('total_matches', 0)) / 100
-                                
-                                dist = learning.get('score_distribution', {})
-                                exact_total += dist.get('exact', 0)
-                                diff1_total += dist.get('difference_1', 0)
-                                miss_total += dist.get('miss', 0)
+                                matches = learning.get('total_matches', 0)
+                                if matches > 0:
+                                    total_result_correct += (learning.get('result_accuracy', 0) * matches) / 100
+                                    total_btts_correct += (learning.get('btts_accuracy', 0) * matches) / 100
+                                    total_over25_correct += (learning.get('over25_accuracy', 0) * matches) / 100
+                                    
+                                    dist = learning.get('score_distribution', {})
+                                    exact_total += dist.get('exact', 0)
+                                    diff1_total += dist.get('difference_1', 0)
+                                    miss_total += dist.get('miss', 0)
                                 break
                     except:
                         pass
         
         results["total_matches"] = total_matches
+        results["total_score_points"] = total_score_points
+        results["total_max_score_points"] = total_max_score_points
         
         if total_matches > 0:
             results["season_accuracy"] = {
                 "result": round(total_result_correct / total_matches, 1),
-                "score": round(total_score_points / total_matches, 1),
+                "score": round(total_score_points / total_max_score_points * 100, 1) if total_max_score_points > 0 else 0,
                 "btts": round(total_btts_correct / total_matches, 1),
                 "over25": round(total_over25_correct / total_matches, 1)
             }
@@ -715,12 +789,12 @@ class HistoricalReplay:
             }
         
         # Сохраняем отчёт
-        report_path = self.replay_dir / "season_report.json"
+        report_path = self.replay_dir / f"season_report_{self.replay_id}.json"
         with open(report_path, 'w', encoding='utf-8') as f:
             json.dump(results, f, ensure_ascii=False, indent=2)
         
         logger.info("=" * 50)
-        logger.info("🏆 FAJ SEASON REPORT")
+        logger.info(f"🏆 FAJ SEASON REPORT (ID: {self.replay_id})")
         logger.info(f"📊 Всего матчей: {total_matches}")
         logger.info(f"🎯 Точность исходов: {results['season_accuracy']['result']:.1f}%")
         logger.info(f"🎯 Точность счёта: {results['season_accuracy']['score']:.1f}%")
@@ -733,13 +807,9 @@ class HistoricalReplay:
 
 if __name__ == "__main__":
     replay = HistoricalReplay()
-    print("🚀 FAJ Historical Replay v1.3")
+    print("🚀 FAJ Historical Replay v1.4")
     print("=" * 40)
     
-    # Тест одного тура
     result = replay.run_tour(1)
     print(f"✅ Тур 1: {result['status']}")
-    
-    # Тест сезона
-    # results = replay.run_season([1, 2, 3, 4, 5])
-    # print(f"🏆 Сезон завершён")
+    print(f"   Replay ID: {result.get('replay_id')}")
