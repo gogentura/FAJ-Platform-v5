@@ -7,8 +7,12 @@ Base Adapter — единый интерфейс для всех источни�
 
 import hashlib
 import re
+import logging
+from datetime import datetime
 from typing import Dict, List, Optional
 from abc import ABC, abstractmethod
+
+logger = logging.getLogger(__name__)
 
 # ============================================================
 # ЕДИНЫЙ СПИСОК КОМАНД РПЛ 2026/27
@@ -38,34 +42,80 @@ RPL_TEAMS_2026_27 = [
 # ============================================================
 
 TEAM_ALIASES = {
+    # Зенит
     "Зенит (СПб)": "Зенит",
     "Зенит СПб": "Зенит",
+    "Зенит Санкт-Петербург": "Зенит",
+    
+    # Спартак
     "Спартак М": "Спартак",
     "Спартак (М)": "Спартак",
     "Спартак Москва": "Спартак",
+    
+    # ЦСКА
     "ЦСКА М": "ЦСКА",
     "ЦСКА (М)": "ЦСКА",
+    "ПФК ЦСКА": "ЦСКА",
+    
+    # Динамо Москва
     "Динамо (М)": "Динамо Москва",
     "Динамо М": "Динамо Москва",
-    "Динамо Москва": "Динамо Москва",
+    "Динамо Москва (М)": "Динамо Москва",
+    
+    # Динамо Махачкала
     "Динамо Мх": "Динамо Махачкала",
     "Динамо (Мх)": "Динамо Махачкала",
     "Динамо Махачкала": "Динамо Махачкала",
+    
+    # Локомотив
     "Локомотив М": "Локомотив",
     "Локомотив (М)": "Локомотив",
+    
+    # Краснодар
     "Краснодар (Кр)": "Краснодар",
+    "ФК Краснодар": "Краснодар",
+    
+    # Ростов
     "Ростов (РнД)": "Ростов",
+    "ФК Ростов": "Ростов",
+    
+    # Рубин
     "Рубин (Кз)": "Рубин",
+    "Рубин Казань": "Рубин",
+    
+    # Ахмат
     "Ахмат (Гр)": "Ахмат",
+    "Ахмат Грозный": "Ахмат",
+    
+    # Крылья Советов
     "Крылья Советов (С)": "Крылья Советов",
     "Крылья": "Крылья Советов",
+    "Крылья Советов Самара": "Крылья Советов",
+    
+    # Акрон
     "Акрон (Тл)": "Акрон",
+    "Акрон Тольятти": "Акрон",
+    
+    # Балтика
     "Балтика (Кл)": "Балтика",
+    "Балтика Калининград": "Балтика",
+    
+    # Оренбург
     "Оренбург (Ор)": "Оренбург",
+    "ФК Оренбург": "Оренбург",
+    
+    # Факел
     "Факел (Вр)": "Факел",
+    "Факел Воронеж": "Факел",
+    
+    # Родина
     "Родина (М)": "Родина",
-    "Пари НН": None,  # Исключаем — нет в РПЛ 2026/27
+    "Родина Москва": "Родина",
+    
+    # ИСКЛЮЧАЕМ
+    "Пари НН": None,
     "Пари Нижний Новгород": None,
+    "Нижний Новгород": None,
 }
 
 
@@ -73,7 +123,7 @@ class BaseAdapter(ABC):
     """Базовый класс для всех адаптеров источников данных"""
 
     # ============================================================
-    # СТАТУСЫ МАТЧЕЙ (ЕДИНЫЙ СТАНДАРТ)
+    # СТАТУСЫ МАТЧЕЙ (ЕДИНЫЙ СТАНДАРТ FAJ v12.1)
     # ============================================================
 
     STATUS_SCHEDULED = "SCHEDULED"
@@ -84,77 +134,17 @@ class BaseAdapter(ABC):
 
     @abstractmethod
     def get_matches(self, league: str = "РПЛ") -> List[Dict]:
-        """
-        Получение сыгранных матчей с результатами
-        
-        Returns:
-            List[Dict]: [
-                {
-                    "home_team": str,
-                    "away_team": str,
-                    "home_goals": int,
-                    "away_goals": int,
-                    "date": str,
-                    "round": int,
-                    "status": str,
-                    "home_xg": Optional[float],
-                    "away_xg": Optional[float],
-                    "home_possession": Optional[int],
-                    "away_possession": Optional[int],
-                    "home_shots": Optional[int],
-                    "away_shots": Optional[int],
-                    "home_shots_on_target": Optional[int],
-                    "away_shots_on_target": Optional[int],
-                    "source": str,
-                    "source_version": str,
-                    "data_quality": float
-                }
-            ]
-        """
+        """Получение сыгранных матчей с результатами"""
         pass
 
     @abstractmethod
     def get_fixtures(self, league: str = "РПЛ") -> List[Dict]:
-        """
-        Получение предстоящих матчей (календарь)
-        
-        Returns:
-            List[Dict]: [
-                {
-                    "home_team": str,
-                    "away_team": str,
-                    "date": str,
-                    "round": int,
-                    "status": str,
-                    "source": str,
-                    "source_version": str
-                }
-            ]
-        """
+        """Получение предстоящих матчей (календарь)"""
         pass
 
     @abstractmethod
     def get_standings(self, league: str = "РПЛ") -> List[Dict]:
-        """
-        Получение турнирной таблицы
-        
-        Returns:
-            List[Dict]: [
-                {
-                    "team": str,
-                    "place": int,
-                    "games": int,
-                    "wins": int,
-                    "draws": int,
-                    "losses": int,
-                    "goals_for": int,
-                    "goals_against": int,
-                    "points": int,
-                    "source": str,
-                    "source_version": str
-                }
-            ]
-        """
+        """Получение турнирной таблицы"""
         pass
 
     def get_scorers(self, league: str = "РПЛ") -> List[Dict]:
@@ -162,7 +152,7 @@ class BaseAdapter(ABC):
         return []
 
     # ============================================================
-    # ОБЩИЕ МЕТОДЫ ДЛЯ ВСЕХ АДАПТЕРОВ
+    # ОБЩИЕ МЕТОДЫ
     # ============================================================
 
     def get_source_name(self) -> str:
@@ -184,11 +174,17 @@ class BaseAdapter(ABC):
         
         # Поиск по алиасам
         if name in TEAM_ALIASES:
-            return TEAM_ALIASES[name]
+            normalized = TEAM_ALIASES[name]
+            if normalized is None:
+                logger.warning(f"⚠️ Команда исключена: {name}")
+                return None
+            return normalized
         
         # Поиск по частичному совпадению
         for alias, normalized in TEAM_ALIASES.items():
             if alias.lower() in name.lower() or name.lower() in alias.lower():
+                if normalized is None:
+                    return None
                 return normalized
         
         # Поиск по списку команд
@@ -196,28 +192,34 @@ class BaseAdapter(ABC):
             if team.lower() in name.lower() or name.lower() in team.lower():
                 return team
         
+        logger.warning(f"⚠️ Неизвестная команда: {name}")
         return None
 
-    def validate_match(self, data: Dict) -> Dict:
-        """
-        Валидация и нормализация данных матча
-        
-        Returns:
-            Dict с гарантированными полями
-        """
+    def validate_match(self, data: Dict) -> Optional[Dict]:
+        """Валидация и нормализация данных матча"""
         # Нормализация команд
         home_team = self.normalize_team_name(data.get('home_team'))
         away_team = self.normalize_team_name(data.get('away_team'))
         
-        # Пропускаем, если команды не валидны
         if not home_team or not away_team:
+            logger.warning(f"⚠️ Некорректные команды: {data.get('home_team')} vs {data.get('away_team')}")
+            return None
+        
+        if home_team == away_team:
+            logger.warning(f"⚠️ Одинаковые команды: {home_team}")
             return None
         
         # Статус
         status = data.get('status', self.STATUS_SCHEDULED).upper()
-        if status not in [self.STATUS_SCHEDULED, self.STATUS_LIVE, self.STATUS_FINISHED,
-                          self.STATUS_POSTPONED, self.STATUS_CANCELLED]:
+        valid_statuses = [self.STATUS_SCHEDULED, self.STATUS_LIVE, self.STATUS_FINISHED,
+                          self.STATUS_POSTPONED, self.STATUS_CANCELLED]
+        if status not in valid_statuses:
             status = self.STATUS_SCHEDULED
+        
+        # Дата (если нет — None)
+        date = data.get('date')
+        if date and date == datetime.now().isoformat():
+            date = None
         
         # Рассчёт data_quality
         data_quality = self._calculate_quality(data)
@@ -225,9 +227,10 @@ class BaseAdapter(ABC):
         return {
             "home_team": home_team,
             "away_team": away_team,
-            "date": data.get('date'),
+            "date": date,
             "round": data.get('round'),
             "season": data.get('season', '2026/27'),
+            "season_id": data.get('season_id', 1),
             "status": status,
             "home_goals": data.get('home_goals'),
             "away_goals": data.get('away_goals'),
@@ -254,7 +257,7 @@ class BaseAdapter(ABC):
             quality += 0.3
         
         # Есть дата (0.25)
-        if data.get('date'):
+        if data.get('date') and data.get('date') != datetime.now().isoformat():
             quality += 0.25
         
         # Есть тур (0.2)
