@@ -204,6 +204,27 @@ class PredictionPipeline:
             away_xg = max(config.XG_MIN, min(config.XG_MAX, xg_result.get("away_xg", config.XG_LEAGUE_MEAN)))
 
             # =========================================================
+            # ЗАДАЧА №9 — ЗАЩИТА ОТ POSSIBLE DEFAULT XG
+            # =========================================================
+            #
+            # Это только диагностическое предупреждение.
+            # Значения НЕ изменяем и НЕ заменяем.
+            #
+            if (
+                abs(home_xg - 1.512) < 0.005
+                and abs(away_xg - 1.350) < 0.005
+            ):
+                logger.warning(
+                    "⚠️ POSSIBLE DEFAULT XG | "
+                    "%s vs %s | xG=%.3f:%.3f | "
+                    "possible passport/input problem",
+                    home_team,
+                    away_team,
+                    home_xg,
+                    away_xg
+                )
+
+            # =========================================================
             # 3. ПОЛУЧАЕМ КОМПОНЕНТЫ ДЛЯ ДИАГНОСТИКИ
             # =========================================================
             components = xg_result.get("components", {})
