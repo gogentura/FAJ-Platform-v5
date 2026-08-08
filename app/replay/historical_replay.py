@@ -40,6 +40,10 @@ class HistoricalReplay:
         self.pm = get_prediction_manager()
         self.current_tour = 0
 
+    # ============================================================
+    # ЗАГРУЗКА ДАННЫХ
+    # ============================================================
+
     def _load_tour_data(self, tour: int) -> Dict:
         """Загружает данные тура из JSON"""
         file_path = self.data_dir / f"rpl_2026_27_tour{tour}.json"
@@ -83,6 +87,84 @@ class HistoricalReplay:
                 })
         return results
 
+    # ============================================================
+    # PASSPORT DEBUG (ЗАДАЧА №8)
+    # ============================================================
+
+    def _passport_debug(self, passport: Dict, team_name: str) -> None:
+        """
+        Диагностика реальной структуры паспорта команды.
+        Показывает:
+        - структуру верхнего уровня;
+        - BASE/base;
+        - ключевые параметры;
+        - FAJ Rating;
+        - Form.
+        """
+        if not passport:
+            logger.error(
+                "❌ PASSPORT DEBUG | %s | PASSPORT = None",
+                team_name
+            )
+            return
+        
+        logger.info(
+            "📦 PASSPORT DEBUG | %s | keys=%s",
+            team_name,
+            list(passport.keys())
+        )
+        
+        # ------------------------------------------------------------
+        # BASE
+        # ------------------------------------------------------------
+        base = passport.get("BASE")
+        if not isinstance(base, dict):
+            base = passport.get("base")
+        if not isinstance(base, dict):
+            base = passport.get("team_base")
+        
+        # ------------------------------------------------------------
+        # ПАРАМЕТРЫ
+        # ------------------------------------------------------------
+        if isinstance(base, dict):
+            logger.info(
+                "   BASE | %s | "
+                "attack=%s | defense=%s | control=%s | goalkeeper=%s",
+                team_name,
+                base.get("attack"),
+                base.get("defense"),
+                base.get("control"),
+                base.get("goalkeeper")
+            )
+        else:
+            logger.info(
+                "   FLAT | %s | "
+                "attack=%s | defense=%s | control=%s | goalkeeper=%s",
+                team_name,
+                passport.get("attack"),
+                passport.get("defense"),
+                passport.get("control"),
+                passport.get("goalkeeper")
+            )
+        
+        # ------------------------------------------------------------
+        # RATING / FORM
+        # ------------------------------------------------------------
+        logger.info(
+            "   RATING | %s | faj_rating=%s",
+            team_name,
+            passport.get("faj_rating")
+        )
+        logger.info(
+            "   FORM | %s | form=%s",
+            team_name,
+            passport.get("form")
+        )
+
+    # ============================================================
+    # ПРОГНОЗЫ (ЗАДАЧА №6 — season_id)
+    # ============================================================
+
     def _run_predictions(self, matches: List[Dict]) -> List[Dict]:
         """Запускает прогнозы для всех матчей с диагностикой паспортов"""
         predictions = []
@@ -97,49 +179,64 @@ class HistoricalReplay:
                 
                 # ============================================================
                 # ДИАГНОСТИКА ПАСПОРТОВ
+                # ЗАДАЧА №6 + №8
                 # ============================================================
-                logger.info(f"🔍 Проверка паспортов: {home_team} vs {away_team}")
+                logger.info(
+                    f"🔍 Проверка паспортов: "
+                    f"{home_team} vs {away_team}"
+                )
+                
+                # Для Historical Replay паспорт должен соответствовать
+                # сезону, из которого взят исторический матч.
+                season_id = match.get("season_id", 1)
+                logger.info(
+                    "📅 HISTORICAL PASSPORT SEASON | "
+                    "%s vs %s | season_id=%s",
+                    home_team,
+                    away_team,
+                    season_id
+                )
                 
                 try:
-                    home_passport = self.pm.passport_manager.get_current_passport_by_name(home_team)
-                    away_passport = self.pm.passport_manager.get_current_passport_by_name(away_team)
-                    
-                    if home_passport:
-                        home_base = home_passport.get("BASE", {})
-                        home_rating = home_passport.get("faj_rating", "N/A")
-                        logger.info(
-                            f"   ✅ {home_team} паспорт найден: "
-                            f"rating={home_rating}, "
-                            f"attack={home_base.get('attack', 'N/A')}, "
-                            f"defense={home_base.get('defense', 'N/A')}, "
-                            f"control={home_base.get('control', 'N/A')}"
+                    home_passport = (
+                        self.pm.passport_manager
+                        .get_current_passport_by_name(
+                            home_team,
+                            season_id
                         )
-                    else:
-                        logger.error(f"   ❌ {home_team}: паспорт НЕ НАЙДЕН")
-                    
-                    if away_passport:
-                        away_base = away_passport.get("BASE", {})
-                        away_rating = away_passport.get("faj_rating", "N/A")
-                        logger.info(
-                            f"   ✅ {away_team} паспорт найден: "
-                            f"rating={away_rating}, "
-                            f"attack={away_base.get('attack', 'N/A')}, "
-                            f"defense={away_base.get('defense', 'N/A')}, "
-                            f"control={away_base.get('control', 'N/A')}"
+                    )
+                    away_passport = (
+                        self.pm.passport_manager
+                        .get_current_passport_by_name(
+                            away_team,
+                            season_id
                         )
-                    else:
-                        logger.error(f"   ❌ {away_team}: паспорт НЕ НАЙДЕН")
-                        
+                    )
+                    
+                    # Используем единую диагностику структуры паспорта
+                    self._passport_debug(
+                        home_passport,
+                        home_team
+                    )
+                    self._passport_debug(
+                        away_passport,
+                        away_team
+                    )
                 except Exception as e:
-                    logger.error(f"   ❌ Ошибка проверки паспортов: {e}")
+                    logger.error(
+                        "❌ Ошибка проверки паспортов: %s",
+                        e,
+                        exc_info=True
+                    )
                 
                 # ============================================================
-                # ПРОГНОЗ
+                # ПРОГНОЗ (С ПЕРЕДАЧЕЙ season_id)
                 # ============================================================
                 result = self.pm.predict(
                     home_team=home_team,
                     away_team=away_team,
-                    league="RPL"
+                    league="RPL",
+                    season_id=season_id
                 )
                 
                 if hasattr(result, "__dict__"):
@@ -161,6 +258,7 @@ class HistoricalReplay:
                     "away_team": away_team,
                     "round": match.get('round'),
                     "date": match.get('date'),
+                    "season_id": season_id,
                     "prediction": result,
                     "timestamp": datetime.now().isoformat()
                 })
@@ -168,6 +266,10 @@ class HistoricalReplay:
                 logger.error(f"❌ Ошибка прогноза для {match.get('home_team')} vs {match.get('away_team')}: {e}")
         
         return predictions
+
+    # ============================================================
+    # СРАВНЕНИЕ (ЗАДАЧА №7 — правильный счёт)
+    # ============================================================
 
     def _compare_predictions(self, predictions: List[Dict], results: List[Dict]) -> List[Dict]:
         """Сравнивает прогнозы с реальными результатами"""
@@ -192,11 +294,15 @@ class HistoricalReplay:
             actual_away = actual.get('away_goals', 0)
             actual_score = f"{actual_home}:{actual_away}"
             
-            pred_home = pred_data.get('xg', {}).get('home', 0)
-            pred_away = pred_data.get('xg', {}).get('away', 0)
-            pred_home_int = round(pred_home)
-            pred_away_int = round(pred_away)
-            predicted_score = f"{pred_home_int}:{pred_away_int}"
+            # ============================================================
+            # ПРОГНОЗИРУЕМЫЙ СЧЁТ
+            # ЗАДАЧА №7 — используем result["score"] из Pipeline
+            # ============================================================
+            predicted_score = pred_data.get("score", "0:0")
+            
+            # xG используются отдельно и НЕ превращаются в счёт
+            pred_home = pred_data.get("xg", {}).get("home", 0)
+            pred_away = pred_data.get("xg", {}).get("away", 0)
             
             pred_home_prob = pred_data.get('probability', {}).get('home', 0)
             pred_draw_prob = pred_data.get('probability', {}).get('draw', 0)
@@ -257,6 +363,10 @@ class HistoricalReplay:
         
         return comparison
 
+    # ============================================================
+    # СОХРАНЕНИЕ
+    # ============================================================
+
     def _save_predictions(self, predictions: List[Dict], tour: int):
         """Сохраняет прогнозы в JSON"""
         file_path = self.predictions_dir / f"tour{tour}_predictions.json"
@@ -280,6 +390,10 @@ class HistoricalReplay:
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         logger.info(f"✅ Сравнение сохранено: {file_path}")
+
+    # ============================================================
+    # ОСНОВНОЙ ЦИКЛ
+    # ============================================================
 
     def run_tour(self, tour: int) -> Dict:
         """Полный цикл одного тура"""
