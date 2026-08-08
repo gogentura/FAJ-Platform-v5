@@ -218,8 +218,15 @@ class PredictionPipeline:
                 "away_keeper_factor": components.get("away_keeper_factor", 1.0),
                 "control_factor": components.get("control_factor", 1.0),
                 "home_advantage": config.HOME_ADVANTAGE,
-                "home_form": components.get("home_form", 1.0),
-                "away_form": components.get("away_form", 1.0),
+                # === ИСПРАВЛЕНО: home_form_factor / away_form_factor ===
+                "home_form": components.get(
+                    "home_form_factor",
+                    components.get("home_form", 1.0)
+                ),
+                "away_form": components.get(
+                    "away_form_factor",
+                    components.get("away_form", 1.0)
+                ),
                 "home_rating": round(home_rating, 1),
                 "away_rating": round(away_rating, 1)
             }
@@ -236,14 +243,14 @@ class PredictionPipeline:
             seed = self._build_seed(home_team, away_team, home_rating, away_rating, home_xg, away_xg)
             mc_result = self.monte_carlo_model.simulate(
                 home_xg, away_xg,
-                iterations=config.MONTE_result, mc_result_CARLO_ITERATIONS,
+                iterations=config.MONTE_CARLO_ITERATIONS,
                 seed=seed if config.MONTE_CARLO_REPRODUCIBLE else None
             )
 
             # =========================================================
             # 6. MODEL AGREEMENT
             # =========================================================
-            agreement_score = self._calculate_model_agreement(poisson)
+            agreement_score = self._calculate_model_agreement(poisson_result, mc_result)
             model_agreement = {
                 "score": round(agreement_score, 3),
                 "level": self._agreement_level(agreement_score)
