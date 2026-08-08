@@ -269,23 +269,146 @@ class PredictionManager:
 
         return [dict(row) for row in rows]
 
+    # ============================================================
+    # GET PASSPORT WITH RATING (ЗАМЕНЕНО)
+    # ============================================================
+
     def _get_passport_with_rating(
         self,
         team_name: str,
         season_id: Optional[int] = None
     ) -> Optional[Dict[str, Any]]:
-        """Получение паспорта с FAJ Rating"""
+        """
+        Получение паспорта команды с FAJ Rating.
+        
+        Задача метода:
+            1. Получить актуальный паспорт.
+            2. Проверить, что паспорт реально загружен.
+            3. Вывести диагностическую информацию о структуре.
+            4. Рассчитать FAJ Rating.
+        
+        ВАЖНО:
+            Метод НЕ изменяет паспорт.
+            Метод НЕ содержит математическую модель.
+            Метод НЕ подставляет значения по умолчанию.
+        """
+        # =========================================================
+        # 1. ЗАГРУЗКА ПАСПОРТА
+        # =========================================================
         if season_id:
-            passport = self.passport_manager.get_current_passport_by_name(team_name, season_id)
+            passport = (
+                self.passport_manager
+                .get_current_passport_by_name(
+                    team_name,
+                    season_id
+                )
+            )
         else:
-            passport = self.passport_manager.get_current_passport_by_name(team_name)
-
+            passport = (
+                self.passport_manager
+                .get_current_passport_by_name(
+                    team_name
+                )
+            )
+        
+        # =========================================================
+        # 2. ПАСПОРТ НЕ НАЙДЕН
+        # =========================================================
         if not passport:
+            logger.error(
+                "❌ PASSPORT NOT FOUND | team=%s | season_id=%s",
+                team_name,
+                season_id
+            )
             return None
-
+        
+        # =========================================================
+        # 3. ДИАГНОСТИКА СТРУКТУРЫ ПАСПОРТА
+        # =========================================================
+        if not isinstance(passport, dict):
+            logger.error(
+                "❌ INVALID PASSPORT TYPE | team=%s | type=%s",
+                team_name,
+                type(passport).__name__
+            )
+            return None
+        
+        logger.info(
+            "📦 PASSPORT LOADED | team=%s | season_id=%s | keys=%s",
+            team_name,
+            season_id,
+            list(passport.keys())
+        )
+        
+        # =========================================================
+        # 4. ПОИСК BASE
+        # =========================================================
+        base = passport.get("BASE")
+        if not isinstance(base, dict):
+            base = passport.get("base")
+        if not isinstance(base, dict):
+            base = passport.get("team_base")
+        
+        # =========================================================
+        # 5. ДИАГНОСТИКА ОСНОВНЫХ ПАРАМЕТРОВ
+        # =========================================================
+        if isinstance(base, dict):
+            logger.info(
+                "📊 PASSPORT BASE | team=%s | "
+                "attack=%s | defense=%s | control=%s | goalkeeper=%s",
+                team_name,
+                base.get("attack"),
+                base.get("defense"),
+                base.get("control"),
+                base.get("goalkeeper")
+            )
+        else:
+            logger.info(
+                "📊 PASSPORT FLAT | team=%s | "
+                "attack=%s | defense=%s | control=%s | goalkeeper=%s",
+                team_name,
+                passport.get("attack"),
+                passport.get("defense"),
+                passport.get("control"),
+                passport.get("goalkeeper")
+            )
+        
+        # =========================================================
+        # 6. ДОПОЛНИТЕЛЬНАЯ ДИАГНОСТИКА FORM
+        # =========================================================
+        form = passport.get("form")
+        if form is None and isinstance(base, dict):
+            form = base.get("form")
+        
+        logger.info(
+            "📈 PASSPORT FORM | team=%s | form=%s",
+            team_name,
+            form
+        )
+        
+        # =========================================================
+        # 7. РАСЧЁТ FAJ RATING
+        # =========================================================
+        try:
+            rating = self.passport_manager.calculate_rating(passport)
+            logger.info(
+                "⭐ FAJ RATING | team=%s | rating=%.2f",
+                team_name,
+                float(rating)
+            )
+        except Exception as e:
+            logger.exception(
+                "❌ RATING CALCULATION ERROR | team=%s",
+                team_name
+            )
+            return None
+        
+        # =========================================================
+        # 8. ВОЗВРАТ
+        # =========================================================
         return {
             "passport": passport,
-            "rating": self.passport_manager.calculate_rating(passport)
+            "rating": rating
         }
 
     def _save_prediction(self, result: Dict[str, Any], home_team: str, away_team: str, league: str) -> None:
