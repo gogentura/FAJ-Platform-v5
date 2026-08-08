@@ -104,7 +104,7 @@ class PredictionPipeline:
 
         try:
             # =========================================================
-            # 1. XG MODEL INPUT DIAGNOSTIC
+            # 1. XG MODEL INPUT DIAGNOSTIC (ЗАДАЧА №3)
             # =========================================================
             logger.info(
                 "🔬 XG PIPELINE INPUT | "
@@ -217,8 +217,12 @@ class PredictionPipeline:
                 "home_keeper_factor": components.get("home_keeper_factor", 1.0),
                 "away_keeper_factor": components.get("away_keeper_factor", 1.0),
                 "control_factor": components.get("control_factor", 1.0),
-                "home_advantage": config.HOME_ADVANTAGE,
-                # === ИСПРАВЛЕНО: home_form_factor / away_form_factor ===
+                # === ЗАДАЧА №5: home_advantage → home_bonus ===
+                "home_advantage": components.get(
+                    "home_bonus",
+                    config.HOME_ADVANTAGE
+                ),
+                # === ЗАДАЧА №4: home_form_factor / away_form_factor ===
                 "home_form": components.get(
                     "home_form_factor",
                     components.get("home_form", 1.0)
