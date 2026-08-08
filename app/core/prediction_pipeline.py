@@ -40,7 +40,7 @@ Prediction Pipeline v1.9
         "confidence": {"overall": float, "level": str},
         "risk": {"score": float, "level": str},
         "model_agreement": {"score": float, "level": str},
-        "diagnostic": {...},  # ← ДОБАВЛЕНО
+        "diagnostic": {...},
         "version": str,
         "processing_time_ms": float
     }
@@ -104,7 +104,94 @@ class PredictionPipeline:
 
         try:
             # =========================================================
-            # 1. XG MODEL
+            # 1. XG MODEL INPUT DIAGNOSTIC
+            # =========================================================
+            logger.info(
+                "🔬 XG PIPELINE INPUT | "
+                "%s vs %s | home_rating=%.2f | away_rating=%.2f",
+                home_team,
+                away_team,
+                float(home_rating),
+                float(away_rating)
+            )
+            # ---------------------------------------------------------
+            # Home passport structure
+            # ---------------------------------------------------------
+            if isinstance(home_passport, dict):
+                home_base = home_passport.get("BASE")
+                if not isinstance(home_base, dict):
+                    home_base = home_passport.get("base")
+                if not isinstance(home_base, dict):
+                    home_base = home_passport.get("team_base")
+                if isinstance(home_base, dict):
+                    logger.info(
+                        "🔬 XG PIPELINE INPUT HOME | "
+                        "BASE | attack=%s | defense=%s | "
+                        "control=%s | goalkeeper=%s",
+                        home_base.get("attack"),
+                        home_base.get("defense"),
+                        home_base.get("control"),
+                        home_base.get("goalkeeper")
+                    )
+                else:
+                    logger.info(
+                        "🔬 XG PIPELINE INPUT HOME | "
+                        "FLAT | attack=%s | defense=%s | "
+                        "control=%s | goalkeeper=%s",
+                        home_passport.get("attack"),
+                        home_passport.get("defense"),
+                        home_passport.get("control"),
+                        home_passport.get("goalkeeper")
+                    )
+                logger.info(
+                    "🔬 XG PIPELINE HOME KEYS | %s",
+                    list(home_passport.keys())
+                )
+            else:
+                logger.error(
+                    "❌ XG PIPELINE HOME PASSPORT INVALID | type=%s",
+                    type(home_passport).__name__
+                )
+            # ---------------------------------------------------------
+            # Away passport structure
+            # ---------------------------------------------------------
+            if isinstance(away_passport, dict):
+                away_base = away_passport.get("BASE")
+                if not isinstance(away_base, dict):
+                    away_base = away_passport.get("base")
+                if not isinstance(away_base, dict):
+                    away_base = away_passport.get("team_base")
+                if isinstance(away_base, dict):
+                    logger.info(
+                        "🔬 XG PIPELINE INPUT AWAY | "
+                        "BASE | attack=%s | defense=%s | "
+                        "control=%s | goalkeeper=%s",
+                        away_base.get("attack"),
+                        away_base.get("defense"),
+                        away_base.get("control"),
+                        away_base.get("goalkeeper")
+                    )
+                else:
+                    logger.info(
+                        "🔬 XG PIPELINE INPUT AWAY | "
+                        "FLAT | attack=%s | defense=%s | "
+                        "control=%s | goalkeeper=%s",
+                        away_passport.get("attack"),
+                        away_passport.get("defense"),
+                        away_passport.get("control"),
+                        away_passport.get("goalkeeper")
+                    )
+                logger.info(
+                    "🔬 XG PIPELINE AWAY KEYS | %s",
+                    list(away_passport.keys())
+                )
+            else:
+                logger.error(
+                    "❌ XG PIPELINE AWAY PASSPORT INVALID | type=%s",
+                    type(away_passport).__name__
+                )
+            # =========================================================
+            # 2. XG MODEL
             # =========================================================
             xg_result = self.xg_model.calculate(
                 home_passport=home_passport,
@@ -117,7 +204,7 @@ class PredictionPipeline:
             away_xg = max(config.XG_MIN, min(config.XG_MAX, xg_result.get("away_xg", config.XG_LEAGUE_MEAN)))
 
             # =========================================================
-            # 2. ПОЛУЧАЕМ КОМПОНЕНТЫ ДЛЯ ДИАГНОСТИКИ
+            # 3. ПОЛУЧАЕМ КОМПОНЕНТЫ ДЛЯ ДИАГНОСТИКИ
             # =========================================================
             components = xg_result.get("components", {})
             diagnostic = {
@@ -138,32 +225,32 @@ class PredictionPipeline:
             }
 
             # =========================================================
-            # 3. POISSON MODEL
+            # 4. POISSON MODEL
             # =========================================================
             poisson_result = self.poisson_model.calculate(home_xg, away_xg, include_matrix=False)
             probs = poisson_result.get("result_probability", {})
 
             # =========================================================
-            # 4. MONTE CARLO
+            # 5. MONTE CARLO
             # =========================================================
             seed = self._build_seed(home_team, away_team, home_rating, away_rating, home_xg, away_xg)
             mc_result = self.monte_carlo_model.simulate(
                 home_xg, away_xg,
-                iterations=config.MONTE_CARLO_ITERATIONS,
+                iterations=config.MONTE_result, mc_result_CARLO_ITERATIONS,
                 seed=seed if config.MONTE_CARLO_REPRODUCIBLE else None
             )
 
             # =========================================================
-            # 5. MODEL AGREEMENT
+            # 6. MODEL AGREEMENT
             # =========================================================
-            agreement_score = self._calculate_model_agreement(poisson_result, mc_result)
+            agreement_score = self._calculate_model_agreement(poisson)
             model_agreement = {
                 "score": round(agreement_score, 3),
                 "level": self._agreement_level(agreement_score)
             }
 
             # =========================================================
-            # 6. RAW PREDICTION
+            # 7. RAW PREDICTION
             # =========================================================
             raw_prediction = {
                 "match": {
@@ -189,7 +276,7 @@ class PredictionPipeline:
             }
 
             # =========================================================
-            # 7. CALIBRATION
+            # 8. CALIBRATION
             # =========================================================
             calibrated = self.calibration_engine.adjust(raw_prediction)
 
@@ -205,7 +292,7 @@ class PredictionPipeline:
                 away_prob /= total
 
             # =========================================================
-            # 8. CONFIDENCE
+            # 9. CONFIDENCE
             # =========================================================
             confidence_result = self.confidence_engine.calculate(
                 raw_prediction=raw_prediction,
@@ -213,7 +300,7 @@ class PredictionPipeline:
             )
 
             # =========================================================
-            # 9. RISK
+            # 10. RISK
             # =========================================================
             risk_result = self.risk_engine.calculate(
                 raw_prediction=raw_prediction,
@@ -222,7 +309,7 @@ class PredictionPipeline:
             )
 
             # =========================================================
-            # 10. РАСШИРЕННЫЕ МЕТРИКИ (ТОП-5 СЧЕТОВ, BTTS, ТОТАЛЫ)
+            # 11. РАСШИРЕННЫЕ МЕТРИКИ (ТОП-5 СЧЕТОВ, BTTS, ТОТАЛЫ)
             # =========================================================
             extended = self._calculate_extended_metrics(
                 home_xg=home_xg,
@@ -231,7 +318,7 @@ class PredictionPipeline:
             )
 
             # =========================================================
-            # 11. РЕЗУЛЬТАТ
+            # 12. РЕЗУЛЬТАТ
             # =========================================================
             score = poisson_result.get("most_likely_score", "0:0")
             score_prob = poisson_result.get("score_probability", 0)
@@ -262,7 +349,7 @@ class PredictionPipeline:
                 },
                 "model_agreement": model_agreement,
                 "extended": extended,
-                "diagnostic": diagnostic,  # ← ДОБАВЛЕНО
+                "diagnostic": diagnostic,
                 "version": self.VERSION,
                 "processing_time_ms": round((time.perf_counter() - start_time) * 1000, 2)
             }
