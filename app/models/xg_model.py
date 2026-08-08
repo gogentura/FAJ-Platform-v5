@@ -345,7 +345,7 @@ class FAJXGModel:
             }
 
     # ============================================================
-    # PASSPORT EXTRACTION
+    # PASSPORT EXTRACTION (ЗАМЕНЕНО)
     # ============================================================
 
     def _extract_team_parameters(
@@ -354,93 +354,140 @@ class FAJXGModel:
         side: str = "TEAM"
     ) -> Dict[str, float]:
         """
-        Универсальное извлечение параметров.
-
-        Поддержка:
-        A:
-            {
-                "BASE": {...},
-                "DYNAMIC_INITIAL": {...}
-            }
-        B:
-            {
-                "attack": 82,
-                "defense": 78,
-                ...
-            }
-
-        ВАЖНО:
-        отсутствие form НЕ означает form=70.
-        При отсутствии формы используется нейтральный
-        фактор 1.0.
+        Универсальное извлечение параметров паспорта.
+        
+        Поддерживает:
+        1. BASE / DYNAMIC_INITIAL
+        2. BASE / DYNAMIC
+        3. base / dynamic
+        4. team_base / team_dynamic
+        5. плоский SQLite passport
+        
+        КРИТИЧЕСКИ:
+        реальные значения паспорта не должны молча
+        заменяться нейтральными 70.
         """
-        # --------------------------------------------------------
-        # Вложенный паспорт
-        # --------------------------------------------------------
-        if isinstance(passport.get("BASE"), dict):
-            base = passport.get("BASE", {})
-            dynamic = passport.get("DYNAMIC_INITIAL", {})
-
-            if not isinstance(dynamic, dict):
-                dynamic = {}
-
-            attack = base.get("attack", 70)
-            defense = base.get("defense", 70)
-            control = base.get("control", 70)
-            goalkeeper = base.get("goalkeeper", 70)
-            raw_form = dynamic.get("form", self.FORM_BASE)
-            form_factor = self._form_factor(raw_form)
-            source = "nested"
-
-        # --------------------------------------------------------
-        # Плоский паспорт SQLite
-        # --------------------------------------------------------
+        if not isinstance(passport, dict):
+            raise TypeError(
+                f"{side} passport must be dict, got "
+                f"{type(passport).__name__}"
+            )
+        
+        # ============================================================
+        # 1. ПОИСК BASE
+        # ============================================================
+        base = None
+        for key in ("BASE", "base", "team_base"):
+            value = passport.get(key)
+            if isinstance(value, dict):
+                base = value
+                break
+        
+        # ============================================================
+        # 2. ПОИСК DYNAMIC
+        # ============================================================
+        dynamic = {}
+        for key in (
+            "DYNAMIC_INITIAL",
+            "dynamic_initial",
+            "DYNAMIC",
+            "dynamic",
+            "team_dynamic"
+        ):
+            value = passport.get(key)
+            if isinstance(value, dict):
+                dynamic = value
+                break
+        
+        # ============================================================
+        # 3. ПОИСК ПОЛЯ
+        # ============================================================
+        def find_value(field: str, default=None):
+            # Сначала BASE
+            if base is not None and field in base:
+                return base[field]
+            # Затем верхний уровень паспорта
+            if field in passport:
+                return passport[field]
+            # Затем DYNAMIC
+            if field in dynamic:
+                return dynamic[field]
+            return default
+        
+        # ============================================================
+        # 4. ИЗВЛЕЧЕНИЕ ОСНОВНЫХ ПАРАМЕТРОВ
+        # ============================================================
+        attack = find_value("attack")
+        defense = find_value("defense")
+        control = find_value("control")
+        goalkeeper = find_value("goalkeeper")
+        
+        # Возможное альтернативное название вратаря
+        if goalkeeper is None:
+            goalkeeper = find_value("keeper")
+        
+        # ============================================================
+        # 5. КРИТИЧЕСКАЯ ПРОВЕРКА
+        # ============================================================
+        missing = []
+        if attack is None:
+            missing.append("attack")
+        if defense is None:
+            missing.append("defense")
+        if control is None:
+            missing.append("control")
+        if goalkeeper is None:
+            missing.append("goalkeeper")
+        
+        if missing:
+            logger.error(
+                "XG PASSPORT ERROR %s | missing=%s | keys=%s",
+                side,
+                ",".join(missing),
+                list(passport.keys())
+            )
+            raise ValueError(
+                f"{side} passport missing required fields: "
+                f"{', '.join(missing)}"
+            )
+        
+        # ============================================================
+        # 6. FORM
+        # ============================================================
+        raw_form = find_value("form", None)
+        if raw_form is None:
+            # Отсутствие формы = нейтральный фактор.
+            # Это НЕ default паспортных характеристик.
+            form_factor = 1.0
         else:
-            attack = passport.get("attack", 70)
-            defense = passport.get("defense", 70)
-            control = passport.get("control", 70)
-            goalkeeper = passport.get("goalkeeper", 70)
-
-            # ----------------------------------------------------
-            # Форма
-            # ----------------------------------------------------
-            #
-            # В team_passports её сейчас может не быть.
-            #
-            # Поэтому:
-            # отсутствует -> 1.0
-            #
-            # Если есть form -> используем её.
-            #
-            if "form" in passport:
-                raw_form = passport.get("form", self.FORM_BASE)
-                form_factor = self._form_factor(raw_form)
-            else:
-                form_factor = 1.0
-
-            source = "flat"
-
-        # --------------------------------------------------------
-        # Clamp
-        # --------------------------------------------------------
+            form_factor = self._form_factor(raw_form)
+        
+        # ============================================================
+        # 7. CLAMP ПАРАМЕТРОВ
+        # ============================================================
         attack = self._clamp_value(attack, self.MIN_POWER, self.MAX_POWER)
         defense = self._clamp_value(defense, self.MIN_POWER, self.MAX_POWER)
         control = self._clamp_value(control, self.MIN_POWER, self.MAX_POWER)
         goalkeeper = self._clamp_value(goalkeeper, self.MIN_POWER, self.MAX_POWER)
-
-        logger.debug(
-            "XG PASSPORT %s | source=%s "
-            "attack=%.2f defense=%.2f "
-            "control=%.2f goalkeeper=%.2f form=%.3f",
+        
+        # ============================================================
+        # 8. ПОДРОБНЫЙ ЛОГ
+        # ============================================================
+        logger.info(
+            "XG PASSPORT %s | "
+            "attack=%.2f defense=%.2f control=%.2f "
+            "goalkeeper=%.2f form=%.3f",
             side,
-            source,
             attack,
             defense,
             control,
             goalkeeper,
             form_factor
         )
-
+        
+        # ============================================================
+        # 9. RETURN
+        # ============================================================
         return {
             "attack": attack,
             "defense": defense,
