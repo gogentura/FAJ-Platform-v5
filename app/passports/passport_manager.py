@@ -4,37 +4,101 @@
 """
 =====================================================
 FAJ Platform v12.0
-Passport Manager v1.4 (ФИНАЛЬНАЯ ВЕРСИЯ)
+Passport Manager v1.5
+=====================================================
 
 РОЛЬ:
-    Управление паспортами команд.
-    Создание, обновление, версионирование.
+    Управление паспортами команд:
+    - создание
+    - получение
+    - версионирование
+    - обновление после матчей
+    - расчёт FAJ Rating
+    - расчёт Passport Confidence
 
-ИЗМЕНЕНИЯ v1.4:
-    - Добавлен метод get_current_passport_by_name()
-    - Полная совместимость с Prediction Manager
+КЛЮЧЕВЫЕ ИСПРАВЛЕНИЯ v1.5:
+
+    1. Исправлено обучение через DELTA.
+       changes теперь являются изменениями параметров,
+       а не новыми абсолютными значениями.
+
+    2. Исправлено влияние силы соперника.
+       Рейтинг соперника 85 больше не умножает сигнал на 85.
+       Используется нормализованный коэффициент.
+
+    3. Единый механизм FAJ Rating.
+
+    4. Первичный паспорт без истории получает
+       рейтинг, основанный на самом паспорте,
+       а не искусственно заниженный рейтинг.
+
+    5. Отсутствующая форма является нейтральной,
+       а не равной 0.
+
+    6. FAJ Rating является производным показателем.
+       Он пересчитывается, а не обучается как обычный
+       параметр паспорта.
+
+    7. fаj_rating НЕ используется как обычный
+       обучаемый параметр.
+
+    8. Сохранены:
+       - Tournament DNA
+       - Passport Confidence
+       - versioning
+       - SQLite
+       - update_after_match()
+       - get_current_passport_by_name()
+
 =====================================================
 """
 
 import logging
 import re
+
 from typing import Dict, Any, Optional
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from app.database import FAJDatabase
+
 
 logger = logging.getLogger(__name__)
 
 
 class PassportManager:
     """
-    Passport Manager v1.4
-    Управление паспортами команд
+    Passport Manager v1.5
     """
 
-    VERSION = "1.4"
+    VERSION = "1.5"
 
-    # Диапазоны параметров
+    # ============================================================
+    # GLOBAL SETTINGS
+    # ============================================================
+
+    DEFAULT_VALUE = 50.0
+
+    POWER_MIN = 0.0
+    POWER_MAX = 100.0
+
+    # Скорость обучения.
+    #
+    # Важно:
+    # changes = DELTA, а не новое значение.
+    #
+    # Пример:
+    # attack = 80
+    # signal = +2
+    # learning_rate = 0.10
+    #
+    # новое attack = 80 + 2 * 0.10 = 80.20
+    #
+    LEARNING_RATE = 0.10
+
+    # ============================================================
+    # PARAMETER RANGES
+    # ============================================================
+
     PARAM_RANGES = {
         "attack": (0, 100),
         "defense": (0, 100),
@@ -57,7 +121,10 @@ class PassportManager:
         "league_adaptation": (0, 100)
     }
 
-    # Веса турниров (Tournament DNA)
+    # ============================================================
+    # TOURNAMENT DNA
+    # ============================================================
+
     TOURNAMENT_DNA = {
         "RPL": {
             "goal_factor": 0.95,
@@ -66,6 +133,7 @@ class PassportManager:
             "physicality": 1.05,
             "league_adaptation": 85
         },
+
         "EPL": {
             "goal_factor": 1.05,
             "home_advantage": 1.05,
@@ -73,6 +141,7 @@ class PassportManager:
             "physicality": 1.00,
             "league_adaptation": 90
         },
+
         "La Liga": {
             "goal_factor": 1.00,
             "home_advantage": 1.08,
@@ -80,6 +149,7 @@ class PassportManager:
             "technical": 1.10,
             "league_adaptation": 88
         },
+
         "UCL": {
             "goal_factor": 1.05,
             "home_advantage": 1.00,
@@ -89,7 +159,10 @@ class PassportManager:
         }
     }
 
-    # Веса для FAJ Rating
+    # ============================================================
+    # RATING WEIGHTS
+    # ============================================================
+
     RATING_WEIGHTS = {
         "passport": 0.40,
         "results": 0.30,
@@ -97,240 +170,558 @@ class PassportManager:
         "form": 0.10
     }
 
-    def __init__(self, db: Optional[FAJDatabase] = None):
-        self.db = db or FAJDatabase()
-        self._version_cache = {}
+    # ============================================================
+    # PASSPORT RATING WEIGHTS
+    # ============================================================
 
-        # Проверяем наличие нужных колонок в БД
-        self._check_migration()
-
-        logger.info(f"Passport Manager v{self.VERSION} initialized")
+    PASSPORT_RATING_WEIGHTS = {
+        "attack": 0.18,
+        "defense": 0.18,
+        "control": 0.10,
+        "tempo": 0.08,
+        "press": 0.08,
+        "transition": 0.06,
+        "finishing": 0.06,
+        "squad_quality": 0.10,
+        "coach_factor": 0.06,
+        "mental": 0.06,
+        "home_strength": 0.02,
+        "league_adaptation": 0.02
+    }
 
     # ============================================================
-    # MIGRATION CHECK
+    # INITIALIZATION
+    # ============================================================
+
+    def __init__(self, db: Optional[FAJDatabase] = None):
+
+        self.db = db or FAJDatabase()
+
+        self._version_cache = {}
+
+        self._check_migration()
+
+        logger.info(
+            "Passport Manager v%s initialized",
+            self.VERSION
+        )
+
+    # ============================================================
+    # MIGRATION
     # ============================================================
 
     def _check_migration(self) -> None:
-        """Проверка наличия нужных колонок в таблице team_passports"""
+        """
+        Проверка таблицы team_passports.
+        """
+
         conn = self.db._get_connection()
         cursor = conn.cursor()
 
-        # Проверяем существование таблицы
-        cursor.execute("""
-            SELECT name FROM sqlite_master
-            WHERE type='table' AND name='team_passports'
-        """)
-        table_exists = cursor.fetchone()
+        try:
 
-        if not table_exists:
-            logger.warning("Table 'team_passports' does not exist. Creating...")
-            self._create_team_passports_table()
+            cursor.execute("""
+                SELECT name
+                FROM sqlite_master
+                WHERE type='table'
+                AND name='team_passports'
+            """)
+
+            table_exists = cursor.fetchone()
+
+            if not table_exists:
+
+                logger.warning(
+                    "Table team_passports does not exist. Creating..."
+                )
+
+                self._create_team_passports_table()
+
+                return
+
+            cursor.execute(
+                "PRAGMA table_info(team_passports)"
+            )
+
+            columns = [
+                row[1]
+                for row in cursor.fetchall()
+            ]
+
+            required_columns = [
+                "faj_rating",
+                "passport_confidence",
+                "injury_factor",
+                "key_player_loss",
+                "league_adaptation"
+            ]
+
+            missing_columns = [
+                col
+                for col in required_columns
+                if col not in columns
+            ]
+
+            if missing_columns:
+
+                logger.warning(
+                    "Missing passport columns: %s",
+                    missing_columns
+                )
+
+                for col in missing_columns:
+
+                    if col == "passport_confidence":
+                        col_type = "REAL DEFAULT 0.5"
+
+                    elif col == "faj_rating":
+                        col_type = "REAL DEFAULT 0.0"
+
+                    else:
+                        col_type = "REAL DEFAULT 50"
+
+                    cursor.execute(
+                        f"""
+                        ALTER TABLE team_passports
+                        ADD COLUMN {col} {col_type}
+                        """
+                    )
+
+                conn.commit()
+
+        finally:
+
             conn.close()
-            return
 
-        # Проверяем наличие колонок
-        cursor.execute("PRAGMA table_info(team_passports)")
-        columns = [row[1] for row in cursor.fetchall()]
+        logger.info(
+            "Passport migration check completed"
+        )
 
-        required_columns = [
-            'faj_rating', 'passport_confidence', 'injury_factor',
-            'key_player_loss', 'league_adaptation'
-        ]
-
-        missing_columns = [col for col in required_columns if col not in columns]
-
-        if missing_columns:
-            logger.warning(f"Missing columns: {missing_columns}. Adding...")
-            for col in missing_columns:
-                col_type = "REAL"
-                if col in ['injury_factor', 'key_player_loss', 'league_adaptation']:
-                    col_type = "REAL DEFAULT 50"
-                cursor.execute(f"ALTER TABLE team_passports ADD COLUMN {col} {col_type}")
-
-        conn.commit()
-        conn.close()
-        logger.info("Migration check completed")
+    # ============================================================
+    # CREATE TABLE
+    # ============================================================
 
     def _create_team_passports_table(self) -> None:
-        """Создание таблицы team_passports, если её нет"""
+
         conn = self.db._get_connection()
         cursor = conn.cursor()
 
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS team_passports (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                team_id INTEGER,
-                season_id INTEGER,
-                attack REAL DEFAULT 50,
-                defense REAL DEFAULT 50,
-                control REAL DEFAULT 50,
-                tempo REAL DEFAULT 50,
-                press REAL DEFAULT 50,
-                transition REAL DEFAULT 50,
-                finishing REAL DEFAULT 50,
-                goalkeeper REAL DEFAULT 50,
-                discipline REAL DEFAULT 50,
-                squad_quality REAL DEFAULT 50,
-                bench_quality REAL DEFAULT 50,
-                coach_factor REAL DEFAULT 50,
-                mental REAL DEFAULT 50,
-                home_strength REAL DEFAULT 50,
-                away_strength REAL DEFAULT 50,
-                injury_factor REAL DEFAULT 50,
-                key_player_loss REAL DEFAULT 50,
-                league_adaptation REAL DEFAULT 80,
-                passport_confidence REAL DEFAULT 0.5,
-                faj_rating REAL DEFAULT 0.0,
-                version TEXT,
-                source TEXT,
-                created_at TEXT,
-                FOREIGN KEY(team_id) REFERENCES teams(id),
-                FOREIGN KEY(season_id) REFERENCES seasons(id),
-                UNIQUE(team_id, season_id, version)
-            )
-        """)
+        try:
 
-        conn.commit()
-        conn.close()
-        logger.info("Table 'team_passports' created")
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS team_passports (
 
-    # ============================================================
-    # GET
-    # ============================================================
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-    def get_current_passport(self, team_id: int, season_id: int) -> Optional[Dict[str, Any]]:
-        conn = self.db._get_connection()
-        cursor = conn.cursor()
+                    team_id INTEGER,
+                    season_id INTEGER,
 
-        cursor.execute("""
-            SELECT *
-            FROM team_passports
-            WHERE team_id = ? AND season_id = ?
-            ORDER BY CAST(REPLACE(version, 'v', '') AS FLOAT) DESC
-            LIMIT 1
-        """, (team_id, season_id))
+                    attack REAL DEFAULT 50,
+                    defense REAL DEFAULT 50,
+                    control REAL DEFAULT 50,
 
-        row = cursor.fetchone()
-        conn.close()
+                    tempo REAL DEFAULT 50,
+                    press REAL DEFAULT 50,
+                    transition REAL DEFAULT 50,
 
-        if row:
-            return dict(row)
-        return None
+                    finishing REAL DEFAULT 50,
+                    goalkeeper REAL DEFAULT 50,
 
-    def get_current_passport_by_name(self, team_name: str, season_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
-        """
-        Получение текущего паспорта команды по имени
-        
-        Args:
-            team_name: название команды
-            season_id: ID сезона (опционально)
-            
-        Returns:
-            Dict с паспортом или None
-        """
-        # Получаем team_id по имени
-        conn = self.db._get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT id FROM teams WHERE name = ?", (team_name,))
-        row = cursor.fetchone()
-        
-        if not row:
+                    discipline REAL DEFAULT 50,
+
+                    squad_quality REAL DEFAULT 50,
+                    bench_quality REAL DEFAULT 50,
+
+                    coach_factor REAL DEFAULT 50,
+                    mental REAL DEFAULT 50,
+
+                    home_strength REAL DEFAULT 50,
+                    away_strength REAL DEFAULT 50,
+
+                    injury_factor REAL DEFAULT 50,
+                    key_player_loss REAL DEFAULT 50,
+
+                    league_adaptation REAL DEFAULT 80,
+
+                    passport_confidence REAL DEFAULT 0.5,
+                    faj_rating REAL DEFAULT 0.0,
+
+                    version TEXT,
+                    source TEXT,
+                    created_at TEXT,
+
+                    FOREIGN KEY(team_id)
+                        REFERENCES teams(id),
+
+                    FOREIGN KEY(season_id)
+                        REFERENCES seasons(id),
+
+                    UNIQUE(
+                        team_id,
+                        season_id,
+                        version
+                    )
+                )
+            """)
+
+            conn.commit()
+
+        finally:
+
             conn.close()
-            logger.warning(f"Team not found: {team_name}")
+
+        logger.info(
+            "Table team_passports created"
+        )
+
+    # ============================================================
+    # GET CURRENT PASSPORT
+    # ============================================================
+
+    def get_current_passport(
+        self,
+        team_id: int,
+        season_id: int
+    ) -> Optional[Dict[str, Any]]:
+
+        conn = self.db._get_connection()
+        cursor = conn.cursor()
+
+        try:
+
+            cursor.execute("""
+                SELECT *
+                FROM team_passports
+
+                WHERE team_id = ?
+                AND season_id = ?
+
+                ORDER BY
+                    CAST(
+                        REPLACE(version, 'v', '')
+                        AS FLOAT
+                    ) DESC
+
+                LIMIT 1
+            """, (
+                team_id,
+                season_id
+            ))
+
+            row = cursor.fetchone()
+
+            if row:
+                return dict(row)
+
             return None
-            
-        team_id = row[0]
-        conn.close()
-        
-        # Если season_id не указан, берём текущий
-        if season_id is None:
-            seasons = self.db.get_seasons()
-            if seasons:
-                # Берём последний сезон
-                season_id = max([s['id'] for s in seasons])
-            else:
-                logger.warning("No seasons found")
+
+        finally:
+
+            conn.close()
+
+    # ============================================================
+    # GET CURRENT BY NAME
+    # ============================================================
+
+    def get_current_passport_by_name(
+        self,
+        team_name: str,
+        season_id: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
+
+        conn = self.db._get_connection()
+        cursor = conn.cursor()
+
+        try:
+
+            cursor.execute("""
+                SELECT id
+                FROM teams
+                WHERE name = ?
+                LIMIT 1
+            """, (
+                team_name,
+            ))
+
+            row = cursor.fetchone()
+
+            if not row:
+
+                logger.warning(
+                    "Team not found: %s",
+                    team_name
+                )
+
                 return None
-        
-        # Получаем паспорт
-        return self.get_current_passport(team_id, season_id)
 
-    def get_passport_history(self, team_id: int, season_id: int, limit: int = 10) -> list:
+            team_id = row[0]
+
+        finally:
+
+            conn.close()
+
+        # --------------------------------------------------------
+        # Определяем сезон
+        # --------------------------------------------------------
+
+        if season_id is None:
+
+            seasons = self.db.get_seasons()
+
+            if not seasons:
+
+                logger.warning(
+                    "No seasons found"
+                )
+
+                return None
+
+            season_id = max(
+                int(s["id"])
+                for s in seasons
+            )
+
+        return self.get_current_passport(
+            team_id,
+            season_id
+        )
+
+    # ============================================================
+    # HISTORY
+    # ============================================================
+
+    def get_passport_history(
+        self,
+        team_id: int,
+        season_id: int,
+        limit: int = 10
+    ) -> list:
+
         conn = self.db._get_connection()
         cursor = conn.cursor()
 
-        cursor.execute("""
-            SELECT *
-            FROM team_passports
-            WHERE team_id = ? AND season_id = ?
-            ORDER BY CAST(REPLACE(version, 'v', '') AS FLOAT) DESC
-            LIMIT ?
-        """, (team_id, season_id, limit))
+        try:
 
-        rows = cursor.fetchall()
-        conn.close()
+            cursor.execute("""
+                SELECT *
+                FROM team_passports
 
-        return [dict(row) for row in rows]
+                WHERE team_id = ?
+                AND season_id = ?
 
-    def get_passport_versions(self, team_id: int, season_id: int) -> list:
+                ORDER BY
+                    CAST(
+                        REPLACE(version, 'v', '')
+                        AS FLOAT
+                    ) DESC
+
+                LIMIT ?
+            """, (
+                team_id,
+                season_id,
+                limit
+            ))
+
+            rows = cursor.fetchall()
+
+            return [
+                dict(row)
+                for row in rows
+            ]
+
+        finally:
+
+            conn.close()
+
+    # ============================================================
+    # VERSIONS
+    # ============================================================
+
+    def get_passport_versions(
+        self,
+        team_id: int,
+        season_id: int
+    ) -> list:
+
         conn = self.db._get_connection()
         cursor = conn.cursor()
 
-        cursor.execute("""
-            SELECT version
-            FROM team_passports
-            WHERE team_id = ? AND season_id = ?
-            ORDER BY CAST(REPLACE(version, 'v', '') AS FLOAT) DESC
-        """, (team_id, season_id))
+        try:
 
-        rows = cursor.fetchall()
-        conn.close()
+            cursor.execute("""
+                SELECT version
+                FROM team_passports
 
-        return [row[0] for row in rows]
+                WHERE team_id = ?
+                AND season_id = ?
+
+                ORDER BY
+                    CAST(
+                        REPLACE(version, 'v', '')
+                        AS FLOAT
+                    ) DESC
+            """, (
+                team_id,
+                season_id
+            ))
+
+            rows = cursor.fetchall()
+
+            return [
+                row[0]
+                for row in rows
+            ]
+
+        finally:
+
+            conn.close()
 
     # ============================================================
-    # CALCULATE RATING
+    # PUBLIC RATING
     # ============================================================
 
-    def calculate_rating(self, passport: Dict[str, Any]) -> float:
+    def calculate_rating(
+        self,
+        passport: Dict[str, Any],
+        results_strength: Optional[float] = None,
+        opponent_strength: Optional[float] = None,
+        form: Optional[float] = None
+    ) -> float:
         """
-        Расчёт FAJ Rating на основе паспорта
-        
-        Args:
-            passport: словарь с параметрами паспорта
-            
-        Returns:
-            float: рейтинг от 0 до 100
+        Единый публичный расчёт FAJ Rating.
+
+        Если исторические данные отсутствуют,
+        используется Passport Rating.
+
+        Это важно для первичного паспорта.
+
+        Полная модель:
+
+            40% Passport
+            30% Results
+            20% Opponent
+            10% Form
+
+        Но отсутствующие компоненты НЕ должны
+        автоматически превращаться в ноль.
         """
-        passport_weights = {
-            'attack': 0.18,
-            'defense': 0.18,
-            'control': 0.10,
-            'tempo': 0.08,
-            'press': 0.08,
-            'transition': 0.06,
-            'finishing': 0.06,
-            'squad_quality': 0.10,
-            'coach_factor': 0.06,
-            'mental': 0.06,
-            'home_strength': 0.02,
-            'league_adaptation': 0.02
-        }
 
-        passport_score = 0
-        for key, weight in passport_weights.items():
-            passport_score += passport.get(key, 50) * weight
+        passport_rating = self._calculate_passport_rating(
+            passport
+        )
 
-        passport_score = passport_score / 100
+        # --------------------------------------------------------
+        # Нет истории
+        # --------------------------------------------------------
 
-        # Итоговый рейтинг (0-100)
-        rating = passport_score * 100
+        history_available = any([
+            results_strength is not None,
+            opponent_strength is not None,
+            form is not None
+        ])
 
-        return round(max(0, min(100, rating)), 1)
+        if not history_available:
+
+            return round(
+                passport_rating,
+                1
+            )
+
+        # --------------------------------------------------------
+        # Нормализация
+        # --------------------------------------------------------
+
+        results_value = (
+            passport_rating
+            if results_strength is None
+            else self._normalize_rating_value(
+                results_strength,
+                passport_rating
+            )
+        )
+
+        opponent_value = (
+            passport_rating
+            if opponent_strength is None
+            else self._normalize_rating_value(
+                opponent_strength,
+                passport_rating
+            )
+        )
+
+        form_value = (
+            passport_rating
+            if form is None
+            else self._normalize_form_value(
+                form,
+                passport_rating
+            )
+        )
+
+        # --------------------------------------------------------
+        # Итог
+        # --------------------------------------------------------
+
+        rating = (
+            passport_rating
+            * self.RATING_WEIGHTS["passport"]
+
+            + results_value
+            * self.RATING_WEIGHTS["results"]
+
+            + opponent_value
+            * self.RATING_WEIGHTS["opponent"]
+
+            + form_value
+            * self.RATING_WEIGHTS["form"]
+        )
+
+        return round(
+            max(0.0, min(100.0, rating)),
+            1
+        )
 
     # ============================================================
-    # CREATE
+    # PASSPORT RATING
+    # ============================================================
+
+    def _calculate_passport_rating(
+        self,
+        passport: Dict[str, Any]
+    ) -> float:
+
+        score = 0.0
+
+        for key, weight in self.PASSPORT_RATING_WEIGHTS.items():
+
+            value = passport.get(
+                key,
+                self.DEFAULT_VALUE
+            )
+
+            try:
+                value = float(value)
+
+            except (
+                TypeError,
+                ValueError
+            ):
+                value = self.DEFAULT_VALUE
+
+            value = max(
+                self.POWER_MIN,
+                min(self.POWER_MAX, value)
+            )
+
+            score += value * weight
+
+        return round(
+            max(0.0, min(100.0, score)),
+            1
+        )
+
+    # ============================================================
+    # CREATE PASSPORT
     # ============================================================
 
     def create_passport(
@@ -340,77 +731,247 @@ class PassportManager:
         data: Dict[str, Any],
         source: str = "manual"
     ) -> Optional[Dict[str, Any]]:
+
         conn = self.db._get_connection()
         cursor = conn.cursor()
 
-        # Определяем следующую версию
-        next_version = self._get_next_version(team_id, season_id)
+        try:
 
-        # Кламп всех параметров
-        clamped_data = self._clamp_params(data)
+            next_version = self._get_next_version(
+                team_id,
+                season_id
+            )
 
-        # Рассчитываем FAJ Rating
-        faj_rating = self._calculate_faj_rating(
-            clamped_data,
-            data.get('results_strength', 0),
-            data.get('opponent_strength', 0),
-            data.get('form', 0)
+            clamped_data = self._clamp_params(
+                data
+            )
+
+            # ----------------------------------------------------
+            # FAJ Rating
+            # ----------------------------------------------------
+
+            results_strength = data.get(
+                "results_strength"
+            )
+
+            opponent_strength = data.get(
+                "opponent_strength"
+            )
+
+            form = data.get(
+                "form"
+            )
+
+            faj_rating = self.calculate_rating(
+                clamped_data,
+                results_strength=results_strength,
+                opponent_strength=opponent_strength,
+                form=form
+            )
+
+            # ----------------------------------------------------
+            # Confidence
+            # ----------------------------------------------------
+
+            passport_confidence = (
+                self._calculate_confidence(
+                    clamped_data,
+                    data.get(
+                        "matches_count",
+                        0
+                    ),
+                    data.get(
+                        "created_at",
+                        datetime.now().isoformat()
+                    )
+                )
+            )
+
+            created_at = datetime.now().isoformat()
+
+            cursor.execute("""
+                INSERT INTO team_passports (
+
+                    team_id,
+                    season_id,
+
+                    attack,
+                    defense,
+                    control,
+
+                    tempo,
+                    press,
+                    transition,
+
+                    finishing,
+                    goalkeeper,
+
+                    discipline,
+
+                    squad_quality,
+                    bench_quality,
+
+                    coach_factor,
+                    mental,
+
+                    home_strength,
+                    away_strength,
+
+                    injury_factor,
+                    key_player_loss,
+
+                    league_adaptation,
+
+                    passport_confidence,
+                    faj_rating,
+
+                    version,
+                    source,
+                    created_at
+
+                )
+                VALUES (
+                    ?, ?,
+                    ?, ?, ?,
+                    ?, ?, ?,
+                    ?, ?,
+                    ?,
+                    ?, ?,
+                    ?, ?,
+                    ?, ?,
+                    ?, ?,
+                    ?,
+                    ?, ?,
+                    ?, ?, ?
+                )
+            """, (
+
+                team_id,
+                season_id,
+
+                clamped_data.get(
+                    "attack",
+                    50.0
+                ),
+
+                clamped_data.get(
+                    "defense",
+                    50.0
+                ),
+
+                clamped_data.get(
+                    "control",
+                    50.0
+                ),
+
+                clamped_data.get(
+                    "tempo",
+                    50.0
+                ),
+
+                clamped_data.get(
+                    "press",
+                    50.0
+                ),
+
+                clamped_data.get(
+                    "transition",
+                    50.0
+                ),
+
+                clamped_data.get(
+                    "finishing",
+                    50.0
+                ),
+
+                clamped_data.get(
+                    "goalkeeper",
+                    50.0
+                ),
+
+                clamped_data.get(
+                    "discipline",
+                    50.0
+                ),
+
+                clamped_data.get(
+                    "squad_quality",
+                    50.0
+                ),
+
+                clamped_data.get(
+                    "bench_quality",
+                    50.0
+                ),
+
+                clamped_data.get(
+                    "coach_factor",
+                    50.0
+                ),
+
+                clamped_data.get(
+                    "mental",
+                    50.0
+                ),
+
+                clamped_data.get(
+                    "home_strength",
+                    50.0
+                ),
+
+                clamped_data.get(
+                    "away_strength",
+                    50.0
+                ),
+
+                clamped_data.get(
+                    "injury_factor",
+                    50.0
+                ),
+
+                clamped_data.get(
+                    "key_player_loss",
+                    50.0
+                ),
+
+                clamped_data.get(
+                    "league_adaptation",
+                    80.0
+                ),
+
+                passport_confidence,
+                faj_rating,
+
+                next_version,
+                source,
+                created_at
+            ))
+
+            conn.commit()
+
+            logger.info(
+                "Passport created | "
+                "team=%s | season=%s | "
+                "version=%s | rating=%.1f | "
+                "confidence=%.3f",
+                team_id,
+                season_id,
+                next_version,
+                faj_rating,
+                passport_confidence
+            )
+
+        finally:
+
+            conn.close()
+
+        return self.get_current_passport(
+            team_id,
+            season_id
         )
-
-        # Рассчитываем Confidence
-        passport_confidence = self._calculate_confidence(
-            clamped_data,
-            data.get('matches_count', 0),
-            data.get('created_at', datetime.now().isoformat())
-        )
-
-        cursor.execute("""
-            INSERT INTO team_passports (
-                team_id, season_id,
-                attack, defense, control, tempo, press, transition,
-                finishing, goalkeeper, discipline,
-                squad_quality, bench_quality, coach_factor,
-                mental, home_strength, away_strength,
-                injury_factor, key_player_loss,
-                league_adaptation,
-                passport_confidence, faj_rating,
-                version, source, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            team_id, season_id,
-            clamped_data.get('attack', 50.0),
-            clamped_data.get('defense', 50.0),
-            clamped_data.get('control', 50.0),
-            clamped_data.get('tempo', 50.0),
-            clamped_data.get('press', 50.0),
-            clamped_data.get('transition', 50.0),
-            clamped_data.get('finishing', 50.0),
-            clamped_data.get('goalkeeper', 50.0),
-            clamped_data.get('discipline', 50.0),
-            clamped_data.get('squad_quality', 50.0),
-            clamped_data.get('bench_quality', 50.0),
-            clamped_data.get('coach_factor', 50.0),
-            clamped_data.get('mental', 50.0),
-            clamped_data.get('home_strength', 50.0),
-            clamped_data.get('away_strength', 50.0),
-            clamped_data.get('injury_factor', 50.0),
-            clamped_data.get('key_player_loss', 50.0),
-            clamped_data.get('league_adaptation', 80.0),
-            passport_confidence,
-            faj_rating,
-            next_version,
-            source,
-            datetime.now().isoformat()
-        ))
-
-        conn.commit()
-        conn.close()
-
-        logger.info(f"Passport created: team_id={team_id}, version={next_version}, rating={faj_rating}")
-        return self.get_current_passport(team_id, season_id)
 
     # ============================================================
-    # UPDATE
+    # UPDATE PASSPORT
     # ============================================================
 
     def update_passport(
@@ -419,108 +980,251 @@ class PassportManager:
         season_id: int,
         changes: Dict[str, Any],
         source: str = "learning",
-        opponent_rating: float = 1.0,
+        opponent_rating: float = 70.0,
         tournament: str = "RPL",
         matches_count: int = 0
     ) -> Optional[Dict[str, Any]]:
-        current = self.get_current_passport(team_id, season_id)
+        """
+        Обновление паспорта.
+
+        ВАЖНО:
+
+        changes = DELTA.
+
+        Например:
+
+            attack: +2.0
+
+        означает:
+
+            текущий attack + 2.0
+
+        После Learning Rate:
+
+            current + 2.0 * 0.10
+        """
+
+        current = self.get_current_passport(
+            team_id,
+            season_id
+        )
 
         if not current:
-            logger.warning(f"No current passport for team {team_id}")
-            return self.create_passport(team_id, season_id, changes, source)
 
-        # Применяем изменения с медленным обучением
-        weighted_changes = self._apply_weighted_changes(changes, opponent_rating, tournament)
+            logger.warning(
+                "No current passport for team %s. "
+                "Creating initial passport.",
+                team_id
+            )
+
+            return self.create_passport(
+                team_id,
+                season_id,
+                changes,
+                source
+            )
+
+        # --------------------------------------------------------
+        # Weighted DELTA
+        # --------------------------------------------------------
+
+        weighted_changes = (
+            self._apply_weighted_changes(
+                changes,
+                opponent_rating,
+                tournament
+            )
+        )
 
         new_data = current.copy()
-        for key, value in weighted_changes.items():
-            if key in new_data and key in self.PARAM_RANGES:
-                old_value = new_data[key]
-                # Медленное обучение: 90% старого + 10% нового сигнала
-                new_data[key] = self._clamp(old_value * 0.9 + value * 0.1, key)
 
-        # Обновляем confidence
-        new_data['passport_confidence'] = self._calculate_confidence(
+        # --------------------------------------------------------
+        # Применяем DELTA
+        # --------------------------------------------------------
+
+        for key, delta in weighted_changes.items():
+
+            if key not in self.PARAM_RANGES:
+                continue
+
+            # FAJ Rating не обучаем напрямую
+            if key == "faj_rating":
+                continue
+
+            try:
+
+                old_value = float(
+                    new_data.get(
+                        key,
+                        self.DEFAULT_VALUE
+                    )
+                )
+
+                delta = float(delta)
+
+            except (
+                TypeError,
+                ValueError
+            ):
+
+                continue
+
+            # ----------------------------------------------------
+            # Learning Rate
+            # ----------------------------------------------------
+
+            learning_delta = (
+                delta * self.LEARNING_RATE
+            )
+
+            new_value = (
+                old_value
+                + learning_delta
+            )
+
+            new_data[key] = self._clamp(
+                new_value,
+                key
+            )
+
+            logger.debug(
+                "Passport learning | "
+                "team=%s | %s | "
+                "old=%.3f | delta=%.3f | "
+                "weighted=%.3f | new=%.3f",
+                team_id,
+                key,
+                old_value,
+                delta,
+                learning_delta,
+                new_value
+            )
+
+        # --------------------------------------------------------
+        # Confidence
+        # --------------------------------------------------------
+
+        new_data[
+            "passport_confidence"
+        ] = self._calculate_confidence(
             new_data,
             matches_count + 1,
-            new_data.get('created_at', datetime.now().isoformat())
+            new_data.get(
+                "created_at",
+                datetime.now().isoformat()
+            )
         )
 
-        # Обновляем FAJ Rating
-        new_data['faj_rating'] = self._calculate_faj_rating(
+        # --------------------------------------------------------
+        # FAJ Rating
+        # --------------------------------------------------------
+
+        # Если изменения содержат форму,
+        # используем её как новый сигнал.
+        form = changes.get("form")
+
+        # Если форма отсутствует,
+        # НЕ превращаем её в 0.
+        if form is None:
+            form = None
+
+        results_strength = (
+            changes.get(
+                "results_strength"
+            )
+        )
+
+        opponent_strength = (
+            changes.get(
+                "opponent_strength",
+                opponent_rating
+            )
+        )
+
+        new_data["faj_rating"] = (
+            self.calculate_rating(
+                new_data,
+                results_strength=results_strength,
+                opponent_strength=opponent_strength,
+                form=form
+            )
+        )
+
+        # --------------------------------------------------------
+        # Создаём новую версию
+        # --------------------------------------------------------
+
+        result = self.create_passport(
+            team_id,
+            season_id,
             new_data,
-            changes.get('results_strength', 0),
-            changes.get('opponent_strength', opponent_rating),
-            changes.get('form', 0)
+            source
         )
 
-        return self.create_passport(team_id, season_id, new_data, source)
+        if result:
+
+            logger.info(
+                "Passport updated | "
+                "team=%s | rating=%.1f",
+                team_id,
+                result.get(
+                    "faj_rating",
+                    0.0
+                )
+            )
+
+        return result
+
+    # ============================================================
+    # UPDATE AFTER MATCH
+    # ============================================================
 
     def update_after_match(
         self,
         team_id: int,
         season_id: int,
         match_data: Dict[str, Any],
-        opponent_rating: float = 1.0,
+        opponent_rating: float = 70.0,
         tournament: str = "RPL",
         matches_count: int = 0
     ) -> Optional[Dict[str, Any]]:
-        current = self.get_current_passport(team_id, season_id)
+
+        current = self.get_current_passport(
+            team_id,
+            season_id
+        )
 
         if not current:
-            return None
 
-        changes = self._calculate_match_changes(match_data)
-
-        if changes:
-            return self.update_passport(
-                team_id,
-                season_id,
-                changes,
-                source="match_update",
-                opponent_rating=opponent_rating,
-                tournament=tournament,
-                matches_count=matches_count
+            logger.warning(
+                "Cannot update team %s: "
+                "passport does not exist.",
+                team_id
             )
 
-        return current
+            return None
+
+        changes = self._calculate_match_changes(
+            match_data
+        )
+
+        if not changes:
+
+            return current
+
+        return self.update_passport(
+            team_id,
+            season_id,
+            changes,
+            source="match_update",
+            opponent_rating=opponent_rating,
+            tournament=tournament,
+            matches_count=matches_count
+        )
 
     # ============================================================
-    # PRIVATE
+    # APPLY WEIGHTED CHANGES
     # ============================================================
-
-    def _clamp(self, value: float, key: str) -> float:
-        if key in self.PARAM_RANGES:
-            min_val, max_val = self.PARAM_RANGES[key]
-            return max(min_val, min(max_val, value))
-        return max(0, min(100, value))
-
-    def _clamp_params(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        result = {}
-        for key, value in data.items():
-            if key in self.PARAM_RANGES:
-                result[key] = self._clamp(value, key)
-            else:
-                result[key] = value
-        return result
-
-    def _get_next_version(self, team_id: int, season_id: int) -> str:
-        versions = self.get_passport_versions(team_id, season_id)
-
-        if not versions:
-            return "v1.0"
-
-        numbers = []
-        for v in versions:
-            match = re.search(r'v(\d+)', v)
-            if match:
-                numbers.append(int(match.group(1)))
-
-        if not numbers:
-            return "v1.0"
-
-        next_num = max(numbers) + 1
-        return f"v{next_num}.0"
 
     def _apply_weighted_changes(
         self,
@@ -528,49 +1232,319 @@ class PassportManager:
         opponent_rating: float,
         tournament: str
     ) -> Dict[str, Any]:
-        tournament_dna = self.TOURNAMENT_DNA.get(tournament, self.TOURNAMENT_DNA["RPL"])
-        base_weight = opponent_rating * tournament_dna.get('goal_factor', 1.0)
+        """
+        Модификация DELTA.
+
+        Критически важно:
+
+        opponent_rating НЕ используется
+        напрямую как множитель.
+
+        Было:
+
+            delta * 85
+
+        Стало:
+
+            delta * ~1.08
+        """
+
+        tournament_dna = (
+            self.TOURNAMENT_DNA.get(
+                tournament,
+                self.TOURNAMENT_DNA["RPL"]
+            )
+        )
+
+        # --------------------------------------------------------
+        # Нормализованный коэффициент соперника
+        # --------------------------------------------------------
+
+        try:
+            opponent_rating = float(
+                opponent_rating
+            )
+
+        except (
+            TypeError,
+            ValueError
+        ):
+
+            opponent_rating = 70.0
+
+        opponent_rating = max(
+            0.0,
+            min(100.0, opponent_rating)
+        )
+
+        opponent_factor = (
+            1.0
+            + (
+                opponent_rating - 70.0
+            ) / 200.0
+        )
+
+        # Ограничение
+        opponent_factor = max(
+            0.85,
+            min(1.15, opponent_factor)
+        )
+
+        # --------------------------------------------------------
+        # Tournament DNA
+        # --------------------------------------------------------
+
+        goal_factor = float(
+            tournament_dna.get(
+                "goal_factor",
+                1.0
+            )
+        )
+
+        # --------------------------------------------------------
+        # Итоговый коэффициент
+        # --------------------------------------------------------
+
+        total_factor = (
+            opponent_factor
+            * goal_factor
+        )
 
         weighted = {}
+
         for key, value in changes.items():
-            if key in self.PARAM_RANGES:
-                weighted[key] = value * base_weight
-            else:
+
+            if key not in self.PARAM_RANGES:
+
+                # Служебные данные
+                # сохраняем без математической
+                # трансформации.
                 weighted[key] = value
+                continue
+
+            try:
+
+                value = float(value)
+
+            except (
+                TypeError,
+                ValueError
+            ):
+
+                continue
+
+            # ----------------------------------------------------
+            # ВАЖНО:
+            #
+            # value = DELTA
+            #
+            # а не абсолютное значение.
+            # ----------------------------------------------------
+
+            weighted[key] = (
+                value
+                * total_factor
+            )
+
+        logger.debug(
+            "Weighted match signal | "
+            "opponent_rating=%.1f | "
+            "opponent_factor=%.3f | "
+            "goal_factor=%.3f | "
+            "total_factor=%.3f",
+            opponent_rating,
+            opponent_factor,
+            goal_factor,
+            total_factor
+        )
 
         return weighted
 
-    def _calculate_match_changes(self, match_data: Dict[str, Any]) -> Dict[str, Any]:
+    # ============================================================
+    # MATCH SIGNALS
+    # ============================================================
+
+    def _calculate_match_changes(
+        self,
+        match_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Формирование DELTA после матча.
+
+        Важно:
+        эти значения НЕ являются новыми паспортными
+        значениями.
+
+        Это только сигналы изменения.
+        """
+
         changes = {}
 
-        goals_for = match_data.get('goals_for', 0)
-        goals_against = match_data.get('goals_against', 0)
-        xg_for = match_data.get('xg_for', goals_for)
-        xg_against = match_data.get('xg_against', goals_against)
+        # --------------------------------------------------------
+        # Goals / xG
+        # --------------------------------------------------------
 
-        # Атака: 60% xG + 40% голы
-        attack_signal = (xg_for - 1.35) * 0.6 + (goals_for - 1.35) * 0.4
-        changes['attack'] = attack_signal * 0.5
+        try:
+            goals_for = float(
+                match_data.get(
+                    "goals_for",
+                    0
+                )
+            )
 
-        # Оборона: 60% xG против + 40% пропущенные
-        defense_signal = (1.35 - xg_against) * 0.6 + (1.35 - goals_against) * 0.4
-        changes['defense'] = defense_signal * 0.5
+            goals_against = float(
+                match_data.get(
+                    "goals_against",
+                    0
+                )
+            )
 
-        # Реализация (finishing): разница между голами и xG
-        finishing_signal = goals_for - xg_for
-        changes['finishing'] = finishing_signal * 0.3
+            xg_for = float(
+                match_data.get(
+                    "xg_for",
+                    goals_for
+                )
+            )
 
-        # Менталитет
-        if match_data.get('is_win', False):
-            changes['mental'] = 1.0
-            changes['injury_factor'] = 0.5
-        elif match_data.get('is_draw', False):
-            changes['mental'] = 0.3
+            xg_against = float(
+                match_data.get(
+                    "xg_against",
+                    goals_against
+                )
+            )
+
+        except (
+            TypeError,
+            ValueError
+        ):
+
+            logger.warning(
+                "Invalid match data"
+            )
+
+            return {}
+
+        # --------------------------------------------------------
+        # Атака
+        # --------------------------------------------------------
+
+        attack_signal = (
+            (xg_for - 1.35) * 0.6
+            +
+            (goals_for - 1.35) * 0.4
+        )
+
+        changes["attack"] = (
+            attack_signal
+            * 2.0
+        )
+
+        # --------------------------------------------------------
+        # Защита
+        # --------------------------------------------------------
+
+        defense_signal = (
+            (1.35 - xg_against) * 0.6
+            +
+            (1.35 - goals_against) * 0.4
+        )
+
+        changes["defense"] = (
+            defense_signal
+            * 2.0
+        )
+
+        # --------------------------------------------------------
+        # Finishing
+        # --------------------------------------------------------
+
+        finishing_signal = (
+            goals_for - xg_for
+        )
+
+        changes["finishing"] = (
+            finishing_signal
+            * 1.0
+        )
+
+        # --------------------------------------------------------
+        # Mental
+        # --------------------------------------------------------
+
+        if match_data.get(
+            "is_win",
+            False
+        ):
+
+            changes["mental"] = 1.0
+
+        elif match_data.get(
+            "is_draw",
+            False
+        ):
+
+            changes["mental"] = 0.3
+
         else:
-            changes['mental'] = -0.5
-            changes['injury_factor'] = -0.3
+
+            changes["mental"] = -0.5
+
+        # --------------------------------------------------------
+        # Injury factor
+        # --------------------------------------------------------
+
+        if match_data.get(
+            "is_win",
+            False
+        ):
+
+            changes["injury_factor"] = 0.5
+
+        elif not match_data.get(
+            "is_draw",
+            False
+        ):
+
+            changes["injury_factor"] = -0.3
+
+        # --------------------------------------------------------
+        # External form signal
+        # --------------------------------------------------------
+
+        if "form" in match_data:
+
+            try:
+
+                form_value = float(
+                    match_data["form"]
+                )
+
+                # Центр формы = 50
+                form_delta = (
+                    form_value - 50.0
+                ) / 10.0
+
+                changes["form"] = (
+                    form_delta
+                )
+
+            except (
+                TypeError,
+                ValueError
+            ):
+
+                pass
+
+        logger.debug(
+            "Match changes generated: %s",
+            changes
+        )
 
         return changes
+
+    # ============================================================
+    # CONFIDENCE
+    # ============================================================
 
     def _calculate_confidence(
         self,
@@ -578,35 +1552,304 @@ class PassportManager:
         matches_count: int,
         created_at: str
     ) -> float:
-        """Расчёт уверенности: Data Quality + Match Count + Freshness"""
+        """
+        Passport Confidence.
+
+        Состав:
+
+        Data Quality
+        +
+        Match Count
+        +
+        Freshness
+        """
+
         required_fields = [
-            'attack', 'defense', 'control', 'tempo',
-            'press', 'transition', 'finishing',
-            'squad_quality', 'coach_factor'
+            "attack",
+            "defense",
+            "control",
+            "tempo",
+            "press",
+            "transition",
+            "finishing",
+            "squad_quality",
+            "coach_factor"
         ]
 
         filled = 0
+
         for field in required_fields:
-            if passport.get(field) is not None and passport.get(field) != 0:
-                filled += 1
 
-        data_quality = filled / len(required_fields)
+            value = passport.get(
+                field
+            )
 
-        # Чем больше матчей, тем выше уверенность
-        matches_factor = min(0.4, matches_count * 0.004)
+            if value is not None:
 
-        # Свежесть данных (чем старше, тем ниже уверенность)
+                try:
+
+                    if float(value) != 0:
+                        filled += 1
+
+                except (
+                    TypeError,
+                    ValueError
+                ):
+                    pass
+
+        data_quality = (
+            filled
+            / len(required_fields)
+        )
+
+        # --------------------------------------------------------
+        # Match count
+        # --------------------------------------------------------
+
         try:
-            created = datetime.fromisoformat(created_at)
-            days_old = (datetime.now() - created).days
-            freshness_factor = max(0.0, 1.0 - (days_old / 180))  # 180 дней = полное старение
-        except:
+
+            matches_count = int(
+                matches_count
+            )
+
+        except (
+            TypeError,
+            ValueError
+        ):
+
+            matches_count = 0
+
+        matches_factor = min(
+            0.4,
+            matches_count * 0.004
+        )
+
+        # --------------------------------------------------------
+        # Freshness
+        # --------------------------------------------------------
+
+        try:
+
+            created = datetime.fromisoformat(
+                created_at
+            )
+
+            days_old = (
+                datetime.now()
+                - created
+            ).days
+
+            freshness_factor = max(
+                0.0,
+                1.0 - (
+                    days_old / 180.0
+                )
+            )
+
+        except Exception:
+
             freshness_factor = 0.8
 
-        # Базовая уверенность от качества данных
-        base_confidence = 0.2 + data_quality * 0.4
+        # --------------------------------------------------------
+        # Base
+        # --------------------------------------------------------
 
-        return min(1.0, base_confidence + matches_factor * freshness_factor)
+        base_confidence = (
+            0.2
+            +
+            data_quality * 0.4
+        )
+
+        confidence = (
+            base_confidence
+            +
+            matches_factor
+            * freshness_factor
+        )
+
+        return round(
+            min(1.0, confidence),
+            4
+        )
+
+    # ============================================================
+    # CLAMP
+    # ============================================================
+
+    def _clamp(
+        self,
+        value: float,
+        key: str
+    ) -> float:
+
+        if key in self.PARAM_RANGES:
+
+            min_val, max_val = (
+                self.PARAM_RANGES[key]
+            )
+
+            return max(
+                min_val,
+                min(max_val, value)
+            )
+
+        return max(
+            0.0,
+            min(100.0, value)
+        )
+
+    # ------------------------------------------------------------
+
+    def _clamp_params(
+        self,
+        data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+
+        result = {}
+
+        for key, value in data.items():
+
+            if key in self.PARAM_RANGES:
+
+                try:
+
+                    result[key] = self._clamp(
+                        float(value),
+                        key
+                    )
+
+                except (
+                    TypeError,
+                    ValueError
+                ):
+
+                    result[key] = (
+                        self.DEFAULT_VALUE
+                    )
+
+            else:
+
+                result[key] = value
+
+        return result
+
+    # ============================================================
+    # VERSION
+    # ============================================================
+
+    def _get_next_version(
+        self,
+        team_id: int,
+        season_id: int
+    ) -> str:
+
+        versions = self.get_passport_versions(
+            team_id,
+            season_id
+        )
+
+        if not versions:
+
+            return "v1.0"
+
+        numbers = []
+
+        for version in versions:
+
+            match = re.search(
+                r"v(\d+)",
+                str(version)
+            )
+
+            if match:
+
+                numbers.append(
+                    int(match.group(1))
+                )
+
+        if not numbers:
+
+            return "v1.0"
+
+        next_num = (
+            max(numbers)
+            + 1
+        )
+
+        return f"v{next_num}.0"
+
+    # ============================================================
+    # RATING HELPERS
+    # ============================================================
+
+    def _normalize_rating_value(
+        self,
+        value: Any,
+        fallback: float
+    ) -> float:
+
+        try:
+
+            value = float(value)
+
+        except (
+            TypeError,
+            ValueError
+        ):
+
+            return fallback
+
+        return max(
+            0.0,
+            min(100.0, value)
+        )
+
+    # ------------------------------------------------------------
+
+    def _normalize_form_value(
+        self,
+        value: Any,
+        fallback: float
+    ) -> float:
+        """
+        Form может приходить как:
+
+            0-100
+
+        либо:
+
+            None
+
+        Отсутствие формы = нейтральное значение.
+        """
+
+        if value is None:
+
+            return fallback
+
+        try:
+
+            value = float(value)
+
+        except (
+            TypeError,
+            ValueError
+        ):
+
+            return fallback
+
+        if value <= 0:
+
+            return fallback
+
+        return max(
+            0.0,
+            min(100.0, value)
+        )
+
+    # ============================================================
+    # LEGACY COMPATIBILITY
+    # ============================================================
 
     def _calculate_faj_rating(
         self,
@@ -616,50 +1859,68 @@ class PassportManager:
         form: float = 0
     ) -> float:
         """
-        FAJ Rating:
-        40% Passport + 30% Results + 20% Opponent + 10% Form
+        Совместимость со старым кодом.
+
+        Теперь весь расчёт проходит через
+        единый calculate_rating().
+
+        Нулевые значения считаются отсутствующими.
         """
-        passport_weights = {
-            'attack': 0.18,
-            'defense': 0.18,
-            'control': 0.10,
-            'tempo': 0.08,
-            'press': 0.08,
-            'transition': 0.06,
-            'finishing': 0.06,
-            'squad_quality': 0.10,
-            'coach_factor': 0.06,
-            'mental': 0.06,
-            'home_strength': 0.02,
-            'league_adaptation': 0.02
-        }
 
-        passport_score = 0
-        for key, weight in passport_weights.items():
-            passport_score += passport.get(key, 50) * weight
-
-        passport_score = passport_score / 100
-
-        # Итоговый рейтинг (0-100)
-        rating = (
-            passport_score * 100 * self.RATING_WEIGHTS["passport"] +
-            results_strength * self.RATING_WEIGHTS["results"] +
-            opponent_strength * self.RATING_WEIGHTS["opponent"] +
-            form * self.RATING_WEIGHTS["form"]
+        results = (
+            None
+            if results_strength in (
+                None,
+                0
+            )
+            else results_strength
         )
 
-        return round(max(0, min(100, rating)), 1)
+        opponent = (
+            None
+            if opponent_strength in (
+                None,
+                0
+            )
+            else opponent_strength
+        )
+
+        form_value = (
+            None
+            if form in (
+                None,
+                0
+            )
+            else form
+        )
+
+        return self.calculate_rating(
+            passport,
+            results_strength=results,
+            opponent_strength=opponent,
+            form=form_value
+        )
 
 
-# ============================================================
+# ================================================================
 # SINGLETON
-# ============================================================
+# ================================================================
 
-_default_manager: Optional[PassportManager] = None
+_default_manager: Optional[
+    PassportManager
+] = None
 
 
-def get_passport_manager(db: Optional[FAJDatabase] = None) -> PassportManager:
+def get_passport_manager(
+    db: Optional[FAJDatabase] = None
+) -> PassportManager:
+
     global _default_manager
+
     if _default_manager is None:
-        _default_manager = PassportManager(db)
+
+        _default_manager = PassportManager(
+            db
+        )
+
     return _default_manager
