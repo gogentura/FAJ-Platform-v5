@@ -882,6 +882,34 @@ def init_database():
     """)
 
     # ============================================================
+    # ТАБЛИЦА: standings (ТУРНИРНАЯ ТАБЛИЦА) — ДОБАВЛЕНО
+    # ============================================================
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS standings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_id INTEGER,
+            season_id INTEGER,
+            round INTEGER,
+            place INTEGER,
+            games INTEGER,
+            wins INTEGER,
+            draws INTEGER,
+            losses INTEGER,
+            goals_for INTEGER,
+            goals_against INTEGER,
+            goal_diff INTEGER,
+            points INTEGER,
+            form TEXT,
+            updated_at TEXT,
+            FOREIGN KEY(team_id) REFERENCES teams(id),
+            FOREIGN KEY(season_id) REFERENCES seasons(id),
+            UNIQUE(team_id, season_id, round)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_standings_team ON standings(team_id, season_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_standings_round ON standings(round)")
+
+    # ============================================================
     # LEARNING LAYER TABLES
     # ============================================================
 
