@@ -51,7 +51,7 @@ import time
 import logging
 import hashlib
 import uuid
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
 
 from app.config import config
 from app.core.calibration_engine import CalibrationEngine
@@ -349,7 +349,7 @@ class PredictionPipeline:
             )
 
             # =========================================================
-            # 11. РАСШИРЕННЫЕ МЕТРИКИ (ИСПРАВЛЕНО)
+            # 11. РАСШИРЕННЫЕ МЕТРИКИ
             # =========================================================
             extended = self._calculate_extended_metrics(
                 home_xg=home_xg,
@@ -449,7 +449,7 @@ class PredictionPipeline:
             return "LOW"
 
     # ============================================================
-    # _calculate_extended_metrics (ИСПРАВЛЕНО)
+    # _calculate_extended_metrics (С ДИАГНОСТИКОЙ И FALLBACK)
     # ============================================================
 
     def _calculate_extended_metrics(
@@ -469,21 +469,80 @@ class PredictionPipeline:
             score_matrix: матрица счетов из Poisson модели
         """
         # =========================================================
-        # ТОП-5 СЧЕТОВ (используем готовые из Poisson)
+        # ДИАГНОСТИКА ВХОДНЫХ ДАННЫХ
         # =========================================================
-        top_scores = poisson_top_scores[:5] if poisson_top_scores else []
+        logger.info("🔬 EXTENDED METRICS INPUT:")
+        logger.info("  home_xg=%.3f, away_xg=%.3f", home_xg, away_xg)
+        logger.info("  poisson_top_scores: %s", poisson_top_scores[:3] if poisson_top_scores else "EMPTY")
+        
+        if score_matrix:
+            keys = list(score_matrix.keys())[:5]
+            items = list(score_matrix.items())[:3]
+            logger.info("  score_matrix keys (first 5): %s", keys)
+            logger.info("  score_matrix items (first 3): %s", items)
+        else:
+            logger.info("  score_matrix: EMPTY")
+
+        # =========================================================
+        # ТОП-5 СЧЕТОВ
+        # =========================================================
+        top_scores = []
+
+        # Вариант 1: из poisson_top_scores
+        if poisson_top_scores:
+            top_scores = poisson_top_scores[:5]
+            logger.info("  ✅ Using poisson_top_scores: %s", top_scores)
+
+        # Вариант 2: из score_matrix (если top_scores пустой)
+        elif score_matrix:
+            logger.info("  ⚠️ poisson_top_scores empty, building from score_matrix")
+            sorted_scores = sorted(score_matrix.items(), key=lambda x: x[1], reverse=True)
+            for i, (score_str, prob) in enumerate(sorted_scores[:5]):
+                try:
+                    if ':' in score_str:
+                        home, away = score_str.split(':')
+                    elif '-' in score_str:
+                        home, away = score_str.split('-')
+                    else:
+                        continue
+                    top_scores.append({
+                        'rank': i + 1,
+                        'home': int(home),
+                        'away': int(away),
+                        'probability': round(prob, 4),
+                        'prob_percent': f"{prob * 100:.2f}%"
+                    })
+                except (ValueError, AttributeError) as e:
+                    logger.warning("  Failed to parse score: %s, error: %s", score_str, e)
+                    continue
+            logger.info("  ✅ Built top_scores from score_matrix: %s", top_scores)
+
+        # Вариант 3: fallback из xG
+        else:
+            logger.warning("  ❌ No top_scores and no score_matrix, using fallback")
+            top_scores = self._get_fallback_top_scores(home_xg, away_xg)
+            logger.info("  ✅ Built fallback top_scores: %s", top_scores)
 
         # =========================================================
         # BTTS (Обе забьют) — из score_matrix
         # =========================================================
         btts_prob = 0.0
-        for score_str, prob in score_matrix.items():
-            try:
-                home, away = score_str.split(':')
-                if int(home) > 0 and int(away) > 0:
-                    btts_prob += prob
-            except (ValueError, AttributeError):
-                continue
+        if score_matrix:
+            for score_str, prob in score_matrix.items():
+                try:
+                    if ':' in score_str:
+                        home, away = score_str.split(':')
+                    elif '-' in score_str:
+                        home, away = score_str.split('-')
+                    else:
+                        continue
+                    if int(home) > 0 and int(away) > 0:
+                        btts_prob += prob
+                except (ValueError, AttributeError):
+                    continue
+        else:
+            # Fallback: approximative BTTS из xG
+            btts_prob = (1 - math.exp(-home_xg * 0.5)) * (1 - math.exp(-away_xg * 0.5))
 
         btts_prob = min(btts_prob, 1.0)
 
@@ -492,16 +551,30 @@ class PredictionPipeline:
         # =========================================================
         over_25 = 0.0
         over_35 = 0.0
-        for score_str, prob in score_matrix.items():
-            try:
-                home, away = score_str.split(':')
-                total = int(home) + int(away)
-                if total > 2.5:
-                    over_25 += prob
-                if total > 3.5:
-                    over_35 += prob
-            except (ValueError, AttributeError):
-                continue
+
+        if score_matrix:
+            for score_str, prob in score_matrix.items():
+                try:
+                    if ':' in score_str:
+                        home, away = score_str.split(':')
+                    elif '-' in score_str:
+                        home, away = score_str.split('-')
+                    else:
+                        continue
+                    total = int(home) + int(away)
+                    if total > 2.5:
+                        over_25 += prob
+                    if total > 3.5:
+                        over_35 += prob
+                except (ValueError, AttributeError):
+                    continue
+        else:
+            # Fallback: approximative totals из xG
+            # Poisson approximation for over 2.5
+            import math
+            home_goals_prob = 1 - math.exp(-home_xg) * (1 + home_xg + home_xg**2/2)
+            away_goals_prob = 1 - math.exp(-away_xg) * (1 + away_xg + away_xg**2/2)
+            over_25 = home_goals_prob + away_goals_prob - home_goals_prob * away_goals_prob
 
         over_25 = min(over_25, 1.0)
         over_35 = min(over_35, 1.0)
@@ -509,13 +582,19 @@ class PredictionPipeline:
         # =========================================================
         # САМЫЙ ВЕРОЯТНЫЙ СЧЁТ
         # =========================================================
-        most_likely = top_scores[0] if top_scores else {'home': 0, 'away': 0, 'prob': 0}
+        most_likely = {'home': 0, 'away': 0, 'prob': 0}
 
-        # Если top_scores есть, но формат другой
         if top_scores and isinstance(top_scores[0], dict):
+            # Формат из poisson_top_scores: {"score": "0:1", "probability": 0.139}
             if 'score' in top_scores[0]:
                 try:
-                    home, away = top_scores[0]['score'].split(':')
+                    score_str = top_scores[0]['score']
+                    if ':' in score_str:
+                        home, away = score_str.split(':')
+                    elif '-' in score_str:
+                        home, away = score_str.split('-')
+                    else:
+                        home, away = '0', '0'
                     most_likely = {
                         'home': int(home),
                         'away': int(away),
@@ -523,6 +602,13 @@ class PredictionPipeline:
                     }
                 except (ValueError, AttributeError, KeyError):
                     pass
+            # Формат из нашего построения: {"home": 0, "away": 1, "probability": 0.139}
+            elif 'home' in top_scores[0] and 'away' in top_scores[0]:
+                most_likely = {
+                    'home': top_scores[0].get('home', 0),
+                    'away': top_scores[0].get('away', 0),
+                    'prob': top_scores[0].get('probability', 0)
+                }
 
         return {
             "top_scores": top_scores,
@@ -542,6 +628,49 @@ class PredictionPipeline:
                 "under_3_5": round(1 - over_35, 4)
             }
         }
+
+    def _get_fallback_top_scores(
+        self,
+        home_xg: float,
+        away_xg: float,
+        max_goals: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        Fallback расчёт топ-счетов на основе xG.
+        Используется только если Poisson модель не вернула данные.
+        """
+        import math
+
+        def poisson_prob(lam: float, k: int) -> float:
+            if lam <= 0:
+                return 1.0 if k == 0 else 0.0
+            return math.exp(-lam) * (lam ** k) / math.factorial(k)
+
+        scores = []
+        for home_goals in range(max_goals + 1):
+            for away_goals in range(max_goals + 1):
+                prob = poisson_prob(home_xg, home_goals) * poisson_prob(away_xg, away_goals)
+                scores.append({
+                    'home': home_goals,
+                    'away': away_goals,
+                    'probability': prob
+                })
+
+        scores.sort(key=lambda x: x['probability'], reverse=True)
+
+        top_scores = []
+        for i, score in enumerate(scores[:5]):
+            if score['probability'] < 0.001:
+                break
+            top_scores.append({
+                'rank': i + 1,
+                'home': score['home'],
+                'away': score['away'],
+                'probability': round(score['probability'], 4),
+                'prob_percent': f"{score['probability'] * 100:.2f}%"
+            })
+
+        return top_scores
 
 
 # ============================================================
