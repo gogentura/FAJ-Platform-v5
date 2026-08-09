@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-FAJ Platform v12.1 - Парсер soccerland.ru
+FAJ Platform v12.1 - Парсер soccerland.ru (ИСПРАВЛЕННЫЙ)
 Сбор данных: календарь матчей + турнирная таблица
 """
 
@@ -109,14 +109,7 @@ class SoccerlandParser:
     # =========================================================
 
     def get_standings(self) -> List[Dict[str, Any]]:
-        """
-        Парсинг турнирной таблицы с soccerland.ru
-
-        Returns:
-            List[Dict] с полями:
-                place, team, games, wins, draws, losses,
-                goals_for, goals_against, goal_diff, points, form
-        """
+        """Парсинг турнирной таблицы с soccerland.ru"""
         try:
             response = requests.get(self.base_url, headers=self.headers, timeout=15)
             response.raise_for_status()
@@ -138,7 +131,7 @@ class SoccerlandParser:
 
             rows = table.find_all('tr')
 
-            for row in rows[1:]:  # Пропускаем заголовок
+            for row in rows[1:]:
                 cols = row.find_all('td')
                 if len(cols) >= 8:
                     try:
@@ -152,7 +145,6 @@ class SoccerlandParser:
                         draws = int(cols[4].text.strip()) if cols[4].text.strip().isdigit() else 0
                         losses = int(cols[5].text.strip()) if cols[5].text.strip().isdigit() else 0
 
-                        # Голы (например "15:8")
                         goals_text = cols[6].text.strip()
                         goals_for = 0
                         goals_against = 0
@@ -163,7 +155,6 @@ class SoccerlandParser:
 
                         points = int(cols[7].text.strip()) if cols[7].text.strip().isdigit() else 0
 
-                        # Форма (последние 5 матчей) — может быть в 8-й колонке
                         form = cols[8].text.strip() if len(cols) > 8 else ""
 
                         standings.append({
@@ -196,16 +187,7 @@ class SoccerlandParser:
     # =========================================================
 
     def save_standings_to_db(self, standings: List[Dict], round_number: int) -> int:
-        """
-        Сохранение турнирной таблицы в БД
-
-        Args:
-            standings: список с данными таблицы
-            round_number: номер тура
-
-        Returns:
-            количество сохранённых записей
-        """
+        """Сохранение турнирной таблицы в БД"""
         saved_count = 0
 
         season_id = self.db.get_season_id(self.league, self.season_year)
@@ -220,7 +202,6 @@ class SoccerlandParser:
         cursor = conn.cursor()
 
         try:
-            # Создаём таблицу standings, если её нет
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS standings (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -289,84 +270,98 @@ class SoccerlandParser:
         return saved_count
 
     # =========================================================
-    # 4. ПАРСИНГ МАТЧЕЙ С КАЛЕНДАРЯ
+    # 4. ПАРСИНГ МАТЧЕЙ С КАЛЕНДАРЯ (ИСПРАВЛЕНО)
     # =========================================================
 
     def get_all_matches(self) -> List[Dict[str, Any]]:
         """
         Парсинг всех матчей с календаря soccerland.ru
-
-        Returns:
-            List[Dict] с полями: home, away, score, status
         """
         try:
             response = requests.get(self.calendar_url, headers=self.headers, timeout=15)
             response.raise_for_status()
-            soup = BeautifulSoup(response.text, 'html.parser')
-
+            
+            # Получаем HTML
+            html = response.text
+            
+            # Ищем все строки с матчами
+            # Паттерн: "Команда А | счёт | Команда Б"
             matches = []
-
-            # Находим все строки с матчами
-            all_text = soup.get_text()
-            lines = all_text.split('\n')
-
+            
+            # Разбиваем по строкам
+            lines = html.split('\n')
+            
             for line in lines:
                 line = line.strip()
-                # Ищем строки с матчами: "Команда А | счёт | Команда Б"
-                if ' | ' in line and (' - ' not in line and '  ' not in line):
+                # Ищем строки с матчами
+                if ' | ' in line:
+                    # Проверяем, что это не таблица и не меню
+                    if 'Бомбардиры' in line or 'Ассистенты' in line or 'Гол + пас' in line:
+                        continue
+                    if 'Информационный партнёр' in line:
+                        continue
                     if len(line) < 10:
                         continue
-
+                    
                     parts = line.split(' | ')
                     if len(parts) >= 3:
                         home_team = parts[0].strip()
                         score = parts[1].strip()
                         away_team = parts[2].strip()
-
+                        
+                        # Проверяем, что это команды (не числа и не пустые)
                         if not home_team or not away_team:
                             continue
-
-                        # Пропускаем строки с цифрами вместо команд
                         if re.match(r'^\d+$', home_team) or re.match(r'^\d+$', away_team):
                             continue
-
+                        if len(home_team) < 2 or len(away_team) < 2:
+                            continue
+                        
                         # Определяем статус
                         is_finished = ':' in score and '–' not in score
                         status = "finished" if is_finished else "scheduled"
-
+                        
                         matches.append({
                             "home": home_team,
                             "away": away_team,
                             "score": score if is_finished else "",
                             "status": status
                         })
-
-            logger.info("📊 Parsed %s matches from soccerland.ru", len(matches))
-            return matches
+            
+            # Удаляем дубликаты
+            unique_matches = []
+            seen = set()
+            for m in matches:
+                key = f"{m['home']}_{m['away']}"
+                if key not in seen:
+                    seen.add(key)
+                    unique_matches.append(m)
+            
+            logger.info("📊 Parsed %s matches from soccerland.ru", len(unique_matches))
+            return unique_matches
 
         except Exception as e:
-            logger.error("❌ Error parsing soccerland.ru: %s", e)
+            logger.error(f"❌ Error parsing soccerland.ru: {e}")
             return []
 
     def get_matches_by_tour(self, tour_number: int) -> List[Dict[str, Any]]:
-        """
-        Получение матчей конкретного тура
-
-        Args:
-            tour_number: номер тура
-
-        Returns:
-            List[Dict] с матчами тура
-        """
+        """Получение матчей конкретного тура"""
         all_matches = self.get_all_matches()
-
+        
+        if not all_matches:
+            return []
+        
         # В РПЛ 8 матчей в туре (16 команд)
         matches_per_tour = 8
         start_idx = (tour_number - 1) * matches_per_tour
         end_idx = start_idx + matches_per_tour
-
+        
+        # Если индекс выходит за пределы — возвращаем пустой список
+        if start_idx >= len(all_matches):
+            return []
+        
         tour_matches = all_matches[start_idx:end_idx]
-
+        
         logger.info("📊 Found %s matches for tour %s", len(tour_matches), tour_number)
         return tour_matches
 
@@ -386,6 +381,7 @@ class SoccerlandParser:
                 year=self.season_year
             )
 
+        # СОЗДАЁМ ТУР (если его нет)
         round_id = self.db.create_round(season_id, round_number)
 
         for match in matches:
@@ -464,6 +460,10 @@ class SoccerlandParser:
             return results
 
         matches = self.db.get_matches(round_id)
+
+        if not matches:
+            results["errors"].append(f"No matches found for round {round_number}")
+            return results
 
         for match in matches:
             match_dict = dict(match)
@@ -612,15 +612,7 @@ class SoccerlandParser:
     # =========================================================
 
     def update_all(self, round_number: int) -> Dict[str, Any]:
-        """
-        Полное обновление: таблица + матчи + прогноз
-
-        Args:
-            round_number: номер тура
-
-        Returns:
-            Dict с результатами
-        """
+        """Полное обновление: таблица + матчи + прогноз"""
         results = {
             "timestamp": datetime.now().isoformat(),
             "round": round_number,
@@ -639,8 +631,6 @@ class SoccerlandParser:
                 saved = self.save_standings_to_db(standings, round_number)
                 results["standings_saved"] = saved
                 logger.info("✅ Saved %s standings", saved)
-            else:
-                results["errors"].append("No standings data")
 
             # 2. Парсим и загружаем матчи тура
             matches = self.get_matches_by_tour(round_number)
@@ -675,20 +665,22 @@ if __name__ == "__main__":
 
     parser = SoccerlandParser()
 
-    # 1. Тест: турнирная таблица
-    print("\n📋 1. Testing: get_standings()")
-    standings = parser.get_standings()
-    print(f"  Found {len(standings)} teams")
+    # 1. Тест: парсинг всех матчей
+    print("\n📋 1. Testing: get_all_matches()")
+    matches = parser.get_all_matches()
+    print(f"  Found {len(matches)} matches")
 
-    if standings:
-        print("\n  Top 5 teams:")
-        for team in standings[:5]:
-            print(f"  {team['place']}. {team['team']} — {team['points']} pts, {team['goals_for']}:{team['goals_against']}")
+    if matches:
+        print("\n  First 10 matches:")
+        for match in matches[:10]:
+            status_icon = "✅" if match['status'] == 'finished' else "⏳"
+            score_display = match['score'] if match['score'] else "– : –"
+            print(f"  {status_icon} {match['home']} | {score_display} | {match['away']}")
 
-    # 2. Тест: матчи 3 тура
-    print("\n📋 2. Testing: get_matches_by_tour(3)")
-    tour_matches = parser.get_matches_by_tour(3)
-    print(f"  Found {len(tour_matches)} matches for tour 3")
+    # 2. Тест: матчи 4 тура
+    print("\n📋 2. Testing: get_matches_by_tour(4)")
+    tour_matches = parser.get_matches_by_tour(4)
+    print(f"  Found {len(tour_matches)} matches for tour 4")
 
     if tour_matches:
         for match in tour_matches:
