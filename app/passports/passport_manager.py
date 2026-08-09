@@ -4,7 +4,7 @@
 """
 =====================================================
 FAJ Platform v12.0
-Passport Manager v1.6
+Passport Manager v1.7
 =====================================================
 
 РОЛЬ:
@@ -16,34 +16,26 @@ Passport Manager v1.6
     - расчёт FAJ Rating
     - расчёт Passport Confidence
 
-ИСПРАВЛЕНИЯ v1.6:
+ИСПРАВЛЕНИЯ v1.7:
 
-    1. Исправлена потеря FAJ Rating после update_passport()
-       results_strength, opponent_strength, form передаются
-       корректно в create_passport()
+    1. Исправлена передача формы в FAJ Rating.
+       form = new_data.get("form") — абсолютное значение,
+       а не changes.get("form") — DELTA.
 
-    2. Добавлено поле form в team_passports (REAL DEFAULT 50)
-       Теперь форма хранится в паспорте, а не только в xG.
+    2. Исправлен update_after_match():
+       абсолютная форма передаётся через _absolute_form.
 
-    3. Динамическое обновление form после матча с Learning Rate.
-       form = current_form + signal × learning_rate
+    3. Исправлен _calculate_match_changes():
+       форма больше не преобразуется в DELTA.
 
-    4. Goalkeeper добавлен в PASSPORT_RATING_WEIGHTS (вес 0.08).
+    4. Исправлен update_passport():
+       служебные поля (_absolute_form, results_strength, opponent_strength)
+       извлекаются до применения DELTA.
 
-    5. Убран блок обучения injury_factor и key_player_loss
-       от результата матча (логически неверно).
+    5. Исправлен _apply_weighted_changes():
+       служебные поля не проходят через opponent_factor.
 
-    6. FAJ Rating пересчитывается, а НЕ обучается как
-       обычный параметр паспорта.
-
-    7. Opponent Rating нормализован (0.85–1.15).
-
-    8. Tournament DNA goal_factor убран из универсального
-       множителя DELTA (оставлен только opponent_factor).
-
-    9. Home/Away strength НЕ обучаются через один матч.
-
-    10. Home Advantage НЕ попадает в Passport Rating.
+    6. FAJ Rating пересчитывается из актуального паспорта.
 =====================================================
 """
 
@@ -60,10 +52,10 @@ logger = logging.getLogger(__name__)
 
 class PassportManager:
     """
-    Passport Manager v1.6
+    Passport Manager v1.7
     """
 
-    VERSION = "1.6"
+    VERSION = "1.7"
 
     # ============================================================
     # GLOBAL SETTINGS
@@ -112,7 +104,7 @@ class PassportManager:
         "key_player_loss": (0, 100),
         "passport_confidence": (0, 1),
         "league_adaptation": (0, 100),
-        "form": (0, 100),  # ← ДОБАВЛЕНО
+        "form": (0, 100),
     }
 
     # ============================================================
@@ -162,7 +154,7 @@ class PassportManager:
     }
 
     # ============================================================
-    # PASSPORT RATING WEIGHTS (ИСПРАВЛЕНО — добавлен goalkeeper)
+    # PASSPORT RATING WEIGHTS
     # ============================================================
 
     PASSPORT_RATING_WEIGHTS = {
@@ -173,7 +165,7 @@ class PassportManager:
         "press": 0.07,
         "transition": 0.06,
         "finishing": 0.06,
-        "goalkeeper": 0.08,      # ← ДОБАВЛЕНО
+        "goalkeeper": 0.08,
         "squad_quality": 0.09,
         "coach_factor": 0.05,
         "mental": 0.05,
@@ -222,7 +214,7 @@ class PassportManager:
                 "injury_factor",
                 "key_player_loss",
                 "league_adaptation",
-                "form"  # ← ДОБАВЛЕНО
+                "form"
             ]
 
             missing_columns = [col for col in required_columns if col not in columns]
@@ -250,7 +242,7 @@ class PassportManager:
         logger.info("Passport migration check completed")
 
     # ============================================================
-    # CREATE TABLE (ДОБАВЛЕНО ПОЛЕ form)
+    # CREATE TABLE
     # ============================================================
 
     def _create_team_passports_table(self) -> None:
@@ -549,7 +541,7 @@ class PassportManager:
         return self.get_current_passport(team_id, season_id)
 
     # ============================================================
-    # UPDATE PASSPORT
+    # UPDATE PASSPORT (ИСПРАВЛЕНО v1.7)
     # ============================================================
 
     def update_passport(
@@ -574,7 +566,29 @@ class PassportManager:
 
         new_data = current.copy()
 
-        # Применяем DELTA
+        # ============================================================
+        # СЛУЖЕБНЫЕ ПОЛЯ (ИЗВЛЕКАЕМ ДО ПРИМЕНЕНИЯ DELTA)
+        # ============================================================
+        absolute_form = weighted_changes.pop("_absolute_form", None)
+        results_strength = weighted_changes.pop("results_strength", None)
+        opponent_strength = weighted_changes.pop("opponent_strength", opponent_rating)
+
+        # ============================================================
+        # АБСОЛЮТНАЯ ФОРМА
+        # ============================================================
+        if absolute_form is not None:
+            try:
+                new_data["form"] = self._clamp(float(absolute_form), "form")
+                logger.debug(
+                    "Absolute form updated | team=%s | form=%.2f",
+                    team_id, new_data["form"]
+                )
+            except (TypeError, ValueError):
+                logger.warning("Invalid absolute form for team %s: %s", team_id, absolute_form)
+
+        # ============================================================
+        # ПРИМЕНЯЕМ DELTA
+        # ============================================================
         for key, delta in weighted_changes.items():
             if key not in self.PARAM_RANGES:
                 continue
@@ -596,32 +610,36 @@ class PassportManager:
                 team_id, key, old_value, delta, new_value
             )
 
-        # Confidence
+        # ============================================================
+        # CONFIDENCE
+        # ============================================================
         new_data["passport_confidence"] = self._calculate_confidence(
             new_data,
             matches_count + 1,
             new_data.get("created_at", datetime.now().isoformat())
         )
 
-        # FAJ Rating (пересчёт, НЕ обучение)
-        form = changes.get("form")
-        if form is None:
-            form = None
-
-        results_strength = changes.get("results_strength")
-        opponent_strength = changes.get("opponent_strength", opponent_rating)
+        # ============================================================
+        # FAJ RATING — ПОЛНЫЙ ПЕРЕСЧЁТ (ИСПРАВЛЕНО v1.7)
+        # ============================================================
+        current_form = new_data.get("form")
 
         new_data["faj_rating"] = self.calculate_rating(
             new_data,
             results_strength=results_strength,
             opponent_strength=opponent_strength,
-            form=form
+            form=current_form
+        )
+
+        logger.info(
+            "Passport updated | team=%s | rating=%.1f | version=%s",
+            team_id, new_data["faj_rating"], source
         )
 
         return self.create_passport(team_id, season_id, new_data, source)
 
     # ============================================================
-    # UPDATE AFTER MATCH
+    # UPDATE AFTER MATCH (ИСПРАВЛЕНО v1.7)
     # ============================================================
 
     def update_after_match(
@@ -643,6 +661,23 @@ class PassportManager:
         if not changes:
             return current
 
+        # ============================================================
+        # АБСОЛЮТНАЯ ФОРМА
+        # ============================================================
+        if "form" in match_data:
+            try:
+                changes["_absolute_form"] = float(match_data["form"])
+            except (TypeError, ValueError):
+                pass
+
+        # ============================================================
+        # ИСТОРИЧЕСКИЕ ДАННЫЕ ДЛЯ RATING
+        # ============================================================
+        if "results_strength" in match_data:
+            changes["results_strength"] = match_data["results_strength"]
+
+        changes["opponent_strength"] = opponent_rating
+
         return self.update_passport(
             team_id,
             season_id,
@@ -654,7 +689,7 @@ class PassportManager:
         )
 
     # ============================================================
-    # APPLY WEIGHTED CHANGES (БЕЗ goal_factor)
+    # APPLY WEIGHTED CHANGES (ИСПРАВЛЕНО v1.7)
     # ============================================================
 
     def _apply_weighted_changes(
@@ -662,7 +697,15 @@ class PassportManager:
         changes: Dict[str, Any],
         opponent_rating: float
     ) -> Dict[str, Any]:
-        """Модификация DELTA. Только opponent_factor, без goal_factor."""
+        """
+        Модификация DELTA.
+        Математические DELTA получают opponent_factor.
+        Служебные поля:
+            _absolute_form
+            results_strength
+            opponent_strength
+        НЕ являются DELTA паспорта.
+        """
         try:
             opponent_rating = float(opponent_rating)
         except (TypeError, ValueError):
@@ -675,9 +718,24 @@ class PassportManager:
 
         weighted = {}
 
+        service_fields = {
+            "_absolute_form",
+            "results_strength",
+            "opponent_strength"
+        }
+
         for key, value in changes.items():
-            if key not in self.PARAM_RANGES:
+            # --------------------------------------------------------
+            # Служебные поля
+            # --------------------------------------------------------
+            if key in service_fields:
                 weighted[key] = value
+                continue
+
+            # --------------------------------------------------------
+            # Неизвестные параметры
+            # --------------------------------------------------------
+            if key not in self.PARAM_RANGES:
                 continue
 
             try:
@@ -695,11 +753,11 @@ class PassportManager:
         return weighted
 
     # ============================================================
-    # MATCH SIGNALS (ИСПРАВЛЕНО — убран injury от результата)
+    # MATCH SIGNALS (ИСПРАВЛЕНО v1.7 — УБРАНА ФОРМА ИЗ DELTA)
     # ============================================================
 
     def _calculate_match_changes(self, match_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Формирование DELTA после матча."""
+        """Формирование DELTA после матча. Форма НЕ преобразуется в DELTA."""
         changes = {}
 
         try:
@@ -735,15 +793,10 @@ class PassportManager:
         # injury_factor и key_player_loss НЕ обучаются от результата
         # ============================================================
 
-        # Форма (dynamic)
-        if "form" in match_data:
-            try:
-                form_value = float(match_data["form"])
-                # Центр формы = 50
-                form_delta = (form_value - 50.0) / 10.0
-                changes["form"] = form_delta
-            except (TypeError, ValueError):
-                pass
+        # ============================================================
+        # ФОРМА НЕ ПРЕОБРАЗУЕТСЯ В DELTA
+        # Она передаётся как абсолютное значение в update_after_match()
+        # ============================================================
 
         logger.debug("Match changes generated: %s", changes)
 
