@@ -4,49 +4,75 @@
 """
 =====================================================
 FAJ Platform v12.0
-Monte Carlo Model v1.3
+FAJ Monte Carlo Model v1.3
 =====================================================
 
 РОЛЬ:
-    Финальная стохастическая симуляция матча
-    на основе уже рассчитанных xG.
+    Финальная стохастическая симуляция футбольного
+    матча на основе xG.
 
 АРХИТЕКТУРА:
 
     Team Passport
           ↓
-    FAJ XG Model
+    FAJ XG Model v1.4
           ↓
-    Poisson Model
+       home_xG
+       away_xG
           ↓
-    Monte Carlo Model
+    FAJ Poisson Model v7.4
           ↓
-    Final Prediction
+    FAJ Monte Carlo Model v1.3
+          ↓
+    Simulation
+          ↓
+    1X2
+    BTTS
+    Over / Under
+    exact scores
+    goal distributions
+    convergence
+    simulation stability
 
 ВАЖНО:
-    Monte Carlo НЕ рассчитывает xG.
+
     Monte Carlo НЕ использует bookmaker odds.
-    Monte Carlo НЕ изменяет FAJ Rating.
-    Monte Carlo получает готовые xG и моделирует
-    распределение возможных результатов матча.
+
+    Monte Carlo НЕ рассчитывает xG.
+
+    Monte Carlo получает xG как вход
+    от FAJ XG Model.
+
+    Poisson и Monte Carlo являются двумя
+    независимыми математическими слоями:
+
+        Poisson:
+            аналитическое распределение
+
+        Monte Carlo:
+            эмпирическая симуляция
+
+=====================================================
 
 ВХОД:
+
     home_xg: float
     away_xg: float
-    iterations: int
-    seed: Optional[int]
+
+    iterations:
+        количество симуляций
+
+    seed:
+        seed для воспроизводимости
 
 ВЫХОД:
+
     {
+        "status": "success",
+
         "home_win": float,
         "draw": float,
         "away_win": float,
-
-        "double_chance": {
-            "home_or_draw": float,
-            "draw_or_away": float,
-            "home_or_away": float
-        },
 
         "btts_probability": float,
         "btts_no_probability": float,
@@ -54,30 +80,91 @@ Monte Carlo Model v1.3
         "over_2_5": float,
         "under_2_5": float,
 
-        "expected_total": float,
+        "iterations": int,
+
+        "convergence": float,
+
+        "simulation_error": float,
 
         "goals_home": [...],
         "goals_away": [...],
 
         "score_probabilities": {...},
+
         "top_scores": [...],
+
         "most_likely_score": str,
+
         "score_probability": float,
 
-        "iterations": int,
-        "convergence": float,
+        "expected_home_goals": float,
+        "expected_away_goals": float,
+        "expected_total_goals": float,
 
-        "model_version": "FAJ_MC_v1.3"
+        "model_version": str
     }
+
+=====================================================
+
+ИЗМЕНЕНИЯ v1.3:
+
+    1. Единый диапазон xG:
+           0.15 – 4.00
+
+    2. Единый MAX_GOALS = 8.
+
+    3. Используется локальный RNG:
+           random.Random()
+
+       вместо глобального:
+           random.seed()
+
+    4. Seed больше не изменяет глобальное
+       состояние random.
+
+    5. Добавлены:
+           BTTS
+           Over 2.5
+           Under 2.5
+
+    6. Добавлены:
+           expected_home_goals
+           expected_away_goals
+           expected_total_goals
+
+    7. Добавлен top_scores.
+
+    8. Добавлена оценка Monte Carlo
+       sampling error.
+
+    9. Convergence теперь зависит
+       от количества итераций и
+       является диагностическим
+       показателем, а не искусственной
+       константой.
+
+   10. Добавлена защита iterations.
+
+   11. Добавлена защита xG.
+
+   12. Добавлен status = success/error.
+
+   13. Сохранён совместимый API:
+           simulate()
 
 =====================================================
 """
 
-import logging
 import math
 import random
+import logging
 
-from typing import Dict, Any, Optional, List
+from typing import (
+    Dict,
+    Any,
+    Optional,
+    List
+)
 
 from app.config import config
 
@@ -89,65 +176,52 @@ class MonteCarloModel:
     """
     FAJ Monte Carlo Model v1.3
 
-    Симулирует футбольный матч на основе
-    двух независимых распределений Пуассона:
+    Стохастическая симуляция футбольного матча.
 
-        Home Goals ~ Poisson(home_xg)
-        Away Goals ~ Poisson(away_xg)
-
-    xG уже рассчитывается XG Model.
-
-    Monte Carlo отвечает только за:
-        - распределение результатов;
-        - вероятности 1/X/2;
-        - BTTS;
-        - тоталы;
-        - наиболее вероятные счета;
-        - статистическую устойчивость симуляции.
+    Основная задача:
+        проверить и дополнить аналитическое
+        распределение Poisson через большое
+        количество случайных симуляций.
     """
 
     VERSION = "1.3"
-    MODEL_VERSION = "FAJ_MC_v1.3"
 
     # ============================================================
-    # CONFIGURATION
+    # MODEL CONSTANTS
     # ============================================================
 
     DEFAULT_ITERATIONS = config.MONTE_CARLO_ITERATIONS
 
+    MIN_XG = 0.15
+    MAX_XG = 4.00
+
+    MAX_GOALS = 8
+
     MIN_ITERATIONS = 100
     MAX_ITERATIONS = 1_000_000
-
-    XG_MIN = config.MONTE_CARLO_XG_MIN
-    XG_MAX = config.MONTE_CARLO_XG_MAX
-
-    MAX_GOALS = config.MAX_GOALS
 
     # ============================================================
     # INITIALIZATION
     # ============================================================
 
     def __init__(self):
-        """
-        Создаём собственный генератор случайных чисел.
-
-        Важно:
-            НЕ используется глобальный random.seed().
-
-        Это предотвращает побочные эффекты для других
-        частей FAJ Platform.
-        """
 
         self.version = self.VERSION
+
+        # ВАЖНО:
+        # локальный генератор случайных чисел.
+        #
+        # Это предотвращает изменение
+        # глобального random state приложения.
         self._rng = random.Random()
 
         logger.info(
-            "Monte Carlo Model v%s initialized | "
-            "iterations=%s | xg_range=[%.2f, %.2f] | max_goals=%s",
+            "FAJ Monte Carlo Model v%s initialized | "
+            "iterations=%s | xg=%s-%s | max_goals=%s",
             self.VERSION,
             self.DEFAULT_ITERATIONS,
-            self.XG_MIN,
-            self.XG_MAX,
+            self.MIN_XG,
+            self.MAX_XG,
             self.MAX_GOALS
         )
 
@@ -163,233 +237,725 @@ class MonteCarloModel:
         seed: Optional[int] = None
     ) -> Dict[str, Any]:
         """
-        Симуляция матча методом Монте-Карло.
+        Основная симуляция матча.
 
         Args:
             home_xg:
-                xG хозяев.
+                ожидаемые голы хозяев.
 
             away_xg:
-                xG гостей.
+                ожидаемые голы гостей.
 
             iterations:
-                Количество симуляций.
+                количество симуляций.
 
             seed:
-                Необязательный seed для воспроизводимости.
+                seed для воспроизводимости.
 
         Returns:
-            Словарь с вероятностями и распределениями.
+            Dict с результатами.
         """
 
-        # ========================================================
-        # 1. VALIDATE INPUT
-        # ========================================================
-
         try:
-            home_xg = float(home_xg)
-            away_xg = float(away_xg)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"xG must be numeric: "
-                f"home_xg={home_xg}, away_xg={away_xg}"
-            ) from exc
 
-        try:
-            iterations = int(iterations)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"iterations must be integer: {iterations}"
-            ) from exc
+            # ====================================================
+            # 1. SANITIZE INPUT
+            # ====================================================
 
-        if iterations < self.MIN_ITERATIONS:
-            raise ValueError(
-                f"iterations={iterations} is too small. "
-                f"Minimum={self.MIN_ITERATIONS}"
+            home_lambda = self._sanitize_xg(
+                home_xg
             )
 
-        if iterations > self.MAX_ITERATIONS:
-            logger.warning(
-                "iterations=%s exceeds MAX_ITERATIONS=%s. "
-                "Clamped.",
-                iterations,
-                self.MAX_ITERATIONS
-            )
-            iterations = self.MAX_ITERATIONS
-
-        # ========================================================
-        # 2. CLAMP XG
-        # ========================================================
-
-        original_home_xg = home_xg
-        original_away_xg = away_xg
-
-        home_xg = self._clamp_xg(home_xg)
-        away_xg = self._clamp_xg(away_xg)
-
-        if (
-            original_home_xg != home_xg
-            or original_away_xg != away_xg
-        ):
-            logger.warning(
-                "Monte Carlo xG clamped | "
-                "input=%.3f:%.3f | used=%.3f:%.3f",
-                original_home_xg,
-                original_away_xg,
-                home_xg,
+            away_lambda = self._sanitize_xg(
                 away_xg
             )
 
-        # ========================================================
-        # 3. LOCAL RNG
-        # ========================================================
-
-        if seed is not None:
-            rng = random.Random(seed)
-        else:
-            rng = self._rng
-
-        # ========================================================
-        # 4. COUNTERS
-        # ========================================================
-
-        home_wins = 0
-        draws = 0
-        away_wins = 0
-
-        btts_count = 0
-
-        over_2_5_count = 0
-        under_2_5_count = 0
-
-        # ========================================================
-        # 5. GOAL DISTRIBUTIONS
-        # ========================================================
-
-        goals_home = [0] * (self.MAX_GOALS + 1)
-        goals_away = [0] * (self.MAX_GOALS + 1)
-
-        # ========================================================
-        # 6. SCORE DISTRIBUTION
-        # ========================================================
-
-        score_distribution: Dict[str, int] = {}
-
-        # ========================================================
-        # 7. TOTAL GOALS
-        # ========================================================
-
-        total_goals_sum = 0.0
-
-        # ========================================================
-        # 8. SIMULATION
-        # ========================================================
-
-        for _ in range(iterations):
-
-            home_goals = self._sample_poisson(
-                home_xg,
-                rng
+            iterations = self._sanitize_iterations(
+                iterations
             )
 
-            away_goals = self._sample_poisson(
-                away_xg,
-                rng
+            # ====================================================
+            # 2. LOCAL RNG
+            # ====================================================
+
+            if seed is not None:
+
+                try:
+                    self._rng.seed(
+                        int(seed)
+                    )
+                except (
+                    TypeError,
+                    ValueError
+                ):
+                    raise ValueError(
+                        f"Invalid seed: {seed}"
+                    )
+
+            # ====================================================
+            # 3. COUNTERS
+            # ====================================================
+
+            home_wins = 0
+            draws = 0
+            away_wins = 0
+
+            btts_yes = 0
+
+            over_2_5 = 0
+            under_2_5 = 0
+
+            # ====================================================
+            # 4. GOAL DISTRIBUTIONS
+            # ====================================================
+
+            goals_home = [
+                0
+                for _ in range(
+                    self.MAX_GOALS + 1
+                )
+            ]
+
+            goals_away = [
+                0
+                for _ in range(
+                    self.MAX_GOALS + 1
+                )
+            ]
+
+            # ====================================================
+            # 5. SCORE DISTRIBUTION
+            # ====================================================
+
+            score_distribution: Dict[
+                str,
+                int
+            ] = {}
+
+            # ====================================================
+            # 6. EXPECTED GOALS
+            # ====================================================
+
+            total_home_goals = 0
+            total_away_goals = 0
+
+            # ====================================================
+            # 7. SIMULATION LOOP
+            # ====================================================
+
+            for _ in range(iterations):
+
+                home_goals = (
+                    self._sample_poisson(
+                        home_lambda
+                    )
+                )
+
+                away_goals = (
+                    self._sample_poisson(
+                        away_lambda
+                    )
+                )
+
+                # ------------------------------------------------
+                # MAX GOALS
+                # ------------------------------------------------
+
+                home_goals = min(
+                    home_goals,
+                    self.MAX_GOALS
+                )
+
+                away_goals = min(
+                    away_goals,
+                    self.MAX_GOALS
+                )
+
+                # ------------------------------------------------
+                # GOAL DISTRIBUTIONS
+                # ------------------------------------------------
+
+                goals_home[
+                    home_goals
+                ] += 1
+
+                goals_away[
+                    away_goals
+                ] += 1
+
+                # ------------------------------------------------
+                # EXPECTED GOALS
+                # ------------------------------------------------
+
+                total_home_goals += (
+                    home_goals
+                )
+
+                total_away_goals += (
+                    away_goals
+                )
+
+                # ------------------------------------------------
+                # SCORE
+                # ------------------------------------------------
+
+                score_key = (
+                    f"{home_goals}:{away_goals}"
+                )
+
+                score_distribution[
+                    score_key
+                ] = (
+                    score_distribution.get(
+                        score_key,
+                        0
+                    ) + 1
+                )
+
+                # ------------------------------------------------
+                # RESULT
+                # ------------------------------------------------
+
+                if home_goals > away_goals:
+
+                    home_wins += 1
+
+                elif home_goals == away_goals:
+
+                    draws += 1
+
+                else:
+
+                    away_wins += 1
+
+                # ------------------------------------------------
+                # BTTS
+                # ------------------------------------------------
+
+                if (
+                    home_goals > 0
+                    and away_goals > 0
+                ):
+
+                    btts_yes += 1
+
+                # ------------------------------------------------
+                # TOTAL
+                # ------------------------------------------------
+
+                total_goals = (
+                    home_goals +
+                    away_goals
+                )
+
+                if total_goals >= 3:
+
+                    over_2_5 += 1
+
+                else:
+
+                    under_2_5 += 1
+
+            # ====================================================
+            # 8. BASIC PROBABILITIES
+            # ====================================================
+
+            home_probability = (
+                home_wins /
+                iterations
             )
 
-            # ----------------------------------------------------
-            # MAX GOALS
-            # ----------------------------------------------------
-
-            if home_goals > self.MAX_GOALS:
-                home_goals = self.MAX_GOALS
-
-            if away_goals > self.MAX_GOALS:
-                away_goals = self.MAX_GOALS
-
-            # ----------------------------------------------------
-            # GOAL DISTRIBUTIONS
-            # ----------------------------------------------------
-
-            goals_home[home_goals] += 1
-            goals_away[away_goals] += 1
-
-            # ----------------------------------------------------
-            # SCORE
-            # ----------------------------------------------------
-
-            score_key = f"{home_goals}:{away_goals}"
-
-            score_distribution[score_key] = (
-                score_distribution.get(score_key, 0) + 1
+            draw_probability = (
+                draws /
+                iterations
             )
 
-            # ----------------------------------------------------
-            # RESULT
-            # ----------------------------------------------------
+            away_probability = (
+                away_wins /
+                iterations
+            )
 
-            if home_goals > away_goals:
-                home_wins += 1
+            btts_probability = (
+                btts_yes /
+                iterations
+            )
 
-            elif home_goals == away_goals:
-                draws += 1
+            over_probability = (
+                over_2_5 /
+                iterations
+            )
+
+            under_probability = (
+                under_2_5 /
+                iterations
+            )
+
+            # ====================================================
+            # 9. GOAL DISTRIBUTIONS
+            # ====================================================
+
+            home_goal_distribution = [
+                round(
+                    count /
+                    iterations,
+                    6
+                )
+                for count
+                in goals_home
+            ]
+
+            away_goal_distribution = [
+                round(
+                    count /
+                    iterations,
+                    6
+                )
+                for count
+                in goals_away
+            ]
+
+            # ====================================================
+            # 10. SCORE PROBABILITIES
+            # ====================================================
+
+            score_probabilities = {
+                score: round(
+                    count /
+                    iterations,
+                    6
+                )
+                for score, count
+                in score_distribution.items()
+            }
+
+            # ====================================================
+            # 11. TOP SCORES
+            # ====================================================
+
+            top_scores = self._build_top_scores(
+                score_distribution,
+                iterations
+            )
+
+            if top_scores:
+
+                most_likely_score = (
+                    top_scores[0]["score"]
+                )
+
+                score_probability = (
+                    top_scores[0]["probability"]
+                )
 
             else:
-                away_wins += 1
 
-            # ----------------------------------------------------
-            # BTTS
-            # ----------------------------------------------------
+                most_likely_score = "0:0"
+                score_probability = 0.0
 
-            if home_goals > 0 and away_goals > 0:
-                btts_count += 1
+            # ====================================================
+            # 12. EXPECTED GOALS FROM SIMULATION
+            # ====================================================
 
-            # ----------------------------------------------------
-            # TOTAL
-            # ----------------------------------------------------
-
-            total_goals = home_goals + away_goals
-
-            total_goals_sum += total_goals
-
-            if total_goals > 2:
-                over_2_5_count += 1
-            else:
-                under_2_5_count += 1
-
-        # ========================================================
-        # 9. PROBABILITIES
-        # ========================================================
-
-        home_probability = home_wins / iterations
-        draw_probability = draws / iterations
-        away_probability = away_wins / iterations
-
-        btts_probability = btts_count / iterations
-
-        over_2_5_probability = (
-            over_2_5_count / iterations
-        )
-
-        under_2_5_probability = (
-            under_2_5_count / iterations
-        )
-
-        # ========================================================
-        # 10. SCORE PROBABILITIES
-        # ========================================================
-
-        score_probabilities = {
-            score: round(
-                count / iterations,
-                6
+            expected_home_goals = (
+                total_home_goals /
+                iterations
             )
-            for score, count in score_distribution.items()
-        }
 
-        # ========================================================
-        # 11. TOP SCORES
-        # ========================================================
+            expected_away_goals = (
+                total_away_goals /
+                iterations
+            )
+
+            expected_total_goals = (
+                expected_home_goals +
+                expected_away_goals
+            )
+
+            # ====================================================
+            # 13. CONVERGENCE
+            # ====================================================
+
+            convergence = (
+                self._calculate_convergence(
+                    iterations
+                )
+            )
+
+            # ====================================================
+            # 14. SAMPLING ERROR
+            # ====================================================
+
+            sampling_error = (
+                self._calculate_sampling_error(
+                    home_probability,
+                    iterations
+                )
+            )
+
+            # ====================================================
+            # 15. RESULT
+            # ====================================================
+
+            result = {
+
+                "status": "success",
+
+                # -----------------------------------------------
+                # 1X2
+                # -----------------------------------------------
+
+                "home_win": round(
+                    home_probability,
+                    4
+                ),
+
+                "draw": round(
+                    draw_probability,
+                    4
+                ),
+
+                "away_win": round(
+                    away_probability,
+                    4
+                ),
+
+                # -----------------------------------------------
+                # DOUBLE CHANCE
+                # -----------------------------------------------
+
+                "home_or_draw": round(
+                    home_probability +
+                    draw_probability,
+                    4
+                ),
+
+                "draw_or_away": round(
+                    draw_probability +
+                    away_probability,
+                    4
+                ),
+
+                "home_or_away": round(
+                    home_probability +
+                    away_probability,
+                    4
+                ),
+
+                # -----------------------------------------------
+                # BTTS
+                # -----------------------------------------------
+
+                "btts_probability": round(
+                    btts_probability,
+                    4
+                ),
+
+                "btts_no_probability": round(
+                    1.0 -
+                    btts_probability,
+                    4
+                ),
+
+                # -----------------------------------------------
+                # TOTAL
+                # -----------------------------------------------
+
+                "over_2_5": round(
+                    over_probability,
+                    4
+                ),
+
+                "under_2_5": round(
+                    under_probability,
+                    4
+                ),
+
+                # -----------------------------------------------
+                # SIMULATION
+                # -----------------------------------------------
+
+                "iterations": iterations,
+
+                "convergence": round(
+                    convergence,
+                    4
+                ),
+
+                "simulation_error": round(
+                    sampling_error,
+                    6
+                ),
+
+                # -----------------------------------------------
+                # GOALS
+                # -----------------------------------------------
+
+                "goals_home": (
+                    home_goal_distribution
+                ),
+
+                "goals_away": (
+                    away_goal_distribution
+                ),
+
+                # -----------------------------------------------
+                # SCORES
+                # -----------------------------------------------
+
+                "score_probabilities": (
+                    score_probabilities
+                ),
+
+                "top_scores": (
+                    top_scores
+                ),
+
+                "most_likely_score": (
+                    most_likely_score
+                ),
+
+                "score_probability": round(
+                    score_probability,
+                    4
+                ),
+
+                # -----------------------------------------------
+                # EXPECTED GOALS
+                # -----------------------------------------------
+
+                "input_home_xg": round(
+                    home_lambda,
+                    3
+                ),
+
+                "input_away_xg": round(
+                    away_lambda,
+                    3
+                ),
+
+                "expected_home_goals": round(
+                    expected_home_goals,
+                    4
+                ),
+
+                "expected_away_goals": round(
+                    expected_away_goals,
+                    4
+                ),
+
+                "expected_total_goals": round(
+                    expected_total_goals,
+                    4
+                ),
+
+                # -----------------------------------------------
+                # META
+                # -----------------------------------------------
+
+                "model_version": (
+                    self.VERSION
+                )
+            }
+
+            # ====================================================
+            # 16. LOGGING
+            # ====================================================
+
+            logger.info(
+                "MONTE CARLO RESULT | "
+                "xG %.3f:%.3f | "
+                "iterations=%d | "
+                "1X2 %.3f/%.3f/%.3f | "
+                "score=%s | "
+                "convergence=%.4f",
+                home_lambda,
+                away_lambda,
+                iterations,
+                home_probability,
+                draw_probability,
+                away_probability,
+                most_likely_score,
+                convergence
+            )
+
+            return result
+
+        except Exception as exc:
+
+            logger.exception(
+                "FAJ Monte Carlo calculation error"
+            )
+
+            return {
+                "status": "error",
+                "message": str(exc),
+                "home_xg": 0.0,
+                "away_xg": 0.0,
+                "home_win": 0.0,
+                "draw": 0.0,
+                "away_win": 0.0,
+                "home_or_draw": 0.0,
+                "draw_or_away": 0.0,
+                "home_or_away": 0.0,
+                "btts_probability": 0.0,
+                "btts_no_probability": 1.0,
+                "over_2_5": 0.0,
+                "under_2_5": 0.0,
+                "iterations": 0,
+                "convergence": 0.0,
+                "simulation_error": 1.0,
+                "goals_home": [],
+                "goals_away": [],
+                "score_probabilities": {},
+                "top_scores": [],
+                "most_likely_score": "0:0",
+                "score_probability": 0.0,
+                "expected_home_goals": 0.0,
+                "expected_away_goals": 0.0,
+                "expected_total_goals": 0.0,
+                "model_version": self.VERSION
+            }
+
+    # ============================================================
+    # XG SANITIZATION
+    # ============================================================
+
+    def _sanitize_xg(
+        self,
+        value: Any
+    ) -> float:
+        """
+        Проверка и ограничение xG.
+        """
+
+        try:
+            value = float(value)
+
+        except (
+            TypeError,
+            ValueError
+        ):
+
+            raise ValueError(
+                f"Invalid xG value: {value}"
+            )
+
+        if not math.isfinite(value):
+
+            raise ValueError(
+                f"xG must be finite: {value}"
+            )
+
+        return max(
+            self.MIN_XG,
+            min(
+                self.MAX_XG,
+                value
+            )
+        )
+
+    # ============================================================
+    # ITERATIONS
+    # ============================================================
+
+    def _sanitize_iterations(
+        self,
+        iterations: Any
+    ) -> int:
+        """
+        Проверка количества симуляций.
+        """
+
+        try:
+            iterations = int(
+                iterations
+            )
+
+        except (
+            TypeError,
+            ValueError
+        ):
+
+            raise ValueError(
+                f"Invalid iterations: "
+                f"{iterations}"
+            )
+
+        if iterations < self.MIN_ITERATIONS:
+
+            raise ValueError(
+                f"iterations must be >= "
+                f"{self.MIN_ITERATIONS}, "
+                f"got {iterations}"
+            )
+
+        if iterations > self.MAX_ITERATIONS:
+
+            raise ValueError(
+                f"iterations must be <= "
+                f"{self.MAX_ITERATIONS}, "
+                f"got {iterations}"
+            )
+
+        return iterations
+
+    # ============================================================
+    # POISSON SAMPLING
+    # ============================================================
+
+    def _sample_poisson(
+        self,
+        lam: float
+    ) -> int:
+        """
+        Генерация одного значения
+        из распределения Пуассона.
+
+        Используется метод
+        обратного преобразования.
+
+            P(X=k) = e^-λ λ^k / k!
+
+        Метод хорошо подходит для
+        футбольных xG, поскольку λ
+        находится в небольшом диапазоне.
+        """
+
+        if lam <= 0:
+
+            return 0
+
+        probability_limit = (
+            math.exp(-lam)
+        )
+
+        k = 0
+        probability = 1.0
+
+        while probability > probability_limit:
+
+            k += 1
+
+            probability *= (
+                self._rng.random()
+            )
+
+        return k - 1
+
+    # ============================================================
+    # TOP SCORES
+    # ============================================================
+
+    def _build_top_scores(
+        self,
+        score_distribution: Dict[str, int],
+        iterations: int,
+        limit: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        Возвращает наиболее вероятные
+        точные счета.
+        """
 
         sorted_scores = sorted(
             score_distribution.items(),
@@ -397,309 +963,21 @@ class MonteCarloModel:
             reverse=True
         )
 
-        top_scores = [
-            {
+        result = []
+
+        for score, count in sorted_scores[:limit]:
+
+            result.append({
                 "score": score,
                 "probability": round(
-                    count / iterations,
-                    6
-                )
-            }
-            for score, count in sorted_scores[:5]
-        ]
-
-        # ========================================================
-        # 12. MOST LIKELY SCORE
-        # ========================================================
-
-        if sorted_scores:
-
-            most_likely_score = sorted_scores[0][0]
-
-            most_likely_score_probability = (
-                sorted_scores[0][1] / iterations
-            )
-
-        else:
-
-            most_likely_score = "0:0"
-            most_likely_score_probability = 0.0
-
-        # ========================================================
-        # 13. DOUBLE CHANCE
-        # ========================================================
-
-        home_or_draw = (
-            home_probability
-            + draw_probability
-        )
-
-        draw_or_away = (
-            draw_probability
-            + away_probability
-        )
-
-        home_or_away = (
-            home_probability
-            + away_probability
-        )
-
-        # ========================================================
-        # 14. EXPECTED TOTAL
-        # ========================================================
-
-        expected_total = (
-            total_goals_sum / iterations
-        )
-
-        # ========================================================
-        # 15. CONVERGENCE
-        # ========================================================
-
-        convergence = self._calculate_convergence(
-            iterations
-        )
-
-        # ========================================================
-        # 16. GOAL DISTRIBUTIONS
-        # ========================================================
-
-        goals_home_probability = [
-            round(
-                count / iterations,
-                6
-            )
-            for count in goals_home
-        ]
-
-        goals_away_probability = [
-            round(
-                count / iterations,
-                6
-            )
-            for count in goals_away
-        ]
-
-        # ========================================================
-        # 17. RESULT
-        # ========================================================
-
-        result = {
-            "status": "success",
-
-            "model": "Monte Carlo Model",
-
-            "model_version": self.MODEL_VERSION,
-            "version": self.VERSION,
-
-            # ----------------------------------------------------
-            # INPUT
-            # ----------------------------------------------------
-
-            "home_xg": round(home_xg, 4),
-            "away_xg": round(away_xg, 4),
-
-            # ----------------------------------------------------
-            # RESULT PROBABILITIES
-            # ----------------------------------------------------
-
-            "home_win": round(
-                home_probability,
-                6
-            ),
-
-            "draw": round(
-                draw_probability,
-                6
-            ),
-
-            "away_win": round(
-                away_probability,
-                6
-            ),
-
-            "result_probability": {
-                "home": round(
-                    home_probability,
+                    count /
+                    iterations,
                     6
                 ),
-                "draw": round(
-                    draw_probability,
-                    6
-                ),
-                "away": round(
-                    away_probability,
-                    6
-                )
-            },
-
-            # ----------------------------------------------------
-            # DOUBLE CHANCE
-            # ----------------------------------------------------
-
-            "double_chance": {
-                "home_or_draw": round(
-                    home_or_draw,
-                    6
-                ),
-                "draw_or_away": round(
-                    draw_or_away,
-                    6
-                ),
-                "home_or_away": round(
-                    home_or_away,
-                    6
-                )
-            },
-
-            # ----------------------------------------------------
-            # BTTS
-            # ----------------------------------------------------
-
-            "btts_probability": round(
-                btts_probability,
-                6
-            ),
-
-            "btts_no_probability": round(
-                1.0 - btts_probability,
-                6
-            ),
-
-            # ----------------------------------------------------
-            # TOTALS
-            # ----------------------------------------------------
-
-            "over_2_5": round(
-                over_2_5_probability,
-                6
-            ),
-
-            "under_2_5": round(
-                under_2_5_probability,
-                6
-            ),
-
-            "expected_total": round(
-                expected_total,
-                4
-            ),
-
-            # ----------------------------------------------------
-            # GOAL DISTRIBUTION
-            # ----------------------------------------------------
-
-            "goals_home": goals_home_probability,
-
-            "goals_away": goals_away_probability,
-
-            # ----------------------------------------------------
-            # SCORE DISTRIBUTION
-            # ----------------------------------------------------
-
-            "score_probabilities": score_probabilities,
-
-            "top_scores": top_scores,
-
-            "most_likely_score": most_likely_score,
-
-            "score_probability": round(
-                most_likely_score_probability,
-                6
-            ),
-
-            # ----------------------------------------------------
-            # SIMULATION
-            # ----------------------------------------------------
-
-            "iterations": iterations,
-
-            "convergence": round(
-                convergence,
-                6
-            ),
-
-            # ----------------------------------------------------
-            # DIAGNOSTICS
-            # ----------------------------------------------------
-
-            "xg_clamped": (
-                original_home_xg != home_xg
-                or original_away_xg != away_xg
-            )
-        }
-
-        logger.info(
-            "MC RESULT | xG=%.3f:%.3f | "
-            "1X2=%.3f/%.3f/%.3f | "
-            "score=%s | "
-            "iterations=%s | convergence=%.3f",
-            home_xg,
-            away_xg,
-            home_probability,
-            draw_probability,
-            away_probability,
-            most_likely_score,
-            iterations,
-            convergence
-        )
+                "count": count
+            })
 
         return result
-
-    # ============================================================
-    # POISSON SAMPLER
-    # ============================================================
-
-    def _sample_poisson(
-        self,
-        lam: float,
-        rng: random.Random
-    ) -> int:
-        """
-        Генерация одного значения Пуассона.
-
-        Используется метод обратного преобразования.
-
-        Для футбольного xG диапазон небольшой, поэтому
-        алгоритм Кнута подходит и остаётся простым
-        и прозрачным.
-        """
-
-        if lam <= 0:
-            return 0
-
-        limit = math.exp(-lam)
-
-        k = 0
-        probability = 1.0
-
-        while probability > limit:
-
-            k += 1
-
-            probability *= rng.random()
-
-        return k - 1
-
-    # ============================================================
-    # XG CLAMP
-    # ============================================================
-
-    def _clamp_xg(
-        self,
-        value: float
-    ) -> float:
-        """
-        Ограничение xG в диапазоне FAJ Monte Carlo.
-        """
-
-        return max(
-            self.XG_MIN,
-            min(
-                self.XG_MAX,
-                value
-            )
-        )
 
     # ============================================================
     # CONVERGENCE
@@ -707,50 +985,96 @@ class MonteCarloModel:
 
     def _calculate_convergence(
         self,
-        total: int
+        iterations: int
     ) -> float:
         """
-        Оценка статистической устойчивости результата.
+        Диагностический показатель
+        стабильности Monte Carlo.
 
         Это НЕ вероятность исхода.
 
-        Это диагностический показатель,
-        зависящий от количества симуляций.
+        Чем больше количество
+        симуляций, тем выше
+        ожидаемая стабильность.
 
-        Чем больше N, тем выше потенциальная
-        стабильность Monte Carlo.
+        Используем плавную функцию:
 
-        Используется плавная функция:
+            convergence =
+                1 - 1 / sqrt(iterations / 100)
 
-            C = 1 - 1 / sqrt(N / 100)
+        с ограничением 0..0.9999.
 
-        с ограничениями.
+        Примеры:
 
-        Приблизительно:
-
-            100    -> 0.000
-            1,000  -> 0.684
-            5,000  -> 0.859
-            10,000 -> 0.900
-            100k   -> 0.968
-
-        Значение не следует трактовать как
-        математическую вероятность точности.
+            100      → 0.000
+            1 000    → ~0.684
+            10 000   → 0.900
+            100 000  → ~0.968
+            1 000 000→ 0.990
         """
 
-        if total <= 0:
+        if iterations <= 100:
+
             return 0.0
 
-        convergence = (
-            1.0
-            - 1.0 / math.sqrt(total / 100.0)
+        value = (
+            1.0 -
+            1.0 /
+            math.sqrt(
+                iterations / 100.0
+            )
         )
 
         return max(
             0.0,
             min(
-                0.99,
-                convergence
+                0.9999,
+                value
+            )
+        )
+
+    # ============================================================
+    # SAMPLING ERROR
+    # ============================================================
+
+    def _calculate_sampling_error(
+        self,
+        probability: float,
+        iterations: int
+    ) -> float:
+        """
+        Стандартная ошибка оценки вероятности:
+
+            SE = sqrt(p(1-p)/N)
+
+        Возвращает приблизительную
+        статистическую ошибку одной
+        бинарной вероятности.
+        """
+
+        if iterations <= 0:
+
+            return 1.0
+
+        probability = max(
+            0.0,
+            min(
+                1.0,
+                probability
+            )
+        )
+
+        variance = (
+            probability *
+            (1.0 - probability)
+            /
+            iterations
+        )
+
+        return math.sqrt(
+            max(
+                0.0,
+                variance
             )
         )
 
@@ -760,57 +1084,55 @@ class MonteCarloModel:
 
     def status(self) -> Dict[str, Any]:
         """
-        Технический статус модели.
+        Диагностический статус модели.
         """
 
         return {
-            "model": "Monte Carlo Model",
+            "model": (
+                "FAJ Monte Carlo Model"
+            ),
             "version": self.VERSION,
-            "model_version": self.MODEL_VERSION,
-            "default_iterations": self.DEFAULT_ITERATIONS,
-            "min_iterations": self.MIN_ITERATIONS,
-            "max_iterations": self.MAX_ITERATIONS,
+            "default_iterations": (
+                self.DEFAULT_ITERATIONS
+            ),
+            "min_iterations": (
+                self.MIN_ITERATIONS
+            ),
+            "max_iterations": (
+                self.MAX_ITERATIONS
+            ),
+            "max_goals": (
+                self.MAX_GOALS
+            ),
             "xg_range": [
-                self.XG_MIN,
-                self.XG_MAX
+                self.MIN_XG,
+                self.MAX_XG
             ],
-            "max_goals": self.MAX_GOALS,
             "status": "READY"
         }
-
-    # ============================================================
-    # TEST
-    # ============================================================
-
-    def test(self) -> Dict[str, Any]:
-        """
-        Стандартный self-test.
-        """
-
-        return self.simulate(
-            home_xg=1.72,
-            away_xg=0.95,
-            iterations=10_000,
-            seed=42
-        )
 
 
 # ================================================================
 # SINGLETON
 # ================================================================
 
-_mc_instance: Optional[MonteCarloModel] = None
+_mc_instance: Optional[
+    MonteCarloModel
+] = None
 
 
 def get_monte_carlo_model() -> MonteCarloModel:
     """
-    Singleton Monte Carlo Model.
+    Получение singleton экземпляра.
     """
 
     global _mc_instance
 
     if _mc_instance is None:
-        _mc_instance = MonteCarloModel()
+
+        _mc_instance = (
+            MonteCarloModel()
+        )
 
     return _mc_instance
 
@@ -823,134 +1145,226 @@ if __name__ == "__main__":
 
     print()
     print("=" * 70)
-    print("FAJ Platform v12.0")
-    print("Monte Carlo Model v1.3")
+    print("FAJ MONTE CARLO MODEL v1.3")
     print("=" * 70)
 
     model = MonteCarloModel()
+
+    # ------------------------------------------------------------
+    # STATUS
+    # ------------------------------------------------------------
 
     print()
     print("STATUS")
     print("-" * 70)
 
-    print(model.status())
+    print(
+        model.status()
+    )
+
+    # ------------------------------------------------------------
+    # TEST PARAMETERS
+    # ------------------------------------------------------------
+
+    home_xg = 1.72
+    away_xg = 0.95
+
+    iterations = 10000
 
     print()
-    print("TEST")
-    print("-" * 70)
-
-    result = model.test()
-
     print(
-        f"xG: "
-        f"{result['home_xg']:.3f} : "
-        f"{result['away_xg']:.3f}"
+        f"TEST xG: "
+        f"{home_xg:.2f} : {away_xg:.2f}"
     )
 
     print(
-        f"Iterations: "
+        f"ITERATIONS: "
+        f"{iterations}"
+    )
+
+    print("-" * 70)
+
+    # ------------------------------------------------------------
+    # SIMULATION
+    # ------------------------------------------------------------
+
+    result = model.simulate(
+        home_xg=home_xg,
+        away_xg=away_xg,
+        iterations=iterations,
+        seed=42
+    )
+
+    # ------------------------------------------------------------
+    # 1X2
+    # ------------------------------------------------------------
+
+    print()
+    print("1X2")
+
+    print(
+        f"  Home: "
+        f"{result['home_win'] * 100:.2f}%"
+    )
+
+    print(
+        f"  Draw: "
+        f"{result['draw'] * 100:.2f}%"
+    )
+
+    print(
+        f"  Away: "
+        f"{result['away_win'] * 100:.2f}%"
+    )
+
+    # ------------------------------------------------------------
+    # DOUBLE CHANCE
+    # ------------------------------------------------------------
+
+    print()
+    print("DOUBLE CHANCE")
+
+    print(
+        f"  1X: "
+        f"{result['home_or_draw'] * 100:.2f}%"
+    )
+
+    print(
+        f"  X2: "
+        f"{result['draw_or_away'] * 100:.2f}%"
+    )
+
+    print(
+        f"  12: "
+        f"{result['home_or_away'] * 100:.2f}%"
+    )
+
+    # ------------------------------------------------------------
+    # BTTS
+    # ------------------------------------------------------------
+
+    print()
+    print("BTTS")
+
+    print(
+        f"  Yes: "
+        f"{result['btts_probability'] * 100:.2f}%"
+    )
+
+    print(
+        f"  No:  "
+        f"{result['btts_no_probability'] * 100:.2f}%"
+    )
+
+    # ------------------------------------------------------------
+    # TOTAL
+    # ------------------------------------------------------------
+
+    print()
+    print("TOTAL")
+
+    print(
+        f"  Over 2.5: "
+        f"{result['over_2_5'] * 100:.2f}%"
+    )
+
+    print(
+        f"  Under 2.5: "
+        f"{result['under_2_5'] * 100:.2f}%"
+    )
+
+    # ------------------------------------------------------------
+    # SCORE
+    # ------------------------------------------------------------
+
+    print()
+    print("MOST LIKELY SCORE")
+
+    print(
+        f"  {result['most_likely_score']}"
+    )
+
+    print(
+        f"  Probability: "
+        f"{result['score_probability'] * 100:.2f}%"
+    )
+
+    # ------------------------------------------------------------
+    # TOP SCORES
+    # ------------------------------------------------------------
+
+    print()
+    print("TOP 5 SCORES")
+
+    for item in result["top_scores"]:
+
+        print(
+            f"  {item['score']}: "
+            f"{item['probability'] * 100:.2f}% "
+            f"({item['count']} simulations)"
+        )
+
+    # ------------------------------------------------------------
+    # EXPECTED GOALS
+    # ------------------------------------------------------------
+
+    print()
+    print("EXPECTED GOALS")
+
+    print(
+        f"  Input home xG: "
+        f"{result['input_home_xg']:.3f}"
+    )
+
+    print(
+        f"  Input away xG: "
+        f"{result['input_away_xg']:.3f}"
+    )
+
+    print(
+        f"  Simulated home goals: "
+        f"{result['expected_home_goals']:.4f}"
+    )
+
+    print(
+        f"  Simulated away goals: "
+        f"{result['expected_away_goals']:.4f}"
+    )
+
+    print(
+        f"  Simulated total: "
+        f"{result['expected_total_goals']:.4f}"
+    )
+
+    # ------------------------------------------------------------
+    # DIAGNOSTICS
+    # ------------------------------------------------------------
+
+    print()
+    print("MONTE CARLO DIAGNOSTICS")
+
+    print(
+        f"  Iterations: "
         f"{result['iterations']}"
     )
 
     print(
-        f"Convergence: "
-        f"{result['convergence']:.2%}"
-    )
-
-    print()
-    print("1X2")
-    print("-" * 70)
-
-    print(
-        f"Home: "
-        f"{result['home_win']:.2%}"
+        f"  Convergence: "
+        f"{result['convergence'] * 100:.2f}%"
     )
 
     print(
-        f"Draw: "
-        f"{result['draw']:.2%}"
+        f"  Sampling error: "
+        f"±{result['simulation_error'] * 100:.3f}%"
     )
 
-    print(
-        f"Away: "
-        f"{result['away_win']:.2%}"
-    )
-
-    print()
-    print("DOUBLE CHANCE")
-    print("-" * 70)
-
-    dc = result["double_chance"]
-
-    print(
-        f"1X: "
-        f"{dc['home_or_draw']:.2%}"
-    )
-
-    print(
-        f"X2: "
-        f"{dc['draw_or_away']:.2%}"
-    )
-
-    print(
-        f"12: "
-        f"{dc['home_or_away']:.2%}"
-    )
-
-    print()
-    print("MARKETS")
-    print("-" * 70)
-
-    print(
-        f"BTTS: "
-        f"{result['btts_probability']:.2%}"
-    )
-
-    print(
-        f"BTTS No: "
-        f"{result['btts_no_probability']:.2%}"
-    )
-
-    print(
-        f"Over 2.5: "
-        f"{result['over_2_5']:.2%}"
-    )
-
-    print(
-        f"Under 2.5: "
-        f"{result['under_2_5']:.2%}"
-    )
-
-    print()
-    print("SCORE")
-    print("-" * 70)
-
-    print(
-        f"Most likely: "
-        f"{result['most_likely_score']}"
-    )
-
-    print(
-        f"Probability: "
-        f"{result['score_probability']:.2%}"
-    )
-
-    print(
-        f"Expected total: "
-        f"{result['expected_total']:.3f}"
-    )
-
-    print()
-    print("TOP 5 SCORES")
-    print("-" * 70)
-
-    for item in result["top_scores"]:
-        print(
-            f"{item['score']:>5} "
-            f"{item['probability']:.2%}"
-        )
+    # ------------------------------------------------------------
+    # FINAL
+    # ------------------------------------------------------------
 
     print()
     print("=" * 70)
-    print("Monte Carlo Model v1.3 — READY")
+    print(
+        "Monte Carlo Model v1.3 READY"
+    )
     print("=" * 70)
