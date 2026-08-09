@@ -52,15 +52,19 @@ def main():
                     return
                 
                 # ============================================================
-                # ЗАГРУЗКА ПАСПОРТОВ
+                # ЗАГРУЗКА ПАСПОРТОВ (НОВАЯ СТРУКТУРА)
                 # ============================================================
+                # Passport Manager v1.7 возвращает плоский словарь
+                # с полями attack, defense, control, goalkeeper, form, faj_rating
                 home_passport = pm.passport_manager.get_current_passport_by_name(home_team)
                 away_passport = pm.passport_manager.get_current_passport_by_name(away_team)
                 
-                home_base = home_passport.get("BASE", {}) if home_passport else {}
-                away_base = away_passport.get("BASE", {}) if away_passport else {}
-                home_dynamic = home_passport.get("DYNAMIC_INITIAL", {}) if home_passport else {}
-                away_dynamic = away_passport.get("DYNAMIC_INITIAL", {}) if away_passport else {}
+                home_base = home_passport if home_passport else {}
+                away_base = away_passport if away_passport else {}
+                
+                # Для динамических данных — используем те же поля
+                home_dynamic = home_passport if home_passport else {}
+                away_dynamic = away_passport if away_passport else {}
                 
                 # ============================================================
                 # 1. FAJ Rating (из БД)
@@ -83,15 +87,16 @@ def main():
                 # ============================================================
                 st.subheader("📋 Сравнение параметров")
                 
-                params = ['attack', 'defense', 'control', 'tempo', 'press', 'transition', 'finishing', 'goalkeeper', 'squad_quality', 'coach_factor']
+                # Основные параметры паспорта (плоская структура)
+                params = ['attack', 'defense', 'control', 'goalkeeper', 'form', 'squad_quality', 'coach_factor']
                 
                 data = []
                 total_home = 0
                 total_away = 0
                 
                 for key in params:
-                    h_val = home_base.get(key, 50)
-                    a_val = away_base.get(key, 50)
+                    h_val = home_base.get(key, 50) if isinstance(home_base, dict) else 50
+                    a_val = away_base.get(key, 50) if isinstance(away_base, dict) else 50
                     total_home += h_val
                     total_away += a_val
                     data.append({
@@ -138,12 +143,14 @@ def main():
                         st.write(f"🏠 Home Advantage: {diagnostic.get('home_advantage', 1.12):.2f}")
                         st.write(f"🏠 Attack Factor: {diagnostic.get('home_attack_factor', 1.0):.2f}")
                         st.write(f"✈️ Defense Factor: {diagnostic.get('away_defense_factor', 1.0):.2f}")
-                        st.write(f"🏠 Form: {diagnostic.get('home_form', 1.0):.2f}")
+                        st.write(f"🏠 Home Form: {diagnostic.get('home_form', 1.0):.2f}")
+                        st.write(f"🏠 Home Control: {diagnostic.get('home_control_factor', 1.0):.2f}")
                     with col2:
                         st.write(f"✈️ Attack Factor: {diagnostic.get('away_attack_factor', 1.0):.2f}")
                         st.write(f"🏠 Defense Factor: {diagnostic.get('home_defense_factor', 1.0):.2f}")
-                        st.write(f"🎮 Control Factor: {diagnostic.get('control_factor', 1.0):.2f}")
-                        st.write(f"✈️ Form: {diagnostic.get('away_form', 1.0):.2f}")
+                        st.write(f"🏠 GK Factor: {diagnostic.get('home_keeper_factor', 1.0):.2f}")
+                        st.write(f"✈️ Away Form: {diagnostic.get('away_form', 1.0):.2f}")
+                        st.write(f"✈️ Away Control: {diagnostic.get('away_control_factor', 1.0):.2f}")
                 
                 # ============================================================
                 # 4. АНАЛИТИЧЕСКИЙ РАЗБОР ПРЕИМУЩЕСТВ
@@ -154,10 +161,10 @@ def main():
                 home_advantages = []
                 away_advantages = []
                 
-                # На основе параметров
-                for key in ['attack', 'defense', 'control', 'squad_quality', 'coach_factor']:
-                    h_val = home_base.get(key, 50)
-                    a_val = away_base.get(key, 50)
+                # На основе параметров (плоская структура)
+                for key in ['attack', 'defense', 'control', 'goalkeeper', 'squad_quality']:
+                    h_val = home_base.get(key, 50) if isinstance(home_base, dict) else 50
+                    a_val = away_base.get(key, 50) if isinstance(away_base, dict) else 50
                     if a_val - h_val > 3:
                         away_advantages.append(f"{key.capitalize()}: +{a_val - h_val:.0f}")
                     elif h_val - a_val > 3:
@@ -166,13 +173,16 @@ def main():
                 # Домашний фактор
                 home_advantages.append(f"🏠 Домашний фактор: +12%")
                 
-                # Форма
-                home_form = home_dynamic.get('form', 50) / 50
-                away_form = away_dynamic.get('form', 50) / 50
-                if home_form > away_form:
-                    home_advantages.append(f"📈 Форма: +{(home_form - away_form)*10:.0f}%")
-                elif away_form > home_form:
-                    away_advantages.append(f"📈 Форма: +{(away_form - home_form)*10:.0f}%")
+                # Форма (из плоской структуры)
+                home_form_value = home_passport.get('form', 50) if home_passport else 50
+                away_form_value = away_passport.get('form', 50) if away_passport else 50
+                home_form_factor = home_form_value / 50
+                away_form_factor = away_form_value / 50
+                
+                if home_form_factor > away_form_factor:
+                    home_advantages.append(f"📈 Форма: +{(home_form_factor - away_form_factor)*10:.0f}%")
+                elif away_form_factor > home_form_factor:
+                    away_advantages.append(f"📈 Форма: +{(away_form_factor - home_form_factor)*10:.0f}%")
                 
                 col1, col2 = st.columns(2)
                 with col1:
