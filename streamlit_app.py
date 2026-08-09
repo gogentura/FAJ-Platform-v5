@@ -77,6 +77,12 @@ with st.sidebar:
     if st.button("📋 Паспорта", use_container_width=True):
         st.session_state.page = 'passports'
     
+    # ============================================================
+    # НОВАЯ СТРАНИЦА — ЗАГРУЗКА ДАННЫХ (ПАРСИНГ)
+    # ============================================================
+    if st.button("📥 Загрузка данных", use_container_width=True):
+        st.session_state.page = 'data_loader'
+    
     if st.button("🔄 Синхронизация", use_container_width=True):
         st.session_state.page = 'sync'
     
@@ -466,7 +472,20 @@ elif st.session_state.page == 'passports':
     except Exception as e:
         st.error(f"❌ Ошибка загрузки паспортов: {e}")
 
-# ----- СИНХРОНИЗАЦИЯ -----
+# ============================================================
+# НОВАЯ СТРАНИЦА — ЗАГРУЗКА ДАННЫХ (ПАРСИНГ)
+# ============================================================
+elif st.session_state.page == 'data_loader':
+    try:
+        from app.pages.data_loader import main as data_loader_main
+        data_loader_main()
+    except ImportError as e:
+        st.error(f"❌ Страница 'Загрузка данных' не найдена: {e}")
+        st.info("Создайте файл app/pages/data_loader.py")
+    except Exception as e:
+        st.error(f"❌ Ошибка: {e}")
+
+# ----- СИНХРОНИЗАЦИЯ (СТАРАЯ) -----
 elif st.session_state.page == 'sync':
     st.title("🔄 Синхронизация данных")
     
