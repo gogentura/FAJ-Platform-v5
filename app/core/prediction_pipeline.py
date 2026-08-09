@@ -51,7 +51,7 @@ import time
 import logging
 import hashlib
 import uuid
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 from app.config import config
 from app.core.calibration_engine import CalibrationEngine
@@ -174,7 +174,7 @@ class PredictionPipeline:
             )
 
             # =========================================================
-            # XG RESULT VALIDATION (ИСПРАВЛЕНИЕ №2)
+            # XG RESULT VALIDATION
             # =========================================================
             if not isinstance(xg_result, dict):
                 raise ValueError(
@@ -212,7 +212,7 @@ class PredictionPipeline:
             )
 
             # =========================================================
-            # 3. ПОЛУЧАЕМ КОМПОНЕНТЫ ДЛЯ ДИАГНОСТИКИ (ИСПРАВЛЕНИЕ №1, №4, №5)
+            # 3. ПОЛУЧАЕМ КОМПОНЕНТЫ ДЛЯ ДИАГНОСТИКИ
             # =========================================================
             components = xg_result.get("components", {})
 
@@ -244,12 +244,12 @@ class PredictionPipeline:
             }
 
             # =========================================================
-            # 4. POISSON MODEL
+            # 4. POISSON MODEL (С include_matrix=True ДЛЯ TOP_SCORES)
             # =========================================================
             poisson_result = self.poisson_model.calculate(
                 home_xg,
                 away_xg,
-                include_matrix=False
+                include_matrix=True  # ← Включаем для получения score_matrix
             )
 
             if poisson_result.get("status") == "error":
@@ -349,12 +349,13 @@ class PredictionPipeline:
             )
 
             # =========================================================
-            # 11. РАСШИРЕННЫЕ МЕТРИКИ
+            # 11. РАСШИРЕННЫЕ МЕТРИКИ (ИСПРАВЛЕНО)
             # =========================================================
             extended = self._calculate_extended_metrics(
                 home_xg=home_xg,
                 away_xg=away_xg,
-                score_probs=poisson_result.get("score_probabilities", {})
+                poisson_top_scores=poisson_result.get("top_scores", []),
+                score_matrix=poisson_result.get("score_matrix", {})
             )
 
             # =========================================================
@@ -447,21 +448,38 @@ class PredictionPipeline:
         else:
             return "LOW"
 
+    # ============================================================
+    # _calculate_extended_metrics (ИСПРАВЛЕНО)
+    # ============================================================
+
     def _calculate_extended_metrics(
         self,
         home_xg: float,
         away_xg: float,
-        score_probs: Dict[str, float]
+        poisson_top_scores: List[Dict[str, Any]],
+        score_matrix: Dict[str, float]
     ) -> Dict[str, Any]:
-        """Расчёт расширенных метрик для UI"""
-        # Топ-5 счетов
-        top_scores = self._get_top_scores(score_probs, 5)
+        """
+        Расчёт расширенных метрик для UI.
 
-        # BTTS (Обе забьют)
+        Args:
+            home_xg: xG хозяев
+            away_xg: xG гостей
+            poisson_top_scores: готовые топ-счета из Poisson модели
+            score_matrix: матрица счетов из Poisson модели
+        """
+        # =========================================================
+        # ТОП-5 СЧЕТОВ (используем готовые из Poisson)
+        # =========================================================
+        top_scores = poisson_top_scores[:5] if poisson_top_scores else []
+
+        # =========================================================
+        # BTTS (Обе забьют) — из score_matrix
+        # =========================================================
         btts_prob = 0.0
-        for score_str, prob in score_probs.items():
+        for score_str, prob in score_matrix.items():
             try:
-                home, away = score_str.split('-')
+                home, away = score_str.split(':')
                 if int(home) > 0 and int(away) > 0:
                     btts_prob += prob
             except (ValueError, AttributeError):
@@ -469,12 +487,14 @@ class PredictionPipeline:
 
         btts_prob = min(btts_prob, 1.0)
 
-        # Тоталы
+        # =========================================================
+        # ТОТАЛЫ — из score_matrix
+        # =========================================================
         over_25 = 0.0
         over_35 = 0.0
-        for score_str, prob in score_probs.items():
+        for score_str, prob in score_matrix.items():
             try:
-                home, away = score_str.split('-')
+                home, away = score_str.split(':')
                 total = int(home) + int(away)
                 if total > 2.5:
                     over_25 += prob
@@ -486,8 +506,23 @@ class PredictionPipeline:
         over_25 = min(over_25, 1.0)
         over_35 = min(over_35, 1.0)
 
-        # Самый вероятный счёт
+        # =========================================================
+        # САМЫЙ ВЕРОЯТНЫЙ СЧЁТ
+        # =========================================================
         most_likely = top_scores[0] if top_scores else {'home': 0, 'away': 0, 'prob': 0}
+
+        # Если top_scores есть, но формат другой
+        if top_scores and isinstance(top_scores[0], dict):
+            if 'score' in top_scores[0]:
+                try:
+                    home, away = top_scores[0]['score'].split(':')
+                    most_likely = {
+                        'home': int(home),
+                        'away': int(away),
+                        'prob': top_scores[0].get('probability', 0)
+                    }
+                except (ValueError, AttributeError, KeyError):
+                    pass
 
         return {
             "top_scores": top_scores,
@@ -507,32 +542,6 @@ class PredictionPipeline:
                 "under_3_5": round(1 - over_35, 4)
             }
         }
-
-    def _get_top_scores(self, score_probs: Dict[str, float], n: int = 5) -> list:
-        """Получает топ-N самых вероятных счетов"""
-        sorted_scores = sorted(
-            score_probs.items(),
-            key=lambda x: x[1],
-            reverse=True
-        )
-
-        top = []
-        for i, (score_str, prob) in enumerate(sorted_scores[:n]):
-            if prob < 0.001:
-                break
-            try:
-                home, away = score_str.split('-')
-                top.append({
-                    'rank': i + 1,
-                    'home': int(home),
-                    'away': int(away),
-                    'prob': round(prob, 4),
-                    'prob_percent': f"{prob * 100:.2f}%"
-                })
-            except (ValueError, AttributeError):
-                continue
-
-        return top
 
 
 # ============================================================
