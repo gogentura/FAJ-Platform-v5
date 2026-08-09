@@ -6,6 +6,7 @@ FAJ Platform v12.1 — ФИНАЛЬНАЯ СХЕМА
 Database Engine — ЕДИНЫЙ ФАЙЛ БАЗЫ ДАННЫХ 🔒
 
 Схема: v12.1
+Исправления: v12.1-hotfix
 """
 
 import sqlite3
@@ -78,27 +79,84 @@ def ensure_index(table_name: str, index_name: str, columns: str) -> None:
         logger.warning(f"Не удалось создать индекс {index_name}: {e}")
 
 
+def ensure_index_if_table_exists(table_name: str, index_name: str, columns: str) -> None:
+    """Создаёт индекс только если таблица существует."""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name = ?
+        """, (table_name,))
+        if not cursor.fetchone():
+            conn.close()
+            logger.warning(
+                f"⚠️ Таблица {table_name} отсутствует. "
+                f"Индекс {index_name} пропущен."
+            )
+            return
+        cursor.execute("""
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'index'
+              AND name = ?
+        """, (index_name,))
+        if not cursor.fetchone():
+            cursor.execute(
+                f"CREATE INDEX IF NOT EXISTS {index_name} "
+                f"ON {table_name} ({columns})"
+            )
+            logger.info(
+                f"✅ Создан индекс: {index_name}"
+            )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning(
+            f"Не удалось создать индекс {index_name}: {e}"
+        )
+
+
 def get_schema_version():
+    """Возвращает последнюю успешно применённую версию схемы."""
     if not os.path.exists(DB_FILE):
         return None
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT version FROM schema_migrations ORDER BY id DESC LIMIT 1")
+        # Проверяем существование таблицы
+        cursor.execute("""
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name = 'schema_migrations'
+        """)
+        if not cursor.fetchone():
+            conn.close()
+            return None
+        cursor.execute("""
+            SELECT version
+            FROM schema_migrations
+            WHERE success = 1
+            ORDER BY id DESC
+            LIMIT 1
+        """)
         row = cursor.fetchone()
         conn.close()
-        return row[0] if row else None
-    except:
+        return row["version"] if row else None
+    except Exception as e:
+        logger.warning(f"Не удалось определить версию схемы: {e}")
         return None
 
 
 def run_migrations():
-    """Выполняет все миграции для существующей базы"""
-    logger.info("🚀 Запуск миграций...")
-
-    # ============================================================
-    # 1. Создаём таблицу миграций
-    # ============================================================
+    """Безопасное выполнение миграций FAJ Database v12.1."""
+    logger.info("🚀 Запуск миграций FAJ...")
+    # ------------------------------------------------------------
+    # 1. Таблица истории миграций
+    # ------------------------------------------------------------
     ensure_table("schema_migrations", """
         CREATE TABLE schema_migrations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -108,53 +166,116 @@ def run_migrations():
             success INTEGER DEFAULT 1
         )
     """)
-
-    # ============================================================
-    # 2. Расширение таблицы matches
-    # ============================================================
-    ensure_column("matches", "home_xg", "REAL")
-    ensure_column("matches", "away_xg", "REAL")
-    ensure_column("matches", "home_possession", "INTEGER")
-    ensure_column("matches", "away_possession", "INTEGER")
-    ensure_column("matches", "home_shots", "INTEGER")
-    ensure_column("matches", "away_shots", "INTEGER")
-    ensure_column("matches", "home_shots_on_target", "INTEGER")
-    ensure_column("matches", "away_shots_on_target", "INTEGER")
-    ensure_column("matches", "parser_source", "TEXT")
-    ensure_column("matches", "parser_version", "TEXT")
-    ensure_column("matches", "updated_at", "TEXT")
-    ensure_column("matches", "data_quality", "REAL DEFAULT 1.0")
-    ensure_column("matches", "match_uuid", "TEXT UNIQUE")
-
-    # ============================================================
-    # 3. Расширение team_dynamic
-    # ============================================================
-    ensure_column("team_dynamic", "last_sync", "TEXT")
-
-    # ============================================================
-    # 4. Новые индексы
-    # ============================================================
-    ensure_index("matches", "idx_matches_status", "status")
-    ensure_index("matches", "idx_matches_date", "date")
-    ensure_index("matches", "idx_matches_home_away", "home_team_id, away_team_id")
-    ensure_index("matches", "idx_matches_uuid", "match_uuid")
-    ensure_index("prediction_validation", "idx_validation_match", "match_id")
-    ensure_index("team_form_history", "idx_form_team_season", "team_id, season_id")
-    ensure_index("team_form_history", "idx_form_team_date", "team_id, created_at")
-
-    # ============================================================
-    # 5. Запись миграции
-    # ============================================================
+    # ------------------------------------------------------------
+    # 2. Проверяем наличие matches
+    # ------------------------------------------------------------
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT OR IGNORE INTO schema_migrations (version, description, success)
-        VALUES ('12.1', 'Initial migration v12.1', 1)
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = 'matches'
     """)
+    matches_exists = cursor.fetchone() is not None
+    conn.close()
+    if matches_exists:
+        ensure_column("matches", "home_xg", "REAL")
+        ensure_column("matches", "away_xg", "REAL")
+        ensure_column("matches", "home_possession", "INTEGER")
+        ensure_column("matches", "away_possession", "INTEGER")
+        ensure_column("matches", "home_shots", "INTEGER")
+        ensure_column("matches", "away_shots", "INTEGER")
+        ensure_column("matches", "home_shots_on_target", "INTEGER")
+        ensure_column("matches", "away_shots_on_target", "INTEGER")
+        ensure_column("matches", "parser_source", "TEXT")
+        ensure_column("matches", "parser_version", "TEXT")
+        ensure_column("matches", "updated_at", "TEXT")
+        ensure_column("matches", "data_quality", "REAL DEFAULT 1.0")
+        # ВАЖНО:
+        # match_uuid нельзя безопасно добавлять через
+        # ALTER TABLE ... ADD COLUMN ... UNIQUE.
+        # Поэтому здесь только колонка.
+        ensure_column("matches", "match_uuid", "TEXT")
+        ensure_index(
+            "matches",
+            "idx_matches_status",
+            "status"
+        )
+        ensure_index(
+            "matches",
+            "idx_matches_date",
+            "date"
+        )
+        ensure_index(
+            "matches",
+            "idx_matches_home_away",
+            "home_team_id, away_team_id"
+        )
+        ensure_index(
+            "matches",
+            "idx_matches_uuid",
+            "match_uuid"
+        )
+    # ------------------------------------------------------------
+    # 3. team_dynamic
+    # ------------------------------------------------------------
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = 'team_dynamic'
+    """)
+    dynamic_exists = cursor.fetchone() is not None
+    conn.close()
+    if dynamic_exists:
+        ensure_column(
+            "team_dynamic",
+            "last_sync",
+            "TEXT"
+        )
+    # ------------------------------------------------------------
+    # 4. prediction_validation
+    # ------------------------------------------------------------
+    ensure_index_if_table_exists(
+        "prediction_validation",
+        "idx_validation_match",
+        "match_id"
+    )
+    # ------------------------------------------------------------
+    # 5. team_form_history
+    # ------------------------------------------------------------
+    ensure_index_if_table_exists(
+        "team_form_history",
+        "idx_form_team_season",
+        "team_id, season_id"
+    )
+    ensure_index_if_table_exists(
+        "team_form_history",
+        "idx_form_team_date",
+        "team_id, created_at"
+    )
+    # ------------------------------------------------------------
+    # 6. Записываем версию
+    # ------------------------------------------------------------
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT OR IGNORE INTO schema_migrations
+        (version, description, success)
+        VALUES (?, ?, ?)
+    """, (
+        DB_SCHEMA_VERSION,
+        "FAJ Platform v12.1 database schema",
+        1
+    ))
     conn.commit()
     conn.close()
-
-    logger.info("✅ Миграции завершены")
+    logger.info(
+        f"✅ Миграции завершены. Schema: {DB_SCHEMA_VERSION}"
+    )
 
 
 def init_database():
@@ -734,6 +855,33 @@ def init_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_form_team ON team_form_history(team_id)")
 
     # ============================================================
+    # ДОБАВЛЯЕМ diagnostic_history (ИСПРАВЛЕНИЕ №4)
+    # ============================================================
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS diagnostic_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            elapsed_seconds REAL DEFAULT 0,
+            passed INTEGER DEFAULT 0,
+            warned INTEGER DEFAULT 0,
+            failed INTEGER DEFAULT 0,
+            total INTEGER DEFAULT 0,
+            critical_fail INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'unknown',
+            details_json TEXT DEFAULT '{}',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_diagnostic_timestamp
+        ON diagnostic_history(timestamp)
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_diagnostic_status
+        ON diagnostic_history(status)
+    """)
+
+    # ============================================================
     # LEARNING LAYER TABLES
     # ============================================================
 
@@ -1035,16 +1183,28 @@ class FAJDatabase:
             logger.error(f"Get diagnostics error: {e}")
             return []
 
-    def prediction_exists(self, prediction_id: str) -> bool:
+    # ============================================================
+    # PREDICTION EXISTS (ИСПРАВЛЕНИЕ №5)
+    # ============================================================
+
+    def prediction_exists(self, prediction_id) -> bool:
+        """Проверяет существование прогноза в основной таблице predictions."""
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM faj_decisions WHERE id = ?", (prediction_id,))
-            count = cursor.fetchone()[0]
+            cursor.execute("""
+                SELECT 1
+                FROM predictions
+                WHERE id = ?
+                LIMIT 1
+            """, (prediction_id,))
+            exists = cursor.fetchone() is not None
             conn.close()
-            return count > 0
+            return exists
         except Exception as e:
-            logger.error(f"Prediction exists error: {e}")
+            logger.error(
+                f"Prediction exists error: {e}"
+            )
             return False
 
     # ============================================================
@@ -1102,20 +1262,64 @@ class FAJDatabase:
         return row
 
     # ============================================================
-    # SEASONS
+    # SEASONS (ИСПРАВЛЕНИЕ №8)
     # ============================================================
 
-    def create_season(self, name, league, year, competition_type="league", status="active"):
+    def create_season(
+        self,
+        name,
+        league,
+        year,
+        competition_type="league",
+        status="active"
+    ):
+        """Создаёт сезон или возвращает существующий."""
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO seasons (name, league, year, competition_type, status, created_at)
-            VALUES (?,?,?,?,?,?)
-        """, (name, league, year, competition_type, status, datetime.now().isoformat()))
-        conn.commit()
-        season_id = cursor.lastrowid
-        conn.close()
-        return season_id
+        try:
+            cursor.execute("""
+                SELECT id
+                FROM seasons
+                WHERE league = ?
+                  AND year = ?
+                  AND competition_type = ?
+                LIMIT 1
+            """, (
+                league,
+                year,
+                competition_type
+            ))
+            existing = cursor.fetchone()
+            if existing:
+                return existing["id"]
+            cursor.execute("""
+                INSERT INTO seasons (
+                    name,
+                    league,
+                    year,
+                    competition_type,
+                    status,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                name,
+                league,
+                year,
+                competition_type,
+                status,
+                datetime.now().isoformat()
+            ))
+            conn.commit()
+            return cursor.lastrowid
+        except Exception as e:
+            conn.rollback()
+            logger.error(
+                f"Ошибка создания сезона {league} {year}: {e}"
+            )
+            raise
+        finally:
+            conn.close()
 
     def get_seasons(self):
         conn = get_connection()
@@ -1134,27 +1338,56 @@ class FAJDatabase:
         return row[0] if row else None
 
     # ============================================================
-    # ROUNDS
+    # ROUNDS (ИСПРАВЛЕНИЕ №7)
     # ============================================================
 
-    def create_round(self, season_id, number, date_start="", date_end=""):
+    def create_round(
+        self,
+        season_id,
+        number,
+        date_start="",
+        date_end=""
+    ):
+        """Создаёт тур или возвращает существующий."""
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id FROM rounds WHERE season_id = ? AND round_number = ?",
-            (season_id, number)
-        )
-        existing = cursor.fetchone()
-        if existing:
-            return existing[0]
-        cursor.execute("""
-            INSERT INTO rounds (season_id, round_number, date_start, date_end, created_at)
-            VALUES (?,?,?,?,?)
-        """, (season_id, number, date_start, date_end, datetime.now().isoformat()))
-        conn.commit()
-        round_id = cursor.lastrowid
-        conn.close()
-        return round_id
+        try:
+            cursor.execute("""
+                SELECT id
+                FROM rounds
+                WHERE season_id = ?
+                  AND round_number = ?
+                LIMIT 1
+            """, (season_id, number))
+            existing = cursor.fetchone()
+            if existing:
+                return existing["id"]
+            cursor.execute("""
+                INSERT INTO rounds (
+                    season_id,
+                    round_number,
+                    date_start,
+                    date_end,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                season_id,
+                number,
+                date_start,
+                date_end,
+                datetime.now().isoformat()
+            ))
+            conn.commit()
+            return cursor.lastrowid
+        except Exception as e:
+            conn.rollback()
+            logger.error(
+                f"Ошибка создания тура {number}: {e}"
+            )
+            raise
+        finally:
+            conn.close()
 
     def get_rounds(self, season_id=None):
         conn = get_connection()
@@ -1168,23 +1401,63 @@ class FAJDatabase:
         return data
 
     # ============================================================
-    # MATCHES
+    # MATCHES (ИСПРАВЛЕНИЕ №6 - upsert_match)
     # ============================================================
 
     def upsert_match(self, data: Dict[str, Any]) -> int:
-        """Создаёт или обновляет матч по match_uuid"""
+        """
+        Создаёт или обновляет матч.
+        Приоритет идентификации:
+        1. Переданный match_uuid
+        2. Существующий матч по:
+           round_id + home_team_id + away_team_id + date
+        3. Новый UUID
+        """
         conn = self.get_connection()
         cursor = conn.cursor()
 
-        # Генерируем uuid если нет
-        match_uuid = data.get('match_uuid') or str(uuid.uuid4())
-
-        # Проверяем существование
-        cursor.execute("SELECT id FROM matches WHERE match_uuid = ?", (match_uuid,))
-        existing = cursor.fetchone()
+        match_uuid = data.get("match_uuid")
+        existing = None
+        # ------------------------------------------------------------
+        # 1. По UUID
+        # ------------------------------------------------------------
+        if match_uuid:
+            cursor.execute("""
+                SELECT id
+                FROM matches
+                WHERE match_uuid = ?
+                LIMIT 1
+            """, (match_uuid,))
+            existing = cursor.fetchone()
+        # ------------------------------------------------------------
+        # 2. По естественному ключу матча
+        # ------------------------------------------------------------
+        if existing is None:
+            cursor.execute("""
+                SELECT id, match_uuid
+                FROM matches
+                WHERE round_id = ?
+                  AND home_team_id = ?
+                  AND away_team_id = ?
+                  AND date = ?
+                LIMIT 1
+            """, (
+                data.get("round_id"),
+                data.get("home_team_id"),
+                data.get("away_team_id"),
+                data.get("date")
+            ))
+            existing = cursor.fetchone()
+            if existing:
+                match_uuid = existing["match_uuid"]
+        # ------------------------------------------------------------
+        # 3. Генерация UUID только для действительно нового матча
+        # ------------------------------------------------------------
+        if not match_uuid:
+            match_uuid = str(uuid.uuid4())
 
         if existing:
-            match_id = existing[0]
+            match_id = existing["id"]
             # Обновляем
             cursor.execute("""
                 UPDATE matches SET
@@ -1381,20 +1654,37 @@ class FAJDatabase:
         return row
 
     # ============================================================
-    # TEAM BASE
+    # TEAM BASE (ИСПРАВЛЕНИЕ №9)
     # ============================================================
 
     def get_base(self, team_id, season_id):
+        """
+        Возвращает основной team_base.
+        ВАЖНО:
+        team_base сохраняется для совместимости со старыми
+        модулями FAJ. Основным паспортом v12.x является
+        team_passports.
+        """
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT * FROM team_base
-            WHERE team_id = ? AND season_id = ?
-            ORDER BY passport_version DESC LIMIT 1
-        """, (team_id, season_id))
-        row = cursor.fetchone()
-        conn.close()
-        return row
+        try:
+            cursor.execute("""
+                SELECT *
+                FROM team_base
+                WHERE team_id = ?
+                  AND season_id = ?
+                ORDER BY
+                    COALESCE(updated_at, '') DESC,
+                    passport_version DESC,
+                    id DESC
+                LIMIT 1
+            """, (
+                team_id,
+                season_id
+            ))
+            return cursor.fetchone()
+        finally:
+            conn.close()
 
     def update_base(self, team_id, season_id, **kwargs):
         allowed = [
@@ -2181,22 +2471,24 @@ class FAJDatabase:
             cursor = conn.cursor()
 
             cursor.execute("""
-                INSERT INTO faj_decisions (
-                    final_score,
-                    final_probability,
+                INSERT INTO predictions (
+                    match_id,
+                    model_version,
+                    algorithm,
+                    home_win,
+                    draw,
+                    away_win,
                     confidence,
-                    risk_level,
-                    model_agreement,
-                    reason,
                     created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                faj_score,
-                0.0,
+                prediction_id,
+                pipeline_version,
+                "FAJ Engine",
+                home_win,
+                draw,
+                away_win,
                 confidence,
-                risk_level,
-                model_agreement,
-                f"FAJ Decision: {home_team} vs {away_team} ({league})",
                 datetime.now().isoformat()
             ))
 
@@ -2210,7 +2502,7 @@ class FAJDatabase:
             return False
 
     # ============================================================
-    # PREDICTION VALIDATION (НОВЫЙ МЕТОД)
+    # PREDICTION VALIDATION
     # ============================================================
 
     def save_prediction_validation(self, data: Dict[str, Any]) -> int:
@@ -2259,7 +2551,7 @@ class FAJDatabase:
         return row_id
 
     # ============================================================
-    # TEAM FORM HISTORY (НОВЫЙ МЕТОД)
+    # TEAM FORM HISTORY
     # ============================================================
 
     def save_team_form(self, data: Dict[str, Any]) -> int:
@@ -2311,6 +2603,67 @@ class FAJDatabase:
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
+
+    # ============================================================
+    # GET TEAM PASSPORT (ИСПРАВЛЕНИЕ №10 - НОВЫЙ МЕТОД)
+    # ============================================================
+
+    def get_team_passport(
+        self,
+        team_id: int,
+        season_id: int,
+        version: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Возвращает актуальный FAJ Team Passport.
+        Приоритет:
+        - конкретная version, если передана;
+        - иначе последний созданный паспорт.
+        team_passports является основным источником
+        паспортных параметров FAJ v12.x.
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            if version:
+                cursor.execute("""
+                    SELECT *
+                    FROM team_passports
+                    WHERE team_id = ?
+                      AND season_id = ?
+                      AND version = ?
+                    LIMIT 1
+                """, (
+                    team_id,
+                    season_id,
+                    version
+                ))
+            else:
+                cursor.execute("""
+                    SELECT *
+                    FROM team_passports
+                    WHERE team_id = ?
+                      AND season_id = ?
+                    ORDER BY
+                        datetime(created_at) DESC,
+                        id DESC
+                    LIMIT 1
+                """, (
+                    team_id,
+                    season_id
+                ))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return dict(row)
+        except Exception as e:
+            logger.error(
+                f"Ошибка получения паспорта "
+                f"team_id={team_id}, season_id={season_id}: {e}"
+            )
+            return None
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":
