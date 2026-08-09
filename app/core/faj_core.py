@@ -20,7 +20,7 @@ from datetime import datetime
 
 from app.config import config
 from app.core.match_context import MatchContext
-from app.prediction.prediction_manager import get_prediction_manager
+from app.core.prediction_manager import get_prediction_manager
 
 logger = logging.getLogger(__name__)
 
