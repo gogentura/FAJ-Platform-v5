@@ -3,179 +3,106 @@
 
 """
 =====================================================
-FAJ Platform v12.0
-FAJ XG Model v1.5
+FAJ XG Model v1.6
 =====================================================
 
 РОЛЬ:
-    Расчёт ожидаемых голов (xG) на основе Team Passport.
+    Расчёт ожидаемых голов (xG) на основе паспортов команд.
 
-ЦЕПОЧКА:
-    Team Passport
-        ↓
-    FAJ XG Model
-        ↓
-    home_xg / away_xg
-        ↓
-    Poisson / Monte Carlo
+АРХИТЕКТУРА:
 
-ПОДДЕРЖИВАЕТ:
+    Team Passport (плоская структура)
+          ↓
+    FAJ XG Model v1.6
+          ↓
+    home_xg
+    away_xg
 
-    1. Вложенный паспорт:
+ФОРМУЛА:
 
-    {
-        "BASE": {...},
-        "DYNAMIC_INITIAL": {...}
-    }
+    Home xG = 1.35
+            × Home Attack Factor
+            × Away Defense Factor
+            × Away GK Factor
+            × Home Control Factor
+            × Home Form Factor
+            × 1.12 (Home Advantage)
 
-    2. Плоский паспорт SQLite:
+    Away xG = 1.35
+            × Away Attack Factor
+            × Home Defense Factor
+            × Home GK Factor
+            × Away Control Factor
+            × Away Form Factor
 
-    {
-        "attack": 82,
-        "defense": 78,
-        "control": 80,
-        "goalkeeper": 75,
-        "form": 55,
-        "faj_rating": 85.5
-    }
+ГДЕ:
 
-ВАЖНЫЕ ПРИНЦИПЫ:
+    Attack Factor = attack / 70 (0.85–1.15)
+    Defense Factor = 70 / defense (0.85–1.15)
+    GK Factor = 70 / goalkeeper (0.85–1.15)
+    Form Factor = form / 50 (0.85–1.15)
+    Control Factor: разница контроля распределяется между командами
 
-    - bookmaker odds НЕ используются
-    - FAJ Rating НЕ используется напрямую для xG
-    - Home Advantage применяется ТОЛЬКО здесь
-    - форма влияет на атакующий потенциал
-    - защита соперника снижает xG
-    - вратарь соперника снижает xG
-    - контроль распределяется между командами
-    - отсутствующая форма = нейтральный фактор 1.0
-    - обязательные паспортные параметры не заменяются
-      молча нейтральным значением
-    - xG ограничивается единым диапазоном
-    - результат совместим с Poisson / Monte Carlo
-
-=====================================================
-MODEL CONTRACT
-=====================================================
-
-INPUT:
-
-    home_passport: Dict
-    away_passport: Dict
-
-    home_rating: float
-    away_rating: float
-
-OUTPUT:
-
-    {
-        "status": "success",
-
-        "home_xg": float,
-        "away_xg": float,
-
-        "components": {...},
-
-        "explanation": [...],
-
-        "model_version": "FAJ_XG_v1.5",
-
-        "timestamp": "..."
-    }
-
+ВАЖНО:
+    - FAJ Rating НЕ участвует в расчёте xG
+    - Home Advantage = 1.12 (только для хозяев)
+    - Диапазон xG: 0.10 – 4.00
+    - Паспорт — плоская структура (v1.7)
+    - Форма — абсолютное значение 0–100
 =====================================================
 """
 
 import logging
-from datetime import datetime
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, Any, Optional
 
+from app.config import config
 
 logger = logging.getLogger(__name__)
 
 
-class FAJXGModel:
+class XGModel:
     """
-    FAJ Expected Goals Model v1.5
+    FAJ XG Model v1.6
 
-    Центральная задача модели:
-
-        Team Passport → xG
-
-    FAJ Rating здесь используется только
-    для диагностики и НЕ является множителем xG.
+    Расчёт xG на основе паспортов команд.
     """
 
-    VERSION = "1.5"
-    MODEL_VERSION = "FAJ_XG_v1.5"
+    VERSION = "1.6"
+    MODEL_VERSION = "FAJ_XG_v1.6"
 
     # ============================================================
-    # BASE MODEL
+    # MODEL CONSTANTS
     # ============================================================
 
-    # Среднее количество голов одной команды
     LEAGUE_MEAN_XG = 1.35
+    HOME_ADVANTAGE = config.HOME_ADVANTAGE  # 1.12
 
-    # Базовый уровень силы команды
-    POWER_BASE = 70.0
-
-    # ============================================================
-    # HOME ADVANTAGE
-    # ============================================================
-
-    # Home Advantage применяется ТОЛЬКО здесь.
-    #
-    # В Passport Manager Home Advantage
-    # НЕ должен попадать в FAJ Rating.
-    #
-    HOME_ADVANTAGE = 1.12
+    XG_MIN = 0.10
+    XG_MAX = 4.00
 
     # ============================================================
-    # XG LIMITS
+    # FACTOR LIMITS
     # ============================================================
 
-    # Эти значения должны совпадать с Poisson Model.
-    MIN_XG = 0.10
-    MAX_XG = 4.00
+    FACTOR_MIN = 0.85
+    FACTOR_MAX = 1.15
 
     # ============================================================
-    # PASSPORT LIMITS
+    # INITIALIZATION
     # ============================================================
 
-    MIN_POWER = 40.0
-    MAX_POWER = 100.0
+    def __init__(self):
+        self.version = self.VERSION
+        self.model_version = self.MODEL_VERSION
 
-    # ============================================================
-    # CONTROL
-    # ============================================================
-
-    CONTROL_WEIGHT = 0.50
-
-    MIN_CONTROL_FACTOR = 0.85
-    MAX_CONTROL_FACTOR = 1.15
-
-    # ============================================================
-    # GOALKEEPER
-    # ============================================================
-
-    MIN_KEEPER_FACTOR = 0.85
-    MAX_KEEPER_FACTOR = 1.15
-
-    # ============================================================
-    # DEFENSE
-    # ============================================================
-
-    MIN_DEFENSE_FACTOR = 0.70
-    MAX_DEFENSE_FACTOR = 1.40
-
-    # ============================================================
-    # FORM
-    # ============================================================
-
-    FORM_BASE = 50.0
-
-    MIN_FORM_FACTOR = 0.85
-    MAX_FORM_FACTOR = 1.15
+        logger.info(
+            "FAJ XG Model v%s initialized | "
+            "home_advantage=%.2f | xg_range=%.2f-%.2f",
+            self.VERSION,
+            self.HOME_ADVANTAGE,
+            self.XG_MIN,
+            self.XG_MAX
+        )
 
     # ============================================================
     # PUBLIC API
@@ -185,1457 +112,343 @@ class FAJXGModel:
         self,
         home_passport: Dict[str, Any],
         away_passport: Dict[str, Any],
-        home_rating: float = 70.0,
-        away_rating: float = 70.0
+        home_rating: float = 50.0,
+        away_rating: float = 50.0
     ) -> Dict[str, Any]:
         """
-        Рассчитать xG матча.
+        Расчёт xG для матча.
 
-        home_rating / away_rating:
+        Args:
+            home_passport: паспорт домашней команды (плоская структура)
+            away_passport: паспорт гостевой команды (плоская структура)
+            home_rating: рейтинг хозяев (только для диагностики)
+            away_rating: рейтинг гостей (только для диагностики)
 
-            только диагностические значения.
-
-        Они НЕ участвуют непосредственно
-        в математическом расчёте xG.
+        Returns:
+            Dict с home_xg, away_xg и компонентами
         """
-
-        timestamp = datetime.utcnow().isoformat()
-
         try:
+            # ============================================================
+            # 1. ИЗВЛЕЧЕНИЕ ПАРАМЕТРОВ
+            # ============================================================
 
-            # ====================================================
-            # 1. INPUT VALIDATION
-            # ====================================================
+            home_params = self._extract_team_parameters(home_passport, is_home=True)
+            away_params = self._extract_team_parameters(away_passport, is_home=False)
 
-            if not isinstance(home_passport, dict):
-                raise TypeError(
-                    "home_passport must be dict, "
-                    f"got {type(home_passport).__name__}"
-                )
+            # ============================================================
+            # 2. БАЗОВЫЕ ПАРАМЕТРЫ
+            # ============================================================
 
-            if not isinstance(away_passport, dict):
-                raise TypeError(
-                    "away_passport must be dict, "
-                    f"got {type(away_passport).__name__}"
-                )
+            home_attack = home_params.get("attack", 50.0)
+            home_defense = home_params.get("defense", 50.0)
+            home_control = home_params.get("control", 50.0)
+            home_goalkeeper = home_params.get("goalkeeper", 50.0)
+            home_form = home_params.get("form", 50.0)
 
-            # ====================================================
-            # 2. EXTRACT PASSPORTS
-            # ====================================================
+            away_attack = away_params.get("attack", 50.0)
+            away_defense = away_params.get("defense", 50.0)
+            away_control = away_params.get("control", 50.0)
+            away_goalkeeper = away_params.get("goalkeeper", 50.0)
+            away_form = away_params.get("form", 50.0)
 
-            home = self._extract_team_parameters(
-                home_passport,
-                side="HOME"
+            # ============================================================
+            # 3. РАСЧЁТ ФАКТОРОВ
+            # ============================================================
+
+            # Attack: attack / 70
+            home_attack_factor = self._calculate_attack_factor(home_attack)
+            away_attack_factor = self._calculate_attack_factor(away_attack)
+
+            # Defense: 70 / defense
+            home_defense_factor = self._calculate_defense_factor(home_defense)
+            away_defense_factor = self._calculate_defense_factor(away_defense)
+
+            # Goalkeeper: 70 / goalkeeper
+            home_keeper_factor = self._calculate_keeper_factor(home_goalkeeper)
+            away_keeper_factor = self._calculate_keeper_factor(away_goalkeeper)
+
+            # Form: form / 50
+            home_form_factor = self._calculate_form_factor(home_form)
+            away_form_factor = self._calculate_form_factor(away_form)
+
+            # Control: разница распределяется между командами
+            home_control_factor, away_control_factor = self._calculate_control_factors(
+                home_control, away_control
             )
 
-            away = self._extract_team_parameters(
-                away_passport,
-                side="AWAY"
-            )
+            # ============================================================
+            # 4. РАСЧЁТ XG
+            # ============================================================
 
-            # ====================================================
-            # 3. RATINGS
-            # ====================================================
-
-            home_rating = self._safe_float(
-                home_rating,
-                70.0
-            )
-
-            away_rating = self._safe_float(
-                away_rating,
-                70.0
-            )
-
-            home_rating = self._clamp(
-                home_rating,
-                0.0,
-                100.0
-            )
-
-            away_rating = self._clamp(
-                away_rating,
-                0.0,
-                100.0
-            )
-
-            # ====================================================
-            # 4. LOG INPUT
-            # ====================================================
-
-            logger.info(
-                "XG INPUT HOME | "
-                "attack=%.2f defense=%.2f control=%.2f "
-                "keeper=%.2f form=%.3f",
-                home["attack"],
-                home["defense"],
-                home["control"],
-                home["goalkeeper"],
-                home["form"]
-            )
-
-            logger.info(
-                "XG INPUT AWAY | "
-                "attack=%.2f defense=%.2f control=%.2f "
-                "keeper=%.2f form=%.3f",
-                away["attack"],
-                away["defense"],
-                away["control"],
-                away["goalkeeper"],
-                away["form"]
-            )
-
-            logger.info(
-                "XG RATINGS DIAGNOSTIC ONLY | "
-                "HOME=%.2f AWAY=%.2f",
-                home_rating,
-                away_rating
-            )
-
-            # ====================================================
-            # 5. ATTACK FACTORS
-            # ====================================================
-
-            home_attack_base = self._attack_factor(
-                home["attack"]
-            )
-
-            away_attack_base = self._attack_factor(
-                away["attack"]
-            )
-
-            home_attack_factor = (
-                home_attack_base
-                * home["form"]
-            )
-
-            away_attack_factor = (
-                away_attack_base
-                * away["form"]
-            )
-
-            # ====================================================
-            # 6. OPPONENT DEFENSE
-            # ====================================================
-
-            away_defense_factor = self._defense_factor(
-                away["defense"]
-            )
-
-            home_defense_factor = self._defense_factor(
-                home["defense"]
-            )
-
-            # ====================================================
-            # 7. OPPONENT GOALKEEPER
-            # ====================================================
-
-            away_keeper_factor = self._keeper_factor(
-                away["goalkeeper"]
-            )
-
-            home_keeper_factor = self._keeper_factor(
-                home["goalkeeper"]
-            )
-
-            # ====================================================
-            # 8. CONTROL
-            # ====================================================
-
-            (
-                home_control_factor,
-                away_control_factor
-            ) = self._control_factors(
-                home["control"],
-                away["control"]
-            )
-
-            # ====================================================
-            # 9. HOME ADVANTAGE
-            # ====================================================
-
-            home_bonus = self.HOME_ADVANTAGE
-
-            # ====================================================
-            # 10. RAW XG
-            # ====================================================
-
-            home_xg_raw = (
+            home_xg = (
                 self.LEAGUE_MEAN_XG
                 * home_attack_factor
                 * away_defense_factor
                 * away_keeper_factor
                 * home_control_factor
-                * home_bonus
+                * home_form_factor
+                * self.HOME_ADVANTAGE
             )
 
-            away_xg_raw = (
+            away_xg = (
                 self.LEAGUE_MEAN_XG
                 * away_attack_factor
                 * home_defense_factor
                 * home_keeper_factor
                 * away_control_factor
+                * away_form_factor
             )
 
-            # ====================================================
-            # 11. CLAMP XG
-            # ====================================================
+            # ============================================================
+            # 5. ОГРАНИЧЕНИЕ
+            # ============================================================
 
-            home_xg = self._clamp_xg(
-                home_xg_raw
+            home_xg = max(self.XG_MIN, min(self.XG_MAX, home_xg))
+            away_xg = max(self.XG_MIN, min(self.XG_MAX, away_xg))
+
+            # ============================================================
+            # 6. ДИАГНОСТИКА
+            # ============================================================
+
+            logger.debug(
+                "XG calculated: home=%.3f, away=%.3f | "
+                "home_attack=%.1f, away_defense=%.1f, "
+                "home_form=%.1f, away_form=%.1f",
+                home_xg, away_xg,
+                home_attack, away_defense,
+                home_form, away_form
             )
 
-            away_xg = self._clamp_xg(
-                away_xg_raw
-            )
-
-            # ====================================================
-            # 12. COMPONENTS
-            # ====================================================
-
-            components = {
-
-                # -----------------------------
-                # Passport input
-                # -----------------------------
-
-                "home_attack": round(
-                    home["attack"], 2
-                ),
-
-                "away_attack": round(
-                    away["attack"], 2
-                ),
-
-                "home_defense": round(
-                    home["defense"], 2
-                ),
-
-                "away_defense": round(
-                    away["defense"], 2
-                ),
-
-                "home_control": round(
-                    home["control"], 2
-                ),
-
-                "away_control": round(
-                    away["control"], 2
-                ),
-
-                "home_goalkeeper": round(
-                    home["goalkeeper"], 2
-                ),
-
-                "away_goalkeeper": round(
-                    away["goalkeeper"], 2
-                ),
-
-                # -----------------------------
-                # Form
-                # -----------------------------
-
-                "home_form": round(
-                    home["form_raw"], 2
-                ),
-
-                "away_form": round(
-                    away["form_raw"], 2
-                ),
-
-                "home_form_factor": round(
-                    home["form"], 3
-                ),
-
-                "away_form_factor": round(
-                    away["form"], 3
-                ),
-
-                # -----------------------------
-                # Attack
-                # -----------------------------
-
-                "home_attack_base_factor": round(
-                    home_attack_base, 3
-                ),
-
-                "away_attack_base_factor": round(
-                    away_attack_base, 3
-                ),
-
-                "home_attack_factor": round(
-                    home_attack_factor, 3
-                ),
-
-                "away_attack_factor": round(
-                    away_attack_factor, 3
-                ),
-
-                # -----------------------------
-                # Defense
-                # -----------------------------
-
-                "home_defense_factor": round(
-                    home_defense_factor, 3
-                ),
-
-                "away_defense_factor": round(
-                    away_defense_factor, 3
-                ),
-
-                # -----------------------------
-                # Goalkeeper
-                # -----------------------------
-
-                "home_keeper_factor": round(
-                    home_keeper_factor, 3
-                ),
-
-                "away_keeper_factor": round(
-                    away_keeper_factor, 3
-                ),
-
-                # -----------------------------
-                # Control
-                # -----------------------------
-
-                "home_control_factor": round(
-                    home_control_factor, 3
-                ),
-
-                "away_control_factor": round(
-                    away_control_factor, 3
-                ),
-
-                # -----------------------------
-                # Home Advantage
-                # -----------------------------
-
-                "home_advantage": round(
-                    home_bonus,
-                    3
-                ),
-
-                # Compatibility alias
-                "home_bonus": round(
-                    home_bonus,
-                    3
-                ),
-
-                # -----------------------------
-                # Ratings
-                # -----------------------------
-
-                "home_rating": round(
-                    home_rating,
-                    2
-                ),
-
-                "away_rating": round(
-                    away_rating,
-                    2
-                ),
-
-                "rating_used_for_xg": False,
-
-                # -----------------------------
-                # Base
-                # -----------------------------
-
-                "league_mean_xg": round(
-                    self.LEAGUE_MEAN_XG,
-                    3
-                ),
-
-                "power_base": round(
-                    self.POWER_BASE,
-                    2
-                ),
-
-                # -----------------------------
-                # Raw
-                # -----------------------------
-
-                "home_xg_raw": round(
-                    home_xg_raw,
-                    5
-                ),
-
-                "away_xg_raw": round(
-                    away_xg_raw,
-                    5
-                ),
-
-                # -----------------------------
-                # Final
-                # -----------------------------
-
-                "home_xg": round(
-                    home_xg,
-                    3
-                ),
-
-                "away_xg": round(
-                    away_xg,
-                    3
-                )
-            }
-
-            # ====================================================
-            # 13. EXPLANATION
-            # ====================================================
-
-            explanation = self._build_explanation(
-                home=home,
-                away=away,
-                home_attack_factor=home_attack_factor,
-                away_attack_factor=away_attack_factor,
-                home_defense_factor=home_defense_factor,
-                away_defense_factor=away_defense_factor,
-                home_keeper_factor=home_keeper_factor,
-                away_keeper_factor=away_keeper_factor,
-                home_control_factor=home_control_factor,
-                away_control_factor=away_control_factor,
-                home_xg=home_xg,
-                away_xg=away_xg
-            )
-
-            # ====================================================
-            # 14. RESULT
-            # ====================================================
-
-            result = {
-
-                "status": "success",
-
-                "home_xg": round(
-                    home_xg,
-                    3
-                ),
-
-                "away_xg": round(
-                    away_xg,
-                    3
-                ),
-
-                "components": components,
-
-                "explanation": explanation,
-
-                "model_version": self.MODEL_VERSION,
-
-                "timestamp": timestamp
-            }
-
-            logger.info(
-                "XG RESULT | %.3f : %.3f",
-                home_xg,
-                away_xg
-            )
-
-            return result
-
-        except Exception as exc:
-
-            logger.exception(
-                "FAJ XG calculation error"
-            )
+            # ============================================================
+            # 7. РЕЗУЛЬТАТ
+            # ============================================================
 
             return {
+                "status": "success",
+                "home_xg": round(home_xg, 3),
+                "away_xg": round(away_xg, 3),
+                "components": {
+                    "home_attack_factor": round(home_attack_factor, 3),
+                    "away_attack_factor": round(away_attack_factor, 3),
+                    "home_defense_factor": round(home_defense_factor, 3),
+                    "away_defense_factor": round(away_defense_factor, 3),
+                    "home_keeper_factor": round(home_keeper_factor, 3),
+                    "away_keeper_factor": round(away_keeper_factor, 3),
+                    "home_control_factor": round(home_control_factor, 3),
+                    "away_control_factor": round(away_control_factor, 3),
+                    "home_form_factor": round(home_form_factor, 3),
+                    "away_form_factor": round(away_form_factor, 3),
+                    "home_advantage": round(self.HOME_ADVANTAGE, 3),
+                },
+                "diagnostic": {
+                    "home_attack": round(home_attack, 1),
+                    "home_defense": round(home_defense, 1),
+                    "home_control": round(home_control, 1),
+                    "home_goalkeeper": round(home_goalkeeper, 1),
+                    "home_form": round(home_form, 1),
+                    "away_attack": round(away_attack, 1),
+                    "away_defense": round(away_defense, 1),
+                    "away_control": round(away_control, 1),
+                    "away_goalkeeper": round(away_goalkeeper, 1),
+                    "away_form": round(away_form, 1),
+                },
+                "model_version": self.MODEL_VERSION
+            }
 
+        except Exception as e:
+            logger.error(f"XG calculation error: {e}", exc_info=True)
+            return {
                 "status": "error",
-
-                "message": str(exc),
-
-                "home_xg": 0.0,
-
-                "away_xg": 0.0,
-
+                "message": str(e),
+                "home_xg": self.LEAGUE_MEAN_XG,
+                "away_xg": self.LEAGUE_MEAN_XG * 0.9,
                 "components": {},
-
-                "explanation": [],
-
-                "model_version": self.MODEL_VERSION,
-
-                "timestamp": timestamp
+                "diagnostic": {},
+                "model_version": self.MODEL_VERSION
             }
 
     # ============================================================
-    # PASSPORT EXTRACTION
+    # PARAMETER EXTRACTION
     # ============================================================
 
     def _extract_team_parameters(
         self,
         passport: Dict[str, Any],
-        side: str = "TEAM"
+        is_home: bool = False
     ) -> Dict[str, float]:
         """
-        Универсальное извлечение параметров.
+        Извлечение параметров из паспорта.
 
-        Приоритет:
-
-            BASE
-            ↓
-            верхний уровень
-            ↓
-            DYNAMIC
-
-        Поддерживает:
-
-            BASE
-            base
-            team_base
-
-            DYNAMIC_INITIAL
-            dynamic_initial
-            DYNAMIC
-            dynamic
-            team_dynamic
-
-        Обязательные поля:
-
-            attack
-            defense
-            control
-            goalkeeper
-
-        Form:
-
-            необязательная.
-
-        Если form отсутствует:
-
-            form factor = 1.0
+        Passport — плоская структура (v1.7).
+        Все параметры на верхнем уровне.
         """
-
-        if not isinstance(
-            passport,
-            dict
-        ):
-            raise TypeError(
-                f"{side} passport must be dict"
-            )
-
-        # ========================================================
-        # BASE
-        # ========================================================
-
-        base = None
-
-        for key in (
-            "BASE",
-            "base",
-            "team_base"
-        ):
-
-            value = passport.get(
-                key
-            )
-
-            if isinstance(
-                value,
-                dict
-            ):
-
-                base = value
-                break
-
-        # ========================================================
-        # DYNAMIC
-        # ========================================================
-
-        dynamic = {}
-
-        for key in (
-            "DYNAMIC_INITIAL",
-            "dynamic_initial",
-            "DYNAMIC",
-            "dynamic",
-            "team_dynamic"
-        ):
-
-            value = passport.get(
-                key
-            )
-
-            if isinstance(
-                value,
-                dict
-            ):
-
-                dynamic = value
-                break
-
-        # ========================================================
-        # FIND VALUE
-        # ========================================================
-
-        def find_value(
-            field: str,
-            default=None
-        ):
-
-            if (
-                base is not None
-                and field in base
-            ):
-
-                return base[field]
-
-            if field in passport:
-                return passport[field]
-
-            if field in dynamic:
-                return dynamic[field]
-
-            return default
-
-        # ========================================================
-        # REQUIRED
-        # ========================================================
-
-        attack = find_value(
-            "attack"
-        )
-
-        defense = find_value(
-            "defense"
-        )
-
-        control = find_value(
-            "control"
-        )
-
-        goalkeeper = find_value(
-            "goalkeeper"
-        )
-
-        if goalkeeper is None:
-
-            goalkeeper = find_value(
-                "keeper"
-            )
-
-        # ========================================================
-        # VALIDATION
-        # ========================================================
-
-        missing = []
-
-        if attack is None:
-            missing.append(
-                "attack"
-            )
-
-        if defense is None:
-            missing.append(
-                "defense"
-            )
-
-        if control is None:
-            missing.append(
-                "control"
-            )
-
-        if goalkeeper is None:
-            missing.append(
-                "goalkeeper"
-            )
-
-        if missing:
-
-            logger.error(
-                "XG PASSPORT ERROR | "
-                "%s | missing=%s | keys=%s",
-                side,
-                ",".join(missing),
-                list(passport.keys())
-            )
-
-            raise ValueError(
-                f"{side} passport missing "
-                f"required fields: "
-                f"{', '.join(missing)}"
-            )
-
-        # ========================================================
-        # FORM
-        # ========================================================
-
-        raw_form = find_value(
-            "form",
-            None
-        )
-
-        if raw_form is None:
-
-            form_raw = 50.0
-            form_factor = 1.0
-
-        else:
-
-            try:
-
-                form_raw = float(
-                    raw_form
-                )
-
-            except (
-                TypeError,
-                ValueError
-            ):
-
-                form_raw = 50.0
-
-            form_raw = self._clamp(
-                form_raw,
-                0.0,
-                100.0
-            )
-
-            form_factor = self._form_factor(
-                form_raw
-            )
-
-        # ========================================================
-        # CLAMP PASSPORT PARAMETERS
-        # ========================================================
-
-        attack = self._clamp_value(
-            attack,
-            self.MIN_POWER,
-            self.MAX_POWER
-        )
-
-        defense = self._clamp_value(
-            defense,
-            self.MIN_POWER,
-            self.MAX_POWER
-        )
-
-        control = self._clamp_value(
-            control,
-            self.MIN_POWER,
-            self.MAX_POWER
-        )
-
-        goalkeeper = self._clamp_value(
-            goalkeeper,
-            self.MIN_POWER,
-            self.MAX_POWER
-        )
-
-        # ========================================================
-        # LOG
-        # ========================================================
-
-        logger.info(
-            "XG PASSPORT %s | "
-            "attack=%.2f "
-            "defense=%.2f "
-            "control=%.2f "
-            "goalkeeper=%.2f "
-            "form=%.2f "
-            "form_factor=%.3f",
-            side,
-            attack,
-            defense,
-            control,
-            goalkeeper,
-            form_raw,
-            form_factor
-        )
-
-        # ========================================================
-        # RETURN
-        # ========================================================
-
-        return {
-
-            "attack": attack,
-
-            "defense": defense,
-
-            "control": control,
-
-            "goalkeeper": goalkeeper,
-
-            "form_raw": form_raw,
-
-            "form": form_factor
+        params = {
+            "attack": 50.0,
+            "defense": 50.0,
+            "control": 50.0,
+            "goalkeeper": 50.0,
+            "form": 50.0,
         }
 
-    # ============================================================
-    # ATTACK
-    # ============================================================
+        if not isinstance(passport, dict):
+            logger.warning(f"Passport is not a dict: {type(passport)}")
+            return params
 
-    def _attack_factor(
-        self,
-        attack_power: float
-    ) -> float:
-        """
-        Атака относительно POWER_BASE.
+        # Извлечение параметров из плоской структуры
+        for key in ["attack", "defense", "control", "goalkeeper", "form"]:
+            value = passport.get(key)
+            if value is not None:
+                try:
+                    params[key] = float(value)
+                except (TypeError, ValueError):
+                    logger.warning(f"Invalid {key} value: {value}")
 
-        70 → 1.00
-        80 → 1.143
-        60 → 0.857
-        """
-
-        return (
-            attack_power
-            / self.POWER_BASE
+        logger.debug(
+            "Extracted params: attack=%.1f, defense=%.1f, "
+            "control=%.1f, goalkeeper=%.1f, form=%.1f",
+            params["attack"], params["defense"],
+            params["control"], params["goalkeeper"],
+            params["form"]
         )
 
-    # ============================================================
-    # DEFENSE
-    # ============================================================
-
-    def _defense_factor(
-        self,
-        defense_power: float
-    ) -> float:
-        """
-        Сильная защита соперника
-        снижает xG.
-
-        70 → 1.000
-        80 → 0.875
-        90 → 0.778
-        60 → 1.167
-        """
-
-        if defense_power <= 0:
-            return 1.0
-
-        factor = (
-            self.POWER_BASE
-            / defense_power
-        )
-
-        return max(
-            self.MIN_DEFENSE_FACTOR,
-            min(
-                self.MAX_DEFENSE_FACTOR,
-                factor
-            )
-        )
+        return params
 
     # ============================================================
-    # GOALKEEPER
+    # FACTOR CALCULATIONS
     # ============================================================
 
-    def _keeper_factor(
-        self,
-        goalkeeper_power: float
-    ) -> float:
-        """
-        Сильный вратарь соперника
-        снижает xG.
+    def _calculate_attack_factor(self, attack: float) -> float:
+        """Attack Factor = attack / 70 (0.85–1.15)"""
+        if attack <= 0:
+            return self.FACTOR_MIN
+        factor = attack / 70.0
+        return max(self.FACTOR_MIN, min(self.FACTOR_MAX, factor))
 
-        70 → 1.000
-        80 → 0.875
-        90 → 0.850
-        60 → 1.150
-        """
+    def _calculate_defense_factor(self, defense: float) -> float:
+        """Defense Factor = 70 / defense (0.85–1.15)"""
+        if defense <= 0:
+            return self.FACTOR_MAX
+        factor = 70.0 / defense
+        return max(self.FACTOR_MIN, min(self.FACTOR_MAX, factor))
 
-        if goalkeeper_power <= 0:
-            return 1.0
+    def _calculate_keeper_factor(self, goalkeeper: float) -> float:
+        """GK Factor = 70 / goalkeeper (0.85–1.15)"""
+        if goalkeeper <= 0:
+            return self.FACTOR_MAX
+        factor = 70.0 / goalkeeper
+        return max(self.FACTOR_MIN, min(self.FACTOR_MAX, factor))
 
-        factor = (
-            self.POWER_BASE
-            / goalkeeper_power
-        )
+    def _calculate_form_factor(self, form: float) -> float:
+        """Form Factor = form / 50 (0.85–1.15)"""
+        if form <= 0:
+            return self.FACTOR_MIN
+        factor = form / 50.0
+        return max(self.FACTOR_MIN, min(self.FACTOR_MAX, factor))
 
-        return max(
-            self.MIN_KEEPER_FACTOR,
-            min(
-                self.MAX_KEEPER_FACTOR,
-                factor
-            )
-        )
-
-    # ============================================================
-    # FORM
-    # ============================================================
-
-    def _form_factor(
-        self,
-        form: Any
-    ) -> float:
-        """
-        Форма 0–100 → коэффициент.
-
-        50 → 1.00
-        60 → 1.15
-        40 → 0.85
-
-        Ограничение:
-
-            0.85 – 1.15
-        """
-
-        try:
-
-            value = float(
-                form
-            )
-
-        except (
-            TypeError,
-            ValueError
-        ):
-
-            return 1.0
-
-        if value <= 0:
-            return 1.0
-
-        factor = (
-            value
-            / self.FORM_BASE
-        )
-
-        return max(
-            self.MIN_FORM_FACTOR,
-            min(
-                self.MAX_FORM_FACTOR,
-                factor
-            )
-        )
-
-    # ============================================================
-    # CONTROL
-    # ============================================================
-
-    def _control_factors(
+    def _calculate_control_factors(
         self,
         home_control: float,
         away_control: float
-    ) -> Tuple[float, float]:
+    ) -> tuple:
         """
-        Контроль распределяется
-        между командами.
+        Control Factors: разница контроля распределяется между командами.
 
-        Например:
-
-            Home = 80
-            Away = 60
-
-        Home получает небольшой плюс.
-        Away получает небольшой минус.
-
-        CONTROL_WEIGHT пока является
-        калибруемым параметром.
+        Пример:
+            home_control = 80, away_control = 60
+            diff = 20
+            home_factor = 1 + 20/200 = 1.10
+            away_factor = 1 - 20/200 = 0.90
         """
+        diff = home_control - away_control
 
-        diff = (
-            home_control
-            - away_control
-        )
+        # Ограничиваем разницу
+        diff = max(-50, min(50, diff))
 
-        home_factor = (
-            1.0
-            + (
-                diff / 100.0
-            )
-            * self.CONTROL_WEIGHT
-        )
+        home_factor = 1.0 + (diff / 200.0)
+        away_factor = 1.0 - (diff / 200.0)
 
-        away_factor = (
-            1.0
-            - (
-                diff / 100.0
-            )
-            * self.CONTROL_WEIGHT
-        )
+        # Ограничиваем факторы
+        home_factor = max(self.FACTOR_MIN, min(self.FACTOR_MAX, home_factor))
+        away_factor = max(self.FACTOR_MIN, min(self.FACTOR_MAX, away_factor))
 
-        home_factor = max(
-            self.MIN_CONTROL_FACTOR,
-            min(
-                self.MAX_CONTROL_FACTOR,
-                home_factor
-            )
-        )
-
-        away_factor = max(
-            self.MIN_CONTROL_FACTOR,
-            min(
-                self.MAX_CONTROL_FACTOR,
-                away_factor
-            )
-        )
-
-        return (
-            home_factor,
-            away_factor
-        )
-
-    # ============================================================
-    # SAFE FLOAT
-    # ============================================================
-
-    def _safe_float(
-        self,
-        value: Any,
-        default: float
-    ) -> float:
-
-        try:
-            return float(
-                value
-            )
-
-        except (
-            TypeError,
-            ValueError
-        ):
-
-            return default
-
-    # ============================================================
-    # CLAMP VALUE
-    # ============================================================
-
-    def _clamp_value(
-        self,
-        value: Any,
-        min_val: float,
-        max_val: float
-    ) -> float:
-
-        try:
-
-            value = float(
-                value
-            )
-
-        except (
-            TypeError,
-            ValueError
-        ):
-
-            raise ValueError(
-                f"Invalid passport value: "
-                f"{value}"
-            )
-
-        return max(
-            min_val,
-            min(
-                max_val,
-                value
-            )
-        )
-
-    # ============================================================
-    # GENERIC CLAMP
-    # ============================================================
-
-    def _clamp(
-        self,
-        value: float,
-        min_val: float,
-        max_val: float
-    ) -> float:
-
-        return max(
-            min_val,
-            min(
-                max_val,
-                value
-            )
-        )
-
-    # ============================================================
-    # XG CLAMP
-    # ============================================================
-
-    def _clamp_xg(
-        self,
-        value: float
-    ) -> float:
-
-        return self._clamp(
-            value,
-            self.MIN_XG,
-            self.MAX_XG
-        )
-
-    # ============================================================
-    # EXPLANATION
-    # ============================================================
-
-    def _build_explanation(
-        self,
-        home: Dict[str, float],
-        away: Dict[str, float],
-        home_attack_factor: float,
-        away_attack_factor: float,
-        home_defense_factor: float,
-        away_defense_factor: float,
-        home_keeper_factor: float,
-        away_keeper_factor: float,
-        home_control_factor: float,
-        away_control_factor: float,
-        home_xg: float,
-        away_xg: float
-    ) -> List[str]:
-
-        explanation = []
-
-        # ========================================================
-        # ATTACK
-        # ========================================================
-
-        if home_attack_factor >= 1.10:
-
-            explanation.append(
-                "Атака хозяев выше средней "
-                f"({home_attack_factor:.2f}x)"
-            )
-
-        elif home_attack_factor <= 0.90:
-
-            explanation.append(
-                "Атака хозяев ниже средней "
-                f"({home_attack_factor:.2f}x)"
-            )
-
-        if away_attack_factor >= 1.10:
-
-            explanation.append(
-                "Атака гостей выше средней "
-                f"({away_attack_factor:.2f}x)"
-            )
-
-        elif away_attack_factor <= 0.90:
-
-            explanation.append(
-                "Атака гостей ниже средней "
-                f"({away_attack_factor:.2f}x)"
-            )
-
-        # ========================================================
-        # DEFENSE
-        # ========================================================
-
-        if away_defense_factor < 0.90:
-
-            explanation.append(
-                "Сильная защита гостей "
-                "снижает xG хозяев"
-            )
-
-        elif away_defense_factor > 1.10:
-
-            explanation.append(
-                "Слабая защита гостей "
-                "повышает xG хозяев"
-            )
-
-        if home_defense_factor < 0.90:
-
-            explanation.append(
-                "Сильная защита хозяев "
-                "снижает xG гостей"
-            )
-
-        elif home_defense_factor > 1.10:
-
-            explanation.append(
-                "Слабая защита хозяев "
-                "повышает xG гостей"
-            )
-
-        # ========================================================
-        # GOALKEEPER
-        # ========================================================
-
-        if away_keeper_factor < 0.90:
-
-            explanation.append(
-                "Сильный вратарь гостей "
-                "снижает xG хозяев"
-            )
-
-        elif away_keeper_factor > 1.10:
-
-            explanation.append(
-                "Слабый вратарь гостей "
-                "повышает xG хозяев"
-            )
-
-        if home_keeper_factor < 0.90:
-
-            explanation.append(
-                "Сильный вратарь хозяев "
-                "снижает xG гостей"
-            )
-
-        elif home_keeper_factor > 1.10:
-
-            explanation.append(
-                "Слабый вратарь хозяев "
-                "повышает xG гостей"
-            )
-
-        # ========================================================
-        # CONTROL
-        # ========================================================
-
-        if home_control_factor > 1.05:
-
-            explanation.append(
-                "Контроль даёт преимущество "
-                f"хозяев ({home_control_factor:.2f}x)"
-            )
-
-        elif away_control_factor > 1.05:
-
-            explanation.append(
-                "Контроль даёт преимущество "
-                f"гостей ({away_control_factor:.2f}x)"
-            )
-
-        # ========================================================
-        # FORM
-        # ========================================================
-
-        if home["form"] > 1.05:
-
-            explanation.append(
-                "Форма хозяев повышает "
-                "атакующий потенциал "
-                f"({home['form']:.2f}x)"
-            )
-
-        elif home["form"] < 0.95:
-
-            explanation.append(
-                "Форма хозяев снижает "
-                "атакующий потенциал "
-                f"({home['form']:.2f}x)"
-            )
-
-        if away["form"] > 1.05:
-
-            explanation.append(
-                "Форма гостей повышает "
-                "атакующий потенциал "
-                f"({away['form']:.2f}x)"
-            )
-
-        elif away["form"] < 0.95:
-
-            explanation.append(
-                "Форма гостей снижает "
-                "атакующий потенциал "
-                f"({away['form']:.2f}x)"
-            )
-
-        # ========================================================
-        # HOME ADVANTAGE
-        # ========================================================
-
-        explanation.append(
-            "Домашнее преимущество: "
-            f"{self.HOME_ADVANTAGE:.2f}x"
-        )
-
-        # ========================================================
-        # RATING
-        # ========================================================
-
-        explanation.append(
-            "FAJ Rating используется "
-            "только для диагностики и "
-            "не является множителем xG"
-        )
-
-        # ========================================================
-        # FINAL
-        # ========================================================
-
-        explanation.append(
-            f"Ожидаемые голы: "
-            f"{home_xg:.2f} : {away_xg:.2f}"
-        )
-
-        return explanation
+        return home_factor, away_factor
 
     # ============================================================
     # STATUS
     # ============================================================
 
     def status(self) -> Dict[str, Any]:
-
+        """Диагностический статус модели."""
         return {
-
-            "model": "FAJ XG Model",
-
+            "model": self.MODEL_VERSION,
             "version": self.VERSION,
-
-            "model_version": self.MODEL_VERSION,
-
             "league_mean_xg": self.LEAGUE_MEAN_XG,
-
             "home_advantage": self.HOME_ADVANTAGE,
-
-            "xg_range": [
-                self.MIN_XG,
-                self.MAX_XG
-            ],
-
-            "power_base": self.POWER_BASE,
-
-            "control_weight": self.CONTROL_WEIGHT,
-
-            "rating_used_for_xg": False,
-
+            "xg_range": [self.XG_MIN, self.XG_MAX],
+            "factor_range": [self.FACTOR_MIN, self.FACTOR_MAX],
             "status": "READY"
         }
-
-    # ============================================================
-    # TEST
-    # ============================================================
-
-    def test(self) -> Dict[str, Any]:
-
-        home_passport = {
-
-            "attack": 82,
-
-            "defense": 78,
-
-            "control": 80,
-
-            "goalkeeper": 75,
-
-            "form": 55,
-
-            "faj_rating": 82.5
-        }
-
-        away_passport = {
-
-            "attack": 74,
-
-            "defense": 81,
-
-            "control": 76,
-
-            "goalkeeper": 79,
-
-            "form": 48,
-
-            "faj_rating": 76.5
-        }
-
-        return self.calculate(
-
-            home_passport,
-
-            away_passport,
-
-            home_rating=82.5,
-
-            away_rating=76.5
-        )
-
-
-# ================================================================
-# COMPATIBILITY ALIAS
-# ================================================================
-
-XGModel = FAJXGModel
 
 
 # ================================================================
 # SINGLETON
 # ================================================================
 
-_xg_model_instance: Optional[
-    FAJXGModel
-] = None
+_xg_model_instance: Optional[XGModel] = None
 
 
-def get_xg_model() -> FAJXGModel:
-
+def get_xg_model() -> XGModel:
+    """Синглтон для XGModel."""
     global _xg_model_instance
-
     if _xg_model_instance is None:
-
-        _xg_model_instance = (
-            FAJXGModel()
-        )
-
+        _xg_model_instance = XGModel()
     return _xg_model_instance
 
 
 # ================================================================
-# LOCAL TEST
+# SELF TEST
 # ================================================================
 
 if __name__ == "__main__":
+    print("\n" + "=" * 60)
+    print("FAJ XG Model v1.6 — SELF TEST")
+    print("=" * 60)
 
-    model = FAJXGModel()
+    model = XGModel()
 
-    print()
-    print("=" * 70)
-    print("FAJ XG MODEL v1.5")
-    print("=" * 70)
+    print("\n📊 Status:")
+    print(model.status())
 
-    print()
-    print("STATUS")
-    print("-" * 70)
+    # Тестовые паспорта
+    home_passport = {
+        "attack": 75.0,
+        "defense": 65.0,
+        "control": 70.0,
+        "goalkeeper": 68.0,
+        "form": 55.0
+    }
 
-    print(
-        model.status()
-    )
+    away_passport = {
+        "attack": 60.0,
+        "defense": 72.0,
+        "control": 55.0,
+        "goalkeeper": 70.0,
+        "form": 48.0
+    }
 
-    print()
-    print("TEST")
-    print("-" * 70)
+    print("\n📋 Тестовые данные:")
+    print(f"  Home: attack=75, defense=65, control=70, gk=68, form=55")
+    print(f"  Away: attack=60, defense=72, control=55, gk=70, form=48")
 
-    result = model.test()
+    result = model.calculate(home_passport, away_passport)
 
-    print(
-        f"xG: "
-        f"{result['home_xg']:.3f} : "
-        f"{result['away_xg']:.3f}"
-    )
+    print("\n📊 Результат:")
+    print(f"  Home xG: {result['home_xg']:.3f}")
+    print(f"  Away xG: {result['away_xg']:.3f}")
 
-    print()
-    print("COMPONENTS")
-    print("-" * 70)
+    print("\n🔧 Компоненты:")
+    for key, value in result.get("components", {}).items():
+        print(f"  {key}: {value:.3f}")
 
-    for key, value in result[
-        "components"
-    ].items():
-
-        print(
-            f"{key}: {value}"
-        )
-
-    print()
-    print("EXPLANATION")
-    print("-" * 70)
-
-    for line in result[
-        "explanation"
-    ]:
-
-        print(
-            f"• {line}"
-        )
-
-    print()
-    print(
-        f"MODEL: "
-        f"{result['model_version']}"
-    )
-
-    print()
-    print("=" * 70)
-    print("XG MODEL TEST COMPLETED")
-    print("=" * 70)
+    print("\n✅ XG Model v1.6 готов к работе.")
+    print("=" * 60)
