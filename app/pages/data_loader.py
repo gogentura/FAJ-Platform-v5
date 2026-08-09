@@ -64,6 +64,7 @@ def main():
                     
                     if not matches:
                         st.warning("⚠️ Не удалось получить данные с soccerland.ru")
+                        st.info("💡 Попробуйте ввести матчи вручную в разделе ниже")
                     else:
                         loaded = parser.load_matches_to_db(matches, tour_to_load)
                         
@@ -78,7 +79,57 @@ def main():
     st.divider()
     
     # =========================================================
-    # 3. АНАЛИЗ СЫГРАННЫХ ТУРОВ
+    # 3. РУЧНОЙ ВВОД МАТЧЕЙ (ЕСЛИ ПАРСЕР НЕ РАБОТАЕТ)
+    # =========================================================
+    st.subheader("✏️ Ручной ввод матчей")
+    st.caption("Если парсер не работает, введите матчи вручную")
+    
+    with st.expander("📝 Ввести матчи тура вручную"):
+        tour_manual = st.number_input(
+            "Номер тура",
+            min_value=1,
+            max_value=30,
+            value=4,
+            step=1,
+            key="manual_tour"
+        )
+        
+        # Получаем список команд
+        teams = db.get_teams()
+        team_names = [t['name'] for t in teams] if teams else []
+        
+        if not team_names:
+            st.warning("⚠️ Сначала загрузите команды через 'Синхронизацию'")
+        else:
+            num_matches = st.number_input("Количество матчей", min_value=1, max_value=16, value=8, step=1)
+            
+            matches_manual = []
+            for i in range(int(num_matches)):
+                st.write(f"**Матч {i+1}**")
+                col1, col2 = st.columns(2)
+                with col1:
+                    home = st.selectbox(f"Хозяева {i+1}", team_names, key=f"manual_home_{i}")
+                with col2:
+                    away = st.selectbox(f"Гости {i+1}", team_names, key=f"manual_away_{i}")
+                
+                if home != away:
+                    matches_manual.append({"home": home, "away": away})
+                else:
+                    st.warning(f"⚠️ Команды не могут совпадать в матче {i+1}")
+            
+            if st.button("💾 Сохранить матчи вручную", type="primary"):
+                if matches_manual:
+                    with st.spinner("Сохранение..."):
+                        loaded = parser.load_matches_to_db(matches_manual, tour_manual)
+                        st.success(f"✅ Сохранено матчей: {loaded}")
+                        st.rerun()
+                else:
+                    st.warning("⚠️ Нет матчей для сохранения")
+    
+    st.divider()
+    
+    # =========================================================
+    # 4. АНАЛИЗ СЫГРАННЫХ ТУРОВ
     # =========================================================
     st.subheader("🔬 Анализ сыгранных туров")
     st.caption("Обновление паспортов команд на основе результатов матчей")
@@ -100,7 +151,8 @@ def main():
                     result = parser.analyze_and_update(round_number=tour_to_analyze)
                     
                     if result['errors']:
-                        st.warning(f"⚠️ Ошибки: {result['errors']}")
+                        for err in result['errors']:
+                            st.warning(f"⚠️ {err}")
                     
                     col1, col2, col3 = st.columns(3)
                     with col1:
@@ -121,7 +173,7 @@ def main():
     st.divider()
     
     # =========================================================
-    # 4. ПРОГНОЗ НА ТУР
+    # 5. ПРОГНОЗ НА ТУР
     # =========================================================
     st.subheader("🎯 Прогноз на тур")
     st.caption("Автоматический прогноз на все матчи тура")
@@ -185,7 +237,7 @@ def main():
     st.divider()
     
     # =========================================================
-    # 5. БЫСТРЫЙ ЗАПУСК (ВСЁ ВМЕСТЕ)
+    # 6. БЫСТРЫЙ ЗАПУСК (ВСЁ ВМЕСТЕ)
     # =========================================================
     st.subheader("🚀 Быстрый запуск")
     st.caption("Одна кнопка: загрузка + анализ + прогноз")
