@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 FAJ Platform v12.1 - Загрузка данных
-Парсинг soccerland.ru, анализ и прогноз на тур
+С диагностикой парсера прямо в интерфейсе
 """
 
 import streamlit as st
@@ -20,6 +20,50 @@ def main():
     db = FAJDatabase()
     parser = SoccerlandParser()
     pm = get_prediction_manager()
+    
+    # =========================================================
+    # 0. ДИАГНОСТИКА ПАРСЕРА (АВТОМАТИЧЕСКИ)
+    # =========================================================
+    st.subheader("🔍 Диагностика парсера")
+    
+    with st.spinner("Проверка соединения с soccerland.ru..."):
+        try:
+            diagnostics = parser.diagnostics()
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("📊 Всего матчей", diagnostics.get('total_matches', 0))
+            with col2:
+                st.metric("📅 Туров", diagnostics.get('total_rounds', 0))
+            with col3:
+                st.metric("🏷️ Команд", diagnostics.get('team_count', 0))
+            with col4:
+                status = diagnostics.get('status', 'UNKNOWN')
+                st.metric("📌 Статус", status)
+            
+            # Детали
+            with st.expander("📋 Детали диагностики"):
+                st.write("**Матчи по турам:**")
+                rounds = diagnostics.get('rounds', {})
+                if rounds:
+                    for r, count in sorted(rounds.items()):
+                        st.write(f"  Тур {r}: {count} матчей")
+                else:
+                    st.warning("⚠️ Матчи не найдены")
+                
+                st.write(f"**Завершено:** {diagnostics.get('finished', 0)}")
+                st.write(f"**Запланировано:** {diagnostics.get('scheduled', 0)}")
+                st.write(f"**Ожидалось команд:** {diagnostics.get('expected_teams', 16)}")
+                
+            if diagnostics.get('status') != 'READY':
+                st.warning("⚠️ Парсер не готов. Возможно, сайт недоступен или изменилась структура.")
+                st.info("💡 Попробуйте обновить страницу или проверьте интернет-соединение.")
+            
+        except Exception as e:
+            st.error(f"❌ Ошибка диагностики: {e}")
+            st.info("💡 Проверьте подключение к интернету. Парсер требует доступа к soccerland.ru.")
+    
+    st.divider()
     
     # =========================================================
     # 1. СТАТИСТИКА БД
@@ -64,7 +108,6 @@ def main():
                     
                     if not matches:
                         st.warning("⚠️ Не удалось получить данные с soccerland.ru")
-                        st.info("💡 Попробуйте ввести матчи вручную в разделе ниже")
                     else:
                         loaded = parser.load_matches_to_db(matches, tour_to_load)
                         
@@ -79,7 +122,7 @@ def main():
     st.divider()
     
     # =========================================================
-    # 3. РУЧНОЙ ВВОД МАТЧЕЙ (ЕСЛИ ПАРСЕР НЕ РАБОТАЕТ)
+    # 3. РУЧНОЙ ВВОД МАТЧЕЙ
     # =========================================================
     st.subheader("✏️ Ручной ввод матчей")
     st.caption("Если парсер не работает, введите матчи вручную")
@@ -94,7 +137,6 @@ def main():
             key="manual_tour"
         )
         
-        # Получаем список команд
         teams = db.get_teams()
         team_names = [t['name'] for t in teams] if teams else []
         
@@ -192,12 +234,10 @@ def main():
         if st.button("🎯 Сделать прогноз", type="primary", use_container_width=True):
             with st.spinner(f"🧠 Прогноз на {tour_to_predict} тур..."):
                 try:
-                    # Сначала загружаем матчи, если их нет
                     matches = parser.get_matches_by_tour(tour_to_predict)
                     if matches:
                         parser.load_matches_to_db(matches, tour_to_predict)
                     
-                    # Делаем прогнозы
                     predictions = parser.predict_tour(round_number=tour_to_predict)
                     
                     if predictions:
@@ -237,7 +277,7 @@ def main():
     st.divider()
     
     # =========================================================
-    # 6. БЫСТРЫЙ ЗАПУСК (ВСЁ ВМЕСТЕ)
+    # 6. БЫСТРЫЙ ЗАПУСК
     # =========================================================
     st.subheader("🚀 Быстрый запуск")
     st.caption("Одна кнопка: загрузка + анализ + прогноз")
