@@ -4,6 +4,7 @@
 """
 Парсер статистики матчей РПЛ с nb-bet.com
 FAJ Platform v12.1
+АВТОМАТИЧЕСКИЙ ПОИСК ВСЕХ МАТЧЕЙ
 """
 
 import requests
@@ -24,66 +25,147 @@ class NBBetParser:
             "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
         }
         
-        # Маппинг ID матчей по турам (из ваших ссылок)
-        self.round_matches = {
-            1: [
-                1612885,  # ЦСКА - Балтика
-                1612882,  # Рубин - Краснодар
-                1612883,  # Спартак - Родина
-                1663973,  # Акрон - Зенит
-                1612879,  # Динамо М - Крылья
-                # остальные нужно добавить
-            ],
-            2: [
-                1612871,  # Ахмат - Спартак
-                1612874,  # Краснодар - Факел
-                1612875,  # Оренбург - Зенит
-                1663972,  # Балтика - Динамо М
-                1612873,  # Динамо Мх - Локомотив
-                1612877,  # ЦСКА - Крылья
-                1612870,  # Акрон - Рубин
-                1612876,  # Родина - Ростов
-            ],
-            3: [
-                1612865,  # Локомотив - Акрон
-                1612864,  # Крылья - Балтика
-                1612862,  # Динамо М - Динамо Мх
-                1681931,  # ЦСКА - Ростов
-                1612863,  # Зенит - Родина
-                1612868,  # Спартак - Краснодар
-                1612867,  # Рубин - Оренбург
-                1612869,  # Факел - Ахмат
-            ]
+        # Список команд РПЛ для поиска
+        self.rpl_teams = [
+            "Зенит", "Спартак", "ЦСКА", "Динамо", "Локомотив",
+            "Краснодар", "Ростов", "Ахмат", "Рубин", "Крылья Советов",
+            "Оренбург", "Пари НН", "Факел", "Химки", "Динамо Мх", "Акрон"
+        ]
+        
+        # Варианты названий команд на сайте
+        self.team_variants = {
+            "Зенит": ["Зенит", "Зенит Санкт-Петербург"],
+            "Спартак": ["Спартак", "Спартак Москва"],
+            "ЦСКА": ["ЦСКА", "ЦСКА Москва"],
+            "Динамо": ["Динамо", "Динамо Москва"],
+            "Локомотив": ["Локомотив", "Локомотив Москва"],
+            "Краснодар": ["Краснодар"],
+            "Ростов": ["Ростов"],
+            "Ахмат": ["Ахмат", "Ахмат Грозный"],
+            "Рубин": ["Рубин", "Рубин Казань"],
+            "Крылья Советов": ["Крылья Советов", "Крылья Советов Самара"],
+            "Оренбург": ["Оренбург"],
+            "Пари НН": ["Пари НН", "Пари Нижний Новгород", "Нижний Новгород"],
+            "Факел": ["Факел", "Факел Воронеж"],
+            "Химки": ["Химки"],
+            "Динамо Мх": ["Динамо Махачкала", "Динамо Мх"],
+            "Акрон": ["Акрон", "Акрон Тольятти"],
         }
+    
+    def find_match_ids(self, round_number: int) -> List[int]:
+        """
+        Находит ID всех матчей тура через поиск на сайте
+        
+        Returns:
+            List[int]: список ID матчей
+        """
+        match_ids = []
+        
+        # Пробуем найти страницу с календарём тура
+        search_urls = [
+            f"{self.base_url}/russia/premier-liga/2026-2027/round-{round_number}",
+            f"{self.base_url}/russia/premier-liga/2026-2027/tour-{round_number}",
+            f"{self.base_url}/russia/premier-liga/2026-2027/tour/{round_number}",
+            f"{self.base_url}/sport/football/russia/premier-league/round-{round_number}",
+        ]
+        
+        for url in search_urls:
+            try:
+                response = requests.get(url, headers=self.headers, timeout=10)
+                if response.status_code == 200:
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    
+                    # Ищем ссылки на матчи
+                    # На nb-bet.com ссылки на матчи обычно в формате /Events/1234567-...
+                    links = soup.find_all('a', href=re.compile(r'/Events/\d+'))
+                    
+                    for link in links:
+                        href = link.get('href', '')
+                        match_id_match = re.search(r'/Events/(\d+)', href)
+                        if match_id_match:
+                            match_id = int(match_id_match.group(1))
+                            if match_id not in match_ids:
+                                match_ids.append(match_id)
+                    
+                    if match_ids:
+                        logger.info(f"Найдено {len(match_ids)} матчей в туре {round_number}")
+                        break
+            except Exception as e:
+                logger.debug(f"Ошибка поиска тура {round_number}: {e}")
+                continue
+        
+        return match_ids
+    
+    def find_match_ids_by_teams(self, round_number: int, home_team: str, away_team: str) -> Optional[int]:
+        """
+        Находит ID конкретного матча по командам через поиск на сайте
+        """
+        # Ищем все матчи тура
+        all_ids = self.find_match_ids(round_number)
+        
+        for match_id in all_ids:
+            # Получаем информацию о матче
+            match_info = self.get_match_teams(match_id)
+            if match_info:
+                if (match_info['home_team'] == home_team and match_info['away_team'] == away_team) or \
+                   (match_info['home_team'] == away_team and match_info['away_team'] == home_team):
+                    return match_id
+        
+        return None
+    
+    def get_match_teams(self, match_id: int) -> Optional[Dict]:
+        """
+        Получает названия команд по ID матча
+        """
+        url = f"{self.base_url}/Events/{match_id}"
+        
+        try:
+            response = requests.get(url, headers=self.headers, timeout=10)
+            if response.status_code != 200:
+                return None
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Ищем названия команд в заголовке
+            title = soup.find('title')
+            if title:
+                title_text = title.get_text(strip=True)
+                # "ЦСКА - Балтика - счет, прогноз, статистика"
+                teams_part = title_text.split(' - счет')[0]
+                if ' - ' in teams_part:
+                    home_team, away_team = teams_part.split(' - ', 1)
+                    # Проверяем, что это команды РПЛ
+                    if self._is_rpl_team(home_team) and self._is_rpl_team(away_team):
+                        return {
+                            'home_team': self._normalize_team_name(home_team),
+                            'away_team': self._normalize_team_name(away_team),
+                            'match_id': match_id
+                        }
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Ошибка получения команд для матча {match_id}: {e}")
+            return None
+    
+    def _is_rpl_team(self, team_name: str) -> bool:
+        """Проверяет, является ли команда командой РПЛ"""
+        for rpl_team in self.rpl_teams:
+            if rpl_team in team_name or team_name in rpl_team:
+                return True
+        return False
+    
+    def _normalize_team_name(self, team_name: str) -> str:
+        """Приводит название команды к стандартному виду"""
+        for rpl_team, variants in self.team_variants.items():
+            for variant in variants:
+                if variant in team_name or team_name in variant:
+                    return rpl_team
+        return team_name
     
     def parse_match(self, match_id: int) -> Optional[Dict]:
         """
         Парсит страницу матча и возвращает статистику
-        
-        Returns:
-            Dict: {
-                'match_id': 1612885,
-                'home_team': 'ЦСКА',
-                'away_team': 'Балтика',
-                'home_goals': 2,
-                'away_goals': 1,
-                'home_xg': 2.25,
-                'away_xg': 1.52,
-                'home_shots': 18,
-                'away_shots': 14,
-                'home_shots_on_target': 5,
-                'away_shots_on_target': 3,
-                'home_possession': 65,
-                'away_possession': 35,
-                'home_corners': 6,
-                'away_corners': 2,
-                'home_yellow_cards': 1,
-                'away_yellow_cards': 1,
-                'home_pass_accuracy': 83,
-                'away_pass_accuracy': 66,
-                'home_fouls': None,
-                'away_fouls': None,
-            }
         """
         url = f"{self.base_url}/Events/{match_id}"
         
@@ -96,20 +178,26 @@ class NBBetParser:
             
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # 1. Извлекаем названия команд из заголовка
+            # Получаем названия команд
             title = soup.find('title')
             if title:
                 title_text = title.get_text(strip=True)
-                # "ЦСКА - Балтика - счет, прогноз, статистика"
                 teams_part = title_text.split(' - счет')[0]
                 if ' - ' in teams_part:
-                    home_team, away_team = teams_part.split(' - ', 1)
+                    home_team_raw, away_team_raw = teams_part.split(' - ', 1)
+                    home_team = self._normalize_team_name(home_team_raw)
+                    away_team = self._normalize_team_name(away_team_raw)
                 else:
                     home_team, away_team = "Unknown", "Unknown"
             else:
                 home_team, away_team = "Unknown", "Unknown"
             
-            # 2. Извлекаем счёт
+            # Проверяем, что это матч РПЛ
+            if not (self._is_rpl_team(home_team) and self._is_rpl_team(away_team)):
+                logger.debug(f"Матч {match_id} не РПЛ: {home_team} vs {away_team}")
+                return None
+            
+            # Извлекаем счёт
             score_text = soup.find('div', class_=re.compile(r'score', re.I))
             home_goals, away_goals = 0, 0
             if score_text:
@@ -118,7 +206,7 @@ class NBBetParser:
                     home_goals = int(score_match.group(1))
                     away_goals = int(score_match.group(2))
             
-            # 3. Ищем блок "Основные показатели"
+            # Инициализируем статистику
             stats = {
                 'match_id': match_id,
                 'home_team': home_team,
@@ -143,19 +231,23 @@ class NBBetParser:
                 'away_fouls': None,
             }
             
-            # Ищем все строки с числами в основных показателях
-            # На nb-bet.com статистика в таблице или div с классами
-            stat_blocks = soup.find_all(['div', 'tr'], class_=re.compile(r'(stat|row|item)', re.I))
+            # Парсим основные показатели
+            # Ищем блок с классом, содержащим "stat" или "row"
+            stat_blocks = soup.find_all(['div', 'tr'], class_=re.compile(r'(stat|row|item|info)', re.I))
             
             for block in stat_blocks:
                 text = block.get_text(strip=True)
                 
-                # xG
+                # xG (ожидаемые голы)
                 if 'Ожидаемые голы' in text or 'xG' in text:
                     numbers = re.findall(r'(\d+\.\d+)', text)
                     if len(numbers) >= 2:
                         stats['home_xg'] = float(numbers[0])
                         stats['away_xg'] = float(numbers[1])
+                    elif len(numbers) == 1:
+                        # Может быть только одно значение xG
+                        if 'xG' in text:
+                            stats['home_xg'] = float(numbers[0])
                 
                 # Удары
                 if 'Удары' in text and 'в створ' not in text:
@@ -165,18 +257,24 @@ class NBBetParser:
                         stats['away_shots'] = int(numbers[1])
                 
                 # Удары в створ
-                if 'Удары в створ' in text:
+                if 'Удары в створ' in text or 'Удары в створ' in text:
                     numbers = re.findall(r'(\d+)', text)
                     if len(numbers) >= 2:
                         stats['home_shots_on_target'] = int(numbers[0])
                         stats['away_shots_on_target'] = int(numbers[1])
                 
-                # Владение (ищем проценты)
+                # Владение
                 if 'Владение' in text:
                     numbers = re.findall(r'(\d+)%', text)
                     if len(numbers) >= 2:
                         stats['home_possession'] = int(numbers[0])
                         stats['away_possession'] = int(numbers[1])
+                    elif len(numbers) == 1:
+                        # Может быть только одно значение
+                        if 'home' in text.lower() or 'хозя' in text:
+                            stats['home_possession'] = int(numbers[0])
+                        else:
+                            stats['away_possession'] = int(numbers[0])
                 
                 # Угловые
                 if 'Угловые' in text:
@@ -207,23 +305,36 @@ class NBBetParser:
             return None
     
     def parse_round(self, round_number: int) -> List[Dict]:
-        """Парсит все матчи тура"""
+        """
+        Парсит все матчи тура - АВТОМАТИЧЕСКИ НАХОДИТ ID
+        """
         matches = []
-        match_ids = self.round_matches.get(round_number, [])
+        
+        # Находим ID всех матчей тура
+        match_ids = self.find_match_ids(round_number)
+        
+        if not match_ids:
+            logger.warning(f"Не найдены матчи для тура {round_number}")
+            return []
+        
+        # Ограничиваем количество попыток (не больше 20 матчей в туре)
+        match_ids = match_ids[:20]
         
         for match_id in match_ids:
             data = self.parse_match(match_id)
             if data:
-                data['round'] = round_number
-                matches.append(data)
+                # Проверяем, что это действительно матч РПЛ
+                if self._is_rpl_team(data['home_team']) and self._is_rpl_team(data['away_team']):
+                    data['round'] = round_number
+                    matches.append(data)
         
-        logger.info(f"Тур {round_number}: загружено {len(matches)} матчей")
+        logger.info(f"Тур {round_number}: загружено {len(matches)} матчей РПЛ")
         return matches
     
     def parse_all_rounds(self, rounds: List[int] = None) -> List[Dict]:
         """Парсит все туры"""
         if rounds is None:
-            rounds = list(self.round_matches.keys())
+            rounds = list(range(1, 31))  # 1-30 туры
         
         all_matches = []
         for round_num in rounds:
@@ -232,6 +343,33 @@ class NBBetParser:
         
         logger.info(f"Всего загружено: {len(all_matches)} матчей")
         return all_matches
+    
+    def parse_round_from_teams(self, round_number: int, matches_list: List[Tuple[str, str]]) -> List[Dict]:
+        """
+        Парсит тур по списку пар команд (для точного поиска)
+        
+        Args:
+            round_number: номер тура
+            matches_list: список кортежей (home_team, away_team)
+        
+        Returns:
+            List[Dict]: список статистики матчей
+        """
+        matches = []
+        
+        for home_team, away_team in matches_list:
+            # Ищем ID матча
+            match_id = self.find_match_ids_by_teams(round_number, home_team, away_team)
+            
+            if match_id:
+                data = self.parse_match(match_id)
+                if data:
+                    data['round'] = round_number
+                    matches.append(data)
+            else:
+                logger.warning(f"Матч не найден: {home_team} vs {away_team} (тур {round_number})")
+        
+        return matches
 
 
 # ============================================================
@@ -241,13 +379,6 @@ class NBBetParser:
 def load_match_stats_to_db(matches_data: List[Dict], db) -> int:
     """
     Загружает статистику матчей в БД
-    
-    Args:
-        matches_data: список словарей от parse_all_rounds()
-        db: объект FAJDatabase
-    
-    Returns:
-        int: количество загруженных матчей
     """
     loaded = 0
     
@@ -262,7 +393,8 @@ def load_match_stats_to_db(matches_data: List[Dict], db) -> int:
                 continue
             
             # Находим матч в БД
-            cursor = db._get_connection().cursor()
+            conn = db._get_connection()
+            cursor = conn.cursor()
             cursor.execute("""
                 SELECT m.id 
                 FROM matches m
@@ -273,6 +405,8 @@ def load_match_stats_to_db(matches_data: List[Dict], db) -> int:
             """, (data['round'], home_team_id, away_team_id))
             
             match_row = cursor.fetchone()
+            conn.close()
+            
             if not match_row:
                 logger.warning(f"Матч не найден в БД: {data['home_team']} vs {data['away_team']} (тур {data['round']})")
                 continue
@@ -345,16 +479,23 @@ def load_match_stats_to_db(matches_data: List[Dict], db) -> int:
     return loaded
 
 
+# ============================================================
+# ТЕСТ
+# ============================================================
+
 if __name__ == "__main__":
-    # Тест парсера
     parser = NBBetParser()
     
-    # Проверяем 1 тур
-    round_1_matches = parser.parse_round(1)
-    print(f"\n📊 Тур 1: {len(round_1_matches)} матчей")
-    for m in round_1_matches:
-        print(f"  {m['home_team']} {m['home_goals']}:{m['away_goals']} {m['away_team']}")
-        print(f"    xG: {m['home_xg']} - {m['away_xg']}")
-        print(f"    Владение: {m['home_possession']}% - {m['away_possession']}%")
-        print(f"    Удары: {m['home_shots']} - {m['away_shots']}")
-        print()
+    # Тестируем поиск матчей для 1 тура
+    print("\n🔍 Поиск матчей 1 тура...")
+    match_ids = parser.find_match_ids(1)
+    print(f"Найдено ID: {match_ids}")
+    
+    # Парсим первые 3 матча
+    print("\n📊 Парсинг матчей...")
+    for match_id in match_ids[:3]:
+        data = parser.parse_match(match_id)
+        if data:
+            print(f"\n{data['home_team']} {data['home_goals']}:{data['away_goals']} {data['away_team']}")
+            print(f"  xG: {data['home_xg']} - {data['away_xg']}")
+            print(f"  Владение: {data['home_possession']}% - {data['away_possession']}%")
