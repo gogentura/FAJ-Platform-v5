@@ -55,7 +55,7 @@ if 'prediction_result' not in st.session_state:
     st.session_state.prediction_result = None
 
 # ============================================================
-# БОКОВОЕ МЕНЮ
+# БОКОВОЕ МЕНЮ — ОБНОВЛЕНО
 # ============================================================
 with st.sidebar:
     st.title("⚽ FAJ")
@@ -77,20 +77,20 @@ with st.sidebar:
     if st.button("📋 Паспорта", use_container_width=True):
         st.session_state.page = 'passports'
     
-    if st.button("📥 Загрузка данных", use_container_width=True):
-        st.session_state.page = 'data_loader'
+    # ============================================================
+    # НОВЫЕ СТРАНИЦЫ
+    # ============================================================
+    if st.button("📋 Проверка календаря", use_container_width=True):
+        st.session_state.page = 'check_calendar'
+    
+    if st.button("📊 Загрузка статистики", use_container_width=True):
+        st.session_state.page = 'load_stats'
     
     if st.button("🔄 Синхронизация", use_container_width=True):
         st.session_state.page = 'sync'
     
     if st.button("⚙️ Система", use_container_width=True):
         st.session_state.page = 'system'
-    
-    # ============================================================
-    # НОВАЯ КНОПКА — ДИАГНОСТИКА SMART TABLES
-    # ============================================================
-    if st.button("📊 Smart Tables Test", use_container_width=True):
-        st.session_state.page = 'smart_tables_test'
     
     st.divider()
     
@@ -476,28 +476,28 @@ elif st.session_state.page == 'passports':
         st.error(f"❌ Ошибка загрузки паспортов: {e}")
 
 # ============================================================
-# НОВАЯ СТРАНИЦА — ЗАГРУЗКА ДАННЫХ (ПАРСИНГ)
+# НОВАЯ СТРАНИЦА — ПРОВЕРКА КАЛЕНДАРЯ
 # ============================================================
-elif st.session_state.page == 'data_loader':
+elif st.session_state.page == 'check_calendar':
     try:
-        from app.pages.data_loader import main as data_loader_main
-        data_loader_main()
+        from app.pages.check_calendar import main as check_calendar_main
+        check_calendar_main()
     except ImportError as e:
-        st.error(f"❌ Страница 'Загрузка данных' не найдена: {e}")
-        st.info("Создайте файл app/pages/data_loader.py")
+        st.error(f"❌ Страница 'Проверка календаря' не найдена: {e}")
+        st.info("Создайте файл app/pages/check_calendar.py")
     except Exception as e:
         st.error(f"❌ Ошибка: {e}")
 
 # ============================================================
-# НОВАЯ СТРАНИЦА — SMART TABLES TEST
+# НОВАЯ СТРАНИЦА — ЗАГРУЗКА СТАТИСТИКИ
 # ============================================================
-elif st.session_state.page == 'smart_tables_test':
+elif st.session_state.page == 'load_stats':
     try:
-        from app.pages.smart_tables_test import main as smart_tables_test_main
-        smart_tables_test_main()
+        from app.pages.load_stats import main as load_stats_main
+        load_stats_main()
     except ImportError as e:
-        st.error(f"❌ Страница 'Smart Tables Test' не найдена: {e}")
-        st.info("Создайте файл app/pages/smart_tables_test.py")
+        st.error(f"❌ Страница 'Загрузка статистики' не найдена: {e}")
+        st.info("Создайте файл app/pages/load_stats.py")
     except Exception as e:
         st.error(f"❌ Ошибка: {e}")
 
