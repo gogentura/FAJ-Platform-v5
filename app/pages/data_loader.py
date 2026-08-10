@@ -2,19 +2,28 @@ import streamlit as st
 import pandas as pd
 import sys
 import os
+import sqlite3
 
 # Добавляем путь к проекту
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from app.parsers.soccerland_parser import SoccerlandParser
-from app.database import get_db
+
+# Путь к БД
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'data', 'faj.db')
+
+def get_connection():
+    """Создаёт соединение с БД"""
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    return sqlite3.connect(DB_PATH)
 
 def main():
     st.set_page_config(page_title="Загрузка данных", layout="wide")
     st.title("📥 Загрузка календаря РПЛ")
     
     # Получаем соединение с БД
-    db = get_db()
+    conn = get_connection()
+    db = conn  # для совместимости с кодом ниже
     
     # Проверяем текущее состояние
     try:
@@ -46,6 +55,38 @@ def main():
                         
                         # Получаем или создаём сезон
                         cursor = db.cursor()
+                        
+                        # Создаём таблицы если их нет
+                        cursor.execute("""
+                            CREATE TABLE IF NOT EXISTS seasons (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                name TEXT UNIQUE,
+                                is_active INTEGER DEFAULT 1
+                            )
+                        """)
+                        
+                        cursor.execute("""
+                            CREATE TABLE IF NOT EXISTS rounds (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                season_id INTEGER,
+                                round_number INTEGER,
+                                FOREIGN KEY (season_id) REFERENCES seasons(id)
+                            )
+                        """)
+                        
+                        cursor.execute("""
+                            CREATE TABLE IF NOT EXISTS matches (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                round_id INTEGER,
+                                home_team_id INTEGER,
+                                away_team_id INTEGER,
+                                match_date TEXT,
+                                match_time TEXT,
+                                home_score INTEGER,
+                                away_score INTEGER,
+                                FOREIGN KEY (round_id) REFERENCES rounds(id)
+                            )
+                        """)
                         
                         # Проверяем сезон
                         cursor.execute(
