@@ -77,9 +77,6 @@ with st.sidebar:
     if st.button("📋 Паспорта", use_container_width=True):
         st.session_state.page = 'passports'
     
-    # ============================================================
-    # НОВАЯ СТРАНИЦА — ЗАГРУЗКА ДАННЫХ (ПАРСИНГ)
-    # ============================================================
     if st.button("📥 Загрузка данных", use_container_width=True):
         st.session_state.page = 'data_loader'
     
@@ -88,6 +85,12 @@ with st.sidebar:
     
     if st.button("⚙️ Система", use_container_width=True):
         st.session_state.page = 'system'
+    
+    # ============================================================
+    # НОВАЯ КНОПКА — ДИАГНОСТИКА SMART TABLES
+    # ============================================================
+    if st.button("📊 Smart Tables Test", use_container_width=True):
+        st.session_state.page = 'smart_tables_test'
     
     st.divider()
     
@@ -482,6 +485,19 @@ elif st.session_state.page == 'data_loader':
     except ImportError as e:
         st.error(f"❌ Страница 'Загрузка данных' не найдена: {e}")
         st.info("Создайте файл app/pages/data_loader.py")
+    except Exception as e:
+        st.error(f"❌ Ошибка: {e}")
+
+# ============================================================
+# НОВАЯ СТРАНИЦА — SMART TABLES TEST
+# ============================================================
+elif st.session_state.page == 'smart_tables_test':
+    try:
+        from app.pages.smart_tables_test import main as smart_tables_test_main
+        smart_tables_test_main()
+    except ImportError as e:
+        st.error(f"❌ Страница 'Smart Tables Test' не найдена: {e}")
+        st.info("Создайте файл app/pages/smart_tables_test.py")
     except Exception as e:
         st.error(f"❌ Ошибка: {e}")
 
