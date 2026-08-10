@@ -3,14 +3,14 @@
 """
 =====================================================
 FAJ Platform v12.1
-Soccerland Parser v12.5 — ТАБЛИЧНЫЙ ПАРСИНГ
+Soccerland Parser v12.6 — ТЕКСТОВЫЙ ПОИСК + ДИАГНОСТИКА
 =====================================================
 Источник:
     https://soccerland.ru/russia/premier-liga/2026-2027/calendar
 Назначение:
-    - парсинг таблицы календаря РПЛ
-    - определение тура
-    - извлечение матчей
+    - загрузка календаря РПЛ 2026/27
+    - извлечение матчей через текстовый поиск
+    - ДИАГНОСТИКА: debug_calendar()
 =====================================================
 """
 import hashlib
@@ -29,9 +29,9 @@ logger = logging.getLogger(__name__)
 class SoccerlandParser:
     """
     Парсер календаря РПЛ с soccerland.ru.
-    Использует табличную структуру.
+    Использует текстовый поиск по странице.
     """
-    VERSION = "12.5"
+    VERSION = "12.6"
     CALENDAR_URL = "https://soccerland.ru/russia/premier-liga/2026-2027/calendar"
     LEAGUE = "RPL"
     SEASON_YEAR = "2026-27"
@@ -50,18 +50,27 @@ class SoccerlandParser:
             "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
         }
         self.session.headers.update(self.headers)
-        logger.info("SoccerlandParser v%s initialized (TABLE)", self.VERSION)
+        logger.info("SoccerlandParser v%s initialized (TEXT SEARCH)", self.VERSION)
 
     # =========================================================
-    # HTTP
+    # ЗАГРУЗКА
     # =========================================================
-    def _get_calendar_soup(self) -> BeautifulSoup:
-        """Получение и парсинг HTML календаря"""
+    def _get_calendar_text(self) -> str:
+        """Получение текста календаря без HTML-тегов"""
         response = self.session.get(self.CALENDAR_URL, timeout=20)
         response.raise_for_status()
         if not response.text:
             raise RuntimeError("soccerland.ru returned empty response")
-        return BeautifulSoup(response.text, "html.parser")
+        
+        soup = BeautifulSoup(response.text, "html.parser")
+        
+        # Удаляем скрипты и стили
+        for script in soup(["script", "style"]):
+            script.decompose()
+        
+        # Получаем текст
+        text = soup.get_text(separator=" ", strip=True)
+        return text
 
     # =========================================================
     # НОРМАЛИЗАЦИЯ
@@ -75,133 +84,97 @@ class SoccerlandParser:
         return text.strip()
 
     # =========================================================
-    # ПАРСИНГ ТАБЛИЦЫ
+    # ПАРСИНГ
     # =========================================================
     def get_all_matches(self) -> List[Dict[str, Any]]:
         """
-        Парсинг таблицы календаря.
-        Ищет все таблицы, затем все строки с матчами.
+        Парсинг календаря через текстовый поиск.
+        Ищет паттерны: "ДД.ММ ЧЧ:ММ | Команда | Счёт | Команда"
         """
         try:
-            soup = self._get_calendar_soup()
-            matches = []
-            current_round = None
-
-            # Ищем все таблицы
-            for table in soup.find_all('table'):
-                # Проверяем, что таблица содержит матчи
-                table_text = self._normalize_text(table.get_text())
-                if 'Тур' not in table_text and '|' not in table_text:
+            text = self._get_calendar_text()
+            text = self._normalize_text(text)
+            
+            logger.info("Text length: %s", len(text))
+            
+            # Ищем все заголовки "Тур N"
+            round_matches = list(re.finditer(r"Тур\s+(\d{1,2})", text, re.IGNORECASE))
+            logger.info("Found %s round headers", len(round_matches))
+            
+            if not round_matches:
+                logger.warning("No round headers found")
+                return []
+            
+            all_matches = []
+            
+            for idx, rm in enumerate(round_matches):
+                round_num = int(rm.group(1))
+                if not (1 <= round_num <= 30):
                     continue
-
-                rows = table.find_all('tr')
-                for row in rows:
-                    # Проверяем, не строка ли это с заголовком тура
-                    row_text = self._normalize_text(row.get_text())
-                    round_match = re.search(r'Тур\s*(\d{1,2})', row_text, re.IGNORECASE)
-                    if round_match:
-                        round_num = int(round_match.group(1))
-                        if 1 <= round_num <= 30:
-                            current_round = round_num
-                            continue
-
-                    # Если тур не определён — пропускаем
-                    if current_round is None:
-                        continue
-
-                    # Ищем ячейки
-                    cells = row.find_all('td')
-                    if len(cells) < 3:
-                        continue
-
-                    # Извлекаем данные из ячеек
-                    cell_texts = [self._normalize_text(cell.get_text()) for cell in cells]
+                
+                # Определяем границы текста для этого тура
+                start = rm.end()
+                end = round_matches[idx + 1].start() if idx + 1 < len(round_matches) else len(text)
+                round_text = text[start:end]
+                
+                # Ищем матчи в этом блоке
+                # Паттерн: дата время | команда | счёт | команда
+                match_pattern = re.compile(
+                    r"(\d{2}\.\d{2})\s+(\d{2}:\d{2})\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)(?=\s+\d{2}\.\d{2}|$)"
+                )
+                
+                matches_in_round = 0
+                for m in match_pattern.finditer(round_text):
+                    date_str = m.group(1).strip()
+                    time_str = m.group(2).strip()
+                    home = self._normalize_text(m.group(3))
+                    score_text = self._normalize_text(m.group(4))
+                    away = self._normalize_text(m.group(5))
                     
-                    # Ищем команды и счёт
-                    home = None
-                    away = None
-                    score_text = None
-                    
-                    for text in cell_texts:
-                        if '|' in text:
-                            parts = text.split('|')
-                            if len(parts) >= 3:
-                                home = self._normalize_text(parts[0])
-                                score_text = self._normalize_text(parts[1])
-                                away = self._normalize_text(parts[2])
-                                break
-                    
-                    # Если не нашли через | — пробуем по тексту
                     if not home or not away:
-                        # Ищем по паттерну "Команда | Счёт | Команда"
-                        full_text = ' | '.join(cell_texts)
-                        match = re.search(r'([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)', full_text)
-                        if match:
-                            home = self._normalize_text(match.group(1))
-                            score_text = self._normalize_text(match.group(2))
-                            away = self._normalize_text(match.group(3))
-
-                    if home and away and len(home) > 1 and len(away) > 1:
-                        # Парсим счёт
-                        score_data = self._parse_score(score_text or "")
-                        
-                        # Пытаемся найти дату
-                        date_str = ""
-                        time_str = ""
-                        for cell in cells:
-                            text = self._normalize_text(cell.get_text())
-                            date_match = re.search(r'(\d{2}\.\d{2})\s+(\d{2}:\d{2})', text)
-                            if date_match:
-                                date_str = date_match.group(1)
-                                time_str = date_match.group(2)
-                                break
-                        
-                        if date_str:
-                            day, month = map(int, date_str.split('.'))
-                            year = 2026 if month >= 7 else 2027
-                            iso_date = f"{year:04d}-{month:02d}-{day:02d}"
-                        else:
-                            iso_date = datetime.now().strftime("%Y-%m-%d")
-                            time_str = "00:00"
-
-                        matches.append({
-                            "round": current_round,
-                            "date": iso_date,
-                            "time": time_str,
-                            "home": home,
-                            "away": away,
-                            "score": score_data["score"],
-                            "status": score_data["status"],
-                            "actual_home": score_data["actual_home"],
-                            "actual_away": score_data["actual_away"],
-                        })
-
+                        continue
+                    if len(home) < 2 or len(away) < 2:
+                        continue
+                    
+                    # Парсим счёт
+                    score_data = self._parse_score(score_text)
+                    
+                    # Дата
+                    day, month = map(int, date_str.split('.'))
+                    year = 2026 if month >= 7 else 2027
+                    iso_date = f"{year:04d}-{month:02d}-{day:02d}"
+                    
+                    all_matches.append({
+                        "round": round_num,
+                        "date": iso_date,
+                        "time": time_str,
+                        "home": home,
+                        "away": away,
+                        "score": score_data["score"],
+                        "status": score_data["status"],
+                        "actual_home": score_data["actual_home"],
+                        "actual_away": score_data["actual_away"],
+                    })
+                    matches_in_round += 1
+                
+                logger.info("Round %s: %s matches", round_num, matches_in_round)
+            
             # Удаляем дубли
             unique = []
             seen = set()
-            for m in matches:
+            for m in all_matches:
                 key = (m["round"], m["date"], m["time"], m["home"], m["away"])
                 if key not in seen:
                     seen.add(key)
                     unique.append(m)
-
+            
             unique.sort(key=lambda x: (x["round"], x["date"], x["time"]))
-
-            logger.info("SOCCERLAND PARSER: %s matches found", len(unique))
             
-            # Диагностика по турам
-            rounds = {}
-            for m in unique:
-                r = m["round"]
-                rounds[r] = rounds.get(r, 0) + 1
-            
-            for r in sorted(rounds.keys()):
-                logger.info("  Round %s: %s matches", r, rounds[r])
-
+            logger.info("TOTAL: %s unique matches", len(unique))
             return unique
-
+            
         except Exception as e:
-            logger.exception("Soccerland parser error")
+            logger.exception("Parser error")
             return []
 
     # =========================================================
@@ -274,6 +247,69 @@ class SoccerlandParser:
             "expected_rounds": 30,
             "expected_teams": 16,
             "status": "READY" if ready else "WARNING"
+        }
+
+    # =========================================================
+    # ДИАГНОСТИЧЕСКАЯ ЗАГРУЗКА (НОВЫЙ МЕТОД)
+    # =========================================================
+    def debug_calendar(self) -> Dict[str, Any]:
+        """Диагностическая загрузка календаря"""
+        response = self.session.get(
+            self.CALENDAR_URL,
+            timeout=20
+        )
+        
+        logger.info("=" * 70)
+        logger.info("SOCCERLAND DEBUG")
+        logger.info("=" * 70)
+        logger.info("HTTP STATUS: %s", response.status_code)
+        logger.info("FINAL URL: %s", response.url)
+        logger.info("CONTENT TYPE: %s", response.headers.get("content-type"))
+        logger.info("HTML LENGTH: %s", len(response.text))
+        
+        # Первые 5000 символов HTML
+        logger.info("========== HTML START ==========")
+        logger.info(response.text[:5000])
+        logger.info("========== HTML END ==========")
+        
+        soup = BeautifulSoup(response.text, "html.parser")
+        logger.info("TITLE: %s", soup.title.get_text(strip=True) if soup.title else "NO TITLE")
+        
+        # Ссылки на страницы матчей
+        match_links = []
+        for a in soup.find_all("a", href=True):
+            href = a.get("href", "")
+            text = self._normalize_text(a.get_text(" ", strip=True))
+            if "/match/" in href:
+                match_links.append((text, href))
+        
+        logger.info("MATCH LINKS FOUND: %s", len(match_links))
+        for item in match_links[:20]:
+            logger.info("MATCH LINK: %s", item)
+        
+        # Текст страницы
+        page_text = soup.get_text(" ", strip=True)
+        page_text = self._normalize_text(page_text)
+        
+        logger.info("========== PAGE TEXT START ==========")
+        logger.info(page_text[:10000])
+        logger.info("========== PAGE TEXT END ==========")
+        
+        # Ищем JSON в HTML
+        json_matches = re.findall(r'\{[^{}]*"matches"[^{}]*\}', response.text)
+        logger.info("JSON MATCHES FOUND: %s", len(json_matches))
+        if json_matches:
+            logger.info("FIRST JSON: %s", json_matches[0][:500])
+        
+        return {
+            "status_code": response.status_code,
+            "url": str(response.url),
+            "content_type": response.headers.get("content-type"),
+            "html_length": len(response.text),
+            "match_links": len(match_links),
+            "title": soup.title.get_text(strip=True) if soup.title else "",
+            "text_length": len(page_text),
+            "json_found": len(json_matches) > 0,
         }
 
     # =========================================================
@@ -558,36 +594,17 @@ class SoccerlandParser:
 # SELF TEST
 # =============================================================
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-    print("\n" + "=" * 70)
-    print("FAJ SOCCERLAND PARSER v12.5 — TABLE PARSER")
-    print("=" * 70)
-    
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s"
+    )
     parser = SoccerlandParser()
-    
-    print("\n1. GET ALL MATCHES")
-    print("-" * 70)
-    matches = parser.get_all_matches()
-    print(f"Found: {len(matches)} matches")
-    
-    if matches:
-        print("\nFirst 10 matches:")
-        for m in matches[:10]:
-            score = m.get("score") or "– : –"
-            print(f"  R{m['round']} | {m['date']} {m['time']} | {m['home']} | {score} | {m['away']}")
-    
-    print("\n2. DIAGNOSTICS")
-    print("-" * 70)
-    diag = parser.diagnostics()
-    print(f"Status: {diag['status']}")
-    print(f"Rounds: {diag['total_rounds']}")
-    print(f"Teams: {diag['team_count']}")
-    print(f"Finished: {diag['finished']}, Scheduled: {diag['scheduled']}")
-    
-    print("\nMATCHES BY ROUND:")
-    for r, count in sorted(diag['rounds'].items()):
-        print(f"  Round {r}: {count} matches")
-    
     print("\n" + "=" * 70)
-    print("READY")
+    print("SOCCERLAND DEBUG")
+    print("=" * 70)
+    result = parser.debug_calendar()
+    print("\n" + "=" * 70)
+    print("RESULT:")
+    for key, value in result.items():
+        print(f"  {key}: {value}")
     print("=" * 70)
