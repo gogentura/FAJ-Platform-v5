@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 FAJ Platform v12.1 - Загрузка данных
-Парсинг soccerland.ru, анализ и прогноз на тур
+С диагностикой парсера из интерфейса
 """
 
 import streamlit as st
@@ -22,47 +22,61 @@ def main():
     pm = get_prediction_manager()
     
     # =========================================================
-    # 0. ДИАГНОСТИКА ПАРСЕРА (ПО КНОПКЕ)
+    # 0. ДИАГНОСТИКА ПАРСЕРА (НОВАЯ КНОПКА)
     # =========================================================
     st.subheader("🔍 Диагностика парсера")
     
-    if st.button("🔍 Проверить парсер", type="secondary"):
-        with st.spinner("Проверка соединения с soccerland.ru..."):
-            try:
-                diagnostics = parser.diagnostics()
-                
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("📊 Всего матчей", diagnostics.get('total_matches', 0))
-                with col2:
-                    st.metric("📅 Туров", diagnostics.get('total_rounds', 0))
-                with col3:
-                    st.metric("🏷️ Команд", diagnostics.get('team_count', 0))
-                with col4:
-                    status = diagnostics.get('status', 'UNKNOWN')
-                    st.metric("📌 Статус", status)
-                
-                with st.expander("📋 Детали диагностики"):
-                    st.write("**Матчи по турам:**")
-                    rounds = diagnostics.get('rounds', {})
-                    if rounds:
-                        for r, count in sorted(rounds.items()):
-                            st.write(f"  Тур {r}: {count} матчей")
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.caption("Проверка соединения с soccerland.ru и структуры страницы")
+    with col2:
+        if st.button("🔍 Запустить диагностику", type="secondary", use_container_width=True):
+            with st.spinner("Загрузка и анализ страницы soccerland.ru..."):
+                try:
+                    result = parser.debug_calendar()
+                    
+                    st.success("✅ Диагностика завершена!")
+                    
+                    # Основные показатели
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("📊 HTML", f"{result.get('html_length', 0):,} байт")
+                    with col2:
+                        st.metric("🔗 Ссылки на матчи", result.get('match_links', 0))
+                    with col3:
+                        st.metric("📄 Текст", f"{result.get('text_length', 0):,} символов")
+                    with col4:
+                        st.metric("📌 JSON найден", "✅" if result.get('json_found') else "❌")
+                    
+                    # Детали
+                    with st.expander("📋 Подробный результат диагностики"):
+                        st.write(f"**Статус HTTP:** {result.get('status_code')}")
+                        st.write(f"**URL:** {result.get('url')}")
+                        st.write(f"**Тип контента:** {result.get('content_type')}")
+                        st.write(f"**Заголовок страницы:** {result.get('title', 'Нет заголовка')}")
+                        st.write(f"**Найдено ссылок на матчи:** {result.get('match_links', 0)}")
+                        st.write(f"**Длина текста страницы:** {result.get('text_length', 0)} символов")
+                        st.write(f"**Найден JSON с матчами:** {'✅' if result.get('json_found') else '❌'}")
+                    
+                    # Если ссылок на матчи нет — показываем предупреждение
+                    if result.get('match_links', 0) == 0:
+                        st.warning("""
+                        ⚠️ **Ссылки на матчи не найдены!**
+                        
+                        Это значит, что Soccerland не отдаёт матчи в виде HTML-ссылок.
+                        Возможные причины:
+                        - Данные загружаются через JavaScript
+                        - Данные приходят в JSON
+                        - Сайт требует другой подход
+                        
+                        💡 **Что делать:** Пришли скриншот этого сообщения, и я предложу следующий шаг.
+                        """)
                     else:
-                        st.warning("⚠️ Матчи не найдены")
+                        st.info(f"✅ Найдено {result.get('match_links', 0)} ссылок на матчи. Это хороший признак!")
                     
-                    st.write(f"**Завершено:** {diagnostics.get('finished', 0)}")
-                    st.write(f"**Запланировано:** {diagnostics.get('scheduled', 0)}")
-                    st.write(f"**Ожидалось туров:** {diagnostics.get('expected_rounds', 30)}")
-                    st.write(f"**Ожидалось матчей:** {diagnostics.get('expected_matches', 240)}")
-                    
-                if diagnostics.get('status') == 'READY':
-                    st.success("✅ Парсер готов к работе!")
-                else:
-                    st.warning("⚠️ Парсер не готов. Возможно, сайт недоступен или изменилась структура.")
-                    
-            except Exception as e:
-                st.error(f"❌ Ошибка диагностики: {e}")
+                except Exception as e:
+                    st.error(f"❌ Ошибка диагностики: {e}")
+                    st.info("💡 Проверьте подключение к интернету. Парсер требует доступа к soccerland.ru.")
     
     st.divider()
     
@@ -86,7 +100,7 @@ def main():
     st.divider()
     
     # =========================================================
-    # 2. ПАРСИНГ РАСПИСАНИЯ (С ПРЕДПРОСМОТРОМ)
+    # 2. ПАРСИНГ РАСПИСАНИЯ
     # =========================================================
     st.subheader("📥 Загрузка расписания")
     st.caption("Парсинг календаря с soccerland.ru и загрузка в БД")
@@ -112,7 +126,6 @@ def main():
                     else:
                         st.success(f"🔎 Найдено матчей: {len(matches)}")
                         
-                        # Показываем найденные матчи
                         st.write("**Найденные матчи:**")
                         for match in matches:
                             score = match.get("score") or "– : –"
@@ -122,7 +135,6 @@ def main():
                                 f"{match.get('home')} | {score} | {match.get('away')}"
                             )
                         
-                        # Кнопка загрузки
                         if st.button("💾 Загрузить найденные матчи в БД", type="primary"):
                             with st.spinner(f"🧠 Загрузка {tour_to_load} тура..."):
                                 loaded = parser.load_matches_to_db(matches, tour_to_load)
