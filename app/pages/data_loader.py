@@ -1,348 +1,128 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-FAJ Platform v12.1 - Загрузка данных
-С диагностикой парсера из интерфейса
-"""
+# app/pages/data_loader.py
 
 import streamlit as st
-from datetime import datetime
-
-from app.database import FAJDatabase
+import pandas as pd
 from app.parsers.soccerland_parser import SoccerlandParser
-from app.core.prediction_manager import get_prediction_manager
-
+from app.database import Database
 
 def main():
-    st.title("📥 Загрузка данных")
-    st.caption("Парсинг soccerland.ru, анализ и прогноз на тур")
+    st.set_page_config(page_title="Загрузка данных", layout="wide")
+    st.title("📥 Загрузка календаря РПЛ")
     
-    db = FAJDatabase()
-    parser = SoccerlandParser()
-    pm = get_prediction_manager()
+    db = Database()
     
-    # =========================================================
-    # 0. ДИАГНОСТИКА ПАРСЕРА (НОВАЯ КНОПКА)
-    # =========================================================
-    st.subheader("🔍 Диагностика парсера")
+    # Проверяем текущее состояние
+    matches_count = db.get_matches_count()
+    st.info(f"📊 В БД: {matches_count} матчей")
     
-    col1, col2 = st.columns([2, 1])
+    col1, col2 = st.columns(2)
+    
     with col1:
-        st.caption("Проверка соединения с soccerland.ru и структуры страницы")
-    with col2:
-        if st.button("🔍 Запустить диагностику", type="secondary", use_container_width=True):
-            with st.spinner("Загрузка и анализ страницы soccerland.ru..."):
-                try:
-                    result = parser.debug_calendar()
+        if st.button("🚀 Загрузить календарь с Soccerland", use_container_width=True):
+            with st.spinner("Парсим календарь..."):
+                parser = SoccerlandParser()
+                matches = parser.parse_fixtures()
+                
+                if matches:
+                    # Сохраняем в БД
+                    season_id = db.get_or_create_season("2026-2027")
                     
-                    st.success("✅ Диагностика завершена!")
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
                     
-                    # Основные показатели
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("📊 HTML", f"{result.get('html_length', 0):,} байт")
-                    with col2:
-                        st.metric("🔗 Ссылки на матчи", result.get('match_links', 0))
-                    with col3:
-                        st.metric("📄 Текст", f"{result.get('text_length', 0):,} символов")
-                    with col4:
-                        st.metric("📌 JSON найден", "✅" if result.get('json_found') else "❌")
-                    
-                    # Детали
-                    with st.expander("📋 Подробный результат диагностики"):
-                        st.write(f"**Статус HTTP:** {result.get('status_code')}")
-                        st.write(f"**URL:** {result.get('url')}")
-                        st.write(f"**Тип контента:** {result.get('content_type')}")
-                        st.write(f"**Заголовок страницы:** {result.get('title', 'Нет заголовка')}")
-                        st.write(f"**Найдено ссылок на матчи:** {result.get('match_links', 0)}")
-                        st.write(f"**Длина текста страницы:** {result.get('text_length', 0)} символов")
-                        st.write(f"**Найден JSON с матчами:** {'✅' if result.get('json_found') else '❌'}")
-                    
-                    # Если ссылок на матчи нет — показываем предупреждение
-                    if result.get('match_links', 0) == 0:
-                        st.warning("""
-                        ⚠️ **Ссылки на матчи не найдены!**
+                    for i, match in enumerate(matches):
+                        status_text.text(f"Загружаем матч {i+1}/{len(matches)}")
                         
-                        Это значит, что Soccerland не отдаёт матчи в виде HTML-ссылок.
-                        Возможные причины:
-                        - Данные загружаются через JavaScript
-                        - Данные приходят в JSON
-                        - Сайт требует другой подход
+                        # Создаём тур
+                        round_id = db.create_round(
+                            season_id=season_id,
+                            round_number=match["round"]
+                        )
                         
-                        💡 **Что делать:** Пришли скриншот этого сообщения, и я предложу следующий шаг.
-                        """)
-                    else:
-                        st.info(f"✅ Найдено {result.get('match_links', 0)} ссылок на матчи. Это хороший признак!")
-                    
-                except Exception as e:
-                    st.error(f"❌ Ошибка диагностики: {e}")
-                    st.info("💡 Проверьте подключение к интернету. Парсер требует доступа к soccerland.ru.")
-    
-    st.divider()
-    
-    # =========================================================
-    # 1. СТАТИСТИКА БД
-    # =========================================================
-    st.subheader("📊 Статистика базы данных")
-    
-    status = db.get_status()
-    
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("🏷️ Команды", status['tables'].get('teams', 0))
-    with col2:
-        st.metric("⚽ Матчи", status['tables'].get('matches', 0))
-    with col3:
-        st.metric("📋 Паспорта", status['tables'].get('team_passports', 0))
-    with col4:
-        st.metric("📊 Прогнозы", status['tables'].get('predictions', 0))
-    
-    st.divider()
-    
-    # =========================================================
-    # 2. ПАРСИНГ РАСПИСАНИЯ
-    # =========================================================
-    st.subheader("📥 Загрузка расписания")
-    st.caption("Парсинг календаря с soccerland.ru и загрузка в БД")
-    
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        tour_to_load = st.number_input(
-            "Номер тура для загрузки",
-            min_value=1,
-            max_value=30,
-            value=4,
-            step=1,
-            key="tour_load"
-        )
-    with col2:
-        if st.button("🔎 Найти матчи тура", type="secondary", use_container_width=True):
-            with st.spinner(f"🔎 Поиск матчей {tour_to_load} тура..."):
-                try:
-                    matches = parser.get_matches_by_tour(tour_to_load)
-                    
-                    if not matches:
-                        st.warning(f"⚠️ Матчи тура {tour_to_load} не найдены")
-                    else:
-                        st.success(f"🔎 Найдено матчей: {len(matches)}")
+                        # Получаем ID команд
+                        home_id = db.get_team_id_by_name(match["home_team"])
+                        away_id = db.get_team_id_by_name(match["away_team"])
                         
-                        st.write("**Найденные матчи:**")
-                        for match in matches:
-                            score = match.get("score") or "– : –"
-                            status_icon = "✅" if match.get("status") == "finished" else "⏳"
-                            st.write(
-                                f"{status_icon} {match.get('date')} {match.get('time')} | "
-                                f"{match.get('home')} | {score} | {match.get('away')}"
+                        if home_id and away_id:
+                            db.create_match(
+                                round_id=round_id,
+                                home_team_id=home_id,
+                                away_team_id=away_id,
+                                match_date=match["match_date"],
+                                match_time=match["match_time"]
                             )
                         
-                        if st.button("💾 Загрузить найденные матчи в БД", type="primary"):
-                            with st.spinner(f"🧠 Загрузка {tour_to_load} тура..."):
-                                loaded = parser.load_matches_to_db(matches, tour_to_load)
-                                if loaded > 0:
-                                    st.success(f"✅ В БД загружено матчей: {loaded}")
-                                    st.rerun()
-                                else:
-                                    st.info("ℹ️ Матчи уже были загружены")
-                            
-                except Exception as e:
-                    st.error(f"❌ Ошибка: {e}")
+                        progress_bar.progress((i + 1) / len(matches))
+                    
+                    status_text.text("✅ Загрузка завершена!")
+                    st.success(f"✅ Загружено {len(matches)} матчей")
+                    st.balloons()
+                    
+                    # Показываем статистику
+                    st.subheader("📊 Статистика загрузки")
+                    
+                    # Группируем по турам
+                    df = pd.DataFrame(matches)
+                    rounds_stats = df.groupby('round').size().reset_index(name='matches')
+                    
+                    st.dataframe(
+                        rounds_stats,
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                    
+                    # Показываем первые 10 матчей
+                    st.subheader("📋 Примеры загруженных матчей")
+                    st.dataframe(
+                        df.head(10),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                else:
+                    st.error("❌ Не удалось загрузить календарь")
     
-    st.divider()
-    
-    # =========================================================
-    # 3. РУЧНОЙ ВВОД МАТЧЕЙ
-    # =========================================================
-    st.subheader("✏️ Ручной ввод матчей")
-    st.caption("Если парсер не работает, введите матчи вручную")
-    
-    with st.expander("📝 Ввести матчи тура вручную"):
-        tour_manual = st.number_input(
-            "Номер тура",
-            min_value=1,
-            max_value=30,
-            value=4,
-            step=1,
-            key="manual_tour"
+    with col2:
+        # Альтернатива: ручная загрузка
+        st.subheader("📤 Или загрузите вручную")
+        
+        uploaded_file = st.file_uploader(
+            "CSV файл с календарём",
+            type=["csv"],
+            key="manual_upload"
         )
         
-        teams = db.get_teams()
-        team_names = [t['name'] for t in teams] if teams else []
-        
-        if not team_names:
-            st.warning("⚠️ Сначала загрузите команды через 'Синхронизацию'")
-        else:
-            num_matches = st.number_input("Количество матчей", min_value=1, max_value=16, value=8, step=1)
-            
-            matches_manual = []
-            for i in range(int(num_matches)):
-                st.write(f"**Матч {i+1}**")
-                col1, col2 = st.columns(2)
-                with col1:
-                    home = st.selectbox(f"Хозяева {i+1}", team_names, key=f"manual_home_{i}")
-                with col2:
-                    away = st.selectbox(f"Гости {i+1}", team_names, key=f"manual_away_{i}")
+        if uploaded_file:
+            try:
+                df = pd.read_csv(uploaded_file)
+                required_cols = ['round', 'home_team', 'away_team', 'match_date']
                 
-                if home != away:
-                    matches_manual.append({"home": home, "away": away})
+                if all(col in df.columns for col in required_cols):
+                    st.success(f"✅ Файл загружен ({len(df)} матчей)")
+                    
+                    if st.button("Загрузить в БД", use_container_width=True):
+                        # Загружаем...
+                        pass
                 else:
-                    st.warning(f"⚠️ Команды не могут совпадать в матче {i+1}")
-            
-            if st.button("💾 Сохранить матчи вручную", type="primary"):
-                if matches_manual:
-                    with st.spinner("Сохранение..."):
-                        loaded = parser.load_matches_to_db(matches_manual, tour_manual)
-                        st.success(f"✅ Сохранено матчей: {loaded}")
-                        st.rerun()
-                else:
-                    st.warning("⚠️ Нет матчей для сохранения")
-    
-    st.divider()
-    
-    # =========================================================
-    # 4. АНАЛИЗ СЫГРАННЫХ ТУРОВ
-    # =========================================================
-    st.subheader("🔬 Анализ сыгранных туров")
-    st.caption("Обновление паспортов команд на основе результатов матчей")
-    
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        tour_to_analyze = st.number_input(
-            "Номер тура для анализа",
-            min_value=1,
-            max_value=30,
-            value=3,
-            step=1,
-            key="tour_analyze"
-        )
-    with col2:
-        if st.button("🔬 Анализировать тур", type="primary", use_container_width=True):
-            with st.spinner(f"🧠 Анализ {tour_to_analyze} тура..."):
-                try:
-                    result = parser.analyze_and_update(round_number=tour_to_analyze)
-                    
-                    if result['errors']:
-                        for err in result['errors']:
-                            st.warning(f"⚠️ {err}")
-                    
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("📊 Матчей", result['matches_analyzed'])
-                    with col2:
-                        st.metric("🔄 Команд обновлено", len(result['teams_updated']))
-                    with col3:
-                        st.metric("📅 Тур", result['round'])
-                    
-                    if result['matches_analyzed'] > 0:
-                        st.success("✅ Анализ завершён")
-                    else:
-                        st.info("ℹ️ Нет завершённых матчей для анализа")
-                        
-                except Exception as e:
-                    st.error(f"❌ Ошибка: {e}")
-    
-    st.divider()
-    
-    # =========================================================
-    # 5. ПРОГНОЗ НА ТУР
-    # =========================================================
-    st.subheader("🎯 Прогноз на тур")
-    st.caption("Автоматический прогноз на все матчи тура")
-    
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        tour_to_predict = st.number_input(
-            "Номер тура для прогноза",
-            min_value=1,
-            max_value=30,
-            value=4,
-            step=1,
-            key="tour_predict"
-        )
-    with col2:
-        if st.button("🎯 Сделать прогноз", type="primary", use_container_width=True):
-            with st.spinner(f"🧠 Прогноз на {tour_to_predict} тур..."):
-                try:
-                    # Сначала загружаем матчи, если их нет
-                    matches = parser.get_matches_by_tour(tour_to_predict)
-                    if matches:
-                        parser.load_matches_to_db(matches, tour_to_predict)
-                    
-                    predictions = parser.predict_tour(round_number=tour_to_predict)
-                    
-                    if predictions:
-                        st.success(f"✅ Прогнозов сделано: {len(predictions)}")
-                        
-                        for pred in predictions:
-                            with st.container():
-                                st.markdown("---")
-                                col1, col2, col3 = st.columns([2, 1.5, 2])
-                                
-                                with col1:
-                                    st.markdown(f"**🏠 {pred['home_team']}**")
-                                    xg = pred['prediction'].get('xg', {})
-                                    st.caption(f"xG: {xg.get('home', 0):.2f}")
-                                
-                                with col2:
-                                    score = pred['prediction'].get('score', '0:0')
-                                    prob = pred['prediction'].get('score_probability', 0)
-                                    st.markdown(f"## {score}")
-                                    st.caption(f"Вероятность: {prob:.1%}")
-                                    
-                                    probs = pred['prediction'].get('probability', {})
-                                    st.caption(f"П1: {probs.get('home', 0):.1%} | X: {probs.get('draw', 0):.1%} | П2: {probs.get('away', 0):.1%}")
-                                
-                                with col3:
-                                    st.markdown(f"**✈️ {pred['away_team']}**")
-                                    st.caption(f"xG: {xg.get('away', 0):.2f}")
-                                
-                                with st.expander("📊 Детали"):
-                                    st.json(pred['prediction'])
-                    else:
-                        st.info("ℹ️ Нет матчей для прогноза")
-                        
-                except Exception as e:
-                    st.error(f"❌ Ошибка: {e}")
-    
-    st.divider()
-    
-    # =========================================================
-    # 6. БЫСТРЫЙ ЗАПУСК
-    # =========================================================
-    st.subheader("🚀 Быстрый запуск")
-    st.caption("Одна кнопка: загрузка + анализ + прогноз")
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        fast_tour = st.number_input(
-            "Тур",
-            min_value=1,
-            max_value=30,
-            value=4,
-            step=1,
-            key="fast_tour"
-        )
-    with col2:
-        if st.button("🚀 Полный цикл", type="primary", use_container_width=True):
-            with st.spinner(f"🧠 Полный цикл для {fast_tour} тура..."):
-                try:
-                    result = parser.update_all(round_number=fast_tour)
-                    
-                    st.success("✅ Полный цикл завершён")
-                    
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("📥 Загружено", result['matches_loaded'])
-                    with col2:
-                        st.metric("🎯 Прогнозов", len(result['predictions']))
-                    with col3:
-                        st.metric("⚠️ Ошибок", len(result['errors']))
-                    
-                    if result['predictions']:
-                        st.info(f"📊 Прогнозы на {fast_tour} тур готовы")
-                        
-                except Exception as e:
-                    st.error(f"❌ Ошибка: {e}")
-
+                    st.error(f"❌ Требуются колонки: {', '.join(required_cols)}")
+            except Exception as e:
+                st.error(f"❌ Ошибка чтения файла: {e}")
+        
+        # Шаблон для скачивания
+        if st.button("📥 Скачать шаблон CSV", use_container_width=True):
+            template = pd.DataFrame({
+                'round': [1, 1, 2],
+                'home_team': ['Зенит', 'Спартак', 'ЦСКА'],
+                'away_team': ['Спартак', 'ЦСКА', 'Динамо'],
+                'match_date': ['2026-07-20', '2026-07-21', '2026-07-27'],
+                'match_time': ['19:00', '17:30', '20:00']
+            })
+            csv = template.to_csv(index=False)
+            st.download_button(
+                label="Скачать шаблон",
+                data=csv,
+                file_name="rpl_calendar_template.csv",
+                mime="text/csv"
+            )
 
 if __name__ == "__main__":
     main()
