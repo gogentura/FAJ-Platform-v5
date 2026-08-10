@@ -23,7 +23,7 @@ def main():
     
     # Получаем соединение с БД
     conn = get_connection()
-    db = conn  # для совместимости с кодом ниже
+    db = conn
     
     # Проверяем текущее состояние
     try:
@@ -53,52 +53,30 @@ def main():
                         progress_bar = st.progress(0)
                         status_text = st.empty()
                         
-                        # Получаем или создаём сезон
                         cursor = db.cursor()
                         
-                        # Создаём таблицы если их нет
-                        cursor.execute("""
-                            CREATE TABLE IF NOT EXISTS seasons (
-                                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                name TEXT UNIQUE,
-                                is_active INTEGER DEFAULT 1
-                            )
-                        """)
+                        # Проверяем структуру таблиц
+                        cursor.execute("PRAGMA table_info(seasons)")
+                        columns = cursor.fetchall()
+                        has_is_active = any(col[1] == 'is_active' for col in columns)
                         
-                        cursor.execute("""
-                            CREATE TABLE IF NOT EXISTS rounds (
-                                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                season_id INTEGER,
-                                round_number INTEGER,
-                                FOREIGN KEY (season_id) REFERENCES seasons(id)
-                            )
-                        """)
-                        
-                        cursor.execute("""
-                            CREATE TABLE IF NOT EXISTS matches (
-                                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                round_id INTEGER,
-                                home_team_id INTEGER,
-                                away_team_id INTEGER,
-                                match_date TEXT,
-                                match_time TEXT,
-                                home_score INTEGER,
-                                away_score INTEGER,
-                                FOREIGN KEY (round_id) REFERENCES rounds(id)
-                            )
-                        """)
-                        
-                        # Проверяем сезон
+                        # Проверяем сезон (без is_active)
                         cursor.execute(
                             "SELECT id FROM seasons WHERE name = '2026-2027'"
                         )
                         season = cursor.fetchone()
                         
                         if not season:
-                            cursor.execute(
-                                "INSERT INTO seasons (name, is_active) VALUES (?, ?)",
-                                ('2026-2027', 1)
-                            )
+                            if has_is_active:
+                                cursor.execute(
+                                    "INSERT INTO seasons (name, is_active) VALUES (?, ?)",
+                                    ('2026-2027', 1)
+                                )
+                            else:
+                                cursor.execute(
+                                    "INSERT INTO seasons (name) VALUES (?)",
+                                    ('2026-2027',)
+                                )
                             db.commit()
                             season_id = cursor.lastrowid
                         else:
@@ -222,14 +200,24 @@ def main():
                     st.dataframe(df.head(5), use_container_width=True)
                     
                     if st.button("📥 Загрузить в БД", use_container_width=True):
-                        # Загружаем CSV в БД
                         cursor = db.cursor()
                         
+                        # Проверяем структуру
+                        cursor.execute("PRAGMA table_info(seasons)")
+                        columns = cursor.fetchall()
+                        has_is_active = any(col[1] == 'is_active' for col in columns)
+                        
                         # Создаём сезон
-                        cursor.execute(
-                            "INSERT OR IGNORE INTO seasons (name, is_active) VALUES (?, ?)",
-                            ('2026-2027', 1)
-                        )
+                        if has_is_active:
+                            cursor.execute(
+                                "INSERT OR IGNORE INTO seasons (name, is_active) VALUES (?, ?)",
+                                ('2026-2027', 1)
+                            )
+                        else:
+                            cursor.execute(
+                                "INSERT OR IGNORE INTO seasons (name) VALUES (?)",
+                                ('2026-2027',)
+                            )
                         db.commit()
                         
                         cursor.execute(
