@@ -192,10 +192,6 @@ def run_migrations():
         ensure_column("matches", "parser_version", "TEXT")
         ensure_column("matches", "updated_at", "TEXT")
         ensure_column("matches", "data_quality", "REAL DEFAULT 1.0")
-        # ВАЖНО:
-        # match_uuid нельзя безопасно добавлять через
-        # ALTER TABLE ... ADD COLUMN ... UNIQUE.
-        # Поэтому здесь только колонка.
         ensure_column("matches", "match_uuid", "TEXT")
         ensure_index(
             "matches",
@@ -882,7 +878,7 @@ def init_database():
     """)
 
     # ============================================================
-    # ТАБЛИЦА: standings (ТУРНИРНАЯ ТАБЛИЦА) — ДОБАВЛЕНО
+    # ТАБЛИЦА: standings (ТУРНИРНАЯ ТАБЛИЦА)
     # ============================================================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS standings (
@@ -908,6 +904,80 @@ def init_database():
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_standings_team ON standings(team_id, season_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_standings_round ON standings(round)")
+
+    # ============================================================
+    # НОВЫЕ ТАБЛИЦЫ ДЛЯ СТАТИСТИКИ И ДИНАМИКИ (ДОБАВЛЕНО)
+    # ============================================================
+    
+    # 1. Таблица результатов матчей
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS match_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_id INTEGER UNIQUE,
+            home_goals INTEGER,
+            away_goals INTEGER,
+            home_penalty_goals INTEGER DEFAULT 0,
+            away_penalty_goals INTEGER DEFAULT 0,
+            FOREIGN KEY (match_id) REFERENCES matches(id)
+        )
+    """)
+    
+    # 2. Таблица расширенной статистики
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS match_statistics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_id INTEGER,
+            team_id INTEGER,
+            possession REAL,
+            shots INTEGER,
+            shots_on_target INTEGER,
+            corners INTEGER,
+            fouls INTEGER,
+            yellow_cards INTEGER,
+            red_cards INTEGER,
+            xg REAL,
+            big_chances INTEGER,
+            saves INTEGER,
+            passes INTEGER,
+            pass_accuracy REAL,
+            FOREIGN KEY (match_id) REFERENCES matches(id),
+            FOREIGN KEY (team_id) REFERENCES teams(id)
+        )
+    """)
+    
+    # 3. Таблица динамики команд по турам
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS team_dynamics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_id INTEGER,
+            round_number INTEGER,
+            season_id INTEGER,
+            matches_played INTEGER DEFAULT 0,
+            wins INTEGER DEFAULT 0,
+            draws INTEGER DEFAULT 0,
+            losses INTEGER DEFAULT 0,
+            goals_for INTEGER DEFAULT 0,
+            goals_against INTEGER DEFAULT 0,
+            goal_difference INTEGER DEFAULT 0,
+            points INTEGER DEFAULT 0,
+            avg_possession REAL DEFAULT 0,
+            avg_shots REAL DEFAULT 0,
+            avg_shots_on_target REAL DEFAULT 0,
+            avg_corners REAL DEFAULT 0,
+            avg_xg REAL DEFAULT 0,
+            avg_fouls REAL DEFAULT 0,
+            form TEXT,
+            form_points REAL DEFAULT 0,
+            home_form_points REAL DEFAULT 0,
+            away_form_points REAL DEFAULT 0,
+            attack_rating REAL DEFAULT 1.0,
+            defense_rating REAL DEFAULT 1.0,
+            control_rating REAL DEFAULT 1.0,
+            FOREIGN KEY (team_id) REFERENCES teams(id),
+            FOREIGN KEY (season_id) REFERENCES seasons(id),
+            UNIQUE(team_id, round_number, season_id)
+        )
+    """)
 
     # ============================================================
     # LEARNING LAYER TABLES
