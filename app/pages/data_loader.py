@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 FAJ Platform v12.1 - Загрузка данных
+Парсинг soccerland.ru, анализ и прогноз на тур
 """
 
 import streamlit as st
@@ -52,8 +53,12 @@ def main():
                     
                     st.write(f"**Завершено:** {diagnostics.get('finished', 0)}")
                     st.write(f"**Запланировано:** {diagnostics.get('scheduled', 0)}")
+                    st.write(f"**Ожидалось туров:** {diagnostics.get('expected_rounds', 30)}")
+                    st.write(f"**Ожидалось матчей:** {diagnostics.get('expected_matches', 240)}")
                     
-                if diagnostics.get('status') != 'READY':
+                if diagnostics.get('status') == 'READY':
+                    st.success("✅ Парсер готов к работе!")
+                else:
                     st.warning("⚠️ Парсер не готов. Возможно, сайт недоступен или изменилась структура.")
                     
             except Exception as e:
@@ -81,7 +86,7 @@ def main():
     st.divider()
     
     # =========================================================
-    # 2. ПАРСИНГ РАСПИСАНИЯ
+    # 2. ПАРСИНГ РАСПИСАНИЯ (С ПРЕДПРОСМОТРОМ)
     # =========================================================
     st.subheader("📥 Загрузка расписания")
     st.caption("Парсинг календаря с soccerland.ru и загрузка в БД")
@@ -97,20 +102,35 @@ def main():
             key="tour_load"
         )
     with col2:
-        if st.button("📥 Загрузить тур", type="primary", use_container_width=True):
-            with st.spinner(f"🧠 Загрузка {tour_to_load} тура..."):
+        if st.button("🔎 Найти матчи тура", type="secondary", use_container_width=True):
+            with st.spinner(f"🔎 Поиск матчей {tour_to_load} тура..."):
                 try:
                     matches = parser.get_matches_by_tour(tour_to_load)
                     
                     if not matches:
-                        st.warning("⚠️ Не удалось получить данные с soccerland.ru")
+                        st.warning(f"⚠️ Матчи тура {tour_to_load} не найдены")
                     else:
-                        loaded = parser.load_matches_to_db(matches, tour_to_load)
+                        st.success(f"🔎 Найдено матчей: {len(matches)}")
                         
-                        if loaded > 0:
-                            st.success(f"✅ Загружено матчей: {loaded}")
-                        else:
-                            st.info("ℹ️ Все матчи уже загружены")
+                        # Показываем найденные матчи
+                        st.write("**Найденные матчи:**")
+                        for match in matches:
+                            score = match.get("score") or "– : –"
+                            status_icon = "✅" if match.get("status") == "finished" else "⏳"
+                            st.write(
+                                f"{status_icon} {match.get('date')} {match.get('time')} | "
+                                f"{match.get('home')} | {score} | {match.get('away')}"
+                            )
+                        
+                        # Кнопка загрузки
+                        if st.button("💾 Загрузить найденные матчи в БД", type="primary"):
+                            with st.spinner(f"🧠 Загрузка {tour_to_load} тура..."):
+                                loaded = parser.load_matches_to_db(matches, tour_to_load)
+                                if loaded > 0:
+                                    st.success(f"✅ В БД загружено матчей: {loaded}")
+                                    st.rerun()
+                                else:
+                                    st.info("ℹ️ Матчи уже были загружены")
                             
                 except Exception as e:
                     st.error(f"❌ Ошибка: {e}")
@@ -230,6 +250,7 @@ def main():
         if st.button("🎯 Сделать прогноз", type="primary", use_container_width=True):
             with st.spinner(f"🧠 Прогноз на {tour_to_predict} тур..."):
                 try:
+                    # Сначала загружаем матчи, если их нет
                     matches = parser.get_matches_by_tour(tour_to_predict)
                     if matches:
                         parser.load_matches_to_db(matches, tour_to_predict)
