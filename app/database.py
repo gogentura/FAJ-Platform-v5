@@ -750,6 +750,7 @@ def init_database():
             injury_factor REAL DEFAULT 50,
             key_player_loss REAL DEFAULT 50,
             league_adaptation REAL DEFAULT 80,
+            form REAL DEFAULT 50,
             passport_confidence REAL DEFAULT 0.5,
             faj_rating REAL DEFAULT 0.0,
             version TEXT,
@@ -941,7 +942,8 @@ def init_database():
             passes INTEGER,
             pass_accuracy REAL,
             FOREIGN KEY (match_id) REFERENCES matches(id),
-            FOREIGN KEY (team_id) REFERENCES teams(id)
+            FOREIGN KEY (team_id) REFERENCES teams(id),
+            UNIQUE(match_id, team_id)
         )
     """)
     
@@ -2844,6 +2846,124 @@ class FAJDatabase:
             return None
         finally:
             conn.close()
+
+    # ============================================================
+    # SAVE TEAM PASSPORT (НОВЫЙ МЕТОД ДЛЯ PASSPORT_MANAGER)
+    # ============================================================
+
+    def save_team_passport(
+        self,
+        team_id: int,
+        season_id: int,
+        data: Dict[str, Any],
+        version: Optional[str] = None,
+        source: str = "manual"
+    ) -> Optional[int]:
+        """
+        Сохраняет паспорт команды в team_passports.
+        Используется PassportManager.
+        """
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+
+            # Определяем версию, если не передана
+            if version is None:
+                cursor.execute("""
+                    SELECT version
+                    FROM team_passports
+                    WHERE team_id = ? AND season_id = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                """, (team_id, season_id))
+                row = cursor.fetchone()
+                if row:
+                    v = row[0]
+                    if v.startswith("v"):
+                        try:
+                            num = int(v[1:].split('.')[0])
+                            version = f"v{num + 1}.0"
+                        except:
+                            version = "v1.0"
+                    else:
+                        version = "v1.0"
+                else:
+                    version = "v1.0"
+
+            # Проверяем существование
+            cursor.execute("""
+                SELECT id
+                FROM team_passports
+                WHERE team_id = ? AND season_id = ? AND version = ?
+            """, (team_id, season_id, version))
+            
+            existing = cursor.fetchone()
+
+            # Подготавливаем данные
+            passport_data = {
+                "team_id": team_id,
+                "season_id": season_id,
+                "attack": data.get("attack", 50.0),
+                "defense": data.get("defense", 50.0),
+                "control": data.get("control", 50.0),
+                "tempo": data.get("tempo", 50.0),
+                "press": data.get("press", 50.0),
+                "transition": data.get("transition", 50.0),
+                "finishing": data.get("finishing", 50.0),
+                "goalkeeper": data.get("goalkeeper", 50.0),
+                "discipline": data.get("discipline", 50.0),
+                "squad_quality": data.get("squad_quality", 50.0),
+                "bench_quality": data.get("bench_quality", 50.0),
+                "coach_factor": data.get("coach_factor", 50.0),
+                "mental": data.get("mental", 50.0),
+                "home_strength": data.get("home_strength", 50.0),
+                "away_strength": data.get("away_strength", 50.0),
+                "injury_factor": data.get("injury_factor", 50.0),
+                "key_player_loss": data.get("key_player_loss", 50.0),
+                "league_adaptation": data.get("league_adaptation", 80.0),
+                "form": data.get("form", 50.0),
+                "passport_confidence": data.get("passport_confidence", 0.5),
+                "faj_rating": data.get("faj_rating", 0.0),
+                "version": version,
+                "source": source,
+                "created_at": datetime.now().isoformat()
+            }
+
+            if existing:
+                passport_id = existing[0]
+                fields = []
+                values = []
+                for key, value in passport_data.items():
+                    if key not in ["team_id", "season_id", "version"]:
+                        fields.append(f"{key} = ?")
+                        values.append(value)
+                values.append(passport_id)
+                
+                query = f"""
+                    UPDATE team_passports
+                    SET {', '.join(fields)}
+                    WHERE id = ?
+                """
+                cursor.execute(query, values)
+            else:
+                columns = ", ".join(passport_data.keys())
+                placeholders = ", ".join(["?"] * len(passport_data))
+                query = f"""
+                    INSERT INTO team_passports ({columns})
+                    VALUES ({placeholders})
+                """
+                cursor.execute(query, list(passport_data.values()))
+                passport_id = cursor.lastrowid
+
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"Passport saved: team_id={team_id}, season_id={season_id}, version={version}")
+            return passport_id
+
+        except Exception as e:
+            logger.error(f"Save team passport error: {e}")
+            return None
 
 
 if __name__ == "__main__":
