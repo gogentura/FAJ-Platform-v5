@@ -54,11 +54,12 @@ class FAJCore:
         league: str = "RPL",
         match_type: str = "league",
         context: Optional[MatchContext] = None,
-        season_id: Optional[int] = None
+        season_id: Optional[int] = None,
+        match_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """Алиас для predict_match"""
         return self.predict_match(
-            home_team, away_team, league, match_type, context, season_id
+            home_team, away_team, league, match_type, context, season_id, match_id
         )
 
     def predict_match(
@@ -68,7 +69,8 @@ class FAJCore:
         league: str = "RPL",
         match_type: str = "league",
         context: Optional[MatchContext] = None,
-        season_id: Optional[int] = None
+        season_id: Optional[int] = None,
+        match_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         Полный прогноз матча
@@ -80,6 +82,7 @@ class FAJCore:
             match_type: тип матча
             context: контекст матча (MatchContext)
             season_id: ID сезона (опционально)
+            match_id: ID матча (опционально, для сохранения)
 
         Returns:
             Dict с полным прогнозом
@@ -97,7 +100,8 @@ class FAJCore:
                 league=league,
                 match_type=match_type,
                 context=context,
-                season_id=season_id
+                season_id=season_id,
+                match_id=match_id
             )
 
             if result.get("status") == "error":
