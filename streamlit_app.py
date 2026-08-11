@@ -66,13 +66,7 @@ with st.sidebar:
         st.session_state.page = 'passports'
     
     if st.button("🚀 Загрузить данные", use_container_width=True):
-        st.session_state.page = 'force_load_data'
-    
-    if st.button("🔧 Исправить команды", use_container_width=True):
-        st.session_state.page = 'fix_teams'
-    
-    if st.button("🔍 Найти пропущенный матч", use_container_width=True):
-        st.session_state.page = 'diagnose_missing_match'
+        st.session_state.page = 'load_data'
     
     if st.button("⚙️ Система", use_container_width=True):
         st.session_state.page = 'system'
@@ -161,7 +155,7 @@ elif st.session_state.page == 'predictions':
     if teams_df.empty:
         st.warning("⚠️ В базе нет команд. Сначала загрузите данные через 'Загрузить данные'.")
         if st.button("🚀 Перейти к загрузке"):
-            st.session_state.page = 'force_load_data'
+            st.session_state.page = 'load_data'
             st.rerun()
     else:
         col1, col2 = st.columns(2)
@@ -292,7 +286,7 @@ elif st.session_state.page == 'passports':
         if not rows:
             st.warning("⚠️ Паспорта не загружены. Загрузите данные через 'Загрузить данные'.")
             if st.button("🚀 Перейти к загрузке"):
-                st.session_state.page = 'force_load_data'
+                st.session_state.page = 'load_data'
                 st.rerun()
         else:
             data = []
@@ -314,36 +308,13 @@ elif st.session_state.page == 'passports':
     except Exception as e:
         st.error(f"❌ Ошибка загрузки паспортов: {e}")
 
-# ----- ПРИНУДИТЕЛЬНАЯ ЗАГРУЗКА ДАННЫХ -----
-elif st.session_state.page == 'force_load_data':
+# ----- ЗАГРУЗКА ДАННЫХ -----
+elif st.session_state.page == 'load_data':
     try:
-        from app.pages.force_load_data import main as force_load_main
-        force_load_main()
+        from app.pages.load_data import main as load_data_main
+        load_data_main()
     except ImportError as e:
         st.error(f"❌ Страница загрузки не найдена: {e}")
-        st.info("Создайте файл app/pages/force_load_data.py")
-    except Exception as e:
-        st.error(f"❌ Ошибка: {e}")
-
-# ----- ИСПРАВЛЕНИЕ КОМАНД -----
-elif st.session_state.page == 'fix_teams':
-    try:
-        from app.pages.fix_teams import main as fix_teams_main
-        fix_teams_main()
-    except ImportError as e:
-        st.error(f"❌ Страница 'Исправить команды' не найдена: {e}")
-        st.info("Создайте файл app/pages/fix_teams.py")
-    except Exception as e:
-        st.error(f"❌ Ошибка: {e}")
-
-# ----- НАЙТИ ПРОПУЩЕННЫЙ МАТЧ -----
-elif st.session_state.page == 'diagnose_missing_match':
-    try:
-        from app.pages.diagnose_missing_match import main as diagnose_missing_main
-        diagnose_missing_main()
-    except ImportError as e:
-        st.error(f"❌ Страница 'Найти пропущенный матч' не найдена: {e}")
-        st.info("Создайте файл app/pages/diagnose_missing_match.py")
     except Exception as e:
         st.error(f"❌ Ошибка: {e}")
 
