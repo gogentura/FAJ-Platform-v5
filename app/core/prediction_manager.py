@@ -5,23 +5,6 @@
 =====================================================
 FAJ Platform v12.0
 Prediction Manager v1.7 (ДИРИЖЁР)
-
-РОЛЬ:
-    Организует процесс прогнозирования.
-    НЕ СОДЕРЖИТ МАТЕМАТИКИ.
-    НЕ РАБОТАЕТ НАПРЯМУЮ С БД (через Database).
-
-ОТВЕТСТВЕННОСТЬ:
-    1. Получить паспорта команд (через PassportManager)
-    2. Получить FAJ Rating (из паспорта)
-    3. Передать данные в PredictionPipeline
-    4. Сохранить результат (через Database)
-
-НЕ ОТВЕЧАЕТ:
-    - За расчёт xG, Poisson, Monte Carlo
-    - За Confidence, Risk
-    - За SQL
-    - За работу с паспортами (только запрос)
 =====================================================
 """
 
@@ -74,20 +57,34 @@ class PredictionManager:
     ) -> Dict[str, Any]:
         """
         Полный прогноз матча
-
-        Args:
-            home_team: название команды хозяев
-            away_team: название команды гостей
-            league: лига (для журнала, по умолчанию "RPL")
-            match_type: тип матча
-            context: контекст матча
-            season_id: ID сезона (опционально)
-            match_id: ID матча (опционально, для сохранения)
-
-        Returns:
-            Dict с прогнозом
         """
         logger.info(f"Prediction requested: {home_team} vs {away_team} ({league})")
+
+        # ============================================================
+        # АВТОМАТИЧЕСКОЕ ПОЛУЧЕНИЕ SEASON_ID
+        # ============================================================
+        if season_id is None:
+            try:
+                conn = self.db._get_connection()
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT id
+                    FROM seasons
+                    WHERE status = 'active'
+                    ORDER BY id DESC
+                    LIMIT 1
+                """)
+                row = cursor.fetchone()
+                conn.close()
+                if row:
+                    season_id = row[0]
+                    logger.info(f"✅ Auto-detected season_id: {season_id}")
+                else:
+                    logger.warning("⚠️ No active season found, using season_id=1")
+                    season_id = 1
+            except Exception as e:
+                logger.error(f"Error getting season_id: {e}")
+                season_id = 1
 
         try:
             # 1. Загрузка паспортов с рейтингом
@@ -166,15 +163,7 @@ class PredictionManager:
             return {"status": "error", "message": str(e)}
 
     def predict_by_match_id(self, match_id: int) -> Dict[str, Any]:
-        """
-        Прогноз по ID матча из БД
-
-        Args:
-            match_id: ID матча
-
-        Returns:
-            Dict с прогнозом
-        """
+        """Прогноз по ID матча из БД"""
         match = self._get_match(match_id)
 
         if not match:
@@ -200,15 +189,7 @@ class PredictionManager:
         )
 
     def predict_round(self, round_id: int) -> List[Dict[str, Any]]:
-        """
-        Прогноз всех матчей тура
-
-        Args:
-            round_id: ID тура
-
-        Returns:
-            List[Dict] с прогнозами
-        """
+        """Прогноз всех матчей тура"""
         matches = self._get_round_matches(round_id)
         results = []
 
@@ -227,15 +208,7 @@ class PredictionManager:
         return results
 
     def predict_batch(self, matches: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Прогноз нескольких матчей по списку
-
-        Args:
-            matches: список словарей с данными матчей
-
-        Returns:
-            List[Dict] с прогнозами
-        """
+        """Прогноз нескольких матчей по списку"""
         results = []
         for match in matches:
             try:
@@ -260,14 +233,11 @@ class PredictionManager:
         return results
 
     # ============================================================
-    # PRIVATE METHODS — АДАПТИРОВАНЫ ПОД НОВУЮ БД
+    # PRIVATE METHODS
     # ============================================================
 
     def _get_match(self, match_id: int) -> Optional[Dict[str, Any]]:
-        """
-        Получение матча из БД по новой схеме.
-        Использует joins: matches → rounds → seasons → teams
-        """
+        """Получение матча из БД"""
         conn = self.db._get_connection()
         cursor = conn.cursor()
 
@@ -284,12 +254,6 @@ class PredictionManager:
                 m.actual_away,
                 m.home_xg,
                 m.away_xg,
-                m.home_possession,
-                m.away_possession,
-                m.home_shots,
-                m.away_shots,
-                m.home_shots_on_target,
-                m.away_shots_on_target,
                 th.name as home_team,
                 ta.name as away_team,
                 r.season_id,
@@ -312,9 +276,7 @@ class PredictionManager:
         return dict(row)
 
     def _get_round_matches(self, round_id: int) -> List[Dict[str, Any]]:
-        """
-        Получение матчей тура по новой схеме
-        """
+        """Получение матчей тура"""
         conn = self.db._get_connection()
         cursor = conn.cursor()
 
@@ -343,150 +305,57 @@ class PredictionManager:
 
         return [dict(row) for row in rows]
 
-    # ============================================================
-    # GET PASSPORT WITH RATING
-    # ============================================================
-
     def _get_passport_with_rating(
         self,
         team_name: str,
         season_id: Optional[int] = None
     ) -> Optional[Dict[str, Any]]:
-        """
-        Получение паспорта команды с FAJ Rating.
-        Использует PassportManager.
-        """
+        """Получение паспорта команды с FAJ Rating"""
         if season_id:
-            passport = (
-                self.passport_manager
-                .get_current_passport_by_name(
-                    team_name,
-                    season_id
-                )
-            )
+            passport = self.passport_manager.get_current_passport_by_name(team_name, season_id)
         else:
-            passport = (
-                self.passport_manager
-                .get_current_passport_by_name(
-                    team_name
-                )
-            )
+            passport = self.passport_manager.get_current_passport_by_name(team_name)
 
         if not passport:
-            logger.error(
-                "❌ PASSPORT NOT FOUND | team=%s | season_id=%s",
-                team_name,
-                season_id
-            )
+            logger.error(f"❌ PASSPORT NOT FOUND | team={team_name} | season_id={season_id}")
             return None
 
         if not isinstance(passport, dict):
-            logger.error(
-                "❌ INVALID PASSPORT TYPE | team=%s | type=%s",
-                team_name,
-                type(passport).__name__
-            )
+            logger.error(f"❌ INVALID PASSPORT TYPE | team={team_name} | type={type(passport).__name__}")
             return None
 
-        logger.info(
-            "📦 PASSPORT LOADED | team=%s | season_id=%s | keys=%s",
-            team_name,
-            season_id,
-            list(passport.keys())
-        )
+        logger.info(f"📦 PASSPORT LOADED | team={team_name} | season_id={season_id} | keys={list(passport.keys())}")
 
-        # Диагностика формы
-        form = passport.get("form")
-        if form is not None:
-            logger.info(
-                "📈 PASSPORT FORM | team=%s | form=%s | source=passport",
-                team_name,
-                form
-            )
-
-        # FAJ Rating из паспорта
         stored_rating = passport.get("faj_rating")
-
         if stored_rating is not None:
             try:
                 rating = float(stored_rating)
-                rating_source = "passport"
             except (TypeError, ValueError):
                 rating = self.passport_manager.calculate_rating(passport)
-                rating_source = "recalculated (fallback)"
         else:
             rating = self.passport_manager.calculate_rating(passport)
-            rating_source = "recalculated (no stored)"
 
-        logger.info(
-            "⭐ FAJ RATING | team=%s | rating=%.2f | source=%s",
-            team_name,
-            float(rating),
-            rating_source
-        )
+        logger.info(f"⭐ FAJ RATING | team={team_name} | rating={rating:.2f}")
 
-        return {
-            "passport": passport,
-            "rating": rating
-        }
+        return {"passport": passport, "rating": rating}
 
-    # ============================================================
-    # VALIDATE PASSPORT
-    # ============================================================
-
-    def _validate_passport_for_prediction(
-        self,
-        passport: Dict[str, Any],
-        team_name: str
-    ) -> None:
-        """
-        Проверка паспорта перед передачей в Prediction Pipeline.
-        Обязательные параметры:
-            attack
-            defense
-            control
-            goalkeeper
-        """
+    def _validate_passport_for_prediction(self, passport: Dict[str, Any], team_name: str) -> None:
+        """Проверка паспорта перед передачей в Pipeline"""
         if not isinstance(passport, dict):
-            raise ValueError(
-                f"Invalid passport for {team_name}: "
-                f"expected dict, got {type(passport).__name__}"
-            )
-
-        def find_value(field: str):
-            """Ищет значение в паспорте (плоская структура)"""
-            if field in passport:
-                return passport[field]
-            return None
+            raise ValueError(f"Invalid passport for {team_name}: expected dict, got {type(passport).__name__}")
 
         required = ["attack", "defense", "control", "goalkeeper"]
         missing = []
 
         for field in required:
-            value = find_value(field)
-            if value is None:
+            if field not in passport or passport.get(field) is None:
                 missing.append(field)
 
         if missing:
-            logger.error(
-                "❌ PASSPORT VALIDATION FAILED | "
-                "team=%s | missing=%s",
-                team_name,
-                ", ".join(missing)
-            )
-            raise ValueError(
-                f"Passport for {team_name} missing "
-                f"required fields: {', '.join(missing)}"
-            )
+            logger.error(f"❌ PASSPORT VALIDATION FAILED | team={team_name} | missing={', '.join(missing)}")
+            raise ValueError(f"Passport for {team_name} missing required fields: {', '.join(missing)}")
 
-        logger.info(
-            "✅ PASSPORT VALIDATED | team=%s | required_fields=OK",
-            team_name
-        )
-
-    # ============================================================
-    # SAVE PREDICTION — АДАПТИРОВАН ПОД НОВУЮ БД
-    # ============================================================
+        logger.info(f"✅ PASSPORT VALIDATED | team={team_name} | required_fields=OK")
 
     def _save_prediction(
         self,
@@ -496,35 +365,23 @@ class PredictionManager:
         league: str,
         match_id: Optional[int] = None
     ) -> Optional[int]:
-        """
-        Сохранение прогноза в БД через FAJDatabase.
-        Использует новый метод save_prediction().
-        """
-        # Проверяем, нужно ли сохранять
+        """Сохранение прогноза в БД"""
         if not getattr(config, 'SAVE_TO_GOLD_DATASET', True):
             logger.debug("Prediction saving disabled")
             return None
 
         try:
-            # Если match_id не передан, пытаемся найти матч по командам
             if match_id is None:
                 match_id = self._find_match_by_teams(home_team, away_team)
 
             if match_id is None:
-                logger.warning(
-                    "Cannot save prediction: match not found for "
-                    "%s vs %s",
-                    home_team,
-                    away_team
-                )
+                logger.warning(f"Cannot save prediction: match not found for {home_team} vs {away_team}")
                 return None
 
-            # Получаем данные из результата
             prob = result.get("probability", {})
             confidence_data = result.get("confidence", {})
             confidence_value = confidence_data.get("overall", 0.5)
 
-            # Сохраняем прогноз через новый метод
             pred_id = self.db.save_prediction(
                 match_id=match_id,
                 model_version=self.VERSION,
@@ -539,7 +396,6 @@ class PredictionManager:
                 prediction_source="FAJ Engine"
             )
 
-            # Сохраняем счета (prediction_scores) если есть
             top_scores = result.get("extended", {}).get("top_scores", [])
             for score_data in top_scores:
                 self.db.add_prediction_score(
@@ -549,7 +405,6 @@ class PredictionManager:
                     rank=score_data.get('rank', 0)
                 )
 
-            # Сохраняем распределение (prediction_distributions) если есть
             distributions = result.get("extended", {}).get("distributions", [])
             for dist in distributions:
                 self.db.add_prediction_distribution(
@@ -566,15 +421,8 @@ class PredictionManager:
             logger.error(f"Save prediction error: {e}")
             return None
 
-    def _find_match_by_teams(
-        self,
-        home_team: str,
-        away_team: str
-    ) -> Optional[int]:
-        """
-        Находит match_id по названиям команд.
-        Используется когда match_id не передан явно.
-        """
+    def _find_match_by_teams(self, home_team: str, away_team: str) -> Optional[int]:
+        """Находит match_id по названиям команд"""
         try:
             conn = self.db._get_connection()
             cursor = conn.cursor()
@@ -599,10 +447,6 @@ class PredictionManager:
         except Exception as e:
             logger.error(f"Find match error: {e}")
             return None
-
-    # ============================================================
-    # STATUS
-    # ============================================================
 
     def status(self) -> Dict[str, Any]:
         return {
