@@ -9,41 +9,6 @@ Prediction Pipeline v1.9
 РОЛЬ:
     Математический двигатель FAJ.
     Только расчёт. Никакой БД.
-
-ВХОД:
-    home_passport: Dict — паспорт хозяев (уже загружен)
-    away_passport: Dict — паспорт гостей (уже загружен)
-    home_rating: float — рейтинг хозяев
-    away_rating: float — рейтинг гостей
-    home_team: str — название хозяев (для вывода)
-    away_team: str — название гостей (для вывода)
-    league: str — лига (для журнала, по умолчанию "RPL")
-
-ПРОЦЕСС:
-    1. XG Model
-    2. Poisson Model
-    3. Monte Carlo
-    4. Calibration
-    5. Confidence
-    6. Risk
-
-ВЫХОД:
-    {
-        "status": "success",
-        "prediction_id": str,
-        "score": str,
-        "score_probability": float,
-        "xg": {"home": float, "away": float},
-        "probability": {"home": float, "draw": float, "away": float},
-        "btts": float,
-        "over_2_5": float,
-        "confidence": {"overall": float, "level": str},
-        "risk": {"score": float, "level": str},
-        "model_agreement": {"score": float, "level": str},
-        "diagnostic": {...},
-        "version": str,
-        "processing_time_ms": float
-    }
 =====================================================
 """
 
@@ -51,7 +16,7 @@ import time
 import logging
 import hashlib
 import uuid
-import math  # <-- ДОБАВЛЕН math
+import math
 from typing import Dict, Any, List, Tuple
 
 from app.config import config
@@ -250,7 +215,8 @@ class PredictionPipeline:
             poisson_result = self.poisson_model.calculate(
                 home_xg,
                 away_xg,
-                include_matrix=True  # ← Включаем для получения score_matrix            )
+                include_matrix=True
+            )
 
             if poisson_result.get("status") == "error":
                 raise ValueError(
@@ -461,12 +427,6 @@ class PredictionPipeline:
     ) -> Dict[str, Any]:
         """
         Расчёт расширенных метрик для UI.
-
-        Args:
-            home_xg: xG хозяев
-            away_xg: xG гостей
-            poisson_top_scores: готовые топ-счета из Poisson модели
-            score_matrix: матрица счетов из Poisson модели
         """
         # =========================================================
         # ДИАГНОСТИКА ВХОДНЫХ ДАННЫХ
@@ -638,8 +598,6 @@ class PredictionPipeline:
         Fallback расчёт топ-счетов на основе xG.
         Используется только если Poisson модель не вернула данные.
         """
-        # math уже импортирован в начале файла
-
         def poisson_prob(lam: float, k: int) -> float:
             if lam <= 0:
                 return 1.0 if k == 0 else 0.0
