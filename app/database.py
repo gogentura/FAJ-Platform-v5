@@ -1287,6 +1287,8 @@ class FAJDatabase:
 
     def prediction_exists(self, prediction_id) -> bool:
         """Проверяет существование прогноза в основной таблице predictions."""
+        if prediction_id is None:
+            return False
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
@@ -1372,6 +1374,8 @@ class FAJDatabase:
         status="active"
     ):
         """Создаёт сезон или возвращает существующий."""
+        if league is None or league == "":
+            raise ValueError("league is required and cannot be None or empty")
         conn = get_connection()
         cursor = conn.cursor()
         try:
@@ -1855,7 +1859,7 @@ class FAJDatabase:
         conn.close()
 
     # ============================================================
-    # TEAM DYNAMIC
+    # TEAM DYNAMIC — ИСПРАВЛЕН (АВТОМАТИЧЕСКИЙ last_sync)
     # ============================================================
 
     def get_dynamic(self, team_id, season_id):
@@ -1878,11 +1882,13 @@ class FAJDatabase:
             'last5_goals', 'last5_conceded', 'last5_performance',
             'average_performance', 'current_streak', 'days_rest',
             'travel_distance', 'rotation_index', 'last_base_correction_match',
-            'passport_confidence', 'last_sync'
+            'passport_confidence'
         ]
         update_data = {k: v for k, v in kwargs.items() if k in allowed}
         if not update_data:
             return
+        # Автоматически обновляем last_sync
+        update_data["last_sync"] = datetime.now().isoformat()
         existing = self.get_dynamic(team_id, season_id)
         conn = get_connection()
         cursor = conn.cursor()
@@ -1937,7 +1943,7 @@ class FAJDatabase:
                 kwargs.get('rotation_index', 0),
                 kwargs.get('last_base_correction_match', 0),
                 kwargs.get('passport_confidence', 0.4),
-                kwargs.get('last_sync'),
+                datetime.now().isoformat(),
                 datetime.now().isoformat()
             ))
         conn.commit()
@@ -2056,26 +2062,61 @@ class FAJDatabase:
     # PREDICTIONS
     # ============================================================
 
-    def save_prediction(self, match_id, model_version, algorithm,
-                        home_win, draw, away_win,
-                        over25=0.0, over35=0.0, btts=0.0,
-                        confidence=50, prediction_source="FAJ Engine", prediction_hash=None):
+    def save_prediction(
+        self,
+        match_id: int,
+        model_version: str,
+        algorithm: str,
+        home_win: float,
+        draw: float,
+        away_win: float,
+        over25: float = 0.0,
+        over35: float = 0.0,
+        btts: float = 0.0,
+        confidence: int = 50,
+        prediction_source: str = "FAJ Engine",
+        prediction_hash: str = None
+    ) -> int:
+        """Создаёт запись прогноза и возвращает его ID."""
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO predictions
-            (match_id, model_version, algorithm, home_win, draw, away_win,
-             over25, over35, btts, confidence, prediction_source, prediction_hash, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO predictions (
+                match_id,
+                model_version,
+                algorithm,
+                home_win,
+                draw,
+                away_win,
+                over25,
+                over35,
+                btts,
+                confidence,
+                prediction_source,
+                prediction_hash,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            match_id, model_version, algorithm, home_win, draw, away_win,
-            over25, over35, btts, confidence, prediction_source, prediction_hash,
+            match_id,
+            model_version,
+            algorithm,
+            home_win,
+            draw,
+            away_win,
+            over25,
+            over35,
+            btts,
+            confidence,
+            prediction_source,
+            prediction_hash,
             datetime.now().isoformat()
         ))
         conn.commit()
-        pred_id = cursor.lastrowid
+        prediction_id = cursor.lastrowid
         conn.close()
-        return pred_id
+        logger.info(f"Prediction saved: id={prediction_id}, match_id={match_id}")
+        return prediction_id
 
     def add_prediction_score(self, prediction_id, score, probability, rank):
         conn = get_connection()
@@ -2156,7 +2197,7 @@ class FAJDatabase:
         conn.close()
 
     # ============================================================
-    # MODEL PARAMETERS
+    # MODEL PARAMETERS — УНИФИЦИРОВАНЫ
     # ============================================================
 
     def get_model_parameters(self, model_version=None):
@@ -2194,21 +2235,36 @@ class FAJDatabase:
         conn.commit()
         conn.close()
 
-    def save_parameter(self, group_name: str, parameter_name: str, parameter_value: float,
-                       version: str = None, description: str = "") -> bool:
-        """Сохраняет параметр модели"""
+    def save_parameter(
+        self,
+        group_name: str,
+        parameter_name: str,
+        parameter_value: float,
+        version: str = None,
+        description: str = ""
+    ) -> bool:
+        """Сохраняет параметр модели (унифицированная версия)."""
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
+            model_version = version or DB_SCHEMA_VERSION
             cursor.execute("""
-                INSERT OR REPLACE INTO model_parameters
-                (group_name, parameter_name, parameter_value, version, description, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO model_parameters (
+                    group_name,
+                    model_version,
+                    category,
+                    parameter_name,
+                    parameter_value,
+                    description,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
+                group_name,
+                model_version,
                 group_name,
                 parameter_name,
                 parameter_value,
-                version or DB_SCHEMA_VERSION,
                 description,
                 datetime.now().isoformat()
             ))
@@ -2219,26 +2275,47 @@ class FAJDatabase:
             logger.error(f"Save parameter error: {e}")
             return False
 
-    def get_parameter(self, group_name: str, parameter_name: str, version: str = None) -> Optional[float]:
-        """Получает параметр модели"""
+    def get_parameter(
+        self,
+        group_name: str,
+        parameter_name: str,
+        version: str = None
+    ) -> Optional[float]:
+        """Получает параметр модели (унифицированная версия)."""
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
             if version:
                 cursor.execute("""
-                    SELECT parameter_value FROM model_parameters
-                    WHERE group_name = ? AND parameter_name = ? AND version = ?
-                    ORDER BY updated_at DESC LIMIT 1
-                """, (group_name, parameter_name, version))
+                    SELECT parameter_value
+                    FROM model_parameters
+                    WHERE group_name = ?
+                      AND parameter_name = ?
+                      AND model_version = ?
+                    ORDER BY datetime(updated_at) DESC
+                    LIMIT 1
+                """, (
+                    group_name,
+                    parameter_name,
+                    version
+                ))
             else:
                 cursor.execute("""
-                    SELECT parameter_value FROM model_parameters
-                    WHERE group_name = ? AND parameter_name = ?
-                    ORDER BY updated_at DESC LIMIT 1
-                """, (group_name, parameter_name))
+                    SELECT parameter_value
+                    FROM model_parameters
+                    WHERE group_name = ?
+                      AND parameter_name = ?
+                    ORDER BY datetime(updated_at) DESC
+                    LIMIT 1
+                """, (
+                    group_name,
+                    parameter_name
+                ))
             row = cursor.fetchone()
             conn.close()
-            return row[0] if row else None
+            if not row:
+                return None
+            return row[0]
         except Exception as e:
             logger.error(f"Get parameter error: {e}")
             return None
@@ -2335,12 +2412,14 @@ class FAJDatabase:
         return result
 
     def get_gold_pending(self):
+        """Возвращает только записи со статусом 'pending'."""
         conn = get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT * FROM gold_dataset
-            WHERE status IN ('pending', 'completed')
+            SELECT *
+            FROM gold_dataset
+            WHERE status = 'pending'
             ORDER BY match_date DESC
         """)
         results = cursor.fetchall()
@@ -2544,55 +2623,58 @@ class FAJDatabase:
         }
 
     # ============================================================
-    # SAVE PREDICTION RESULT
+    # SAVE PREDICTION RESULT — ИСПРАВЛЕН
     # ============================================================
 
     def save_prediction_result(
         self,
-        prediction_id: str,
-        home_team: str,
-        away_team: str,
-        league: str,
-        xg_home: float,
-        xg_away: float,
+        prediction_id: int,
+        match_id: int,
         home_win: float,
         draw: float,
         away_win: float,
-        faj_score: str,
         confidence: float,
-        risk_level: str,
-        model_agreement: float,
-        pipeline_version: str
+        model_version: str
     ) -> bool:
+        """
+        Сохраняет итоговый результат прогноза в существующую запись predictions.
+        Используется для финального обновления прогноза после расчёта.
+        """
         try:
             conn = self._get_connection()
             cursor = conn.cursor()
 
             cursor.execute("""
-                INSERT INTO predictions (
-                    match_id,
-                    model_version,
-                    algorithm,
-                    home_win,
-                    draw,
-                    away_win,
-                    confidence,
-                    created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                UPDATE predictions
+                SET
+                    match_id = ?,
+                    home_win = ?,
+                    draw = ?,
+                    away_win = ?,
+                    confidence = ?,
+                    model_version = ?,
+                    prediction_source = 'FAJ Engine',
+                    prediction_status = 'active'
+                WHERE id = ?
             """, (
-                prediction_id,
-                pipeline_version,
-                "FAJ Engine",
+                match_id,
                 home_win,
                 draw,
                 away_win,
                 confidence,
-                datetime.now().isoformat()
+                model_version,
+                prediction_id
             ))
+
+            if cursor.rowcount == 0:
+                conn.rollback()
+                logger.warning(f"Prediction not found: {prediction_id}")
+                conn.close()
+                return False
 
             conn.commit()
             conn.close()
-            logger.info(f"Prediction result saved: {prediction_id}")
+            logger.info(f"Prediction result updated: {prediction_id}, match_id={match_id}")
             return True
 
         except Exception as e:
