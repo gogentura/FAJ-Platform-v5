@@ -254,7 +254,76 @@ def run_migrations():
         "team_id, created_at"
     )
     # ------------------------------------------------------------
-    # 6. Записываем версию
+    # 6. team_passports — миграция колонок
+    # ------------------------------------------------------------
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = 'team_passports'
+    """)
+    passport_exists = cursor.fetchone() is not None
+    conn.close()
+
+    if passport_exists:
+        ensure_column("team_passports", "mental", "REAL DEFAULT 50")
+        ensure_column("team_passports", "home_strength", "REAL DEFAULT 50")
+        ensure_column("team_passports", "away_strength", "REAL DEFAULT 50")
+        ensure_column("team_passports", "injury_factor", "REAL DEFAULT 50")
+        ensure_column("team_passports", "key_player_loss", "REAL DEFAULT 50")
+        ensure_column("team_passports", "league_adaptation", "REAL DEFAULT 80")
+        ensure_column("team_passports", "form", "REAL DEFAULT 50")
+        ensure_column("team_passports", "passport_confidence", "REAL DEFAULT 0.5")
+        ensure_column("team_passports", "faj_rating", "REAL DEFAULT 0.0")
+        ensure_column("team_passports", "source", "TEXT DEFAULT 'manual'")
+        logger.info("✅ Проверены колонки team_passports")
+    
+    # ------------------------------------------------------------
+    # 7. team_passport_meta — миграция колонок
+    # ------------------------------------------------------------
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = 'team_passport_meta'
+    """)
+    meta_exists = cursor.fetchone() is not None
+    conn.close()
+
+    if meta_exists:
+        ensure_column("team_passport_meta", "style", "TEXT")
+        ensure_column("team_passport_meta", "dna", "TEXT")
+        ensure_column("team_passport_meta", "strengths", "TEXT")
+        ensure_column("team_passport_meta", "weaknesses", "TEXT")
+        ensure_column("team_passport_meta", "class", "TEXT")
+        ensure_column("team_passport_meta", "version", "TEXT DEFAULT '1.0'")
+        ensure_column("team_passport_meta", "source", "TEXT DEFAULT 'FAJ Expert Layer'")
+        logger.info("✅ Проверены колонки team_passport_meta")
+    
+    # ------------------------------------------------------------
+    # 8. predictions — проверка prediction_status
+    # ------------------------------------------------------------
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = 'predictions'
+    """)
+    predictions_exists = cursor.fetchone() is not None
+    conn.close()
+
+    if predictions_exists:
+        ensure_column("predictions", "prediction_status", "TEXT DEFAULT 'active'")
+        logger.info("✅ Проверена колонка prediction_status в predictions")
+
+    # ------------------------------------------------------------
+    # 9. Записываем версию
     # ------------------------------------------------------------
     conn = get_connection()
     cursor = conn.cursor()
@@ -516,6 +585,81 @@ def init_database():
         )
     """)
 
+    # ============================================================
+    # TEAM PASSPORTS — ОСНОВНОЙ ПАСПОРТ FAJ v12.x
+    # ============================================================
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS team_passports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_id INTEGER NOT NULL,
+            season_id INTEGER NOT NULL,
+            attack REAL DEFAULT 50.0,
+            defense REAL DEFAULT 50.0,
+            control REAL DEFAULT 50.0,
+            tempo REAL DEFAULT 50.0,
+            press REAL DEFAULT 50.0,
+            transition REAL DEFAULT 50.0,
+            finishing REAL DEFAULT 50.0,
+            goalkeeper REAL DEFAULT 50.0,
+            discipline REAL DEFAULT 50.0,
+            squad_quality REAL DEFAULT 50.0,
+            bench_quality REAL DEFAULT 50.0,
+            coach_factor REAL DEFAULT 50.0,
+            mental REAL DEFAULT 50.0,
+            home_strength REAL DEFAULT 50.0,
+            away_strength REAL DEFAULT 50.0,
+            injury_factor REAL DEFAULT 50.0,
+            key_player_loss REAL DEFAULT 50.0,
+            league_adaptation REAL DEFAULT 80.0,
+            form REAL DEFAULT 50.0,
+            passport_confidence REAL DEFAULT 0.5,
+            faj_rating REAL DEFAULT 0.0,
+            version TEXT NOT NULL,
+            source TEXT DEFAULT 'manual',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(team_id) REFERENCES teams(id),
+            FOREIGN KEY(season_id) REFERENCES seasons(id),
+            UNIQUE(team_id, season_id, version)
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_passports_team_season
+        ON team_passports(team_id, season_id)
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_passports_version
+        ON team_passports(version)
+    """)
+
+    # ============================================================
+    # TEAM PASSPORT META
+    # ============================================================
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS team_passport_meta (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_id INTEGER NOT NULL,
+            season_id INTEGER NOT NULL,
+            style TEXT,
+            dna TEXT,
+            strengths TEXT,
+            weaknesses TEXT,
+            class TEXT,
+            version TEXT DEFAULT '1.0',
+            source TEXT DEFAULT 'FAJ Expert Layer',
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(team_id) REFERENCES teams(id),
+            FOREIGN KEY(season_id) REFERENCES seasons(id),
+            UNIQUE(team_id, season_id)
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_passport_meta_team
+        ON team_passport_meta(team_id, season_id)
+    """)
+
+    # ============================================================
+    # PLAYER IMPACT
+    # ============================================================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS player_impact (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -577,6 +721,9 @@ def init_database():
         )
     """)
 
+    # ============================================================
+    # PREDICTIONS
+    # ============================================================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS predictions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -725,68 +872,7 @@ def init_database():
     """)
 
     # ============================================================
-    # ТАБЛИЦА: team_passports (ОСНОВНАЯ ДЛЯ ПАСПОРТОВ)
-    # ============================================================
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS team_passports (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            team_id INTEGER,
-            season_id INTEGER,
-            attack REAL DEFAULT 50,
-            defense REAL DEFAULT 50,
-            control REAL DEFAULT 50,
-            tempo REAL DEFAULT 50,
-            press REAL DEFAULT 50,
-            transition REAL DEFAULT 50,
-            finishing REAL DEFAULT 50,
-            goalkeeper REAL DEFAULT 50,
-            discipline REAL DEFAULT 50,
-            squad_quality REAL DEFAULT 50,
-            bench_quality REAL DEFAULT 50,
-            coach_factor REAL DEFAULT 50,
-            mental REAL DEFAULT 50,
-            home_strength REAL DEFAULT 50,
-            away_strength REAL DEFAULT 50,
-            injury_factor REAL DEFAULT 50,
-            key_player_loss REAL DEFAULT 50,
-            league_adaptation REAL DEFAULT 80,
-            form REAL DEFAULT 50,
-            passport_confidence REAL DEFAULT 0.5,
-            faj_rating REAL DEFAULT 0.0,
-            version TEXT,
-            source TEXT,
-            created_at TEXT,
-            FOREIGN KEY(team_id) REFERENCES teams(id),
-            FOREIGN KEY(season_id) REFERENCES seasons(id),
-            UNIQUE(team_id, season_id, version)
-        )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_passports_team ON team_passports(team_id, season_id)")
-
-    # ============================================================
-    # ТАБЛИЦА: team_passport_meta (ЭКСПЕРТНЫЙ СЛОЙ)
-    # ============================================================
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS team_passport_meta (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            team_id INTEGER,
-            season_id INTEGER,
-            style TEXT,
-            dna TEXT,
-            strengths TEXT,
-            weaknesses TEXT,
-            class TEXT,
-            version TEXT,
-            source TEXT,
-            updated_at TEXT,
-            FOREIGN KEY (team_id) REFERENCES teams(id),
-            FOREIGN KEY (season_id) REFERENCES seasons(id),
-            UNIQUE(team_id, season_id)
-        )
-    """)
-
-    # ============================================================
-    # ТАБЛИЦА: prediction_validation (НОВАЯ)
+    # PREDICTION VALIDATION
     # ============================================================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS prediction_validation (
@@ -820,7 +906,7 @@ def init_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_validation_match ON prediction_validation(match_id)")
 
     # ============================================================
-    # ТАБЛИЦА: team_form_history (НОВАЯ)
+    # TEAM FORM HISTORY
     # ============================================================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS team_form_history (
@@ -852,7 +938,7 @@ def init_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_form_team ON team_form_history(team_id)")
 
     # ============================================================
-    # ДОБАВЛЯЕМ diagnostic_history (ИСПРАВЛЕНИЕ №4)
+    # DIAGNOSTIC HISTORY
     # ============================================================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS diagnostic_history (
@@ -879,7 +965,7 @@ def init_database():
     """)
 
     # ============================================================
-    # ТАБЛИЦА: standings (ТУРНИРНАЯ ТАБЛИЦА)
+    # STANDINGS
     # ============================================================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS standings (
@@ -907,10 +993,8 @@ def init_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_standings_round ON standings(round)")
 
     # ============================================================
-    # НОВЫЕ ТАБЛИЦЫ ДЛЯ СТАТИСТИКИ И ДИНАМИКИ (ДОБАВЛЕНО)
+    # MATCH RESULTS
     # ============================================================
-    
-    # 1. Таблица результатов матчей
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS match_results (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -923,7 +1007,9 @@ def init_database():
         )
     """)
     
-    # 2. Таблица расширенной статистики
+    # ============================================================
+    # MATCH STATISTICS
+    # ============================================================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS match_statistics (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -947,7 +1033,9 @@ def init_database():
         )
     """)
     
-    # 3. Таблица динамики команд по турам
+    # ============================================================
+    # TEAM DYNAMICS (ПО ТУРАМ)
+    # ============================================================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS team_dynamics (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -982,7 +1070,7 @@ def init_database():
     """)
 
     # ============================================================
-    # LEARNING LAYER TABLES
+    # LEARNING LAYER
     # ============================================================
 
     cursor.execute("""
@@ -2096,9 +2184,10 @@ class FAJDatabase:
                 confidence,
                 prediction_source,
                 prediction_hash,
+                prediction_status,
                 created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             match_id,
             model_version,
@@ -2112,6 +2201,7 @@ class FAJDatabase:
             confidence,
             prediction_source,
             prediction_hash,
+            'active',
             datetime.now().isoformat()
         ))
         conn.commit()
