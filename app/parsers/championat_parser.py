@@ -3,193 +3,141 @@ from bs4 import BeautifulSoup
 import re
 import logging
 from typing import List, Dict, Optional
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-class ChampionatParser:
+class ChampionatCalendarParser:
     """
-    Парсер календаря и результатов РПЛ с championat.com
+    Парсер календаря РПЛ с сайта championat.com
     """
-    
+
     BASE_URL = "https://www.championat.com/football/_russiapl/tournament/7096/calendar/"
-    
+
     def __init__(self):
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
         }
-        # Маппинг коротких названий из URL к полным
-        self.team_mapping = {
-            # Здесь нужно будет добавить соответствие названий
-            # Пока оставляем как есть, будем определять из контекста
-        }
-    
+        # Список всех команд РПЛ для сопоставления
+        self.teams = [
+            "Зенит", "Спартак", "ЦСКА", "Динамо Москва", "Локомотив",
+            "Краснодар", "Ростов", "Ахмат", "Рубин", "Крылья Советов",
+            "Оренбург", "Родина", "Факел", "Акрон", "Балтика", "Динамо Махачкала"
+        ]
+
     def parse(self) -> List[Dict]:
         """
-        Парсит страницу календаря и возвращает список матчей.
+        Парсит страницу и возвращает список матчей.
         """
         try:
             response = requests.get(self.BASE_URL, headers=self.headers, timeout=15)
             response.raise_for_status()
-            
+
             soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Ищем все строки таблицы
-            rows = soup.find_all('tr', class_=re.compile(r'^[a-z]+-line'))
-            
-            if not rows:
-                logger.warning("Не найдены строки с матчами на странице")
-                return []
-            
+
+            # Ищем все строки таблицы (на странице это <tr> с классами)
+            rows = soup.find_all('tr')
+
             matches = []
             current_round = None
-            
+
             for row in rows:
-                # Определяем тур
-                round_cell = row.find('td', class_=re.compile(r'round'))
-                if round_cell:
-                    round_text = round_cell.get_text(strip=True)
-                    match = re.search(r'(\d+)', round_text)
-                    if match:
-                        current_round = int(match.group(1))
+                row_text = row.get_text(strip=True)
+
+                # Проверяем, содержит ли строка номер тура
+                round_match = re.search(r'Тур\s*(\d+)', row_text)
+                if round_match:
+                    current_round = int(round_match.group(1))
                     continue
-                
+
+                # Если тур не определён, пропускаем
                 if current_round is None:
                     continue
-                
-                # Парсим матч
-                match_data = self._parse_match_row(row, current_round)
+
+                # Проверяем, что строка содержит дату и время
+                date_match = re.search(r'(\d{2}\.\d{2}\.\d{4})', row_text)
+                if not date_match:
+                    continue
+
+                # Разбиваем строку на части по пробелам
+                parts = row_text.split()
+
+                # Ищем команды и счёт
+                match_data = self._extract_match_data(row_text, current_round)
                 if match_data:
                     matches.append(match_data)
-            
+
             logger.info(f"Найдено {len(matches)} матчей")
             return matches
-            
+
         except Exception as e:
             logger.error(f"Ошибка парсинга: {e}")
             return []
-    
-    def _parse_match_row(self, row, round_num: int) -> Optional[Dict]:
-        """Парсит одну строку матча"""
-        try:
-            cells = row.find_all('td')
-            if len(cells) < 3:
-                return None
-            
-            # Дата и время
-            datetime_cell = cells[0] if len(cells) > 0 else None
-            datetime_text = datetime_cell.get_text(strip=True) if datetime_cell else ""
-            match_date, match_time = self._parse_datetime(datetime_text)
-            
-            # Команды и счёт
-            teams_cell = cells[1] if len(cells) > 1 else None
-            score_cell = cells[2] if len(cells) > 2 else None
-            
-            if not teams_cell:
-                return None
-            
-            # Извлекаем команды и счёт
-            teams_text = teams_cell.get_text(strip=True)
-            score_text = score_cell.get_text(strip=True) if score_cell else ""
-            
-            home, away = self._parse_teams(teams_text)
-            home_goals, away_goals = self._parse_score(score_text)
-            
-            if not home or not away:
-                return None
-            
-            return {
-                "round": round_num,
-                "home_team": home,
-                "away_team": away,
-                "match_date": match_date,
-                "match_time": match_time,
-                "home_goals": home_goals,
-                "away_goals": away_goals,
-                "season": "2026-2027"
-            }
-            
-        except Exception as e:
-            logger.debug(f"Ошибка парсинга строки: {e}")
+
+    def _extract_match_data(self, text: str, round_num: int) -> Optional[Dict]:
+        """
+        Извлекает данные матча из текста строки.
+        """
+        # Ищем дату
+        date_match = re.search(r'(\d{2}\.\d{2}\.\d{4})', text)
+        if not date_match:
             return None
-    
-    def _parse_datetime(self, text: str) -> tuple:
-        """Парсит дату и время"""
-        date_pattern = r'(\d{2})\.(\d{2})\.(\d{4})'
-        time_pattern = r'(\d{2}):(\d{2})'
-        
-        date_match = re.search(date_pattern, text)
-        time_match = re.search(time_pattern, text)
-        
-        if date_match:
-            day, month, year = date_match.groups()
-            date_str = f"{year}-{month}-{day}"
+        date_str = date_match.group(1)
+
+        # Ищем время
+        time_match = re.search(r'(\d{2}:\d{2})', text)
+        time_str = time_match.group(1) if time_match else "19:00"
+
+        # Ищем счёт
+        score_match = re.search(r'(\d+)\s*[:;]\s*(\d+)', text)
+        if score_match:
+            home_goals = int(score_match.group(1))
+            away_goals = int(score_match.group(2))
         else:
-            date_str = "2026-08-14"  # fallback для 4-го тура
-        
-        if time_match:
-            time_str = f"{time_match.group(1)}:{time_match.group(2)}"
-        else:
-            time_str = "19:00"
-        
-        return date_str, time_str
-    
-    def _parse_teams(self, text: str) -> tuple:
-        """Парсит названия команд"""
-        # Убираем эмодзи и лишние символы
-        clean_text = re.sub(r'[^\w\s\-\.]', ' ', text)
+            home_goals = None
+            away_goals = None
+
+        # Ищем команды — они идут между датой и счётом
+        # Удаляем дату и счёт из текста
+        clean_text = re.sub(r'\d{2}\.\d{2}\.\d{4}', '', text)
+        clean_text = re.sub(r'\d{2}:\d{2}', '', clean_text)
+        if score_match:
+            clean_text = re.sub(r'\d+\s*[:;]\s*\d+', '', clean_text)
+
+        # Убираем лишние пробелы
         clean_text = re.sub(r'\s+', ' ', clean_text).strip()
-        
-        # Находим разделитель (обычно пробел, но может быть и эмодзи)
-        parts = clean_text.split()
-        
-        # Ищем названия команд по известному списку
-        from app.config import RPL_TEAMS
-        team_names = RPL_TEAMS
-        
-        home, away = None, None
-        for team in team_names:
+
+        # Ищем команды из списка
+        home_team = None
+        away_team = None
+
+        for team in self.teams:
             if team in clean_text:
-                if not home:
-                    home = team
-                    # Удаляем найденную команду из текста и ищем вторую
-                    rest = clean_text.replace(team, '').strip()
-                    for team2 in team_names:
-                        if team2 != team and team2 in rest:
-                            away = team2
-                            break
-                    if away:
+                if home_team is None:
+                    home_team = team
+                    # Удаляем найденную команду из текста
+                    clean_text = clean_text.replace(team, '').strip()
+                else:
+                    # Проверяем, что это не та же команда
+                    if team != home_team and team in clean_text:
+                        away_team = team
                         break
-        
-        if not home or not away:
-            # Fallback: пытаемся разделить по пробелам
-            words = clean_text.split()
-            if len(words) >= 2:
-                # Пробуем найти первые два слова как команды
-                for i in range(len(words)):
-                    for j in range(i+1, len(words)):
-                        candidate_home = ' '.join(words[:i+1])
-                        candidate_away = ' '.join(words[i+1:j+1])
-                        if candidate_home in team_names and candidate_away in team_names:
-                            return candidate_home, candidate_away
-        
-        return home, away
-    
-    def _parse_score(self, text: str) -> tuple:
-        """Парсит счёт матча"""
-        if not text or text == "– : –" or text == "–:–":
-            return None, None
-        
-        match = re.search(r'(\d+)\s*[:;]\s*(\d+)', text)
-        if match:
-            return int(match.group(1)), int(match.group(2))
-        
-        return None, None
 
+        if not home_team or not away_team:
+            logger.warning(f"Не удалось определить команды: {clean_text}")
+            return None
 
-# Список команд РПЛ для парсинга
-RPL_TEAMS = [
-    "Зенит", "Спартак", "ЦСКА", "Динамо Москва", "Локомотив",
-    "Краснодар", "Ростов", "Ахмат", "Рубин", "Крылья Советов",
-    "Оренбург", "Родина", "Факел", "Акрон", "Балтика", "Динамо Махачкала"
-]
+        # Преобразуем дату в формат YYYY-MM-DD
+        day, month, year = date_str.split('.')
+        date_formatted = f"{year}-{month}-{day}"
+
+        return {
+            "round": round_num,
+            "home_team": home_team,
+            "away_team": away_team,
+            "match_date": date_formatted,
+            "match_time": time_str,
+            "home_goals": home_goals,
+            "away_goals": away_goals,
+            "season": "2026-2027"
+        }
