@@ -81,9 +81,6 @@ class PredictionPipeline:
                 float(away_rating)
             )
 
-            # ---------------------------------------------------------
-            # Home passport structure
-            # ---------------------------------------------------------
             if isinstance(home_passport, dict):
                 logger.info(
                     "🔬 XG PIPELINE INPUT HOME | "
@@ -105,9 +102,6 @@ class PredictionPipeline:
                     type(home_passport).__name__
                 )
 
-            # ---------------------------------------------------------
-            # Away passport structure
-            # ---------------------------------------------------------
             if isinstance(away_passport, dict):
                 logger.info(
                     "🔬 XG PIPELINE INPUT AWAY | "
@@ -130,7 +124,7 @@ class PredictionPipeline:
                 )
 
             # =========================================================
-            # 2. XG MODEL (С ПРОВЕРКОЙ РЕЗУЛЬТАТА)
+            # 2. XG MODEL
             # =========================================================
             xg_result = self.xg_model.calculate(
                 home_passport=home_passport,
@@ -139,19 +133,11 @@ class PredictionPipeline:
                 away_rating=away_rating
             )
 
-            # =========================================================
-            # XG RESULT VALIDATION
-            # =========================================================
             if not isinstance(xg_result, dict):
-                raise ValueError(
-                    f"XG Model returned invalid result: {type(xg_result)}"
-                )
+                raise ValueError(f"XG Model returned invalid result: {type(xg_result)}")
 
             if xg_result.get("status") != "success":
-                raise ValueError(
-                    f"XG Model calculation failed: "
-                    f"{xg_result.get('message', 'unknown error')}"
-                )
+                raise ValueError(f"XG Model calculation failed: {xg_result.get('message', 'unknown error')}")
 
             if "home_xg" not in xg_result:
                 raise ValueError("XG Model result missing home_xg")
@@ -162,9 +148,6 @@ class PredictionPipeline:
             home_xg = float(xg_result["home_xg"])
             away_xg = float(xg_result["away_xg"])
 
-            # =========================================================
-            # XG RANGE
-            # =========================================================
             home_xg = max(config.XG_MIN, min(config.XG_MAX, home_xg))
             away_xg = max(config.XG_MIN, min(config.XG_MAX, away_xg))
 
@@ -178,39 +161,31 @@ class PredictionPipeline:
             )
 
             # =========================================================
-            # 3. ПОЛУЧАЕМ КОМПОНЕНТЫ ДЛЯ ДИАГНОСТИКИ
+            # 3. ДИАГНОСТИКА
             # =========================================================
             components = xg_result.get("components", {})
 
             diagnostic = {
                 "raw_xg_home": round(xg_result.get("home_xg", home_xg), 3),
                 "raw_xg_away": round(xg_result.get("away_xg", away_xg), 3),
-
                 "home_attack_factor": components.get("home_attack_factor", 1.0),
                 "away_attack_factor": components.get("away_attack_factor", 1.0),
-
                 "home_defense_factor": components.get("home_defense_factor", 1.0),
                 "away_defense_factor": components.get("away_defense_factor", 1.0),
-
                 "home_keeper_factor": components.get("home_keeper_factor", 1.0),
                 "away_keeper_factor": components.get("away_keeper_factor", 1.0),
-
                 "home_control_factor": components.get("home_control_factor", 1.0),
                 "away_control_factor": components.get("away_control_factor", 1.0),
-
                 "home_advantage": components.get("home_advantage", config.HOME_ADVANTAGE),
-
                 "home_form": components.get("home_form_factor", 1.0),
                 "away_form": components.get("away_form_factor", 1.0),
-
                 "home_rating": round(home_rating, 1),
                 "away_rating": round(away_rating, 1),
-
-                "rating_used_for_xg": False  # FAJ Rating не участвует в xG
+                "rating_used_for_xg": False
             }
 
             # =========================================================
-            # 4. POISSON MODEL (С include_matrix=True ДЛЯ TOP_SCORES)
+            # 4. POISSON MODEL
             # =========================================================
             poisson_result = self.poisson_model.calculate(
                 home_xg,
@@ -219,10 +194,7 @@ class PredictionPipeline:
             )
 
             if poisson_result.get("status") == "error":
-                raise ValueError(
-                    f"Poisson calculation failed: "
-                    f"{poisson_result.get('message', 'unknown error')}"
-                )
+                raise ValueError(f"Poisson calculation failed: {poisson_result.get('message', 'unknown error')}")
 
             probs = poisson_result.get("result_probability", {})
 
@@ -286,7 +258,6 @@ class PredictionPipeline:
             # =========================================================
             calibrated = self.calibration_engine.adjust(raw_prediction)
 
-            # Нормализация вероятностей (сумма должна быть 1.0)
             home_prob = calibrated.get("home", probs.get("home", 0.33))
             draw_prob = calibrated.get("draw", probs.get("draw", 0.33))
             away_prob = calibrated.get("away", probs.get("away", 0.33))
@@ -415,7 +386,7 @@ class PredictionPipeline:
             return "LOW"
 
     # ============================================================
-    # _calculate_extended_metrics (С ДИАГНОСТИКОЙ И FALLBACK)
+    # _calculate_extended_metrics — ИСПРАВЛЕНА
     # ============================================================
 
     def _calculate_extended_metrics(
@@ -428,43 +399,29 @@ class PredictionPipeline:
         """
         Расчёт расширенных метрик для UI.
         """
-        # =========================================================
-        # ДИАГНОСТИКА ВХОДНЫХ ДАННЫХ
-        # =========================================================
         logger.info("🔬 EXTENDED METRICS INPUT:")
         logger.info("  home_xg=%.3f, away_xg=%.3f", home_xg, away_xg)
         logger.info("  poisson_top_scores: %s", poisson_top_scores[:3] if poisson_top_scores else "EMPTY")
-        
-        if score_matrix:
-            keys = list(score_matrix.keys())[:5]
-            items = list(score_matrix.items())[:3]
-            logger.info("  score_matrix keys (first 5): %s", keys)
-            logger.info("  score_matrix items (first 3): %s", items)
-        else:
-            logger.info("  score_matrix: EMPTY")
+        logger.info("  score_matrix keys (first 5): %s", list(score_matrix.keys())[:5] if score_matrix else "EMPTY")
 
         # =========================================================
         # ТОП-5 СЧЕТОВ
         # =========================================================
         top_scores = []
 
-        # Вариант 1: из poisson_top_scores
         if poisson_top_scores:
-            top_scores = poisson_top_scores[:5]
-            logger.info("  ✅ Using poisson_top_scores: %s", top_scores)
-
-        # Вариант 2: из score_matrix (если top_scores пустой)
-        elif score_matrix:
-            logger.info("  ⚠️ poisson_top_scores empty, building from score_matrix")
-            sorted_scores = sorted(score_matrix.items(), key=lambda x: x[1], reverse=True)
-            for i, (score_str, prob) in enumerate(sorted_scores[:5]):
+            for i, score_data in enumerate(poisson_top_scores[:5]):
                 try:
+                    score_str = score_data.get('score', '0:0')
+                    prob = score_data.get('probability', 0.0)
+
                     if ':' in score_str:
                         home, away = score_str.split(':')
                     elif '-' in score_str:
                         home, away = score_str.split('-')
                     else:
-                        continue
+                        home, away = '0', '0'
+
                     top_scores.append({
                         'rank': i + 1,
                         'home': int(home),
@@ -473,18 +430,13 @@ class PredictionPipeline:
                         'prob_percent': f"{prob * 100:.2f}%"
                     })
                 except (ValueError, AttributeError) as e:
-                    logger.warning("  Failed to parse score: %s, error: %s", score_str, e)
+                    logger.warning("Failed to parse score: %s, error: %s", score_data, e)
                     continue
-            logger.info("  ✅ Built top_scores from score_matrix: %s", top_scores)
 
-        # Вариант 3: fallback из xG
-        else:
-            logger.warning("  ❌ No top_scores and no score_matrix, using fallback")
-            top_scores = self._get_fallback_top_scores(home_xg, away_xg)
-            logger.info("  ✅ Built fallback top_scores: %s", top_scores)
+            logger.info("  ✅ Built top_scores from poisson_top_scores: %s", top_scores)
 
         # =========================================================
-        # BTTS (Обе забьют) — из score_matrix
+        # BTTS (Обе забьют)
         # =========================================================
         btts_prob = 0.0
         if score_matrix:
@@ -501,13 +453,12 @@ class PredictionPipeline:
                 except (ValueError, AttributeError):
                     continue
         else:
-            # Fallback: approximative BTTS из xG
             btts_prob = (1 - math.exp(-home_xg * 0.5)) * (1 - math.exp(-away_xg * 0.5))
 
         btts_prob = min(btts_prob, 1.0)
 
         # =========================================================
-        # ТОТАЛЫ — из score_matrix
+        # ТОТАЛЫ
         # =========================================================
         over_25 = 0.0
         over_35 = 0.0
@@ -529,8 +480,6 @@ class PredictionPipeline:
                 except (ValueError, AttributeError):
                     continue
         else:
-            # Fallback: approximative totals из xG
-            # Poisson approximation for over 2.5
             home_goals_prob = 1 - math.exp(-home_xg) * (1 + home_xg + home_xg**2/2)
             away_goals_prob = 1 - math.exp(-away_xg) * (1 + away_xg + away_xg**2/2)
             over_25 = home_goals_prob + away_goals_prob - home_goals_prob * away_goals_prob
@@ -542,32 +491,12 @@ class PredictionPipeline:
         # САМЫЙ ВЕРОЯТНЫЙ СЧЁТ
         # =========================================================
         most_likely = {'home': 0, 'away': 0, 'prob': 0}
-
-        if top_scores and isinstance(top_scores[0], dict):
-            # Формат из poisson_top_scores: {"score": "0:1", "probability": 0.139}
-            if 'score' in top_scores[0]:
-                try:
-                    score_str = top_scores[0]['score']
-                    if ':' in score_str:
-                        home, away = score_str.split(':')
-                    elif '-' in score_str:
-                        home, away = score_str.split('-')
-                    else:
-                        home, away = '0', '0'
-                    most_likely = {
-                        'home': int(home),
-                        'away': int(away),
-                        'prob': top_scores[0].get('probability', 0)
-                    }
-                except (ValueError, AttributeError, KeyError):
-                    pass
-            # Формат из нашего построения: {"home": 0, "away": 1, "probability": 0.139}
-            elif 'home' in top_scores[0] and 'away' in top_scores[0]:
-                most_likely = {
-                    'home': top_scores[0].get('home', 0),
-                    'away': top_scores[0].get('away', 0),
-                    'prob': top_scores[0].get('probability', 0)
-                }
+        if top_scores:
+            most_likely = {
+                'home': top_scores[0].get('home', 0),
+                'away': top_scores[0].get('away', 0),
+                'prob': top_scores[0].get('probability', 0)
+            }
 
         return {
             "top_scores": top_scores,
@@ -587,47 +516,6 @@ class PredictionPipeline:
                 "under_3_5": round(1 - over_35, 4)
             }
         }
-
-    def _get_fallback_top_scores(
-        self,
-        home_xg: float,
-        away_xg: float,
-        max_goals: int = 5
-    ) -> List[Dict[str, Any]]:
-        """
-        Fallback расчёт топ-счетов на основе xG.
-        Используется только если Poisson модель не вернула данные.
-        """
-        def poisson_prob(lam: float, k: int) -> float:
-            if lam <= 0:
-                return 1.0 if k == 0 else 0.0
-            return math.exp(-lam) * (lam ** k) / math.factorial(k)
-
-        scores = []
-        for home_goals in range(max_goals + 1):
-            for away_goals in range(max_goals + 1):
-                prob = poisson_prob(home_xg, home_goals) * poisson_prob(away_xg, away_goals)
-                scores.append({
-                    'home': home_goals,
-                    'away': away_goals,
-                    'probability': prob
-                })
-
-        scores.sort(key=lambda x: x['probability'], reverse=True)
-
-        top_scores = []
-        for i, score in enumerate(scores[:5]):
-            if score['probability'] < 0.001:
-                break
-            top_scores.append({
-                'rank': i + 1,
-                'home': score['home'],
-                'away': score['away'],
-                'probability': round(score['probability'], 4),
-                'prob_percent': f"{score['probability'] * 100:.2f}%"
-            })
-
-        return top_scores
 
 
 # ============================================================
