@@ -4,517 +4,455 @@
 """
 =====================================================
 FAJ Platform v12.0
-Prediction Pipeline v1.9
-
-РОЛЬ:
-    Математический двигатель FAJ.
-    Только расчёт. Никакой БД.
+Prediction Manager v1.7 (ДИРИЖЁР)
 =====================================================
 """
 
-import time
 import logging
-import hashlib
-import uuid
-import math
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, Optional, List
+from datetime import datetime
 
+from app.core.prediction_pipeline import PredictionPipeline, get_prediction_pipeline
+from app.core.match_context import MatchContext
+from app.passports.passport_manager import PassportManager, get_passport_manager
+from app.database import FAJDatabase
 from app.config import config
-from app.core.calibration_engine import CalibrationEngine
-from app.core.confidence_engine import ConfidenceEngine
-from app.core.risk_engine import RiskEngine
-
-from app.models.xg_model import XGModel
-from app.models.poisson_model import FAJPoissonModel
-from app.models.monte_carlo_model import MonteCarloModel
 
 logger = logging.getLogger(__name__)
 
 
-class PredictionPipeline:
+class PredictionManager:
     """
-    Prediction Pipeline v1.9
-    Математический двигатель FAJ
+    Prediction Manager v1.7 (ДИРИЖЁР)
     """
 
-    VERSION = config.PIPELINE_VERSION
+    VERSION = "1.7"
 
-    def __init__(self):
-        self.version = self.VERSION
-
-        self.xg_model = XGModel()
-        self.poisson_model = FAJPoissonModel(max_goals=config.MAX_GOALS)
-        self.monte_carlo_model = MonteCarloModel()
-
-        self.calibration_engine = CalibrationEngine()
-        self.confidence_engine = ConfidenceEngine()
-        self.risk_engine = RiskEngine()
-
-        logger.info(f"Prediction Pipeline v{self.VERSION} initialized")
-
-    def run(
+    def __init__(
         self,
-        home_passport: Dict[str, Any],
-        away_passport: Dict[str, Any],
-        home_rating: float,
-        away_rating: float,
-        home_team: str = "",
-        away_team: str = "",
-        league: str = "RPL"
+        pipeline: Optional[PredictionPipeline] = None,
+        passport_manager: Optional[PassportManager] = None,
+        db: Optional[FAJDatabase] = None
+    ):
+        self.version = self.VERSION
+        self.pipeline = pipeline or get_prediction_pipeline()
+        self.passport_manager = passport_manager or get_passport_manager()
+        self.db = db or FAJDatabase()
+
+        logger.info(f"Prediction Manager v{self.VERSION} initialized")
+
+    # ============================================================
+    # MAIN API
+    # ============================================================
+
+    def predict(
+        self,
+        home_team: str,
+        away_team: str,
+        league: str = "RPL",
+        match_type: str = "league",
+        context: Optional[MatchContext] = None,
+        season_id: Optional[int] = None,
+        match_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """
-        Запуск вычислительного конвейера
+        Полный прогноз матча
         """
-        start_time = time.perf_counter()
-        prediction_id = str(uuid.uuid4())[:8]
+        logger.info(f"Prediction requested: {home_team} vs {away_team} ({league})")
+
+        # ============================================================
+        # АВТОМАТИЧЕСКОЕ ПОЛУЧЕНИЕ SEASON_ID
+        # ============================================================
+        if season_id is None:
+            try:
+                conn = self.db._get_connection()
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT id
+                    FROM seasons
+                    WHERE status = 'active'
+                    ORDER BY id DESC
+                    LIMIT 1
+                """)
+                row = cursor.fetchone()
+                conn.close()
+                if row:
+                    season_id = row[0]
+                    logger.info(f"✅ Auto-detected season_id: {season_id}")
+                else:
+                    logger.warning("⚠️ No active season found, using season_id=1")
+                    season_id = 1
+            except Exception as e:
+                logger.error(f"Error getting season_id: {e}")
+                season_id = 1
 
         try:
-            # =========================================================
-            # 1. XG MODEL INPUT DIAGNOSTIC
-            # =========================================================
+            # 1. Загрузка паспортов с рейтингом
+            home_data = self._get_passport_with_rating(home_team, season_id)
+            away_data = self._get_passport_with_rating(away_team, season_id)
+
+            if not home_data or not away_data:
+                missing = []
+                if not home_data:
+                    missing.append(home_team)
+                if not away_data:
+                    missing.append(away_team)
+                return {
+                    "status": "error",
+                    "message": f"Паспорт не найден: {', '.join(missing)}"
+                }
+
+            # 2. Валидация паспортов ДО Pipeline
+            self._validate_passport_for_prediction(
+                home_data["passport"],
+                home_team
+            )
+            self._validate_passport_for_prediction(
+                away_data["passport"],
+                away_team
+            )
+
+            # 3. Логирование входных данных
             logger.info(
-                "🔬 XG PIPELINE INPUT | "
-                "%s vs %s | home_rating=%.2f | away_rating=%.2f",
+                "🚀 PREDICTION INPUT | "
+                "%s vs %s | "
+                "home_rating=%.2f | away_rating=%.2f",
                 home_team,
                 away_team,
-                float(home_rating),
-                float(away_rating)
+                float(home_data["rating"]),
+                float(away_data["rating"])
             )
-
-            if isinstance(home_passport, dict):
-                logger.info(
-                    "🔬 XG PIPELINE INPUT HOME | "
-                    "FLAT | attack=%s | defense=%s | "
-                    "control=%s | goalkeeper=%s | form=%s",
-                    home_passport.get("attack"),
-                    home_passport.get("defense"),
-                    home_passport.get("control"),
-                    home_passport.get("goalkeeper"),
-                    home_passport.get("form")
-                )
-                logger.info(
-                    "🔬 XG PIPELINE HOME KEYS | %s",
-                    list(home_passport.keys())
-                )
-            else:
-                logger.error(
-                    "❌ XG PIPELINE HOME PASSPORT INVALID | type=%s",
-                    type(home_passport).__name__
-                )
-
-            if isinstance(away_passport, dict):
-                logger.info(
-                    "🔬 XG PIPELINE INPUT AWAY | "
-                    "FLAT | attack=%s | defense=%s | "
-                    "control=%s | goalkeeper=%s | form=%s",
-                    away_passport.get("attack"),
-                    away_passport.get("defense"),
-                    away_passport.get("control"),
-                    away_passport.get("goalkeeper"),
-                    away_passport.get("form")
-                )
-                logger.info(
-                    "🔬 XG PIPELINE AWAY KEYS | %s",
-                    list(away_passport.keys())
-                )
-            else:
-                logger.error(
-                    "❌ XG PIPELINE AWAY PASSPORT INVALID | type=%s",
-                    type(away_passport).__name__
-                )
-
-            # =========================================================
-            # 2. XG MODEL
-            # =========================================================
-            xg_result = self.xg_model.calculate(
-                home_passport=home_passport,
-                away_passport=away_passport,
-                home_rating=home_rating,
-                away_rating=away_rating
-            )
-
-            if not isinstance(xg_result, dict):
-                raise ValueError(f"XG Model returned invalid result: {type(xg_result)}")
-
-            if xg_result.get("status") != "success":
-                raise ValueError(f"XG Model calculation failed: {xg_result.get('message', 'unknown error')}")
-
-            if "home_xg" not in xg_result:
-                raise ValueError("XG Model result missing home_xg")
-
-            if "away_xg" not in xg_result:
-                raise ValueError("XG Model result missing away_xg")
-
-            home_xg = float(xg_result["home_xg"])
-            away_xg = float(xg_result["away_xg"])
-
-            home_xg = max(config.XG_MIN, min(config.XG_MAX, home_xg))
-            away_xg = max(config.XG_MIN, min(config.XG_MAX, away_xg))
 
             logger.info(
-                "XG PIPELINE RESULT | "
-                "%s vs %s | home_xg=%.3f | away_xg=%.3f",
+                "🚀 PREDICTION PASSPORTS | "
+                "HOME keys=%s | AWAY keys=%s",
+                list(home_data["passport"].keys()),
+                list(away_data["passport"].keys())
+            )
+
+            # 4. Вызов Pipeline (ВСЯ МАТЕМАТИКА)
+            result = self.pipeline.run(
+                home_passport=home_data["passport"],
+                away_passport=away_data["passport"],
+                home_rating=home_data["rating"],
+                away_rating=away_data["rating"],
+                home_team=home_team,
+                away_team=away_team,
+                league=league
+            )
+
+            if result.get("status") == "error":
+                return result
+
+            # 5. Сохранение результата
+            pred_id = self._save_prediction(
+                result,
                 home_team,
                 away_team,
-                home_xg,
-                away_xg
+                league,
+                match_id
             )
 
-            # =========================================================
-            # 3. ДИАГНОСТИКА
-            # =========================================================
-            components = xg_result.get("components", {})
+            if pred_id:
+                result["prediction_id"] = pred_id
 
-            diagnostic = {
-                "raw_xg_home": round(xg_result.get("home_xg", home_xg), 3),
-                "raw_xg_away": round(xg_result.get("away_xg", away_xg), 3),
-                "home_attack_factor": components.get("home_attack_factor", 1.0),
-                "away_attack_factor": components.get("away_attack_factor", 1.0),
-                "home_defense_factor": components.get("home_defense_factor", 1.0),
-                "away_defense_factor": components.get("away_defense_factor", 1.0),
-                "home_keeper_factor": components.get("home_keeper_factor", 1.0),
-                "away_keeper_factor": components.get("away_keeper_factor", 1.0),
-                "home_control_factor": components.get("home_control_factor", 1.0),
-                "away_control_factor": components.get("away_control_factor", 1.0),
-                "home_advantage": components.get("home_advantage", config.HOME_ADVANTAGE),
-                "home_form": components.get("home_form_factor", 1.0),
-                "away_form": components.get("away_form_factor", 1.0),
-                "home_rating": round(home_rating, 1),
-                "away_rating": round(away_rating, 1),
-                "rating_used_for_xg": False
-            }
-
-            # =========================================================
-            # 4. POISSON MODEL
-            # =========================================================
-            poisson_result = self.poisson_model.calculate(
-                home_xg,
-                away_xg,
-                include_matrix=True
-            )
-
-            if poisson_result.get("status") == "error":
-                raise ValueError(f"Poisson calculation failed: {poisson_result.get('message', 'unknown error')}")
-
-            probs = poisson_result.get("result_probability", {})
-
-            # =========================================================
-            # 5. MONTE CARLO
-            # =========================================================
-            seed = self._build_seed(
-                home_team,
-                away_team,
-                home_rating,
-                away_rating,
-                home_xg,
-                away_xg
-            )
-
-            mc_result = self.monte_carlo_model.simulate(
-                home_xg,
-                away_xg,
-                iterations=config.MONTE_CARLO_ITERATIONS,
-                seed=seed if config.MONTE_CARLO_REPRODUCIBLE else None
-            )
-
-            # =========================================================
-            # 6. MODEL AGREEMENT
-            # =========================================================
-            agreement_score = self._calculate_model_agreement(poisson_result, mc_result)
-
-            model_agreement = {
-                "score": round(agreement_score, 3),
-                "level": self._agreement_level(agreement_score)
-            }
-
-            # =========================================================
-            # 7. RAW PREDICTION
-            # =========================================================
-            raw_prediction = {
-                "match": {
-                    "home": home_team,
-                    "away": away_team,
-                    "league": league
-                },
-                "xg": {
-                    "home": home_xg,
-                    "away": away_xg
-                },
-                "probability": {
-                    "home": probs.get("home", config.DEFAULT_HOME_PROB),
-                    "draw": probs.get("draw", config.DEFAULT_DRAW_PROB),
-                    "away": probs.get("away", config.DEFAULT_AWAY_PROB)
-                },
-                "score_prediction": {
-                    "faj_score": poisson_result.get("most_likely_score", "0:0"),
-                    "probability": poisson_result.get("score_probability", 0)
-                },
-                "btts": poisson_result.get("btts_probability", 0),
-                "over_2_5": poisson_result.get("over_2_5", 0)
-            }
-
-            # =========================================================
-            # 8. CALIBRATION
-            # =========================================================
-            calibrated = self.calibration_engine.adjust(raw_prediction)
-
-            home_prob = calibrated.get("home", probs.get("home", 0.33))
-            draw_prob = calibrated.get("draw", probs.get("draw", 0.33))
-            away_prob = calibrated.get("away", probs.get("away", 0.33))
-
-            total = home_prob + draw_prob + away_prob
-            if total > 0:
-                home_prob /= total
-                draw_prob /= total
-                away_prob /= total
-
-            # =========================================================
-            # 9. CONFIDENCE
-            # =========================================================
-            confidence_result = self.confidence_engine.calculate(
-                raw_prediction=raw_prediction,
-                calibrated={"home": home_prob, "draw": draw_prob, "away": away_prob}
-            )
-
-            # =========================================================
-            # 10. RISK
-            # =========================================================
-            risk_result = self.risk_engine.calculate(
-                raw_prediction=raw_prediction,
-                calibrated={"home": home_prob, "draw": draw_prob, "away": away_prob},
-                confidence=confidence_result
-            )
-
-            # =========================================================
-            # 11. РАСШИРЕННЫЕ МЕТРИКИ
-            # =========================================================
-            extended = self._calculate_extended_metrics(
-                home_xg=home_xg,
-                away_xg=away_xg,
-                poisson_top_scores=poisson_result.get("top_scores", []),
-                score_matrix=poisson_result.get("score_matrix", {})
-            )
-
-            # =========================================================
-            # 12. РЕЗУЛЬТАТ
-            # =========================================================
-            score = poisson_result.get("most_likely_score", "0:0")
-            score_prob = poisson_result.get("score_probability", 0)
-
-            return {
-                "status": "success",
-                "prediction_id": prediction_id,
-                "score": score,
-                "score_probability": round(score_prob, 3),
-                "xg": {
-                    "home": round(home_xg, 3),
-                    "away": round(away_xg, 3)
-                },
-                "probability": {
-                    "home": round(home_prob, 3),
-                    "draw": round(draw_prob, 3),
-                    "away": round(away_prob, 3)
-                },
-                "btts": round(poisson_result.get("btts_probability", 0), 3),
-                "over_2_5": round(poisson_result.get("over_2_5", 0), 3),
-                "confidence": {
-                    "overall": round(confidence_result.get("overall", 0), 3),
-                    "level": confidence_result.get("level", "MEDIUM")
-                },
-                "risk": {
-                    "score": risk_result.get("score", 0),
-                    "level": risk_result.get("level", "MEDIUM")
-                },
-                "model_agreement": model_agreement,
-                "extended": extended,
-                "diagnostic": diagnostic,
-                "version": self.VERSION,
-                "processing_time_ms": round((time.perf_counter() - start_time) * 1000, 2)
-            }
+            return result
 
         except Exception as e:
-            logger.error(f"Pipeline error: {e}", exc_info=True)
+            logger.exception(f"Prediction exception: {home_team} vs {away_team}")
+            return {"status": "error", "message": str(e)}
+
+    def predict_by_match_id(self, match_id: int) -> Dict[str, Any]:
+        """Прогноз по ID матча из БД"""
+        match = self._get_match(match_id)
+
+        if not match:
             return {
                 "status": "error",
-                "message": str(e),
-                "prediction_id": prediction_id
+                "message": f"Матч с ID {match_id} не найден"
             }
+
+        context = MatchContext(
+            season=match.get("season_name"),
+            round=match.get("round_number"),
+            tournament=match.get("competition")
+        )
+
+        return self.predict(
+            home_team=match.get("home_team"),
+            away_team=match.get("away_team"),
+            league=match.get("competition", "RPL"),
+            match_type="league",
+            context=context,
+            season_id=match.get("season_id"),
+            match_id=match_id
+        )
+
+    def predict_round(self, round_id: int) -> List[Dict[str, Any]]:
+        """Прогноз всех матчей тура"""
+        matches = self._get_round_matches(round_id)
+        results = []
+
+        for match in matches:
+            try:
+                result = self.predict_by_match_id(match["id"])
+                results.append(result)
+            except Exception as e:
+                logger.error(f"Prediction error for match {match['id']}: {e}")
+                results.append({
+                    "status": "error",
+                    "match_id": match["id"],
+                    "message": str(e)
+                })
+
+        return results
+
+    def predict_batch(self, matches: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Прогноз нескольких матчей по списку"""
+        results = []
+        for match in matches:
+            try:
+                result = self.predict(
+                    home_team=match.get("home_team"),
+                    away_team=match.get("away_team"),
+                    league=match.get("league", "RPL"),
+                    match_type=match.get("match_type", "league"),
+                    context=match.get("context"),
+                    season_id=match.get("season_id"),
+                    match_id=match.get("match_id")
+                )
+                results.append(result)
+            except Exception as e:
+                logger.error(f"Batch prediction error: {e}")
+                results.append({
+                    "status": "error",
+                    "match": match,
+                    "message": str(e)
+                })
+
+        return results
 
     # ============================================================
     # PRIVATE METHODS
     # ============================================================
 
-    def _build_seed(
+    def _get_match(self, match_id: int) -> Optional[Dict[str, Any]]:
+        """Получение матча из БД"""
+        conn = self.db._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT
+                m.id,
+                m.round_id,
+                m.home_team_id,
+                m.away_team_id,
+                m.date,
+                m.competition,
+                m.status,
+                m.actual_home,
+                m.actual_away,
+                m.home_xg,
+                m.away_xg,
+                th.name as home_team,
+                ta.name as away_team,
+                r.season_id,
+                r.round_number,
+                s.name as season_name
+            FROM matches m
+            LEFT JOIN teams th ON m.home_team_id = th.id
+            LEFT JOIN teams ta ON m.away_team_id = ta.id
+            LEFT JOIN rounds r ON m.round_id = r.id
+            LEFT JOIN seasons s ON r.season_id = s.id
+            WHERE m.id = ?
+        """, (match_id,))
+
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            return None
+
+        return dict(row)
+
+    def _get_round_matches(self, round_id: int) -> List[Dict[str, Any]]:
+        """Получение матчей тура"""
+        conn = self.db._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT
+                m.id,
+                m.home_team_id,
+                m.away_team_id,
+                m.competition,
+                m.date,
+                m.status,
+                th.name as home_team,
+                ta.name as away_team,
+                r.season_id,
+                r.round_number
+            FROM matches m
+            LEFT JOIN teams th ON m.home_team_id = th.id
+            LEFT JOIN teams ta ON m.away_team_id = ta.id
+            LEFT JOIN rounds r ON m.round_id = r.id
+            WHERE m.round_id = ?
+            ORDER BY m.date, m.id
+        """, (round_id,))
+
+        rows = cursor.fetchall()
+        conn.close()
+
+        return [dict(row) for row in rows]
+
+    def _get_passport_with_rating(
         self,
-        home: str,
-        away: str,
-        home_rating: float,
-        away_rating: float,
-        home_xg: float,
-        away_xg: float
-    ) -> int:
-        key = (
-            f"{home}_{away}_{self.VERSION}_"
-            f"{home_rating:.1f}_{away_rating:.1f}_"
-            f"{home_xg:.2f}_{away_xg:.2f}_"
-            f"{config.SEASON_START}"
-        )
-        return int(hashlib.md5(key.encode()).hexdigest()[:8], 16)
+        team_name: str,
+        season_id: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Получение паспорта команды с FAJ Rating"""
+        if season_id:
+            passport = self.passport_manager.get_current_passport_by_name(team_name, season_id)
+        else:
+            passport = self.passport_manager.get_current_passport_by_name(team_name)
 
-    def _calculate_model_agreement(
+        if not passport:
+            logger.error(f"❌ PASSPORT NOT FOUND | team={team_name} | season_id={season_id}")
+            return None
+
+        if not isinstance(passport, dict):
+            logger.error(f"❌ INVALID PASSPORT TYPE | team={team_name} | type={type(passport).__name__}")
+            return None
+
+        logger.info(f"📦 PASSPORT LOADED | team={team_name} | season_id={season_id} | keys={list(passport.keys())}")
+
+        stored_rating = passport.get("faj_rating")
+        if stored_rating is not None:
+            try:
+                rating = float(stored_rating)
+            except (TypeError, ValueError):
+                rating = self.passport_manager.calculate_rating(passport)
+        else:
+            rating = self.passport_manager.calculate_rating(passport)
+
+        logger.info(f"⭐ FAJ RATING | team={team_name} | rating={rating:.2f}")
+
+        return {"passport": passport, "rating": rating}
+
+    def _validate_passport_for_prediction(self, passport: Dict[str, Any], team_name: str) -> None:
+        """Проверка паспорта перед передачей в Pipeline"""
+        if not isinstance(passport, dict):
+            raise ValueError(f"Invalid passport for {team_name}: expected dict, got {type(passport).__name__}")
+
+        required = ["attack", "defense", "control", "goalkeeper"]
+        missing = []
+
+        for field in required:
+            if field not in passport or passport.get(field) is None:
+                missing.append(field)
+
+        if missing:
+            logger.error(f"❌ PASSPORT VALIDATION FAILED | team={team_name} | missing={', '.join(missing)}")
+            raise ValueError(f"Passport for {team_name} missing required fields: {', '.join(missing)}")
+
+        logger.info(f"✅ PASSPORT VALIDATED | team={team_name} | required_fields=OK")
+
+    def _save_prediction(
         self,
-        poisson_result: Dict,
-        mc_result: Dict
-    ) -> float:
-        p = poisson_result.get("result_probability", {})
-        m = mc_result
+        result: Dict[str, Any],
+        home_team: str,
+        away_team: str,
+        league: str,
+        match_id: Optional[int] = None
+    ) -> Optional[int]:
+        """Сохранение прогноза в БД"""
+        if not getattr(config, 'SAVE_TO_GOLD_DATASET', True):
+            logger.debug("Prediction saving disabled")
+            return None
 
-        diff = (
-            abs(p.get("home", config.DEFAULT_HOME_PROB) - m.get("home_win", config.DEFAULT_HOME_PROB)) +
-            abs(p.get("draw", config.DEFAULT_DRAW_PROB) - m.get("draw", config.DEFAULT_DRAW_PROB)) +
-            abs(p.get("away", config.DEFAULT_AWAY_PROB) - m.get("away_win", config.DEFAULT_AWAY_PROB))
-        )
+        try:
+            if match_id is None:
+                match_id = self._find_match_by_teams(home_team, away_team)
 
-        return round(1 - diff / 3, 4)
+            if match_id is None:
+                logger.warning(f"Cannot save prediction: match not found for {home_team} vs {away_team}")
+                return None
 
-    def _agreement_level(self, value: float) -> str:
-        if value >= 0.85:
-            return "HIGH"
-        elif value >= 0.65:
-            return "MEDIUM"
-        else:
-            return "LOW"
+            prob = result.get("probability", {})
+            confidence_data = result.get("confidence", {})
+            confidence_value = confidence_data.get("overall", 0.5)
 
-    # ============================================================
-    # _calculate_extended_metrics — ИСПРАВЛЕНА
-    # ============================================================
+            pred_id = self.db.save_prediction(
+                match_id=match_id,
+                model_version=self.VERSION,
+                algorithm="FAJ Engine",
+                home_win=prob.get("home", 0.0),
+                draw=prob.get("draw", 0.0),
+                away_win=prob.get("away", 0.0),
+                over25=result.get("extended", {}).get("total", {}).get("over_2_5", 0.0),
+                over35=result.get("extended", {}).get("total", {}).get("over_3_5", 0.0),
+                btts=result.get("extended", {}).get("btts", {}).get("yes", 0.0),
+                confidence=int(confidence_value * 100),
+                prediction_source="FAJ Engine"
+            )
 
-    def _calculate_extended_metrics(
-        self,
-        home_xg: float,
-        away_xg: float,
-        poisson_top_scores: List[Dict[str, Any]],
-        score_matrix: Dict[str, float]
-    ) -> Dict[str, Any]:
-        """
-        Расчёт расширенных метрик для UI.
-        """
-        logger.info("🔬 EXTENDED METRICS INPUT:")
-        logger.info("  home_xg=%.3f, away_xg=%.3f", home_xg, away_xg)
-        logger.info("  poisson_top_scores: %s", poisson_top_scores[:3] if poisson_top_scores else "EMPTY")
-        logger.info("  score_matrix keys (first 5): %s", list(score_matrix.keys())[:5] if score_matrix else "EMPTY")
+            top_scores = result.get("extended", {}).get("top_scores", [])
+            for score_data in top_scores:
+                self.db.add_prediction_score(
+                    prediction_id=pred_id,
+                    score=f"{score_data.get('home', 0)}:{score_data.get('away', 0)}",
+                    probability=score_data.get('probability', 0.0),
+                    rank=score_data.get('rank', 0)
+                )
 
-        # =========================================================
-        # ТОП-5 СЧЕТОВ
-        # =========================================================
-        top_scores = []
+            distributions = result.get("extended", {}).get("distributions", [])
+            for dist in distributions:
+                self.db.add_prediction_distribution(
+                    prediction_id=pred_id,
+                    home_goals=dist.get("home", 0),
+                    away_goals=dist.get("away", 0),
+                    probability=dist.get("probability", 0.0)
+                )
 
-        if poisson_top_scores:
-            for i, score_data in enumerate(poisson_top_scores[:5]):
-                try:
-                    score_str = score_data.get('score', '0:0')
-                    prob = score_data.get('probability', 0.0)
+            logger.info(f"Prediction saved: id={pred_id}, match_id={match_id}")
+            return pred_id
 
-                    if ':' in score_str:
-                        home, away = score_str.split(':')
-                    elif '-' in score_str:
-                        home, away = score_str.split('-')
-                    else:
-                        home, away = '0', '0'
+        except Exception as e:
+            logger.error(f"Save prediction error: {e}")
+            return None
 
-                    top_scores.append({
-                        'rank': i + 1,
-                        'home': int(home),
-                        'away': int(away),
-                        'probability': round(prob, 4),
-                        'prob_percent': f"{prob * 100:.2f}%"
-                    })
-                except (ValueError, AttributeError) as e:
-                    logger.warning("Failed to parse score: %s, error: %s", score_data, e)
-                    continue
+    def _find_match_by_teams(self, home_team: str, away_team: str) -> Optional[int]:
+        """Находит match_id по названиям команд"""
+        try:
+            conn = self.db._get_connection()
+            cursor = conn.cursor()
 
-            logger.info("  ✅ Built top_scores from poisson_top_scores: %s", top_scores)
+            cursor.execute("""
+                SELECT m.id
+                FROM matches m
+                JOIN teams th ON th.id = m.home_team_id
+                JOIN teams ta ON ta.id = m.away_team_id
+                WHERE th.name = ? AND ta.name = ?
+                ORDER BY m.date DESC
+                LIMIT 1
+            """, (home_team, away_team))
 
-        # =========================================================
-        # BTTS (Обе забьют)
-        # =========================================================
-        btts_prob = 0.0
-        if score_matrix:
-            for score_str, prob in score_matrix.items():
-                try:
-                    if ':' in score_str:
-                        home, away = score_str.split(':')
-                    elif '-' in score_str:
-                        home, away = score_str.split('-')
-                    else:
-                        continue
-                    if int(home) > 0 and int(away) > 0:
-                        btts_prob += prob
-                except (ValueError, AttributeError):
-                    continue
-        else:
-            btts_prob = (1 - math.exp(-home_xg * 0.5)) * (1 - math.exp(-away_xg * 0.5))
+            row = cursor.fetchone()
+            conn.close()
 
-        btts_prob = min(btts_prob, 1.0)
+            if row:
+                return row[0]
+            return None
 
-        # =========================================================
-        # ТОТАЛЫ
-        # =========================================================
-        over_25 = 0.0
-        over_35 = 0.0
+        except Exception as e:
+            logger.error(f"Find match error: {e}")
+            return None
 
-        if score_matrix:
-            for score_str, prob in score_matrix.items():
-                try:
-                    if ':' in score_str:
-                        home, away = score_str.split(':')
-                    elif '-' in score_str:
-                        home, away = score_str.split('-')
-                    else:
-                        continue
-                    total = int(home) + int(away)
-                    if total > 2.5:
-                        over_25 += prob
-                    if total > 3.5:
-                        over_35 += prob
-                except (ValueError, AttributeError):
-                    continue
-        else:
-            home_goals_prob = 1 - math.exp(-home_xg) * (1 + home_xg + home_xg**2/2)
-            away_goals_prob = 1 - math.exp(-away_xg) * (1 + away_xg + away_xg**2/2)
-            over_25 = home_goals_prob + away_goals_prob - home_goals_prob * away_goals_prob
-
-        over_25 = min(over_25, 1.0)
-        over_35 = min(over_35, 1.0)
-
-        # =========================================================
-        # САМЫЙ ВЕРОЯТНЫЙ СЧЁТ
-        # =========================================================
-        most_likely = {'home': 0, 'away': 0, 'prob': 0}
-        if top_scores:
-            most_likely = {
-                'home': top_scores[0].get('home', 0),
-                'away': top_scores[0].get('away', 0),
-                'prob': top_scores[0].get('probability', 0)
-            }
-
+    def status(self) -> Dict[str, Any]:
         return {
-            "top_scores": top_scores,
-            "most_likely_score": {
-                "home": most_likely.get('home', 0),
-                "away": most_likely.get('away', 0),
-                "prob": most_likely.get('prob', 0)
-            },
-            "btts": {
-                "yes": round(btts_prob, 4),
-                "no": round(1 - btts_prob, 4)
-            },
-            "total": {
-                "over_2_5": round(over_25, 4),
-                "under_2_5": round(1 - over_25, 4),
-                "over_3_5": round(over_35, 4),
-                "under_3_5": round(1 - over_35, 4)
-            }
+            "manager": "Prediction Manager",
+            "version": self.VERSION,
+            "status": "READY"
         }
 
 
@@ -522,12 +460,11 @@ class PredictionPipeline:
 # SINGLETON
 # ============================================================
 
-_pipeline_instance: PredictionPipeline = None
+_default_manager: Optional[PredictionManager] = None
 
 
-def get_prediction_pipeline() -> PredictionPipeline:
-    """Синглтон для PredictionPipeline"""
-    global _pipeline_instance
-    if _pipeline_instance is None:
-        _pipeline_instance = PredictionPipeline()
-    return _pipeline_instance
+def get_prediction_manager() -> PredictionManager:
+    global _default_manager
+    if _default_manager is None:
+        _default_manager = PredictionManager()
+    return _default_manager
