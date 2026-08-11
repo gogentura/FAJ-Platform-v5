@@ -47,17 +47,31 @@ def main():
         "https://nb-bet.com/Events/1612869-fakel-ahmat-prognoz-na-match",
     ]
     
+    # ============================================================
+    # ОПЦИИ
+    # ============================================================
+    with st.expander("⚙️ Настройки"):
+        clear_existing = st.checkbox("Очистить существующую статистику перед загрузкой", value=False)
+    
     if st.button("📊 ЗАГРУЗИТЬ СТАТИСТИКУ", type="primary", use_container_width=True):
         conn = get_connection()
         cursor = conn.cursor()
         
         try:
-            # Очищаем статистику
-            cursor.execute("DELETE FROM match_statistics")
-            conn.commit()
+            # ============================================================
+            # 1. Очистка (опционально)
+            # ============================================================
+            if clear_existing:
+                cursor.execute("DELETE FROM match_statistics")
+                conn.commit()
+                st.info("🗑️ Старая статистика очищена")
             
+            # ============================================================
+            # 2. Парсинг и загрузка
+            # ============================================================
             parser = NBBetLoader()
             loaded = 0
+            skipped = 0
             
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -67,6 +81,8 @@ def main():
                 
                 match_data = parser.parse_match(url)
                 if not match_data:
+                    skipped += 1
+                    progress_bar.progress((i + 1) / len(match_urls))
                     continue
                 
                 # Находим матч в БД
@@ -80,6 +96,8 @@ def main():
                 match_row = cursor.fetchone()
                 if not match_row:
                     st.warning(f"⚠️ Матч не найден: {match_data['home_team']} vs {match_data['away_team']}")
+                    skipped += 1
+                    progress_bar.progress((i + 1) / len(match_urls))
                     continue
                 
                 match_id = match_row[0]
@@ -91,12 +109,16 @@ def main():
                 away_row = cursor.fetchone()
                 
                 if not home_row or not away_row:
+                    skipped += 1
+                    progress_bar.progress((i + 1) / len(match_urls))
                     continue
                 
                 home_id = home_row[0]
                 away_id = away_row[0]
                 
-                # Обновляем матч (xG и т.д.)
+                # ============================================================
+                # 3. Обновляем матч (xG и т.д.)
+                # ============================================================
                 cursor.execute("""
                     UPDATE matches SET
                         home_xg = ?,
@@ -109,39 +131,53 @@ def main():
                         away_shots_on_target = ?
                     WHERE id = ?
                 """, (
-                    match_data["home_xg"], match_data["away_xg"],
-                    match_data["home_possession"], match_data["away_possession"],
-                    match_data["home_shots"], match_data["away_shots"],
-                    match_data["home_shots_on_target"], match_data["away_shots_on_target"],
+                    match_data.get("home_xg"),
+                    match_data.get("away_xg"),
+                    match_data.get("home_possession"),
+                    match_data.get("away_possession"),
+                    match_data.get("home_shots"),
+                    match_data.get("away_shots"),
+                    match_data.get("home_shots_on_target"),
+                    match_data.get("away_shots_on_target"),
                     match_id
                 ))
                 
-                # Статистика хозяев
+                # ============================================================
+                # 4. Статистика хозяев (с защитой от дублей)
+                # ============================================================
                 cursor.execute("""
-                    INSERT INTO match_statistics
+                    INSERT OR REPLACE INTO match_statistics
                     (match_id, team_id, possession, shots, shots_on_target,
                      corners, yellow_cards, xg, pass_accuracy)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     match_id, home_id,
-                    match_data["home_possession"], match_data["home_shots"],
-                    match_data["home_shots_on_target"],
-                    match_data["home_corners"], match_data["home_yellow_cards"],
-                    match_data["home_xg"], match_data["home_pass_accuracy"]
+                    match_data.get("home_possession"),
+                    match_data.get("home_shots"),
+                    match_data.get("home_shots_on_target"),
+                    match_data.get("home_corners"),
+                    match_data.get("home_yellow_cards"),
+                    match_data.get("home_xg"),
+                    match_data.get("home_pass_accuracy")
                 ))
                 
-                # Статистика гостей
+                # ============================================================
+                # 5. Статистика гостей (с защитой от дублей)
+                # ============================================================
                 cursor.execute("""
-                    INSERT INTO match_statistics
+                    INSERT OR REPLACE INTO match_statistics
                     (match_id, team_id, possession, shots, shots_on_target,
                      corners, yellow_cards, xg, pass_accuracy)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     match_id, away_id,
-                    match_data["away_possession"], match_data["away_shots"],
-                    match_data["away_shots_on_target"],
-                    match_data["away_corners"], match_data["away_yellow_cards"],
-                    match_data["away_xg"], match_data["away_pass_accuracy"]
+                    match_data.get("away_possession"),
+                    match_data.get("away_shots"),
+                    match_data.get("away_shots_on_target"),
+                    match_data.get("away_corners"),
+                    match_data.get("away_yellow_cards"),
+                    match_data.get("away_xg"),
+                    match_data.get("away_pass_accuracy")
                 ))
                 
                 loaded += 1
@@ -149,12 +185,26 @@ def main():
             
             conn.commit()
             status_text.text("✅ Загрузка завершена!")
+            
+            # ============================================================
+            # 6. Результат
+            # ============================================================
             st.success(f"✅ ЗАГРУЖЕНО {loaded} МАТЧЕЙ!")
+            if skipped > 0:
+                st.warning(f"⚠️ Пропущено: {skipped} матчей")
+            
+            # Показываем статистику
+            cursor.execute("SELECT COUNT(*) FROM match_statistics")
+            total_stats = cursor.fetchone()[0]
+            st.info(f"📊 Всего записей статистики: {total_stats}")
+            
             st.balloons()
             
         except Exception as e:
             conn.rollback()
             st.error(f"❌ Ошибка: {e}")
+            import traceback
+            st.code(traceback.format_exc())
         finally:
             conn.close()
 
