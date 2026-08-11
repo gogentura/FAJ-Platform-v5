@@ -71,6 +71,9 @@ with st.sidebar:
     if st.button("🔧 Исправить команды", use_container_width=True):
         st.session_state.page = 'fix_teams'
     
+    if st.button("🔍 Найти пропущенный матч", use_container_width=True):
+        st.session_state.page = 'diagnose_missing_match'
+    
     if st.button("⚙️ Система", use_container_width=True):
         st.session_state.page = 'system'
     
@@ -330,6 +333,17 @@ elif st.session_state.page == 'fix_teams':
     except ImportError as e:
         st.error(f"❌ Страница 'Исправить команды' не найдена: {e}")
         st.info("Создайте файл app/pages/fix_teams.py")
+    except Exception as e:
+        st.error(f"❌ Ошибка: {e}")
+
+# ----- НАЙТИ ПРОПУЩЕННЫЙ МАТЧ -----
+elif st.session_state.page == 'diagnose_missing_match':
+    try:
+        from app.pages.diagnose_missing_match import main as diagnose_missing_main
+        diagnose_missing_main()
+    except ImportError as e:
+        st.error(f"❌ Страница 'Найти пропущенный матч' не найдена: {e}")
+        st.info("Создайте файл app/pages/diagnose_missing_match.py")
     except Exception as e:
         st.error(f"❌ Ошибка: {e}")
 
