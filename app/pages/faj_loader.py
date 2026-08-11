@@ -625,17 +625,17 @@ def main():
             cursor = conn.cursor()
 
             # ====================================================
-            # SEASON
+            # SEASON — ИСПРАВЛЕНО!
             # ====================================================
 
             cursor.execute(
                 """
                 SELECT id
                 FROM seasons
-                WHERE name = ?
+                WHERE name = ? AND league = ?
                 LIMIT 1
                 """,
-                ("2026-2027",)
+                ("2026-2027", "РПЛ")
             )
 
             season_row = cursor.fetchone()
@@ -644,13 +644,14 @@ def main():
 
                 cursor.execute(
                     """
-                    INSERT INTO seasons (name)
-                    VALUES (?)
+                    INSERT INTO seasons (name, league)
+                    VALUES (?, ?)
                     """,
-                    ("2026-2027",)
+                    ("2026-2027", "РПЛ")
                 )
 
                 season_id = cursor.lastrowid
+                conn.commit()
 
             else:
 
