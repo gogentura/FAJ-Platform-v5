@@ -3,11 +3,11 @@
 
 """
 FAJ Sync Engine — Единый модуль синхронизации
-Паспорта команд вшиты в код (НЕ JSON!)
-Работает ТОЛЬКО через FAJDatabase
+Работает через PassportManager, НЕ пишет SQL напрямую.
 """
 
 from app.database import FAJDatabase
+from app.passports.passport_manager import get_passport_manager
 from app.passports.rpl_2026_27 import RPL_PASSPORTS_2026_27, normalize_team_name
 from datetime import datetime
 import os
@@ -49,7 +49,6 @@ LEAGUE_CONFIG = {
     }
 }
 
-
 LEAGUE_DNA = {
     "mean_xg": 1.35,
     "home_advantage": 0.12,
@@ -65,6 +64,7 @@ LEAGUE_DNA = {
 class SyncEngine:
     def __init__(self):
         self.db = FAJDatabase()
+        self.passport_manager = get_passport_manager()
         self.passports = RPL_PASSPORTS_2026_27
         self.league_dna = LEAGUE_DNA
         self.league = "РПЛ"
@@ -95,7 +95,7 @@ class SyncEngine:
             "learning_records": tables.get("learning_records", 0)
         }
 
-    def _get_or_create_season(self, league="РПЛ", year="2026/27"):
+    def _get_or_create_season(self, league="РПЛ", year="2026-2027"):
         seasons = self.db.get_seasons()
         for s in seasons:
             if s['league'] == league and s['year'] == year:
@@ -111,7 +111,7 @@ class SyncEngine:
         return season_id
 
     # ============================================================
-    # PASSPORT SYNC (FAJ v12 COMPATIBILITY)
+    # PASSPORT SYNC — ЧЕРЕЗ PASSPORT_MANAGER
     # ============================================================
     def sync_passports(self, league="РПЛ"):
         try:
@@ -128,11 +128,8 @@ class SyncEngine:
                 "message": str(e)
             }
 
-    # ------------------------------------------------------------
-    # PASSPORT LOADER — СОХРАНЯЕТ В team_passports
-    # ------------------------------------------------------------
     def load_passports(self, league="РПЛ"):
-        """Загружает паспорта из вшитых данных в SQLite"""
+        """Загружает паспорта через PassportManager"""
         season_id = self._get_or_create_season(league)
         teams = self.db.get_teams(league=league)
         updated = 0
@@ -140,10 +137,8 @@ class SyncEngine:
         for team in teams:
             team_name_normalized = normalize_team_name(team['name'])
             passport = self.passports.get(team_name_normalized)
-            
             if not passport:
                 passport = self.passports.get(team['name'])
-            
             if not passport:
                 logger.warning(f"Паспорт не найден для команды: {team['name']}")
                 continue
@@ -153,132 +148,75 @@ class SyncEngine:
             dynamic_initial = passport.get("DYNAMIC_INITIAL", {})
             expert = passport.get("EXPERT", {})
 
-            # ============================================================
-            # 1. СОХРАНЕНИЕ В team_passports (ОСНОВНАЯ ТАБЛИЦА)
-            # ============================================================
-            conn = self.db._get_connection()
-            cursor = conn.cursor()
-            
-            # Проверяем, есть ли уже запись
-            cursor.execute("""
-                SELECT id FROM team_passports 
-                WHERE team_id = ? AND season_id = ?
-                ORDER BY CAST(REPLACE(version, 'v', '') AS FLOAT) DESC
-                LIMIT 1
-            """, (team['id'], season_id))
-            
-            existing = cursor.fetchone()
-            
-            # Рассчитываем примерный рейтинг
-            attack = base.get("attack", 50)
-            defense = base.get("defense", 50)
-            control = base.get("control", 50)
-            faj_rating = round((attack * 0.4 + defense * 0.3 + control * 0.3), 1)
-            
-            if existing:
-                cursor.execute("""
-                    UPDATE team_passports SET
-                        attack = ?,
-                        defense = ?,
-                        control = ?,
-                        tempo = ?,
-                        press = ?,
-                        transition = ?,
-                        finishing = ?,
-                        goalkeeper = ?,
-                        discipline = ?,
-                        squad_quality = ?,
-                        bench_quality = ?,
-                        coach_factor = ?,
-                        mental = ?,
-                        home_strength = ?,
-                        away_strength = ?,
-                        injury_factor = ?,
-                        key_player_loss = ?,
-                        league_adaptation = ?,
-                        passport_confidence = ?,
-                        faj_rating = ?,
-                        version = ?,
-                        source = ?,
-                        created_at = ?
-                    WHERE id = ?
-                """, (
-                    attack,
-                    defense,
-                    control,
-                    base.get("tempo", 50),
-                    base.get("press", 50),
-                    base.get("transition", 50),
-                    base.get("finishing", 50),
-                    base.get("goalkeeper", 50),
-                    base.get("discipline", 50),
-                    base.get("squad_quality", 50),
-                    base.get("bench_quality", 50),
-                    base.get("coach_factor", 50),
-                    identity.get("mental", 50),
-                    base.get("home_advantage", 1.0) * 50,
-                    base.get("home_advantage", 1.0) * 40,
-                    dynamic_initial.get("injury_index", 0),
-                    0,
-                    80,
-                    dynamic_initial.get("passport_confidence", 0.4),
-                    faj_rating,
-                    passport.get("version", "1.0"),
-                    passport.get("author", "FAJ Expert Layer"),
-                    datetime.now().isoformat(),
-                    existing[0]
-                ))
-            else:
-                cursor.execute("""
-                    INSERT INTO team_passports (
-                        team_id, season_id,
-                        attack, defense, control, tempo, press, transition,
-                        finishing, goalkeeper, discipline,
-                        squad_quality, bench_quality, coach_factor,
-                        mental, home_strength, away_strength,
-                        injury_factor, key_player_loss,
-                        league_adaptation,
-                        passport_confidence, faj_rating,
-                        version, source, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    team['id'], season_id,
-                    attack,
-                    defense,
-                    control,
-                    base.get("tempo", 50),
-                    base.get("press", 50),
-                    base.get("transition", 50),
-                    base.get("finishing", 50),
-                    base.get("goalkeeper", 50),
-                    base.get("discipline", 50),
-                    base.get("squad_quality", 50),
-                    base.get("bench_quality", 50),
-                    base.get("coach_factor", 50),
-                    identity.get("mental", 50),
-                    base.get("home_advantage", 1.0) * 50,
-                    base.get("home_advantage", 1.0) * 40,
-                    dynamic_initial.get("injury_index", 0),
-                    0,
-                    80,
-                    dynamic_initial.get("passport_confidence", 0.4),
-                    faj_rating,
-                    passport.get("version", "1.0"),
-                    passport.get("author", "FAJ Expert Layer"),
-                    datetime.now().isoformat()
-                ))
-            
-            conn.commit()
-            conn.close()
+            # ------------------------------------------------------------
+            # 1. ПОДГОТОВКА ДАННЫХ ДЛЯ PASSPORT_MANAGER
+            # ------------------------------------------------------------
+            passport_data = {
+                "attack": base.get("attack", 50),
+                "defense": base.get("defense", 50),
+                "control": base.get("control", 50),
+                "tempo": base.get("tempo", 50),
+                "press": base.get("press", 50),
+                "transition": base.get("transition", 50),
+                "finishing": base.get("finishing", 50),
+                "goalkeeper": base.get("goalkeeper", 50),
+                "discipline": base.get("discipline", 50),
+                "squad_quality": base.get("squad_quality", 50),
+                "bench_quality": base.get("bench_quality", 50),
+                "coach_factor": base.get("coach_factor", 50),
+                "mental": identity.get("mental", 50),
+                "home_strength": base.get("home_advantage", 1.0) * 50,
+                "away_strength": base.get("home_advantage", 1.0) * 40,
+                "injury_factor": dynamic_initial.get("injury_index", 0),
+                "key_player_loss": 0,
+                "league_adaptation": 80,
+                "form": dynamic_initial.get("form", 50),
+                "results_strength": 0,  # Будет заполнено после матчей
+                "opponent_strength": 0,  # Будет заполнено после матчей
+                "matches_count": 0,
+                "created_at": datetime.now().isoformat()
+            }
 
-            # ============================================================
-            # 2. team_base
-            # ============================================================
+            # ------------------------------------------------------------
+            # 2. СОХРАНЕНИЕ ЧЕРЕЗ PASSPORT_MANAGER
+            # ------------------------------------------------------------
+            existing_passport = self.passport_manager.get_current_passport(
+                team['id'], season_id
+            )
+
+            if existing_passport:
+                # Обновляем через update_passport с небольшими изменениями
+                changes = {}
+                for key in passport_data:
+                    if key in existing_passport and passport_data[key] != existing_passport[key]:
+                        changes[key] = passport_data[key] - existing_passport[key]
+                if changes:
+                    self.passport_manager.update_passport(
+                        team_id=team['id'],
+                        season_id=season_id,
+                        changes=changes,
+                        source="sync",
+                        opponent_rating=70,
+                        matches_count=0
+                    )
+            else:
+                # Создаём новый паспорт
+                self.passport_manager.create_passport(
+                    team_id=team['id'],
+                    season_id=season_id,
+                    data=passport_data,
+                    source=passport.get("author", "sync")
+                )
+
+            # ------------------------------------------------------------
+            # 3. LEGACY: team_base, team_identity, team_dynamic
+            #    (оставляем для совместимости со старыми модулями)
+            # ------------------------------------------------------------
             self.db.update_base(
                 team['id'], season_id,
-                attack=attack,
-                defense=defense,
-                control=control,
+                attack=base.get("attack", 50),
+                defense=base.get("defense", 50),
+                control=base.get("control", 50),
                 press=base.get("press", 50),
                 tempo=base.get("tempo", 50),
                 transition=base.get("transition", 50),
@@ -291,9 +229,6 @@ class SyncEngine:
                 home_advantage=base.get("home_advantage", 1.0)
             )
 
-            # ============================================================
-            # 3. team_identity
-            # ============================================================
             self.db.update_identity(
                 team['id'], season_id,
                 style=identity.get("style", "mixed"),
@@ -303,9 +238,6 @@ class SyncEngine:
                 risk_level=identity.get("risk", "medium")
             )
 
-            # ============================================================
-            # 4. team_dynamic
-            # ============================================================
             existing_dynamic = self.db.get_dynamic(team['id'], season_id)
             if not existing_dynamic:
                 self.db.update_dynamic(
@@ -318,9 +250,9 @@ class SyncEngine:
                     passport_confidence=dynamic_initial.get("passport_confidence", 0.4)
                 )
 
-            # ============================================================
-            # 5. team_passport_meta (экспертный слой)
-            # ============================================================
+            # ------------------------------------------------------------
+            # 4. TEAM_PASSPORT_META
+            # ------------------------------------------------------------
             strengths = expert.get("strengths", {})
             weaknesses = expert.get("weaknesses", {})
             strengths_str = ", ".join([f"{k}:{v}" for k, v in strengths.items()]) if strengths else ""
@@ -342,11 +274,7 @@ class SyncEngine:
             updated += 1
 
         logger.info(f"Загружено паспортов: {updated} из {len(teams)}")
-        return {
-            "status": "success",
-            "updated": updated,
-            "total": len(teams)
-        }
+        return {"updated": updated, "total": len(teams)}
 
     # ------------------------------------------------------------
     # LEGACY SYNC
