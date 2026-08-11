@@ -3,7 +3,8 @@
 
 """
 FAJ Platform v13.0
-FAJ Loader — загрузка фактических результатов и статистики РПЛ
+FAJ Loader — ПРЯМАЯ ЗАГРУЗКА 24 МАТЧЕЙ
+СОЗДАЁТ МАТЧИ, ЕСЛИ ИХ НЕТ В КАЛЕНДАРЕ
 """
 
 import os
@@ -40,7 +41,7 @@ MATCH_DATA = [
     (2, "ЦСКА", "Крылья Советов", 1, 1, 1.87, 0.52, 18, 11, 6, 5, 55, 45, 2, 5, 0, 3, 86, 79),
     (2, "Динамо Мх", "Локомотив", 2, 1, 2.24, 1.73, 12, 13, 5, 5, 41, 59, 1, 9, 1, 2, 73, 80),
     (2, "Балтика", "Динамо", 2, 1, 1.34, 0.76, 8, 14, 4, 4, 28, 72, 2, 8, 2, 0, 54, 80),
-    (2, "Оренбург", "Зенит", 0, 3, 1.02, 0.80, 13, 12, 2, 5, 31, 69, 5, 2, 3, 1, 78, 90),
+    (2, "Оренburg", "Зенит", 0, 3, 1.02, 0.80, 13, 12, 2, 5, 31, 69, 5, 2, 3, 1, 78, 90),
     (2, "Краснодар", "Факел", 3, 2, 0.83, 2.10, 11, 13, 5, 3, 56, 44, 2, 4, 4, 0, 85, 76),
     (2, "Ахмат", "Спартак", 1, 2, 0.93, 0.55, 4, 11, 3, 4, 27, 73, 1, 5, 1, 2, 62, 87),
     # ТУР 3
@@ -65,22 +66,43 @@ TEAM_ALIASES = {
 def normalize_team_name(name):
     return TEAM_ALIASES.get(name, name)
 
-def get_team_id(cursor, team_name):
+def get_or_create_team(cursor, team_name):
+    """Находит команду или создаёт её, если нет"""
     team_name = normalize_team_name(team_name)
     cursor.execute("SELECT id FROM teams WHERE name = ?", (team_name,))
     row = cursor.fetchone()
-    return row[0] if row else None
+    if row:
+        return row[0]
+    # Если команды нет — создаём
+    cursor.execute("INSERT INTO teams (name, league) VALUES (?, ?)", (team_name, "RPL"))
+    return cursor.lastrowid
 
-def get_match_id(cursor, season_id, round_number, home_id, away_id):
+def get_or_create_round(cursor, season_id, round_number):
+    """Находит тур или создаёт его"""
+    cursor.execute("SELECT id FROM rounds WHERE season_id = ? AND round_number = ?", (season_id, round_number))
+    row = cursor.fetchone()
+    if row:
+        return row[0]
+    cursor.execute("INSERT INTO rounds (season_id, round_number) VALUES (?, ?)", (season_id, round_number))
+    return cursor.lastrowid
+
+def get_or_create_match(cursor, season_id, round_number, home_id, away_id):
+    """Находит матч или создаёт его"""
     cursor.execute("""
-        SELECT m.id
-        FROM matches m
+        SELECT m.id FROM matches m
         JOIN rounds r ON r.id = m.round_id
         WHERE r.season_id = ? AND r.round_number = ? AND m.home_team_id = ? AND m.away_team_id = ?
-        LIMIT 1
     """, (season_id, round_number, home_id, away_id))
     row = cursor.fetchone()
-    return row[0] if row else None
+    if row:
+        return row[0]
+    # Создаём матч
+    round_id = get_or_create_round(cursor, season_id, round_number)
+    cursor.execute("""
+        INSERT INTO matches (round_id, home_team_id, away_team_id, status)
+        VALUES (?, ?, ?, 'scheduled')
+    """, (round_id, home_id, away_id))
+    return cursor.lastrowid
 
 def save_statistics(cursor, match_id, team_id, possession, shots, shots_on_target, corners, yellow_cards, xg, pass_accuracy):
     cursor.execute("DELETE FROM match_statistics WHERE match_id = ? AND team_id = ?", (match_id, team_id))
@@ -117,10 +139,12 @@ def main():
             columns = cursor.fetchall()
             col_names = [col[1] for col in columns]
 
-            # Какие колонки есть в seasons
             has_league = "league" in col_names
             has_name = "name" in col_names
-            has_season = "season" in col_names
+
+            if not has_name:
+                st.error("❌ В таблице seasons нет колонки name!")
+                return
 
             # ============================================================
             # ПОИСК ИЛИ СОЗДАНИЕ СЕЗОНА
@@ -128,30 +152,18 @@ def main():
             season_name = "2026-2027"
             league_name = "РПЛ"
 
-            # Строим запрос на поиск сезона
-            if has_name and has_league:
+            if has_league:
                 cursor.execute("SELECT id FROM seasons WHERE name = ? AND league = ?", (season_name, league_name))
-            elif has_name and has_season:
-                cursor.execute("SELECT id FROM seasons WHERE name = ? AND season = ?", (season_name, league_name))
-            elif has_name:
-                cursor.execute("SELECT id FROM seasons WHERE name = ?", (season_name,))
             else:
-                st.error("❌ В таблице seasons нет колонки name!")
-                return
+                cursor.execute("SELECT id FROM seasons WHERE name = ?", (season_name,))
 
             season_row = cursor.fetchone()
 
             if not season_row:
-                # Создаём сезон
-                if has_name and has_league:
+                if has_league:
                     cursor.execute("INSERT INTO seasons (name, league) VALUES (?, ?)", (season_name, league_name))
-                elif has_name and has_season:
-                    cursor.execute("INSERT INTO seasons (name, season) VALUES (?, ?)", (season_name, league_name))
-                elif has_name:
-                    cursor.execute("INSERT INTO seasons (name) VALUES (?)", (season_name,))
                 else:
-                    st.error("❌ Невозможно создать сезон: нет колонки name")
-                    return
+                    cursor.execute("INSERT INTO seasons (name) VALUES (?)", (season_name,))
                 conn.commit()
                 season_id = cursor.lastrowid
             else:
@@ -161,7 +173,7 @@ def main():
             # ЗАГРУЗКА МАТЧЕЙ
             # ============================================================
             loaded = 0
-            skipped = []
+            created_matches = 0
             progress = st.progress(0)
             status = st.empty()
 
@@ -193,20 +205,16 @@ def main():
 
                 status.text(f"Загрузка {index + 1}/{len(MATCH_DATA)}: {home_name} — {away_name}")
 
-                home_id = get_team_id(cursor, home_name)
-                away_id = get_team_id(cursor, away_name)
+                # Находим или создаём команды
+                home_id = get_or_create_team(cursor, home_name)
+                away_id = get_or_create_team(cursor, away_name)
 
-                if not home_id or not away_id:
-                    skipped.append(f"Тур {round_number}: {home_name} — {away_name} (команда не найдена)")
-                    progress.progress((index + 1) / len(MATCH_DATA))
-                    continue
+                # Находим или создаём матч
+                match_id = get_or_create_match(cursor, season_id, round_number, home_id, away_id)
 
-                match_id = get_match_id(cursor, season_id, round_number, home_id, away_id)
-
-                if not match_id:
-                    skipped.append(f"Тур {round_number}: {home_name} — {away_name} (матч не найден в календаре)")
-                    progress.progress((index + 1) / len(MATCH_DATA))
-                    continue
+                # Если матч создан — считаем
+                if match_id:
+                    created_matches += 1
 
                 # Результат
                 cursor.execute("DELETE FROM match_results WHERE match_id = ?", (match_id,))
@@ -238,14 +246,7 @@ def main():
             conn.commit()
             status.text("✅ Загрузка завершена")
             st.success(f"🔥 ЗАГРУЖЕНО: {loaded} из {len(MATCH_DATA)} матчей")
-
-            if skipped:
-                st.warning(f"⚠️ Не загружено: {len(skipped)}")
-                with st.expander("Показать пропущенные матчи"):
-                    for item in skipped:
-                        st.write(f"• {item}")
-            else:
-                st.success("✅ ВСЕ 24 МАТЧА НАЙДЕНЫ И ЗАГРУЖЕНЫ")
+            st.info(f"📌 Создано матчей: {created_matches}")
 
             # ============================================================
             # ПРОВЕРКА
@@ -285,8 +286,6 @@ def main():
             if rows:
                 df = pd.DataFrame(rows, columns=["Тур", "Хозяева", "Гости", "Голы Х", "Голы Г", "xG Х", "xG Г"])
                 st.dataframe(df, use_container_width=True, hide_index=True)
-
-            st.balloons()
 
         except Exception as e:
             if conn:
