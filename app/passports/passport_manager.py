@@ -4,7 +4,7 @@
 """
 =====================================================
 FAJ Platform v12.1
-Passport Manager v1.8
+Passport Manager v1.9
 =====================================================
 
 РОЛЬ:
@@ -18,21 +18,22 @@ Passport Manager v1.8
     - расчёт FAJ Rating
     - расчёт Passport Confidence
 
-ВАЖНО v1.8:
+ВАЖНО v1.9:
 
-    1. FAJ Rating не теряет results_strength
+    1. PassportManager НЕ создаёт таблицы.
+       Только работает с готовой схемой из database.py.
+
+    2. FAJ Rating не теряет results_strength
        и opponent_strength при сохранении нового паспорта.
 
-    2. Абсолютная форма хранится как абсолютное значение,
+    3. Абсолютная форма хранится как абсолютное значение,
        а не как DELTA.
 
-    3. DELTA параметров обучается через LEARNING_RATE.
+    4. DELTA параметров обучается через LEARNING_RATE.
 
-    4. Служебные поля не проходят через opponent_factor.
+    5. Служебные поля не проходят через opponent_factor.
 
-    5. FAJ Rating всегда пересчитывается из актуального паспорта.
-
-    6. team_passports создаётся автоматически, если таблицы нет.
+    6. FAJ Rating всегда пересчитывается из актуального паспорта.
 
     7. Поддерживается SQLite / Streamlit Community Cloud.
 
@@ -53,10 +54,10 @@ logger = logging.getLogger(__name__)
 
 class PassportManager:
     """
-    Passport Manager v1.8
+    Passport Manager v1.9
     """
 
-    VERSION = "1.8"
+    VERSION = "1.9"
 
     # ============================================================
     # GLOBAL SETTINGS
@@ -186,19 +187,18 @@ class PassportManager:
         )
 
     # ============================================================
-    # MIGRATION
+    # MIGRATION — ТОЛЬКО ПРОВЕРКА
     # ============================================================
 
     def _check_migration(self) -> None:
         """
         Проверяет наличие team_passports и обязательных колонок.
+        НЕ создаёт таблицы — только проверяет схему.
         """
-
         conn = self.db._get_connection()
         cursor = conn.cursor()
 
         try:
-
             cursor.execute("""
                 SELECT name
                 FROM sqlite_master
@@ -206,159 +206,61 @@ class PassportManager:
                   AND name='team_passports'
             """)
 
-            table_exists = cursor.fetchone()
-
-            if not table_exists:
-
-                logger.warning(
-                    "Table team_passports does not exist. Creating..."
+            if cursor.fetchone() is None:
+                raise RuntimeError(
+                    "FAJ database schema error: "
+                    "table 'team_passports' does not exist. "
+                    "Fix database.py."
                 )
-
-                self._create_team_passports_table()
-
-                return
 
             cursor.execute("""
                 PRAGMA table_info(team_passports)
             """)
 
-            columns = [
-                row[1]
-                for row in cursor.fetchall()
-            ]
+            columns = {row[1] for row in cursor.fetchall()}
 
-            required_columns = [
-                "faj_rating",
-                "passport_confidence",
+            required_columns = {
+                "team_id",
+                "season_id",
+                "attack",
+                "defense",
+                "control",
+                "tempo",
+                "press",
+                "transition",
+                "finishing",
+                "goalkeeper",
+                "discipline",
+                "squad_quality",
+                "bench_quality",
+                "coach_factor",
+                "mental",
+                "home_strength",
+                "away_strength",
                 "injury_factor",
                 "key_player_loss",
                 "league_adaptation",
                 "form",
-            ]
+                "passport_confidence",
+                "faj_rating",
+                "version",
+                "source",
+                "created_at",
+            }
 
-            missing_columns = [
-                col
-                for col in required_columns
-                if col not in columns
-            ]
+            missing = required_columns - columns
 
-            if missing_columns:
-
-                logger.warning(
-                    "Missing passport columns: %s",
-                    missing_columns
+            if missing:
+                raise RuntimeError(
+                    "FAJ database schema error: "
+                    f"team_passports is missing columns: "
+                    f"{sorted(missing)}"
                 )
 
-                for col in missing_columns:
-
-                    if col == "passport_confidence":
-                        col_type = "REAL DEFAULT 0.5"
-
-                    elif col == "faj_rating":
-                        col_type = "REAL DEFAULT 0.0"
-
-                    elif col == "form":
-                        col_type = "REAL DEFAULT 50"
-
-                    else:
-                        col_type = "REAL DEFAULT 50"
-
-                    cursor.execute(
-                        f"""
-                        ALTER TABLE team_passports
-                        ADD COLUMN {col} {col_type}
-                        """
-                    )
-
-                conn.commit()
+            logger.info("✅ Passport schema check completed")
 
         finally:
-
             conn.close()
-
-        logger.info(
-            "Passport migration check completed"
-        )
-
-    # ============================================================
-    # CREATE TABLE
-    # ============================================================
-
-    def _create_team_passports_table(self) -> None:
-
-        conn = self.db._get_connection()
-        cursor = conn.cursor()
-
-        try:
-
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS team_passports (
-
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-                    team_id INTEGER,
-                    season_id INTEGER,
-
-                    attack REAL DEFAULT 50,
-                    defense REAL DEFAULT 50,
-                    control REAL DEFAULT 50,
-
-                    tempo REAL DEFAULT 50,
-                    press REAL DEFAULT 50,
-                    transition REAL DEFAULT 50,
-
-                    finishing REAL DEFAULT 50,
-                    goalkeeper REAL DEFAULT 50,
-
-                    discipline REAL DEFAULT 50,
-
-                    squad_quality REAL DEFAULT 50,
-                    bench_quality REAL DEFAULT 50,
-
-                    coach_factor REAL DEFAULT 50,
-                    mental REAL DEFAULT 50,
-
-                    home_strength REAL DEFAULT 50,
-                    away_strength REAL DEFAULT 50,
-
-                    injury_factor REAL DEFAULT 50,
-                    key_player_loss REAL DEFAULT 50,
-
-                    league_adaptation REAL DEFAULT 80,
-
-                    form REAL DEFAULT 50,
-
-                    passport_confidence REAL DEFAULT 0.5,
-
-                    faj_rating REAL DEFAULT 0.0,
-
-                    version TEXT,
-                    source TEXT,
-                    created_at TEXT,
-
-                    FOREIGN KEY(team_id)
-                        REFERENCES teams(id),
-
-                    FOREIGN KEY(season_id)
-                        REFERENCES seasons(id),
-
-                    UNIQUE(
-                        team_id,
-                        season_id,
-                        version
-                    )
-                )
-            """)
-
-            conn.commit()
-
-        finally:
-
-            conn.close()
-
-        logger.info(
-            "Table team_passports created"
-        )
 
     # ============================================================
     # GET CURRENT PASSPORT
@@ -742,11 +644,6 @@ class PassportManager:
 
             # ----------------------------------------------------
             # FAJ RATING
-            #
-            # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ v1.8:
-            #
-            # create_passport() сохраняет исторические
-            # параметры rating, если они были переданы.
             # ----------------------------------------------------
 
             faj_rating = self.calculate_rating(
@@ -1020,7 +917,7 @@ class PassportManager:
         new_data = current.copy()
 
         # --------------------------------------------------------
-        # SERVICE FIELDS
+        # SERVICE FIELDS — БЕРЁМ ИЗ ТЕКУЩЕГО ПАСПОРТА, ЕСЛИ НЕ ПЕРЕДАНО
         # --------------------------------------------------------
 
         absolute_form = weighted_changes.pop(
@@ -1030,12 +927,12 @@ class PassportManager:
 
         results_strength = weighted_changes.pop(
             "results_strength",
-            None
+            current.get("results_strength")
         )
 
         opponent_strength = weighted_changes.pop(
             "opponent_strength",
-            opponent_rating
+            current.get("opponent_strength", opponent_rating)
         )
 
         # --------------------------------------------------------
@@ -1182,10 +1079,7 @@ class PassportManager:
         )
 
         # --------------------------------------------------------
-        # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ:
-        #
-        # Передаём служебные поля в create_passport(),
-        # чтобы рейтинг не пересчитался без history.
+        # ПЕРЕДАЁМ СЛУЖЕБНЫЕ ПОЛЯ В create_passport()
         # --------------------------------------------------------
 
         new_data["results_strength"] = (
