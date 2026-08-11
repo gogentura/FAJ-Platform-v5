@@ -51,6 +51,7 @@ import time
 import logging
 import hashlib
 import uuid
+import math  # <-- ДОБАВЛЕН math
 from typing import Dict, Any, List, Tuple
 
 from app.config import config
@@ -249,8 +250,7 @@ class PredictionPipeline:
             poisson_result = self.poisson_model.calculate(
                 home_xg,
                 away_xg,
-                include_matrix=True  # ← Включаем для получения score_matrix
-            )
+                include_matrix=True  # ← Включаем для получения score_matrix            )
 
             if poisson_result.get("status") == "error":
                 raise ValueError(
@@ -571,7 +571,6 @@ class PredictionPipeline:
         else:
             # Fallback: approximative totals из xG
             # Poisson approximation for over 2.5
-            import math
             home_goals_prob = 1 - math.exp(-home_xg) * (1 + home_xg + home_xg**2/2)
             away_goals_prob = 1 - math.exp(-away_xg) * (1 + away_xg + away_xg**2/2)
             over_25 = home_goals_prob + away_goals_prob - home_goals_prob * away_goals_prob
@@ -639,7 +638,7 @@ class PredictionPipeline:
         Fallback расчёт топ-счетов на основе xG.
         Используется только если Poisson модель не вернула данные.
         """
-        import math
+        # math уже импортирован в начале файла
 
         def poisson_prob(lam: float, k: int) -> float:
             if lam <= 0:
