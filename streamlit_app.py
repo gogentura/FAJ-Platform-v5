@@ -11,26 +11,21 @@ import os
 import pandas as pd
 import json
 from datetime import datetime
-from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from app.config import config
 from app.database import get_connection, FAJDatabase
-from app.migrations.learning import ensure_learning_layer
-from app.sync_engine import SyncEngine
 from app.core.prediction_manager import get_prediction_manager
 from app.passports.passport_manager import get_passport_manager
 
 # ============================================================
-# AUTO BOOTSTRAP — АВТОМАТИЧЕСКАЯ ЗАГРУЗКА
+# AUTO BOOTSTRAP
 # ============================================================
 from app.bootstrap import bootstrap_faj
 
-# FAJ AUTO START — проверка и подготовка системы
 bootstrap_result = bootstrap_faj()
 
-# Если что-то пошло не так — показываем
 if not bootstrap_result.get("ready"):
     st.warning("⚠️ FAJ требует настройки")
     with st.expander("📋 Детали загрузки"):
@@ -44,18 +39,13 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-try:
-    ensure_learning_layer()
-except Exception as e:
-    st.error(f"⚠️ Ошибка миграции: {e}")
-
 if 'page' not in st.session_state:
     st.session_state.page = 'home'
 if 'prediction_result' not in st.session_state:
     st.session_state.prediction_result = None
 
 # ============================================================
-# БОКОВОЕ МЕНЮ — ОБНОВЛЕНО
+# БОКОВОЕ МЕНЮ — ТОЛЬКО НУЖНОЕ
 # ============================================================
 with st.sidebar:
     st.title("⚽ FAJ")
@@ -77,23 +67,8 @@ with st.sidebar:
     if st.button("📋 Паспорта", use_container_width=True):
         st.session_state.page = 'passports'
     
-    # ============================================================
-    # НОВЫЕ СТРАНИЦЫ
-    # ============================================================
-    if st.button("📋 Проверка календаря", use_container_width=True):
-        st.session_state.page = 'check_calendar'
-    
-    if st.button("📊 Загрузка статистики", use_container_width=True):
-        st.session_state.page = 'load_stats'
-    
-    # ============================================================
-    # НОВАЯ КНОПКА — ЗАГРУЗЧИК FAJ
-    # ============================================================
-    if st.button("📥 Загрузчик FAJ", use_container_width=True):
-        st.session_state.page = 'faj_loader'
-    
-    if st.button("🔄 Синхронизация", use_container_width=True):
-        st.session_state.page = 'sync'
+    if st.button("🚀 Загрузить данные", use_container_width=True):
+        st.session_state.page = 'force_load_data'
     
     if st.button("⚙️ Система", use_container_width=True):
         st.session_state.page = 'system'
@@ -105,18 +80,15 @@ with st.sidebar:
         cursor = conn.cursor()
         teams = cursor.execute("SELECT COUNT(*) FROM teams").fetchone()[0]
         matches = cursor.execute("SELECT COUNT(*) FROM matches").fetchone()[0]
-        gold = cursor.execute("SELECT COUNT(*) FROM gold_dataset").fetchone()[0]
         conn.close()
         
         st.caption("📊 Статус:")
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
         with col1:
-            st.caption(f"{'✅' if teams > 0 else '❌'} {teams}")
+            st.caption(f"🏟️ {teams}")
         with col2:
-            st.caption(f"{'✅' if matches > 0 else '❌'} {matches}")
-        with col3:
-            st.caption(f"{'✅' if gold > 0 else '❌'} {gold}")
-        st.caption("Команды | Матчи | Gold")
+            st.caption(f"📋 {matches}")
+        st.caption("Команды | Матчи")
     except:
         pass
 
@@ -129,7 +101,6 @@ if st.session_state.page == 'home':
     st.title("🏠 FAJ Platform v12")
     st.caption(f"Ядро v{config.CORE_VERSION} · Pipeline v{config.PIPELINE_VERSION}")
     
-    # Показываем статус Bootstrap
     if bootstrap_result.get("ready"):
         st.success("✅ Система готова к работе")
     else:
@@ -142,8 +113,8 @@ if st.session_state.page == 'home':
         cursor = conn.cursor()
         teams = cursor.execute("SELECT COUNT(*) FROM teams").fetchone()[0]
         matches = cursor.execute("SELECT COUNT(*) FROM matches").fetchone()[0]
-        gold = cursor.execute("SELECT COUNT(*) FROM gold_dataset").fetchone()[0]
-        learning = cursor.execute("SELECT COUNT(*) FROM learning_records").fetchone()[0]
+        results = cursor.execute("SELECT COUNT(*) FROM match_results").fetchone()[0]
+        stats = cursor.execute("SELECT COUNT(*) FROM match_statistics").fetchone()[0]
         conn.close()
         
         col1, col2, col3, col4 = st.columns(4)
@@ -152,9 +123,9 @@ if st.session_state.page == 'home':
         with col2:
             st.metric("📋 Матчи", matches)
         with col3:
-            st.metric("💎 Gold", gold)
+            st.metric("📊 Результаты", results)
         with col4:
-            st.metric("🧠 Learning", learning)
+            st.metric("📈 Статистика", stats)
     except:
         st.warning("⚠️ Статус БД недоступен")
     
@@ -170,74 +141,6 @@ if st.session_state.page == 'home':
         if st.button("🔬 Match Lab", use_container_width=True):
             st.session_state.page = 'match_analysis'
             st.rerun()
-    
-    # ============================================================
-    # HISTORICAL REPLAY
-    # ============================================================
-    st.divider()
-    st.subheader("🕰 Historical Replay")
-    st.caption("Проверка FAJ на исторических матчах")
-    
-    # ВЫБОР ТУРА
-    tour = st.selectbox(
-        "Выберите тур",
-        [1, 2],
-        index=0,
-        key="replay_tour"
-    )
-    
-    if st.button(
-        f"▶️ Запустить Replay тура {tour}",
-        use_container_width=True,
-        type="primary"
-    ):
-        with st.spinner("⏳ FAJ считает исторический тур..."):
-            try:
-                from app.replay.historical_replay import HistoricalReplay
-                replay = HistoricalReplay()
-                result = replay.run_tour(tour)
-                
-                if result.get("status") == "success":
-                    st.success(f"✅ Тур {tour} завершён")
-                    
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric(
-                            "🎯 Исходы",
-                            f"{result.get('result_accuracy', 0)}%"
-                        )
-                    with col2:
-                        st.metric(
-                            "🎯 Счёт",
-                            f"{result.get('score_accuracy', 0)}%"
-                        )
-                    with col3:
-                        xg_error = result.get('avg_xg_error')
-                        if xg_error is not None:
-                            st.metric("📊 xG Error", f"{xg_error:.2f}")
-                        else:
-                            st.metric("📊 xG Error", "Нет данных")
-                    
-                    with st.expander("📋 Детальный отчёт"):
-                        st.json(result)
-                        
-                        # КНОПКА КОПИРОВАНИЯ JSON
-                        report_text = json.dumps(
-                            result,
-                            ensure_ascii=False,
-                            indent=2
-                        )
-                        st.download_button(
-                            label="📋 Скопировать отчёт JSON",
-                            data=report_text,
-                            file_name=f"FAJ_tour_{result.get('tour', 1)}_report.json",
-                            mime="application/json",
-                            use_container_width=True
-                        )
-                else:
-                    st.error(f"❌ Ошибка: {result.get('message', 'Неизвестная ошибка')}")
-            except Exception as e:
-                st.error(f"❌ Ошибка Replay: {e}")
 
 # ----- ПРОГНОЗЫ -----
 elif st.session_state.page == 'predictions':
@@ -252,9 +155,9 @@ elif st.session_state.page == 'predictions':
         teams_df = pd.DataFrame()
     
     if teams_df.empty:
-        st.warning("⚠️ В базе нет команд. Сначала загрузите данные через 'Синхронизацию'.")
-        if st.button("🔄 Перейти к синхронизации"):
-            st.session_state.page = 'sync'
+        st.warning("⚠️ В базе нет команд. Сначала загрузите данные через 'Загрузить данные'.")
+        if st.button("🚀 Перейти к загрузке"):
+            st.session_state.page = 'force_load_data'
             st.rerun()
     else:
         col1, col2 = st.columns(2)
@@ -262,13 +165,6 @@ elif st.session_state.page == 'predictions':
             team1 = st.selectbox("🏠 Хозяева", teams_df['name'].tolist())
         with col2:
             team2 = st.selectbox("✈️ Гости", teams_df['name'].tolist())
-        
-        with st.expander("⚙️ Дополнительные параметры"):
-            league = st.selectbox(
-                "Турнир",
-                ["RPL", "EPL", "La Liga", "Bundesliga", "Serie A", "UCL"],
-                index=0
-            )
         
         if st.button("🔮 Сделать прогноз", type="primary", use_container_width=True):
             if team1 == team2:
@@ -281,7 +177,7 @@ elif st.session_state.page == 'predictions':
                         result = pm.predict(
                             home_team=team1,
                             away_team=team2,
-                            league=league
+                            league="RPL"
                         )
                         st.session_state.prediction_result = result
                         if result.get('status') == 'error':
@@ -360,7 +256,6 @@ elif st.session_state.page == 'match_analysis':
         match_analysis_main()
     except ImportError as e:
         st.error(f"❌ Страница Match Laboratory не найдена: {e}")
-        st.info("Создайте файл app/pages/match_analysis.py")
     except Exception as e:
         st.error(f"❌ Ошибка: {e}")
 
@@ -375,23 +270,16 @@ elif st.session_state.page == 'passports':
         
         cursor.execute("""
             SELECT 
-                t.id,
                 t.name as team_name,
                 tp.attack,
                 tp.defense,
                 tp.control,
                 tp.tempo,
                 tp.press,
-                tp.transition,
                 tp.finishing,
                 tp.goalkeeper,
-                tp.squad_quality,
-                tp.coach_factor,
-                tp.mental,
                 tp.faj_rating,
-                tp.version,
-                tp.source,
-                tp.created_at
+                tp.version
             FROM teams t
             LEFT JOIN team_passports tp ON t.id = tp.team_id
             ORDER BY t.name
@@ -400,153 +288,41 @@ elif st.session_state.page == 'passports':
         rows = cursor.fetchall()
         conn.close()
         
-        if not rows or not any(r['team_name'] for r in rows):
-            st.warning("⚠️ Паспорта не загружены. Нажмите 'Синхронизация' → 'Полная синхронизация'")
-            if st.button("🔄 Перейти к синхронизации"):
-                st.session_state.page = 'sync'
+        if not rows:
+            st.warning("⚠️ Паспорта не загружены. Загрузите данные через 'Загрузить данные'.")
+            if st.button("🚀 Перейти к загрузке"):
+                st.session_state.page = 'force_load_data'
                 st.rerun()
         else:
             data = []
             for row in rows:
-                if row['team_name'] and row['faj_rating'] is not None:
+                if row['team_name']:
                     data.append({
                         "Команда": row['team_name'],
                         "Атака": round(row['attack'] or 50, 1),
                         "Защита": round(row['defense'] or 50, 1),
                         "Контроль": round(row['control'] or 50, 1),
-                        "Темп": round(row['tempo'] or 50, 1),
-                        "Прессинг": round(row['press'] or 50, 1),
-                        "Реализация": round(row['finishing'] or 50, 1),
+                        "Вратарь": round(row['goalkeeper'] or 50, 1),
                         "FAJ Rating": round(row['faj_rating'] or 0, 1),
-                        "Версия": row['version'] or 'N/A'
                     })
             
             if data:
                 df = pd.DataFrame(data)
-                
-                st.dataframe(
-                    df,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "FAJ Rating": st.column_config.NumberColumn(
-                            "FAJ Rating",
-                            help="Рейтинг команды от 0 до 100",
-                            format="%.1f"
-                        )
-                    }
-                )
-                
+                st.dataframe(df, use_container_width=True, hide_index=True)
                 st.caption(f"📊 Всего команд: {len(data)}")
-                
-                st.divider()
-                st.subheader("🔍 Детальный просмотр паспорта")
-                
-                selected_team = st.selectbox(
-                    "Выберите команду",
-                    [row['team_name'] for row in rows if row['team_name']]
-                )
-                
-                if selected_team:
-                    conn = get_connection()
-                    cursor = conn.cursor()
-                    cursor.execute("""
-                        SELECT *
-                        FROM team_passports tp
-                        JOIN teams t ON tp.team_id = t.id
-                        WHERE t.name = ?
-                        ORDER BY CAST(REPLACE(tp.version, 'v', '') AS FLOAT) DESC
-                        LIMIT 1
-                    """, (selected_team,))
-                    
-                    detail_row = cursor.fetchone()
-                    conn.close()
-                    
-                    if detail_row:
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.write("**📊 Базовые параметры**")
-                            st.write(f"Атака: {detail_row['attack'] or 50}")
-                            st.write(f"Защита: {detail_row['defense'] or 50}")
-                            st.write(f"Контроль: {detail_row['control'] or 50}")
-                            st.write(f"Темп: {detail_row['tempo'] or 50}")
-                        with col2:
-                            st.write("**🎯 Дополнительные параметры**")
-                            st.write(f"Реализация: {detail_row['finishing'] or 50}")
-                            st.write(f"FAJ Rating: {detail_row['faj_rating'] or 0}")
-                            st.write(f"Версия: {detail_row['version'] or 'N/A'}")
-            else:
-                st.info("ℹ️ Паспорта загружены, но данные отсутствуют")
-                
     except Exception as e:
         st.error(f"❌ Ошибка загрузки паспортов: {e}")
 
-# ============================================================
-# НОВАЯ СТРАНИЦА — ПРОВЕРКА КАЛЕНДАРЯ
-# ============================================================
-elif st.session_state.page == 'check_calendar':
+# ----- ПРИНУДИТЕЛЬНАЯ ЗАГРУЗКА ДАННЫХ -----
+elif st.session_state.page == 'force_load_data':
     try:
-        from app.pages.check_calendar import main as check_calendar_main
-        check_calendar_main()
+        from app.pages.force_load_data import main as force_load_main
+        force_load_main()
     except ImportError as e:
-        st.error(f"❌ Страница 'Проверка календаря' не найдена: {e}")
-        st.info("Создайте файл app/pages/check_calendar.py")
+        st.error(f"❌ Страница загрузки не найдена: {e}")
+        st.info("Создайте файл app/pages/force_load_data.py")
     except Exception as e:
         st.error(f"❌ Ошибка: {e}")
-
-# ============================================================
-# НОВАЯ СТРАНИЦА — ЗАГРУЗЧИК FAJ
-# ============================================================
-elif st.session_state.page == 'faj_loader':
-    try:
-        from app.pages.faj_loader import main as faj_loader_main
-        faj_loader_main()
-    except ImportError as e:
-        st.error(f"❌ Страница 'Загрузчик FAJ' не найдена: {e}")
-        st.info("Создайте файл app/pages/faj_loader.py")
-    except Exception as e:
-        st.error(f"❌ Ошибка: {e}")
-
-# ============================================================
-# НОВАЯ СТРАНИЦА — ЗАГРУЗКА СТАТИСТИКИ
-# ============================================================
-elif st.session_state.page == 'load_stats':
-    try:
-        from app.pages.load_stats import main as load_stats_main
-        load_stats_main()
-    except ImportError as e:
-        st.error(f"❌ Страница 'Загрузка статистики' не найдена: {e}")
-        st.info("Создайте файл app/pages/load_stats.py")
-    except Exception as e:
-        st.error(f"❌ Ошибка: {e}")
-
-# ----- СИНХРОНИЗАЦИЯ (СТАРАЯ) -----
-elif st.session_state.page == 'sync':
-    st.title("🔄 Синхронизация данных")
-    
-    sync = SyncEngine()
-    try:
-        status = sync.get_status()
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("🏟️ Команды", status.get('teams', 0))
-        with col2:
-            st.metric("📋 Матчи", status.get('matches', 0))
-        with col3:
-            st.metric("💎 Gold", status.get('gold_dataset', 0))
-    except:
-        st.warning("⚠️ Статус недоступен")
-    
-    st.divider()
-    
-    if st.button("🔄 Полная синхронизация", type="primary", use_container_width=True):
-        with st.spinner("Синхронизация..."):
-            try:
-                result = sync.sync_teams()
-                st.success(f"✅ {result.get('created', 0)} создано, {result.get('updated', 0)} обновлено")
-                st.rerun()
-            except Exception as e:
-                st.error(f"❌ Ошибка: {e}")
 
 # ----- СИСТЕМА -----
 elif st.session_state.page == 'system':
@@ -563,10 +339,11 @@ elif st.session_state.page == 'system':
             st.write("**Основные**")
             st.write(f"- teams: {tables.get('teams', 0)}")
             st.write(f"- matches: {tables.get('matches', 0)}")
+            st.write(f"- match_results: {tables.get('match_results', 0)}")
         with col2:
             st.write("**Системные**")
-            st.write(f"- gold_dataset: {tables.get('gold_dataset', 0)}")
             st.write(f"- team_passports: {tables.get('team_passports', 0)}")
+            st.write(f"- predictions: {tables.get('predictions', 0)}")
         
         st.divider()
         
