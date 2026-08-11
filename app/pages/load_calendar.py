@@ -2,6 +2,7 @@ import streamlit as st
 import sqlite3
 import os
 from app.parsers.championat_calendar_parser import ChampionatCalendarParser
+from app.sync_engine import SyncEngine
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'data', 'faj.db')
 
@@ -23,13 +24,19 @@ def main():
         cursor = conn.cursor()
         
         try:
-            # Очищаем матчи и результаты
-            cursor.execute("DELETE FROM match_statistics")
-            cursor.execute("DELETE FROM match_results")
-            cursor.execute("DELETE FROM matches")
-            conn.commit()
+            # ============================================================
+            # 1. Очистка данных (опционально)
+            # ============================================================
+            if st.checkbox("Очистить старые данные перед загрузкой", value=False):
+                cursor.execute("DELETE FROM match_statistics")
+                cursor.execute("DELETE FROM match_results")
+                cursor.execute("DELETE FROM matches")
+                conn.commit()
+                st.info("🗑️ Старые данные очищены")
             
-            # Сезон
+            # ============================================================
+            # 2. Сезон и команды
+            # ============================================================
             cursor.execute("""
                 INSERT OR IGNORE INTO seasons (name, league)
                 VALUES ('2026-2027', 'РПЛ')
@@ -40,7 +47,6 @@ def main():
             season_row = cursor.fetchone()
             season_id = season_row[0]
             
-            # Команды РПЛ
             teams = [
                 "Акрон", "Ахмат", "Балтика", "Динамо Махачкала",
                 "Динамо Москва", "Зенит", "Краснодар", "Крылья Советов",
@@ -51,7 +57,9 @@ def main():
                 cursor.execute("INSERT OR IGNORE INTO teams (name, league) VALUES (?, 'РПЛ')", (team,))
             conn.commit()
             
-            # Парсим календарь
+            # ============================================================
+            # 3. Парсинг календаря
+            # ============================================================
             with st.spinner("Парсим календарь с championat.com..."):
                 parser = ChampionatCalendarParser()
                 matches = parser.parse()
@@ -60,6 +68,9 @@ def main():
                 st.error("❌ Не удалось загрузить календарь.")
                 return
             
+            # ============================================================
+            # 4. Сохранение матчей
+            # ============================================================
             loaded = 0
             
             for match in matches:
@@ -92,7 +103,7 @@ def main():
                 status = 'finished' if hg is not None and ag is not None else 'scheduled'
                 
                 cursor.execute("""
-                    INSERT INTO matches
+                    INSERT OR IGNORE INTO matches
                     (round_id, home_team_id, away_team_id, competition, status, date, actual_home, actual_away)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (round_id, home_id, away_id, 'РПЛ', status, date, hg, ag))
@@ -104,11 +115,19 @@ def main():
                     match_row = cursor.fetchone()
                     if match_row:
                         match_id = match_row[0]
-                        cursor.execute("INSERT INTO match_results (match_id, home_goals, away_goals) VALUES (?, ?, ?)",
+                        cursor.execute("INSERT OR IGNORE INTO match_results (match_id, home_goals, away_goals) VALUES (?, ?, ?)",
                                      (match_id, hg, ag))
                         conn.commit()
                 
                 loaded += 1
+            
+            # ============================================================
+            # 5. Обновление паспортов
+            # ============================================================
+            with st.spinner("Обновляем паспорта команд..."):
+                sync = SyncEngine()
+                result = sync.load_passports()
+                st.info(f"📋 Обновлено паспортов: {result['updated']}")
             
             st.success(f"✅ ЗАГРУЖЕНО {loaded} МАТЧЕЙ!")
             st.balloons()
@@ -116,6 +135,8 @@ def main():
         except Exception as e:
             conn.rollback()
             st.error(f"❌ Ошибка: {e}")
+            import traceback
+            st.code(traceback.format_exc())
         finally:
             conn.close()
 
