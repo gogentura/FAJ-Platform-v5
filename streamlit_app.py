@@ -86,6 +86,12 @@ with st.sidebar:
     if st.button("📊 Загрузка статистики", use_container_width=True):
         st.session_state.page = 'load_stats'
     
+    # ============================================================
+    # НОВАЯ КНОПКА — ЗАГРУЗЧИК FAJ
+    # ============================================================
+    if st.button("📥 Загрузчик FAJ", use_container_width=True):
+        st.session_state.page = 'faj_loader'
+    
     if st.button("🔄 Синхронизация", use_container_width=True):
         st.session_state.page = 'sync'
     
@@ -485,6 +491,19 @@ elif st.session_state.page == 'check_calendar':
     except ImportError as e:
         st.error(f"❌ Страница 'Проверка календаря' не найдена: {e}")
         st.info("Создайте файл app/pages/check_calendar.py")
+    except Exception as e:
+        st.error(f"❌ Ошибка: {e}")
+
+# ============================================================
+# НОВАЯ СТРАНИЦА — ЗАГРУЗЧИК FAJ
+# ============================================================
+elif st.session_state.page == 'faj_loader':
+    try:
+        from app.pages.faj_loader import main as faj_loader_main
+        faj_loader_main()
+    except ImportError as e:
+        st.error(f"❌ Страница 'Загрузчик FAJ' не найдена: {e}")
+        st.info("Создайте файл app/pages/faj_loader.py")
     except Exception as e:
         st.error(f"❌ Ошибка: {e}")
 
