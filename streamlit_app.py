@@ -50,25 +50,31 @@ with st.sidebar:
     st.caption(f"v{config.PLATFORM_VERSION}")
     st.divider()
     
-    if st.button("🏠 Главная", use_container_width=True):
+    if st.button("🏠 Главная", use_container_width=True, key="menu_home"):
         st.session_state.page = 'home'
         st.session_state.prediction_result = None
     
-    if st.button("📊 Прогнозы", use_container_width=True):
+    if st.button("📊 Прогнозы", use_container_width=True, key="menu_predictions"):
         st.session_state.page = 'predictions'
         st.session_state.prediction_result = None
     
-    if st.button("🔬 Match Lab", use_container_width=True):
+    if st.button("🔬 Match Lab", use_container_width=True, key="menu_match_lab"):
         st.session_state.page = 'match_analysis'
         st.session_state.prediction_result = None
     
-    if st.button("📋 Паспорта", use_container_width=True):
+    if st.button("📋 Паспорта", use_container_width=True, key="menu_passports"):
         st.session_state.page = 'passports'
     
-    if st.button("🚀 Загрузить данные", use_container_width=True):
-        st.session_state.page = 'load_data'
+    # ============================================================
+    # ДВЕ КНОПКИ ДЛЯ ЗАГРУЗКИ
+    # ============================================================
+    if st.button("📅 Загрузить календарь", use_container_width=True, key="menu_load_calendar"):
+        st.session_state.page = 'load_calendar'
     
-    if st.button("⚙️ Система", use_container_width=True):
+    if st.button("📊 Загрузить статистику", use_container_width=True, key="menu_load_stats"):
+        st.session_state.page = 'load_stats'
+    
+    if st.button("⚙️ Система", use_container_width=True, key="menu_system"):
         st.session_state.page = 'system'
     
     st.divider()
@@ -78,15 +84,18 @@ with st.sidebar:
         cursor = conn.cursor()
         teams = cursor.execute("SELECT COUNT(*) FROM teams").fetchone()[0]
         matches = cursor.execute("SELECT COUNT(*) FROM matches").fetchone()[0]
+        stats = cursor.execute("SELECT COUNT(*) FROM match_statistics").fetchone()[0]
         conn.close()
         
         st.caption("📊 Статус:")
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
             st.caption(f"🏟️ {teams}")
         with col2:
             st.caption(f"📋 {matches}")
-        st.caption("Команды | Матчи")
+        with col3:
+            st.caption(f"📊 {stats}")
+        st.caption("Команды | Матчи | Статистика")
     except:
         pass
 
@@ -132,11 +141,11 @@ if st.session_state.page == 'home':
     st.subheader("🚀 Быстрый старт")
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("📊 Сделать прогноз", use_container_width=True, type="primary"):
+        if st.button("📊 Сделать прогноз", use_container_width=True, type="primary", key="home_predict"):
             st.session_state.page = 'predictions'
             st.rerun()
     with col2:
-        if st.button("🔬 Match Lab", use_container_width=True):
+        if st.button("🔬 Match Lab", use_container_width=True, key="home_match_lab"):
             st.session_state.page = 'match_analysis'
             st.rerun()
 
@@ -153,18 +162,18 @@ elif st.session_state.page == 'predictions':
         teams_df = pd.DataFrame()
     
     if teams_df.empty:
-        st.warning("⚠️ В базе нет команд. Сначала загрузите данные через 'Загрузить данные'.")
-        if st.button("🚀 Перейти к загрузке"):
-            st.session_state.page = 'load_data'
+        st.warning("⚠️ В базе нет команд. Сначала загрузите данные.")
+        if st.button("📅 Перейти к загрузке календаря", key="predict_go_calendar"):
+            st.session_state.page = 'load_calendar'
             st.rerun()
     else:
         col1, col2 = st.columns(2)
         with col1:
-            team1 = st.selectbox("🏠 Хозяева", teams_df['name'].tolist())
+            team1 = st.selectbox("🏠 Хозяева", teams_df['name'].tolist(), key="team1")
         with col2:
-            team2 = st.selectbox("✈️ Гости", teams_df['name'].tolist())
+            team2 = st.selectbox("✈️ Гости", teams_df['name'].tolist(), key="team2")
         
-        if st.button("🔮 Сделать прогноз", type="primary", use_container_width=True):
+        if st.button("🔮 Сделать прогноз", type="primary", use_container_width=True, key="do_predict"):
             if team1 == team2:
                 st.error("❌ Команды не могут совпадать!")
                 st.session_state.prediction_result = None
@@ -284,9 +293,9 @@ elif st.session_state.page == 'passports':
         conn.close()
         
         if not rows:
-            st.warning("⚠️ Паспорта не загружены. Загрузите данные через 'Загрузить данные'.")
-            if st.button("🚀 Перейти к загрузке"):
-                st.session_state.page = 'load_data'
+            st.warning("⚠️ Паспорта не загружены. Загрузите данные.")
+            if st.button("📅 Перейти к загрузке календаря", key="passports_go_calendar"):
+                st.session_state.page = 'load_calendar'
                 st.rerun()
         else:
             data = []
@@ -308,13 +317,23 @@ elif st.session_state.page == 'passports':
     except Exception as e:
         st.error(f"❌ Ошибка загрузки паспортов: {e}")
 
-# ----- ЗАГРУЗКА ДАННЫХ -----
-elif st.session_state.page == 'load_data':
+# ----- ЗАГРУЗКА КАЛЕНДАРЯ -----
+elif st.session_state.page == 'load_calendar':
     try:
-        from app.pages.load_data import main as load_data_main
-        load_data_main()
+        from app.pages.load_calendar import main as load_calendar_main
+        load_calendar_main()
     except ImportError as e:
-        st.error(f"❌ Страница загрузки не найдена: {e}")
+        st.error(f"❌ Страница загрузки календаря не найдена: {e}")
+    except Exception as e:
+        st.error(f"❌ Ошибка: {e}")
+
+# ----- ЗАГРУЗКА СТАТИСТИКИ -----
+elif st.session_state.page == 'load_stats':
+    try:
+        from app.pages.load_stats import main as load_stats_main
+        load_stats_main()
+    except ImportError as e:
+        st.error(f"❌ Страница загрузки статистики не найдена: {e}")
     except Exception as e:
         st.error(f"❌ Ошибка: {e}")
 
