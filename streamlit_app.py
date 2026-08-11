@@ -66,8 +66,11 @@ with st.sidebar:
         st.session_state.page = 'passports'
     
     # ============================================================
-    # ДВЕ КНОПКИ ДЛЯ ЗАГРУЗКИ
+    # КНОПКИ ЗАГРУЗКИ
     # ============================================================
+    if st.button("🚀 Загрузить всё", use_container_width=True, key="menu_load_all"):
+        st.session_state.page = 'load_all'
+    
     if st.button("📅 Загрузить календарь", use_container_width=True, key="menu_load_calendar"):
         st.session_state.page = 'load_calendar'
     
@@ -163,8 +166,8 @@ elif st.session_state.page == 'predictions':
     
     if teams_df.empty:
         st.warning("⚠️ В базе нет команд. Сначала загрузите данные.")
-        if st.button("📅 Перейти к загрузке календаря", key="predict_go_calendar"):
-            st.session_state.page = 'load_calendar'
+        if st.button("🚀 Перейти к полной загрузке", key="predict_go_load_all"):
+            st.session_state.page = 'load_all'
             st.rerun()
     else:
         col1, col2 = st.columns(2)
@@ -294,8 +297,8 @@ elif st.session_state.page == 'passports':
         
         if not rows:
             st.warning("⚠️ Паспорта не загружены. Загрузите данные.")
-            if st.button("📅 Перейти к загрузке календаря", key="passports_go_calendar"):
-                st.session_state.page = 'load_calendar'
+            if st.button("🚀 Перейти к полной загрузке", key="passports_go_load_all"):
+                st.session_state.page = 'load_all'
                 st.rerun()
         else:
             data = []
@@ -316,6 +319,17 @@ elif st.session_state.page == 'passports':
                 st.caption(f"📊 Всего команд: {len(data)}")
     except Exception as e:
         st.error(f"❌ Ошибка загрузки паспортов: {e}")
+
+# ----- ЗАГРУЗКА ВСЕГО -----
+elif st.session_state.page == 'load_all':
+    try:
+        from app.pages.load_all import main as load_all_main
+        load_all_main()
+    except ImportError as e:
+        st.error(f"❌ Страница 'Загрузить всё' не найдена: {e}")
+        st.info("Создайте файл app/pages/load_all.py")
+    except Exception as e:
+        st.error(f"❌ Ошибка: {e}")
 
 # ----- ЗАГРУЗКА КАЛЕНДАРЯ -----
 elif st.session_state.page == 'load_calendar':
