@@ -1,7 +1,6 @@
 import streamlit as st
 import sqlite3
 import os
-from datetime import datetime
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'data', 'faj.db')
 
@@ -14,29 +13,25 @@ def main():
     st.title("🚀 ЗАГРУЗКА ДАННЫХ")
     
     st.warning("""
-    ⚠️ ЭТО ЗАЛЬЁТ В БД 24 МАТЧА 1-3 ТУРОВ.
-    Если матчи уже есть — они будут обновлены.
+    ⚠️ Нажми кнопку — старые данные будут удалены, и зальются 24 матча 1-3 туров.
     """)
-    
-    conn = get_connection()
-    cursor = conn.cursor()
-    
-    try:
-        cursor.execute("SELECT COUNT(*) FROM matches")
-        matches_count = cursor.fetchone()[0]
-        st.info(f"📊 В БД сейчас: {matches_count} матчей")
-    except:
-        st.warning("⚠️ Таблица matches не существует или пуста")
-        matches_count = 0
-    
-    conn.close()
     
     if st.button("🔥 ЗАГРУЗИТЬ 24 МАТЧА", type="primary", use_container_width=True):
         conn = get_connection()
         cursor = conn.cursor()
         
         try:
-            # Сезон
+            # ============================================================
+            # 1. УДАЛЯЕМ СТАРЫЕ ДАННЫЕ
+            # ============================================================
+            cursor.execute("DELETE FROM match_statistics")
+            cursor.execute("DELETE FROM match_results")
+            cursor.execute("DELETE FROM matches")
+            conn.commit()
+            
+            # ============================================================
+            # 2. СОЗДАЁМ СЕЗОН
+            # ============================================================
             cursor.execute("""
                 INSERT OR IGNORE INTO seasons (name, league)
                 VALUES ('2026-2027', 'РПЛ')
@@ -48,25 +43,13 @@ def main():
             season_id = season_row[0]
             
             # ============================================================
-            # ПРАВИЛЬНЫЙ СПИСОК — 16 КОМАНД РПЛ 2026/27
+            # 3. 16 КОМАНД РПЛ 2026/27
             # ============================================================
             teams = [
-                "Акрон",
-                "Ахмат",
-                "Балтика",
-                "Динамо Махачкала",
-                "Динамо Москва",
-                "Зенит",
-                "Краснодар",
-                "Крылья Советов",
-                "Локомотив",
-                "Оренбург",
-                "Родина",
-                "Ростов",
-                "Рубин",
-                "Спартак",
-                "Факел",
-                "ЦСКА"
+                "Акрон", "Ахмат", "Балтика", "Динамо Махачкала",
+                "Динамо Москва", "Зенит", "Краснодар", "Крылья Советов",
+                "Локомотив", "Оренбург", "Родина", "Ростов",
+                "Рубин", "Спартак", "Факел", "ЦСКА"
             ]
             
             for team in teams:
@@ -77,7 +60,7 @@ def main():
             conn.commit()
             
             # ============================================================
-            # 24 МАТЧА (с правильными командами)
+            # 4. 24 МАТЧА
             # ============================================================
             matches = [
                 # ТУР 1
@@ -105,7 +88,7 @@ def main():
                 (3, "ЦСКА", "Ростов", 0, 0, 0.83, 0.84, 13, 13, 3, 4, 56, 44, 1, 3, 1, 2, 78, 71),
                 (3, "Зенит", "Родина", 1, 2, 1.59, 0.76, 22, 7, 6, 3, 66, 34, 11, 3, 1, 1, 87, 77),
                 (3, "Спартак", "Краснодар", 1, 2, 1.32, 1.08, 16, 16, 3, 4, 63, 37, 6, 7, 1, 3, 78, 71),
-                (3, "Рубин", "Оренбург", 1, 1, 0.64, 0.86, 10, 13, 1, 3, 62, 38, 7, 1, 2, 1, 74, 65),  # <-- ИСПРАВЛЕНО
+                (3, "Рубин", "Оренбург", 1, 1, 0.64, 0.86, 10, 13, 1, 3, 62, 38, 7, 1, 2, 1, 74, 65),
             ]
             
             loaded = 0
@@ -138,7 +121,7 @@ def main():
                 round_id = round_row[0]
                 
                 cursor.execute("""
-                    INSERT OR IGNORE INTO matches
+                    INSERT INTO matches
                     (round_id, home_team_id, away_team_id, competition, status, actual_home, actual_away,
                      home_xg, away_xg, home_possession, away_possession,
                      home_shots, away_shots, home_shots_on_target, away_shots_on_target)
@@ -155,19 +138,19 @@ def main():
                 match_id = match_row[0]
                 
                 cursor.execute("""
-                    INSERT OR REPLACE INTO match_results (match_id, home_goals, away_goals)
+                    INSERT INTO match_results (match_id, home_goals, away_goals)
                     VALUES (?, ?, ?)
                 """, (match_id, hg, ag))
                 conn.commit()
                 
                 cursor.execute("""
-                    INSERT OR REPLACE INTO match_statistics
+                    INSERT INTO match_statistics
                     (match_id, team_id, possession, shots, shots_on_target, corners, yellow_cards, xg, pass_accuracy)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (match_id, home_id, hp, hs, hsot, hc, hy, hxg, hpa))
                 
                 cursor.execute("""
-                    INSERT OR REPLACE INTO match_statistics
+                    INSERT INTO match_statistics
                     (match_id, team_id, possession, shots, shots_on_target, corners, yellow_cards, xg, pass_accuracy)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (match_id, away_id, ap, ash, asot, ac, ay, axg, apa))
@@ -175,20 +158,16 @@ def main():
                 loaded += 1
             
             conn.commit()
-            conn.close()
             
             st.success(f"✅ ЗАГРУЖЕНО {loaded} МАТЧЕЙ!")
             st.balloons()
             
-            conn = get_connection()
-            cursor = conn.cursor()
             cursor.execute("SELECT COUNT(*) FROM matches")
             total_matches = cursor.fetchone()[0]
             cursor.execute("SELECT COUNT(*) FROM match_results")
             total_results = cursor.fetchone()[0]
             cursor.execute("SELECT COUNT(*) FROM match_statistics")
             total_stats = cursor.fetchone()[0]
-            conn.close()
             
             col1, col2, col3 = st.columns(3)
             with col1:
