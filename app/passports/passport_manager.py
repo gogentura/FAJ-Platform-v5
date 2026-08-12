@@ -185,7 +185,7 @@ class PassportManager:
         PassportManager НЕ создаёт таблицы.
         """
 
-        conn = self.db._get_connection()
+        conn = self.db.get_connection()  # ✅ ИСПРАВЛЕНО
         cursor = conn.cursor()
 
         try:
@@ -271,7 +271,7 @@ class PassportManager:
         season_id: int
     ) -> Optional[Dict[str, Any]]:
 
-        conn = self.db._get_connection()
+        conn = self.db.get_connection()  # ✅ ИСПРАВЛЕНО
         cursor = conn.cursor()
 
         try:
@@ -313,7 +313,7 @@ class PassportManager:
         season_id: Optional[int] = None
     ) -> Optional[Dict[str, Any]]:
 
-        conn = self.db._get_connection()
+        conn = self.db.get_connection()  # ✅ ИСПРАВЛЕНО
         cursor = conn.cursor()
 
         try:
@@ -375,7 +375,7 @@ class PassportManager:
         limit: int = 10
     ) -> list:
 
-        conn = self.db._get_connection()
+        conn = self.db.get_connection()  # ✅ ИСПРАВЛЕНО
         cursor = conn.cursor()
 
         try:
@@ -421,7 +421,7 @@ class PassportManager:
         season_id: int
     ) -> list:
 
-        conn = self.db._get_connection()
+        conn = self.db.get_connection()  # ✅ ИСПРАВЛЕНО
         cursor = conn.cursor()
 
         try:
@@ -623,7 +623,7 @@ class PassportManager:
         Этот метод НЕ применяет LEARNING_RATE.
         """
 
-        conn = self.db._get_connection()
+        conn = self.db.get_connection()  # ✅ ИСПРАВЛЕНО
         cursor = conn.cursor()
 
         try:
