@@ -15,7 +15,7 @@ LOAD ALL — RPL DATA & PREDICTION CENTER
     2. Создание команд
     3. Создание туров
     4. Загрузка календаря
-    5. Загрузка результатов 1–3 туров
+    5. Загрузка результатов исторических туров
     6. Загрузка статистики прошедших матчей
     7. Идемпотентное обновление
     8. Persistent state
@@ -26,6 +26,17 @@ LOAD ALL — RPL DATA & PREDICTION CENTER
 
 ВАЖНО:
     database.py НЕ изменяется.
+
+ИСПРАВЛЕНИЕ v12.1:
+    FAJDatabase использует публичный метод:
+
+        db.get_connection()
+
+    Старый:
+
+        db._get_connection()
+
+    удалён из этого файла.
 ============================================================
 """
 
@@ -34,7 +45,7 @@ import json
 import logging
 import traceback
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Dict, Optional, Any
 
 import streamlit as st
 
@@ -63,7 +74,10 @@ LEAGUE = "РПЛ"
 TOTAL_ROUNDS = 30
 
 DATA_DIR = "data"
-STATE_FILE = os.path.join(DATA_DIR, "import_state.json")
+STATE_FILE = os.path.join(
+    DATA_DIR,
+    "import_state.json",
+)
 
 FIXTURES_SOURCE = (
     "championat.com / smart-tables.ru / soccerland.ru"
@@ -73,6 +87,7 @@ RESULTS_SOURCE = (
     "smart-tables.ru / soccerland.ru"
 )
 
+# Исторические туры, которые сейчас загружаем
 HISTORICAL_ROUNDS = [1, 2, 3]
 
 
@@ -108,34 +123,52 @@ RPL_TEAMS = [
 
 
 # ============================================================
+# DATABASE CONNECTION
+# ============================================================
+
+def get_connection(db):
+    """
+    Единая точка получения SQLite connection.
+
+    ВАЖНО:
+        Текущий FAJDatabase имеет публичный метод
+        get_connection().
+
+    Не используем приватный _get_connection().
+    """
+
+    return db.get_connection()
+
+
+# ============================================================
 # STATE
 # ============================================================
 
 def ensure_data_dir():
-    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(
+        DATA_DIR,
+        exist_ok=True,
+    )
 
 
 def default_state() -> Dict:
     """
     Persistent состояние FAJ.
 
-    Важный момент:
-        predictions хранится ПО ТУРАМ.
+    predictions хранится ПО ТУРАМ:
 
-    Было:
-        predictions = {...}
-
-    Теперь:
         predictions = {
             "4": {...},
             "5": {...}
         }
 
-    Поэтому прогноз 5-го тура не уничтожает прогноз 4-го.
+    Поэтому прогноз одного тура не уничтожает
+    прогноз другого.
     """
 
     return {
         "version": APP_VERSION,
+
         "season": SEASON_NAME,
         "season_id": None,
 
@@ -163,17 +196,19 @@ def load_state() -> Dict:
     """
     Загружает persistent state.
 
-    Это отдельный файл, а не st.session_state.
-
-    Поэтому обычный Streamlit rerun не обнуляет состояние.
+    State находится отдельно от st.session_state,
+    поэтому Streamlit rerun его не уничтожает.
     """
 
     ensure_data_dir()
 
-    if not os.path.exists(STATE_FILE):
+    if not os.path.exists(
+        STATE_FILE
+    ):
         return default_state()
 
     try:
+
         with open(
             STATE_FILE,
             "r",
@@ -183,10 +218,15 @@ def load_state() -> Dict:
             state = json.load(f)
 
         base = default_state()
-        base.update(state)
+
+        if isinstance(
+            state,
+            dict,
+        ):
+            base.update(state)
 
         # ----------------------------------------------------
-        # Миграция старого формата predictions
+        # Безопасная нормализация
         # ----------------------------------------------------
 
         if not isinstance(
@@ -219,14 +259,18 @@ def load_state() -> Dict:
         return default_state()
 
 
-def save_state(state: Dict):
+def save_state(
+    state: Dict,
+):
     """
     Атомарная запись persistent state.
     """
 
     ensure_data_dir()
 
-    temp_file = STATE_FILE + ".tmp"
+    temp_file = (
+        STATE_FILE + ".tmp"
+    )
 
     try:
 
@@ -257,14 +301,16 @@ def save_state(state: Dict):
 
 
 # ============================================================
-# DATABASE
+# DATABASE HELPERS
 # ============================================================
 
 def get_db():
     return FAJDatabase()
 
 
-def get_or_create_season(db):
+def get_or_create_season(
+    db,
+):
 
     return db.create_season(
         name=SEASON_NAME,
@@ -273,7 +319,9 @@ def get_or_create_season(db):
     )
 
 
-def ensure_teams(db) -> Dict[str, int]:
+def ensure_teams(
+    db,
+) -> Dict[str, int]:
 
     team_ids = {}
 
@@ -299,6 +347,7 @@ def ensure_teams(db) -> Dict[str, int]:
                 )
 
             if team_id:
+
                 team_ids[name] = team_id
 
         except Exception as e:
@@ -332,6 +381,7 @@ def ensure_rounds(
             )
 
             if round_id:
+
                 round_ids[
                     round_number
                 ] = round_id
@@ -359,7 +409,7 @@ def find_match(
     away_team_id,
 ):
 
-    conn = db._get_connection()
+    conn = get_connection(db)
 
     try:
 
@@ -388,11 +438,13 @@ def find_match(
         row = cursor.fetchone()
 
         if row:
+
             return row[0]
 
         return None
 
     finally:
+
         conn.close()
 
 
@@ -422,7 +474,10 @@ def import_fixtures(
     fixtures = parser.parse()
 
     if not fixtures:
-        state["fixtures_loaded"] = False
+
+        state[
+            "fixtures_loaded"
+        ] = False
 
         result["message"] = (
             "Парсер календаря не вернул матчи."
@@ -430,7 +485,9 @@ def import_fixtures(
 
         return result
 
-    result["found"] = len(fixtures)
+    result["found"] = len(
+        fixtures
+    )
 
     for match in fixtures:
 
@@ -507,7 +564,9 @@ def import_fixtures(
                 ),
             }
 
-            db.upsert_match(payload)
+            db.upsert_match(
+                payload
+            )
 
             if existing_id:
 
@@ -540,25 +599,29 @@ def import_fixtures(
 
 
 # ============================================================
-# RESULT PARSER ADAPTER
+# RESULT PARSER
 # ============================================================
 
 def create_results_parser():
 
     if RPLResultsParser is None:
+
         return None
 
     try:
+
         return RPLResultsParser()
 
     except TypeError:
 
-        # На случай parser с другим конструктором
         try:
+
             return RPLResultsParser(
                 season=SEASON_YEAR
             )
+
         except Exception:
+
             return None
 
 
@@ -566,28 +629,14 @@ def normalize_result_item(
     item: Dict,
 ) -> Optional[Dict]:
     """
-    Приводит разные варианты parser output
-    к единому формату load_all.
-
-    Ожидаемый результат:
-
-    {
-        round,
-        home_team,
-        away_team,
-        date,
-        home_goals,
-        away_goals,
-        home_xg,
-        away_xg,
-        ...
-    }
+    Приводит parser output к единому формату.
     """
 
     if not isinstance(
         item,
         dict,
     ):
+
         return None
 
     home = (
@@ -603,6 +652,7 @@ def normalize_result_item(
     )
 
     if not home or not away:
+
         return None
 
     round_number = (
@@ -612,13 +662,18 @@ def normalize_result_item(
     )
 
     if round_number is None:
+
         return None
 
-    normalized = dict(item)
+    normalized = dict(
+        item
+    )
 
     normalized[
         "round"
-    ] = int(round_number)
+    ] = int(
+        round_number
+    )
 
     normalized[
         "home_team"
@@ -655,6 +710,7 @@ def import_historical_results(
         "errors": 0,
         "skipped": 0,
         "matches_without_db_record": 0,
+        "rounds_updated": [],
         "message": "",
     }
 
@@ -686,25 +742,30 @@ def import_historical_results(
 
     try:
 
-        raw_matches = parser.parse_rounds(
-            season=SEASON_YEAR,
-            rounds=rounds,
+        raw_matches = (
+            parser.parse_rounds(
+                season=SEASON_YEAR,
+                rounds=rounds,
+            )
         )
 
     except TypeError:
 
-        # Совместимость с parser,
-        # который принимает только rounds.
         try:
 
-            raw_matches = parser.parse_rounds(
-                rounds=rounds
+            raw_matches = (
+                parser.parse_rounds(
+                    rounds=rounds
+                )
             )
 
         except Exception as e:
 
             result["errors"] += 1
-            result["message"] = str(e)
+
+            result["message"] = str(
+                e
+            )
 
             logger.exception(
                 "Ошибка parse_rounds"
@@ -715,7 +776,10 @@ def import_historical_results(
     except Exception as e:
 
         result["errors"] += 1
-        result["message"] = str(e)
+
+        result["message"] = str(
+            e
+        )
 
         logger.exception(
             "Ошибка исторического parser"
@@ -755,6 +819,7 @@ def import_historical_results(
             )
 
             if round_number not in rounds:
+
                 result["skipped"] += 1
                 continue
 
@@ -881,14 +946,14 @@ def import_historical_results(
             except Exception as e:
 
                 logger.warning(
-                    "Не удалось записать "
-                    "статистику match_id=%s: %s",
+                    "Не удалось записать статистику "
+                    "match_id=%s: %s",
                     match_id,
                     e,
                 )
 
             # ------------------------------------------------
-            # ДОПОЛНИТЕЛЬНАЯ СТАТИСТИКА
+            # РАСШИРЕННАЯ СТАТИСТИКА
             # ------------------------------------------------
 
             write_match_statistics(
@@ -934,17 +999,20 @@ def write_match_statistics(
     item,
 ):
     """
-    Записывает расширенную статистику,
-    если соответствующая таблица существует
-    и текущий database.py её поддерживает.
+    Записывает расширенную статистику.
 
     Ошибка здесь НЕ должна останавливать
-    основной импорт результата.
+    основной импорт результатов.
     """
+
+    conn = None
 
     try:
 
-        conn = db._get_connection()
+        conn = get_connection(
+            db
+        )
+
         cursor = conn.cursor()
 
         cursor.execute(
@@ -1034,7 +1102,6 @@ def write_match_statistics(
         )
 
         conn.commit()
-        conn.close()
 
     except Exception as e:
 
@@ -1043,6 +1110,15 @@ def write_match_statistics(
             "не записана: %s",
             e,
         )
+
+    finally:
+
+        if conn is not None:
+
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ============================================================
@@ -1127,11 +1203,15 @@ def ensure_passports(
 # DATABASE STATUS
 # ============================================================
 
-def get_database_status(db):
+def get_database_status(
+    db,
+):
 
     result = {}
 
-    conn = db._get_connection()
+    conn = get_connection(
+        db
+    )
 
     try:
 
@@ -1158,7 +1238,9 @@ def get_database_status(db):
 
             try:
 
-                cursor.execute(query)
+                cursor.execute(
+                    query
+                )
 
                 row = cursor.fetchone()
 
@@ -1189,7 +1271,9 @@ def get_round_matches(
     round_number,
 ):
 
-    conn = db._get_connection()
+    conn = get_connection(
+        db
+    )
 
     try:
 
@@ -1284,12 +1368,30 @@ def run_predictions(
 
         try:
 
-            prediction = pm.predict(
-                home_team=home,
-                away_team=away,
-                league=LEAGUE,
-                season_id=season_id,
-            )
+            # ------------------------------------------------
+            # Предпочтительно используем match_id,
+            # поскольку он однозначно определяет матч.
+            # ------------------------------------------------
+
+            if hasattr(
+                pm,
+                "predict_by_match_id",
+            ):
+
+                prediction = (
+                    pm.predict_by_match_id(
+                        match_id
+                    )
+                )
+
+            else:
+
+                prediction = pm.predict(
+                    home_team=home,
+                    away_team=away,
+                    league=LEAGUE,
+                    season_id=season_id,
+                )
 
             predictions[
                 str(match_id)
@@ -1308,6 +1410,12 @@ def run_predictions(
 
         except Exception as e:
 
+            logger.exception(
+                "Ошибка прогноза "
+                "match_id=%s",
+                match_id,
+            )
+
             predictions[
                 str(match_id)
             ] = {
@@ -1324,7 +1432,7 @@ def run_predictions(
             }
 
     # --------------------------------------------------------
-    # СОХРАНЯЕМ ИМЕННО ВЫБРАННЫЙ ТУР
+    # Сохраняем именно выбранный тур
     # --------------------------------------------------------
 
     state.setdefault(
@@ -1356,7 +1464,9 @@ def run_predictions(
         "last_selected_round"
     ] = round_number
 
-    save_state(state)
+    save_state(
+        state
+    )
 
     return {
         "status": "ok",
@@ -1372,7 +1482,9 @@ def run_predictions(
 # IMPORT WORKFLOW
 # ============================================================
 
-def run_full_import(state):
+def run_full_import(
+    state,
+):
 
     db = get_db()
 
@@ -1390,8 +1502,10 @@ def run_full_import(state):
         # 1. SEASON
         # ----------------------------------------------------
 
-        season_id = get_or_create_season(
-            db
+        season_id = (
+            get_or_create_season(
+                db
+            )
         )
 
         state[
@@ -1459,11 +1573,6 @@ def run_full_import(state):
             "historical"
         ] = historical_result
 
-        # ----------------------------------------------------
-        # ВАЖНО:
-        # записываем только реально загруженные туры.
-        # ----------------------------------------------------
-
         loaded_rounds = (
             historical_result.get(
                 "rounds_updated",
@@ -1471,9 +1580,28 @@ def run_full_import(state):
             )
         )
 
+        # ----------------------------------------------------
+        # НЕ СТИРАЕМ УЖЕ ЗАГРУЖЕННЫЕ
+        # ----------------------------------------------------
+
+        existing_historical = set(
+            int(x)
+            for x in state.get(
+                "historical_rounds_loaded",
+                [],
+            )
+        )
+
+        existing_historical.update(
+            int(x)
+            for x in loaded_rounds
+        )
+
         state[
             "historical_rounds_loaded"
-        ] = loaded_rounds
+        ] = sorted(
+            existing_historical
+        )
 
         # ----------------------------------------------------
         # 6. PASSPORTS
@@ -1516,7 +1644,9 @@ def run_full_import(state):
             "last_import_summary"
         ] = log
 
-        save_state(state)
+        save_state(
+            state
+        )
 
         return log
 
@@ -1546,7 +1676,9 @@ def run_full_import(state):
             "last_import_summary"
         ] = log
 
-        save_state(state)
+        save_state(
+            state
+        )
 
         raise
 
@@ -1555,7 +1687,9 @@ def run_full_import(state):
 # UI — STATE
 # ============================================================
 
-def render_state(state):
+def render_state(
+    state,
+):
 
     st.subheader(
         "🧠 Состояние FAJ"
@@ -1606,6 +1740,7 @@ def render_state(state):
         )
 
         if loaded:
+
             st.caption(
                 "Загружены: "
                 + ", ".join(
@@ -1667,10 +1802,11 @@ def render_state(state):
 # ============================================================
 
 def render_import_report(
-    log
+    log,
 ):
 
     if not log:
+
         return
 
     st.divider()
@@ -1694,7 +1830,9 @@ def render_import_report(
         {},
     )
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3 = (
+        st.columns(3)
+    )
 
     with c1:
 
@@ -1775,7 +1913,7 @@ def render_import_report(
 
 
 # ============================================================
-# UI — ROUND PREDICTIONS
+# UI — SAVED PREDICTION
 # ============================================================
 
 def render_saved_prediction_round(
@@ -1789,6 +1927,7 @@ def render_saved_prediction_round(
     )
 
     if not saved:
+
         return
 
     st.success(
@@ -1816,6 +1955,7 @@ def render_saved_prediction_round(
             )
 
         except Exception:
+
             pass
 
     matches = saved.get(
@@ -1827,12 +1967,12 @@ def render_saved_prediction_round(
 
         home = prediction.get(
             "home",
-            "?"
+            "?",
         )
 
         away = prediction.get(
             "away",
-            "?"
+            "?",
         )
 
         if "error" in prediction:
@@ -1869,11 +2009,13 @@ def render_saved_prediction_round(
         )
 
         with c1:
+
             st.write(
                 f"**{home}**"
             )
 
         with c2:
+
             st.write(
                 f"**{away}**"
             )
@@ -2040,7 +2182,9 @@ def render_expert_predictions(
                 ),
             }
 
-            save_state(state)
+            save_state(
+                state
+            )
 
             st.success(
                 "✅ Экспертский прогноз "
@@ -2121,6 +2265,14 @@ def main():
             "🔄 ОБНОВИТЬ",
             use_container_width=True,
         )
+
+    # --------------------------------------------------------
+    # REFRESH
+    # --------------------------------------------------------
+
+    if refresh_clicked:
+
+        st.rerun()
 
     # --------------------------------------------------------
     # FULL IMPORT
@@ -2206,9 +2358,27 @@ def main():
                 [],
             )
 
+            # Не уничтожаем предыдущие
+            # успешно загруженные туры.
+
+            existing_historical = set(
+                int(x)
+                for x in state.get(
+                    "historical_rounds_loaded",
+                    [],
+                )
+            )
+
+            existing_historical.update(
+                int(x)
+                for x in loaded_rounds
+            )
+
             state[
                 "historical_rounds_loaded"
-            ] = loaded_rounds
+            ] = sorted(
+                existing_historical
+            )
 
             state[
                 "last_import"
@@ -2235,7 +2405,7 @@ def main():
             if loaded_rounds:
 
                 st.success(
-                    "✅ Загружены туры: "
+                    "✅ Загружены/обновлены туры: "
                     + ", ".join(
                         str(x)
                         for x in loaded_rounds
@@ -2288,6 +2458,7 @@ def main():
         )
 
         with c1:
+
             st.metric(
                 "Матчи",
                 db_status.get(
@@ -2297,6 +2468,7 @@ def main():
             )
 
         with c2:
+
             st.metric(
                 "Результаты",
                 db_status.get(
@@ -2306,6 +2478,7 @@ def main():
             )
 
         with c3:
+
             st.metric(
                 "Статистика",
                 db_status.get(
@@ -2315,6 +2488,7 @@ def main():
             )
 
         with c4:
+
             st.metric(
                 "Паспорта",
                 db_status.get(
@@ -2371,8 +2545,10 @@ def main():
         как фактическая база.
 
         Для будущего тура создаётся отдельный
-        прогноз. Уже рассчитанные туры не
-        перезаписываются.
+        прогноз.
+
+        Уже сохранённые прогнозы по другим
+        турам не перезаписываются.
         """
     )
 
@@ -2405,9 +2581,19 @@ def main():
             4,
         )
 
+        try:
+
+            default_round = int(
+                default_round
+            )
+
+        except Exception:
+
+            default_round = 4
+
         if not (
             1
-            <= int(default_round)
+            <= default_round
             <= TOTAL_ROUNDS
         ):
 
@@ -2422,7 +2608,7 @@ def main():
                 )
             ),
             index=(
-                int(default_round) - 1
+                default_round - 1
             ),
             key="prediction_round",
         )
@@ -2439,10 +2625,13 @@ def main():
         # HISTORY STATUS
         # ----------------------------------------------------
 
-        loaded_rounds = state.get(
-            "historical_rounds_loaded",
-            [],
-        )
+        loaded_rounds = [
+            int(x)
+            for x in state.get(
+                "historical_rounds_loaded",
+                [],
+            )
+        ]
 
         if selected_round in loaded_rounds:
 
@@ -2499,16 +2688,19 @@ def main():
                 )
 
                 with c1:
+
                     st.write(
                         f"**{home}**"
                     )
 
                 with c2:
+
                     st.write(
                         f"**{away}**"
                     )
 
                 with c3:
+
                     st.caption(
                         f"{date or ''}"
                     )
@@ -2614,6 +2806,29 @@ def main():
 
     try:
 
+        current_round = state.get(
+            "last_selected_round",
+            4,
+        )
+
+        try:
+
+            current_round = int(
+                current_round
+            )
+
+        except Exception:
+
+            current_round = 4
+
+        if not (
+            1
+            <= current_round
+            <= TOTAL_ROUNDS
+        ):
+
+            current_round = 4
+
         expert_round = st.selectbox(
             "🧠 Тур для экспертного прогноза",
             options=list(
@@ -2623,13 +2838,7 @@ def main():
                 )
             ),
             index=(
-                int(
-                    state.get(
-                        "last_selected_round",
-                        4,
-                    )
-                )
-                - 1
+                current_round - 1
             ),
             key="expert_round",
         )
@@ -2711,4 +2920,5 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
+
     main()
