@@ -4,45 +4,30 @@
 """
 ============================================================
 FAJ Platform v12.1
-FAJ Bootstrap
+Bootstrap
 ============================================================
 
-РОЛЬ:
-    Автоматическая инициализация FAJ.
+Назначение:
 
-ОТВЕТСТВЕННОСТЬ:
-    - проверить наличие БД;
-    - проверить команды;
-    - при отсутствии команд запустить SyncEngine;
-    - проверить паспорта;
-    - при отсутствии паспортов загрузить их;
-    - проверить сезон;
-    - проверить матчи;
-    - вернуть итоговый статус.
+    Автоматическая проверка и первичная инициализация FAJ.
 
-АРХИТЕКТУРА:
+Принцип:
 
     Bootstrap
         ↓
-    SyncEngine
-        ↓
     FAJDatabase
         ↓
-    SQLite
+    SyncEngine
+        ↓
+    PassportManager
 
 ВАЖНО:
-    Bootstrap НЕ работает с SQLite напрямую.
 
-    Никаких:
-        sqlite3.connect()
-        _get_connection()
-        SQL-запросов
-
-    Все операции с БД выполняются через FAJDatabase.
-
-    Bootstrap не удаляет данные.
-    Bootstrap не обучает модель.
-    Bootstrap не изменяет существующие динамические данные.
+    Bootstrap НЕ обучает модель.
+    Bootstrap НЕ удаляет данные.
+    Bootstrap НЕ перезаписывает динамику.
+    Bootstrap только проверяет и восстанавливает
+    отсутствующие базовые данные.
 """
 
 import os
@@ -55,10 +40,6 @@ from app.sync_engine import SyncEngine
 logger = logging.getLogger(__name__)
 
 
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
 DEFAULT_LEAGUE = "РПЛ"
 DEFAULT_SEASON = "2026-2027"
 
@@ -69,7 +50,7 @@ DEFAULT_SEASON = "2026-2027"
 
 def bootstrap_faj() -> dict:
     """
-    Автоматическая проверка и подготовка системы.
+    Автоматическая проверка и подготовка FAJ.
 
     Возвращает:
 
@@ -94,263 +75,293 @@ def bootstrap_faj() -> dict:
 
     try:
 
+        logger.info("🚀 Запуск FAJ Bootstrap v12.1...")
+
         # ====================================================
         # DATABASE
         # ====================================================
 
-        logger.info(
-            "🚀 Запуск FAJ Bootstrap v12.1..."
-        )
-
         db = FAJDatabase()
+
+        # SyncEngine создаётся после БД
         sync = SyncEngine()
 
-        # ----------------------------------------------------
-        # Проверка файла БД
-        # ----------------------------------------------------
+        # ====================================================
+        # 1. DATABASE FILE
+        # ====================================================
 
-        result["db_exists"] = os.path.exists(
-            DB_FILE
-        )
+        result["db_exists"] = os.path.exists(DB_FILE)
 
-        db_message = (
+        message = (
             "📁 База данных: есть"
             if result["db_exists"]
             else "📁 База данных: нет"
         )
 
-        logger.info(db_message)
-        result["messages"].append(db_message)
+        logger.info(message)
+        result["messages"].append(message)
 
         # ====================================================
-        # TEAMS
+        # 2. TEAMS
         # ====================================================
 
         teams = db.get_teams(
             league=DEFAULT_LEAGUE
         )
 
-        result["teams"] = (
-            len(teams)
-            if teams
-            else 0
-        )
+        result["teams"] = len(teams) if teams else 0
 
-        message = (
-            f"🏟️ Команды: "
-            f"{result['teams']}"
-        )
+        message = f"🏟️ Команды: {result['teams']}"
 
         logger.info(message)
         result["messages"].append(message)
 
-        # ----------------------------------------------------
-        # Если команд нет — создаём
-        # ----------------------------------------------------
+        # ====================================================
+        # 3. TEAM SYNCHRONIZATION
+        # ====================================================
 
         if result["teams"] == 0:
 
             logger.info(
-                "🔄 Команд нет — "
-                "запускаем синхронизацию..."
+                "🔄 Команд нет — запускаем синхронизацию..."
             )
 
             result["messages"].append(
-                "🔄 Команд нет — "
-                "запускаем синхронизацию..."
+                "🔄 Команд нет — запускаем синхронизацию..."
             )
 
             sync_result = sync.sync_teams(
                 DEFAULT_LEAGUE
             )
 
-            result["teams"] = sync_result.get(
-                "total",
-                0
+            # После sync_teams() НЕ доверяем
+            # счётчику из возвращённого словаря.
+            #
+            # Источник истины — сама БД.
+
+            teams = db.get_teams(
+                league=DEFAULT_LEAGUE
             )
 
-            result["passports"] = sync_result.get(
-                "passports",
-                0
+            result["teams"] = (
+                len(teams)
+                if teams
+                else 0
             )
 
-            message = (
+            logger.info(
                 f"✅ Команд после синхронизации: "
                 f"{result['teams']}"
             )
 
-            logger.info(message)
-            result["messages"].append(message)
-
-            message = (
-                f"✅ Паспортов после синхронизации: "
-                f"{result['passports']}"
+            result["messages"].append(
+                f"✅ Команд после синхронизации: "
+                f"{result['teams']}"
             )
 
-            logger.info(message)
-            result["messages"].append(message)
-
         # ====================================================
-        # PASSPORTS
+        # 4. PASSPORTS
         # ====================================================
 
-        if result["teams"] > 0:
+        # ВАЖНО:
+        #
+        # Не используем sync_result["updated"].
+        #
+        # PassportManager v2.0 различает:
+        #
+        # created
+        # updated
+        # unchanged
+        #
+        # Источник истины — количество записей
+        # в team_passports.
 
-            # ------------------------------------------------
-            # ВАЖНО:
-            #
-            # Не используем db._get_connection().
-            #
-            # PassportManager владеет team_passports,
-            # а SyncEngine владеет синхронизацией.
-            #
-            # Получаем текущие паспорта через PassportManager.
-            # ------------------------------------------------
+        try:
+
+            passport_count = db.get_table_count(
+                "team_passports"
+            )
+
+        except Exception:
 
             passport_count = 0
 
-            try:
-
-                season_id = sync._get_or_create_season(
-                    DEFAULT_LEAGUE,
-                    DEFAULT_SEASON
-                )
-
-                for team in teams:
-
-                    passport = (
-                        sync.passport_manager
-                        .get_current_passport(
-                            team["id"],
-                            season_id
-                        )
-                    )
-
-                    if passport:
-                        passport_count += 1
-
-            except Exception as e:
-
-                logger.warning(
-                    "Не удалось проверить "
-                    "паспорта через PassportManager: %s",
-                    e
-                )
-
-                passport_count = 0
-
-            # ------------------------------------------------
-            # Если паспортов нет — загружаем
-            # ------------------------------------------------
-
-            if passport_count == 0:
-
-                logger.info(
-                    "🔄 Паспортов нет — "
-                    "загружаем..."
-                )
-
-                result["messages"].append(
-                    "🔄 Паспортов нет — "
-                    "загружаем..."
-                )
-
-                load_result = sync.load_passports(
-                    DEFAULT_LEAGUE
-                )
-
-                result["passports"] = load_result.get(
-                    "updated",
-                    0
-                )
-
-                message = (
-                    f"✅ Загружено паспортов: "
-                    f"{result['passports']}"
-                )
-
-                logger.info(message)
-                result["messages"].append(message)
-
-            else:
-
-                result["passports"] = passport_count
-
-                message = (
-                    f"📋 Паспорта: "
-                    f"{result['passports']}"
-                )
-
-                logger.info(message)
-                result["messages"].append(message)
-
-        # ====================================================
-        # SEASON
-        # ====================================================
-
-        season_id = sync._get_or_create_season(
-            DEFAULT_LEAGUE,
-            DEFAULT_SEASON
+        result["passports"] = (
+            passport_count
+            if passport_count
+            else 0
         )
 
-        if season_id:
+        # ----------------------------------------------------
+        # Если паспортов нет — синхронизируем
+        # ----------------------------------------------------
+
+        if (
+            result["teams"] > 0
+            and result["passports"] == 0
+        ):
+
+            logger.info(
+                "🔄 Паспортов нет — загружаем..."
+            )
+
+            result["messages"].append(
+                "🔄 Паспортов нет — загружаем..."
+            )
+
+            sync.load_passports(
+                DEFAULT_LEAGUE
+            )
+
+            # Снова читаем фактическое состояние БД
+
+            result["passports"] = (
+                db.get_table_count(
+                    "team_passports"
+                )
+                or 0
+            )
+
+            logger.info(
+                f"✅ Паспортов после загрузки: "
+                f"{result['passports']}"
+            )
+
+            result["messages"].append(
+                f"✅ Паспортов после загрузки: "
+                f"{result['passports']}"
+            )
+
+        else:
+
+            logger.info(
+                f"📋 Паспорта: "
+                f"{result['passports']}"
+            )
+
+            result["messages"].append(
+                f"📋 Паспорта: "
+                f"{result['passports']}"
+            )
+
+        # ====================================================
+        # 5. SEASON
+        # ====================================================
+
+        seasons = db.get_seasons()
+
+        # Ищем именно сезон РПЛ 2026-2027
+
+        season_exists = any(
+            season["league"] == DEFAULT_LEAGUE
+            and season["year"] == DEFAULT_SEASON
+            for season in seasons
+        ) if seasons else False
+
+        if not season_exists:
+
+            logger.info(
+                "🔄 Сезона РПЛ 2026-2027 нет — создаём..."
+            )
+
+            result["messages"].append(
+                "🔄 Сезона РПЛ 2026-2027 нет — создаём..."
+            )
+
+            sync._get_or_create_season(
+                DEFAULT_LEAGUE,
+                DEFAULT_SEASON
+            )
 
             result["season"] = True
 
-            message = (
-                f"🏆 Сезон: "
-                f"{DEFAULT_SEASON}"
+            logger.info(
+                "✅ Сезон 2026-2027 создан"
             )
 
-            logger.info(message)
-            result["messages"].append(message)
+            result["messages"].append(
+                "✅ Сезон 2026-2027 создан"
+            )
+
+        else:
+
+            result["season"] = True
+
+            logger.info(
+                "🏆 Сезон: 2026-2027"
+            )
+
+            result["messages"].append(
+                "🏆 Сезон: 2026-2027"
+            )
 
         # ====================================================
-        # MATCHES
+        # 6. MATCHES
         # ====================================================
 
         matches = db.get_matches()
 
-        matches_count = (
+        result["matches"] = (
             len(matches)
             if matches
             else 0
         )
 
-        result["matches"] = matches_count
-
-        message = (
-            f"📋 Матчи: "
-            f"{matches_count}"
+        logger.info(
+            f"📋 Матчи: {result['matches']}"
         )
 
-        logger.info(message)
-        result["messages"].append(message)
+        result["messages"].append(
+            f"📋 Матчи: {result['matches']}"
+        )
 
         # ====================================================
-        # FINAL STATUS
+        # 7. FINAL DATABASE CHECK
+        # ====================================================
+
+        # Ещё раз читаем БД как источник истины.
+
+        result["teams"] = len(
+            db.get_teams(
+                league=DEFAULT_LEAGUE
+            )
+        )
+
+        result["passports"] = (
+            db.get_table_count(
+                "team_passports"
+            )
+            or 0
+        )
+
+        # ====================================================
+        # 8. READY
         # ====================================================
 
         result["ready"] = (
             result["db_exists"]
-            and result["teams"] > 0
-            and result["passports"] > 0
+            and result["teams"] >= 16
+            and result["passports"] >= 16
             and result["season"]
         )
 
-        message = (
-            f"✅ FAJ готов: "
-            f"{result['ready']}"
+        logger.info(
+            f"📊 Bootstrap final state: "
+            f"teams={result['teams']}, "
+            f"passports={result['passports']}, "
+            f"season={result['season']}, "
+            f"matches={result['matches']}"
         )
 
-        logger.info(message)
-        result["messages"].append(message)
+        logger.info(
+            f"✅ FAJ готов: {result['ready']}"
+        )
+
+        result["messages"].append(
+            f"✅ FAJ готов: {result['ready']}"
+        )
 
         return result
-
-    # ========================================================
-    # ERROR
-    # ========================================================
 
     except Exception as e:
 
@@ -358,10 +369,10 @@ def bootstrap_faj() -> dict:
             "❌ Ошибка Bootstrap"
         )
 
+        result["ready"] = False
+
         result["messages"].append(
             f"❌ Ошибка: {e}"
         )
-
-        result["ready"] = False
 
         return result
