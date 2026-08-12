@@ -9,15 +9,7 @@ STREAMLIT MAIN APPLICATION
 
 Главная точка входа FAJ Platform.
 
-Принципы:
-    - SQLite only
-    - database.py — единый источник схемы
-    - load_all.py — центр загрузки данных
-    - persistent state хранится вне session_state
-    - Streamlit rerun не должен обнулять состояние БД
-    - никаких DELETE / DROP / очисток исторических данных
-
-Структура:
+АРХИТЕКТУРА:
 
     streamlit_app.py
         |
@@ -27,11 +19,22 @@ STREAMLIT MAIN APPLICATION
         +-- Predictions
         +-- Match Laboratory
         +-- Passports
+        +-- System Trace       <-- НОВАЯ ДИАГНОСТИКА АРХИТЕКТУРЫ
         +-- Database Diagnostic
         +-- Load All
         +-- Load Calendar
         +-- Load Statistics
         +-- System
+
+ПРИНЦИПЫ:
+
+    - SQLite only
+    - database.py — единый источник схемы
+    - load_all.py — центр загрузки данных
+    - persistent state хранится в БД
+    - Streamlit rerun не должен обнулять БД
+    - никаких DELETE / DROP / очисток исторических данных
+    - System Trace работает только в режиме чтения
 ============================================================
 """
 
@@ -117,20 +120,25 @@ if "prediction_result" not in st.session_state:
 
 
 # ============================================================
-# HELPERS
+# NAVIGATION
 # ============================================================
 
 def go_to_page(page_name: str):
     """
-    Единая навигация.
+    Единая навигация Streamlit.
     """
     st.session_state.page = page_name
 
 
+# ============================================================
+# DATABASE COUNTS
+# ============================================================
+
 def get_db_counts():
     """
-    Получает базовый статус БД.
+    Получает базовые счётчики БД.
 
+    Только чтение.
     Ничего не изменяет.
     """
 
@@ -158,9 +166,10 @@ def get_db_counts():
             try:
 
                 cursor.execute(query)
+
                 row = cursor.fetchone()
 
-                if row:
+                if row is not None:
                     result[key] = row[0] or 0
 
             except Exception:
@@ -170,6 +179,7 @@ def get_db_counts():
         conn.close()
 
     except Exception:
+
         pass
 
     return result
@@ -189,9 +199,9 @@ with st.sidebar:
 
     st.divider()
 
-    # --------------------------------------------------------
+    # ========================================================
     # MAIN
-    # --------------------------------------------------------
+    # ========================================================
 
     if st.button(
         "🏠 Главная",
@@ -203,6 +213,7 @@ with st.sidebar:
         st.session_state.prediction_result = None
         st.rerun()
 
+
     if st.button(
         "📊 Прогнозы",
         use_container_width=True,
@@ -212,6 +223,7 @@ with st.sidebar:
         go_to_page("predictions")
         st.session_state.prediction_result = None
         st.rerun()
+
 
     if st.button(
         "🔬 Match Lab",
@@ -223,6 +235,7 @@ with st.sidebar:
         st.session_state.prediction_result = None
         st.rerun()
 
+
     if st.button(
         "📋 Паспорта",
         use_container_width=True,
@@ -232,13 +245,25 @@ with st.sidebar:
         go_to_page("passports")
         st.rerun()
 
-    # --------------------------------------------------------
+
+    # ========================================================
     # DIAGNOSTICS
-    # --------------------------------------------------------
+    # ========================================================
 
     st.divider()
 
     st.caption("🔍 ДИАГНОСТИКА")
+
+
+    if st.button(
+        "🧬 System Trace",
+        use_container_width=True,
+        key="menu_system_trace",
+    ):
+
+        go_to_page("system_trace")
+        st.rerun()
+
 
     if st.button(
         "🔍 Диагностика БД",
@@ -249,13 +274,15 @@ with st.sidebar:
         go_to_page("db_diagnostic")
         st.rerun()
 
-    # --------------------------------------------------------
+
+    # ========================================================
     # DATA
-    # --------------------------------------------------------
+    # ========================================================
 
     st.divider()
 
     st.caption("📥 ДАННЫЕ")
+
 
     if st.button(
         "🚀 Загрузить всё",
@@ -266,6 +293,7 @@ with st.sidebar:
         go_to_page("load_all")
         st.rerun()
 
+
     if st.button(
         "📅 Загрузить календарь",
         use_container_width=True,
@@ -274,6 +302,7 @@ with st.sidebar:
 
         go_to_page("load_calendar")
         st.rerun()
+
 
     if st.button(
         "📊 Загрузить статистику",
@@ -284,11 +313,13 @@ with st.sidebar:
         go_to_page("load_stats")
         st.rerun()
 
-    # --------------------------------------------------------
+
+    # ========================================================
     # SYSTEM
-    # --------------------------------------------------------
+    # ========================================================
 
     st.divider()
+
 
     if st.button(
         "⚙️ Система",
@@ -299,9 +330,10 @@ with st.sidebar:
         go_to_page("system")
         st.rerun()
 
-    # --------------------------------------------------------
+
+    # ========================================================
     # DATABASE STATUS
-    # --------------------------------------------------------
+    # ========================================================
 
     st.divider()
 
@@ -312,16 +344,19 @@ with st.sidebar:
     c1, c2, c3 = st.columns(3)
 
     with c1:
+
         st.caption(
             f"🏟️ {counts['teams']}"
         )
 
     with c2:
+
         st.caption(
             f"📋 {counts['matches']}"
         )
 
     with c3:
+
         st.caption(
             f"📊 {counts['stats']}"
         )
@@ -346,6 +381,7 @@ if st.session_state.page == "home":
         f"Core v{config.CORE_VERSION} · "
         f"Pipeline v{config.PIPELINE_VERSION}"
     )
+
 
     # --------------------------------------------------------
     # BOOTSTRAP STATUS
@@ -375,9 +411,12 @@ if st.session_state.page == "home":
             ):
 
                 for message in messages:
+
                     st.text(message)
 
+
     st.divider()
+
 
     # --------------------------------------------------------
     # DATABASE OVERVIEW
@@ -388,30 +427,36 @@ if st.session_state.page == "home":
     c1, c2, c3, c4 = st.columns(4)
 
     with c1:
+
         st.metric(
             "🏟️ Команды",
             counts["teams"],
         )
 
     with c2:
+
         st.metric(
             "📋 Матчи",
             counts["matches"],
         )
 
     with c3:
+
         st.metric(
             "📊 Результаты",
             counts["results"],
         )
 
     with c4:
+
         st.metric(
             "📈 Статистика",
             counts["stats"],
         )
 
+
     st.divider()
+
 
     # --------------------------------------------------------
     # QUICK START
@@ -422,6 +467,7 @@ if st.session_state.page == "home":
     )
 
     c1, c2, c3 = st.columns(3)
+
 
     with c1:
 
@@ -435,6 +481,7 @@ if st.session_state.page == "home":
             go_to_page("load_all")
             st.rerun()
 
+
     with c2:
 
         if st.button(
@@ -446,15 +493,16 @@ if st.session_state.page == "home":
             go_to_page("predictions")
             st.rerun()
 
+
     with c3:
 
         if st.button(
-            "🔬 Match Laboratory",
+            "🧬 System Trace",
             use_container_width=True,
-            key="home_lab",
+            key="home_trace",
         ):
 
-            go_to_page("match_analysis")
+            go_to_page("system_trace")
             st.rerun()
 
 
@@ -472,6 +520,7 @@ elif st.session_state.page == "predictions":
         f"FAJ Prediction Engine · "
         f"Pipeline v{config.PIPELINE_VERSION}"
     )
+
 
     try:
 
@@ -497,6 +546,7 @@ elif st.session_state.page == "predictions":
             f"❌ Ошибка чтения команд: {e}"
         )
 
+
     if teams_df.empty:
 
         st.warning(
@@ -511,9 +561,11 @@ elif st.session_state.page == "predictions":
             go_to_page("load_all")
             st.rerun()
 
+
     else:
 
         col1, col2 = st.columns(2)
+
 
         with col1:
 
@@ -523,6 +575,7 @@ elif st.session_state.page == "predictions":
                 key="team1",
             )
 
+
         with col2:
 
             team2 = st.selectbox(
@@ -530,6 +583,7 @@ elif st.session_state.page == "predictions":
                 teams_df["name"].tolist(),
                 key="team2",
             )
+
 
         if st.button(
             "🔮 Сделать прогноз",
@@ -545,6 +599,7 @@ elif st.session_state.page == "predictions":
                 )
 
                 st.session_state.prediction_result = None
+
 
             else:
 
@@ -564,6 +619,7 @@ elif st.session_state.page == "predictions":
 
                         st.session_state.prediction_result = result
 
+
                     except Exception as e:
 
                         st.error(
@@ -572,17 +628,21 @@ elif st.session_state.page == "predictions":
 
                         st.session_state.prediction_result = None
 
+
         result = (
             st.session_state.prediction_result
         )
+
 
         if result:
 
             if result.get("status") == "error":
 
                 st.error(
-                    f"❌ {result.get('message', 'Ошибка')}"
+                    f"❌ "
+                    f"{result.get('message', 'Ошибка')}"
                 )
+
 
             else:
 
@@ -595,6 +655,7 @@ elif st.session_state.page == "predictions":
                     f"{result.get('away_team', '')}"
                 )
 
+
                 xg = result.get(
                     "xg",
                     {},
@@ -605,7 +666,9 @@ elif st.session_state.page == "predictions":
                     {},
                 )
 
+
                 c1, c2, c3 = st.columns(3)
+
 
                 with c1:
 
@@ -613,6 +676,7 @@ elif st.session_state.page == "predictions":
                         "🏠 xG хозяев",
                         f"{xg.get('home', 0):.2f}",
                     )
+
 
                 with c2:
 
@@ -629,6 +693,7 @@ elif st.session_state.page == "predictions":
                         f"{result.get('score_probability', 0):.1%}"
                     )
 
+
                 with c3:
 
                     st.metric(
@@ -636,9 +701,11 @@ elif st.session_state.page == "predictions":
                         f"{xg.get('away', 0):.2f}",
                     )
 
+
                 st.subheader(
                     "📈 Вероятности"
                 )
+
 
                 prob_df = pd.DataFrame(
                     {
@@ -664,16 +731,19 @@ elif st.session_state.page == "predictions":
                     }
                 )
 
+
                 st.bar_chart(
                     prob_df.set_index(
                         "Исход"
                     )
                 )
 
+
                 extended = result.get(
                     "extended",
                     {},
                 )
+
 
                 if extended:
 
@@ -682,6 +752,7 @@ elif st.session_state.page == "predictions":
                     )
 
                     c1, c2 = st.columns(2)
+
 
                     with c1:
 
@@ -704,6 +775,7 @@ elif st.session_state.page == "predictions":
                             f"{btts.get('no', 0):.1%}",
                         )
 
+
                     with c2:
 
                         st.write(
@@ -725,10 +797,12 @@ elif st.session_state.page == "predictions":
                             f"{total.get('over_3_5', 0):.1%}",
                         )
 
+
                     top_scores = extended.get(
                         "top_scores",
                         [],
                     )
+
 
                     if top_scores:
 
@@ -737,6 +811,7 @@ elif st.session_state.page == "predictions":
                         )
 
                         scores_data = []
+
 
                         for score in top_scores:
 
@@ -757,12 +832,14 @@ elif st.session_state.page == "predictions":
                                 }
                             )
 
+
                         st.dataframe(
                             pd.DataFrame(
                                 scores_data
                             ).set_index("№"),
                             use_container_width=True,
                         )
+
 
                 with st.expander(
                     "📋 Полный результат JSON"
@@ -785,11 +862,13 @@ elif st.session_state.page == "match_analysis":
 
         match_analysis_main()
 
+
     except ImportError as e:
 
         st.error(
             f"❌ Match Laboratory не найден: {e}"
         )
+
 
     except Exception as e:
 
@@ -812,10 +891,13 @@ elif st.session_state.page == "passports":
         "FAJ Passport Manager"
     )
 
+
     try:
 
         conn = get_connection()
+
         cursor = conn.cursor()
+
 
         cursor.execute(
             """
@@ -834,15 +916,18 @@ elif st.session_state.page == "passports":
             """
         )
 
+
         rows = cursor.fetchall()
 
         conn.close()
+
 
         if not rows:
 
             st.warning(
                 "⚠️ Паспорта пока не загружены."
             )
+
 
             if st.button(
                 "🚀 Перейти к загрузке",
@@ -852,9 +937,11 @@ elif st.session_state.page == "passports":
                 go_to_page("load_all")
                 st.rerun()
 
+
         else:
 
             data = []
+
 
             for row in rows:
 
@@ -862,27 +949,33 @@ elif st.session_state.page == "passports":
 
                     team_name = row["team_name"]
 
+
                     if team_name:
 
                         data.append(
                             {
                                 "Команда": team_name,
+
                                 "Атака": round(
                                     row["attack"] or 50,
                                     1,
                                 ),
+
                                 "Защита": round(
                                     row["defense"] or 50,
                                     1,
                                 ),
+
                                 "Контроль": round(
                                     row["control"] or 50,
                                     1,
                                 ),
+
                                 "Вратарь": round(
                                     row["goalkeeper"] or 50,
                                     1,
                                 ),
+
                                 "FAJ Rating": round(
                                     row["faj_rating"] or 0,
                                     1,
@@ -890,8 +983,11 @@ elif st.session_state.page == "passports":
                             }
                         )
 
+
                 except Exception:
+
                     continue
+
 
             if data:
 
@@ -914,6 +1010,75 @@ elif st.session_state.page == "passports":
 
 
 # ============================================================
+# SYSTEM TRACE
+# ============================================================
+
+elif st.session_state.page == "system_trace":
+
+    st.title(
+        "🧬 System Trace"
+    )
+
+    st.caption(
+        "FAJ Platform · фактическая архитектура и цепочки проекта"
+    )
+
+    st.info(
+        "Эта страница предназначена не для проверки "
+        "состояния модели, а для определения того, "
+        "какие файлы реально участвуют в работе приложения."
+    )
+
+    st.warning(
+        "⚠️ Ничего не удаляем. Сначала строим карту зависимостей. "
+        "После этого отдельно решаем, что является Legacy, "
+        "дубликатом или реально используемым модулем."
+    )
+
+
+    # --------------------------------------------------------
+    # SYSTEM TRACE MODULE
+    # --------------------------------------------------------
+
+    try:
+
+        from app.pages.system_trace import (
+            main as system_trace_main
+        )
+
+        system_trace_main()
+
+
+    except ImportError as e:
+
+        st.error(
+            "❌ Модуль System Trace пока не найден."
+        )
+
+        st.code(
+            str(e)
+        )
+
+        st.info(
+            "Следующим шагом создадим файл: "
+            "app/pages/system_trace.py"
+        )
+
+
+    except Exception as e:
+
+        st.error(
+            f"❌ Ошибка System Trace: {e}"
+        )
+
+        with st.expander(
+            "Техническая ошибка"
+        ):
+
+            st.exception(e)
+
+
+# ============================================================
 # DATABASE DIAGNOSTIC
 # ============================================================
 
@@ -932,6 +1097,7 @@ elif st.session_state.page == "db_diagnostic":
         "Она не создаёт, не удаляет и не изменяет данные."
     )
 
+
     # --------------------------------------------------------
     # DB FILE
     # --------------------------------------------------------
@@ -940,13 +1106,16 @@ elif st.session_state.page == "db_diagnostic":
         "💾 SQLite"
     )
 
+
     db_path = os.path.join(
         ROOT_DIR,
         "data",
         "faj.db",
     )
 
+
     c1, c2, c3 = st.columns(3)
+
 
     with c1:
 
@@ -962,11 +1131,13 @@ elif st.session_state.page == "db_diagnostic":
                 "❌ faj.db не найден"
             )
 
+
     with c2:
 
         st.write(
             f"**Путь:** `{db_path}`"
         )
+
 
     with c3:
 
@@ -981,6 +1152,7 @@ elif st.session_state.page == "db_diagnostic":
                 f"**Размер:** {size:.2f} MB"
             )
 
+
     # --------------------------------------------------------
     # TABLE COUNTS
     # --------------------------------------------------------
@@ -991,52 +1163,70 @@ elif st.session_state.page == "db_diagnostic":
         "📊 Состояние таблиц"
     )
 
+
     expected_tables = [
+
         "teams",
         "seasons",
         "rounds",
         "matches",
         "match_results",
         "match_statistics",
+
         "team_base",
         "team_dynamic",
         "team_identity",
         "team_passports",
         "team_passport_meta",
+
         "tactical_matchup",
+
         "predictions",
+        "match_predictions",
         "prediction_scores",
         "prediction_distributions",
         "prediction_validation",
+
         "expert_predictions",
+
         "gold_dataset",
         "learning_records",
         "learning_events",
+        "learning_memory",
+
         "audit_log",
+
         "team_dynamics",
         "standings",
         "diagnostic_history",
         "journal",
+
         "model_parameters",
-        "learning_memory",
         "xg_memory",
+
         "match_snapshots",
+
         "player_impact",
         "team_competition_profile",
         "team_events",
         "team_history",
+
         "match_events",
         "players",
         "player_events",
+
         "migrations",
         "schema_migrations",
     ]
 
+
     table_data = []
+
 
     try:
 
         db = FAJDatabase()
+
 
         for table in expected_tables:
 
@@ -1046,6 +1236,7 @@ elif st.session_state.page == "db_diagnostic":
                     table
                 )
 
+
                 table_data.append(
                     {
                         "Таблица": table,
@@ -1053,6 +1244,7 @@ elif st.session_state.page == "db_diagnostic":
                         "Статус": "✅",
                     }
                 )
+
 
             except Exception as e:
 
@@ -1064,17 +1256,20 @@ elif st.session_state.page == "db_diagnostic":
                     }
                 )
 
+
         st.dataframe(
             pd.DataFrame(table_data),
             use_container_width=True,
             hide_index=True,
         )
 
+
     except Exception as e:
 
         st.error(
             f"❌ Ошибка диагностики таблиц: {e}"
         )
+
 
     # --------------------------------------------------------
     # TEAMS
@@ -1086,13 +1281,16 @@ elif st.session_state.page == "db_diagnostic":
         "🏟️ Команды РПЛ"
     )
 
+
     try:
 
         teams = db.get_teams(
             league="РПЛ"
         )
 
+
         team_data = []
+
 
         for team in teams:
 
@@ -1105,10 +1303,12 @@ elif st.session_state.page == "db_diagnostic":
                 }
             )
 
+
         st.metric(
             "Команд РПЛ",
             len(team_data),
         )
+
 
         if team_data:
 
@@ -1117,6 +1317,7 @@ elif st.session_state.page == "db_diagnostic":
                 use_container_width=True,
                 hide_index=True,
             )
+
 
         if len(team_data) == 16:
 
@@ -1127,14 +1328,17 @@ elif st.session_state.page == "db_diagnostic":
         else:
 
             st.warning(
-                f"⚠️ Ожидалось 16 команд, найдено {len(team_data)}."
+                f"⚠️ Ожидалось 16 команд, "
+                f"найдено {len(team_data)}."
             )
+
 
     except Exception as e:
 
         st.error(
             f"❌ Ошибка проверки команд: {e}"
         )
+
 
     # --------------------------------------------------------
     # SEASONS
@@ -1146,11 +1350,14 @@ elif st.session_state.page == "db_diagnostic":
         "🏆 Сезоны"
     )
 
+
     try:
 
         seasons = db.get_seasons()
 
+
         season_data = []
+
 
         for season in seasons:
 
@@ -1163,17 +1370,20 @@ elif st.session_state.page == "db_diagnostic":
                 }
             )
 
+
         st.dataframe(
             pd.DataFrame(season_data),
             use_container_width=True,
             hide_index=True,
         )
 
+
     except Exception as e:
 
         st.error(
             f"❌ Ошибка проверки сезонов: {e}"
         )
+
 
     # --------------------------------------------------------
     # ROUNDS
@@ -1185,16 +1395,19 @@ elif st.session_state.page == "db_diagnostic":
         "🔢 Туры"
     )
 
+
     try:
 
         round_count = db.get_table_count(
             "rounds"
         )
 
+
         st.metric(
             "Всего туров",
             round_count,
         )
+
 
         if round_count == 30:
 
@@ -1209,11 +1422,13 @@ elif st.session_state.page == "db_diagnostic":
                 f"Ожидалось 30."
             )
 
+
     except Exception as e:
 
         st.error(
             f"❌ Ошибка проверки туров: {e}"
         )
+
 
     # --------------------------------------------------------
     # PASSPORTS
@@ -1225,6 +1440,7 @@ elif st.session_state.page == "db_diagnostic":
         "📋 Паспорта"
     )
 
+
     try:
 
         passport_count = db.get_table_count(
@@ -1235,6 +1451,7 @@ elif st.session_state.page == "db_diagnostic":
             "team_passport_meta"
         )
 
+
         st.write(
             f"**team_passports:** {passport_count}"
         )
@@ -1242,6 +1459,7 @@ elif st.session_state.page == "db_diagnostic":
         st.write(
             f"**team_passport_meta:** {meta_count}"
         )
+
 
         if passport_count == 16:
 
@@ -1256,10 +1474,11 @@ elif st.session_state.page == "db_diagnostic":
                 f"Ожидалось 16."
             )
 
-        # Passport details
 
         conn = get_connection()
+
         cursor = conn.cursor()
+
 
         cursor.execute(
             """
@@ -1277,23 +1496,35 @@ elif st.session_state.page == "db_diagnostic":
             """
         )
 
+
         rows = cursor.fetchall()
 
         conn.close()
 
+
         passport_data = []
+
 
         for row in rows:
 
             passport_data.append(
                 {
                     "Команда": row["team_name"],
-                    "Версия": row["version"] or "—",
+
+                    "Версия": (
+                        row["version"]
+                        or "—"
+                    ),
+
                     "FAJ Rating": (
-                        round(row["faj_rating"], 1)
+                        round(
+                            row["faj_rating"],
+                            1,
+                        )
                         if row["faj_rating"] is not None
                         else "—"
                     ),
+
                     "Confidence": (
                         round(
                             row["passport_confidence"],
@@ -1302,9 +1533,14 @@ elif st.session_state.page == "db_diagnostic":
                         if row["passport_confidence"] is not None
                         else "—"
                     ),
-                    "Source": row["source"] or "—",
+
+                    "Source": (
+                        row["source"]
+                        or "—"
+                    ),
                 }
             )
+
 
         if passport_data:
 
@@ -1314,14 +1550,16 @@ elif st.session_state.page == "db_diagnostic":
                 hide_index=True,
             )
 
+
     except Exception as e:
 
         st.error(
             f"❌ Ошибка проверки паспортов: {e}"
         )
 
+
     # --------------------------------------------------------
-    # LEGACY TEAM LAYERS
+    # TEAM INTELLIGENCE
     # --------------------------------------------------------
 
     st.divider()
@@ -1330,6 +1568,7 @@ elif st.session_state.page == "db_diagnostic":
         "🧠 Слои Team Intelligence"
     )
 
+
     intelligence_tables = [
         "team_base",
         "team_identity",
@@ -1337,7 +1576,9 @@ elif st.session_state.page == "db_diagnostic":
         "team_passport_meta",
     ]
 
+
     intelligence_data = []
+
 
     for table in intelligence_tables:
 
@@ -1346,6 +1587,7 @@ elif st.session_state.page == "db_diagnostic":
             count = db.get_table_count(
                 table
             )
+
 
             intelligence_data.append(
                 {
@@ -1359,6 +1601,7 @@ elif st.session_state.page == "db_diagnostic":
                 }
             )
 
+
         except Exception as e:
 
             intelligence_data.append(
@@ -1369,11 +1612,15 @@ elif st.session_state.page == "db_diagnostic":
                 }
             )
 
+
     st.dataframe(
-        pd.DataFrame(intelligence_data),
+        pd.DataFrame(
+            intelligence_data
+        ),
         use_container_width=True,
         hide_index=True,
     )
+
 
     # --------------------------------------------------------
     # MATCH / PREDICTION LAYER
@@ -1385,19 +1632,26 @@ elif st.session_state.page == "db_diagnostic":
         "⚽ Match / Prediction Layer"
     )
 
+
     match_tables = [
+
         "matches",
         "match_results",
         "match_statistics",
+
         "predictions",
         "match_predictions",
+
         "prediction_scores",
         "prediction_distributions",
         "prediction_validation",
+
         "expert_predictions",
     ]
 
+
     match_data = []
+
 
     for table in match_tables:
 
@@ -1407,12 +1661,14 @@ elif st.session_state.page == "db_diagnostic":
                 table
             )
 
+
             match_data.append(
                 {
                     "Таблица": table,
                     "Записей": count,
                 }
             )
+
 
         except Exception as e:
 
@@ -1423,11 +1679,13 @@ elif st.session_state.page == "db_diagnostic":
                 }
             )
 
+
     st.dataframe(
         pd.DataFrame(match_data),
         use_container_width=True,
         hide_index=True,
     )
+
 
     # --------------------------------------------------------
     # LEARNING LAYER
@@ -1439,7 +1697,9 @@ elif st.session_state.page == "db_diagnostic":
         "🧠 Learning Layer"
     )
 
+
     learning_tables = [
+
         "gold_dataset",
         "learning_records",
         "learning_events",
@@ -1447,7 +1707,9 @@ elif st.session_state.page == "db_diagnostic":
         "learning_memory",
     ]
 
+
     learning_data = []
+
 
     for table in learning_tables:
 
@@ -1457,12 +1719,14 @@ elif st.session_state.page == "db_diagnostic":
                 table
             )
 
+
             learning_data.append(
                 {
                     "Таблица": table,
                     "Записей": count,
                 }
             )
+
 
         except Exception as e:
 
@@ -1473,11 +1737,13 @@ elif st.session_state.page == "db_diagnostic":
                 }
             )
 
+
     st.dataframe(
         pd.DataFrame(learning_data),
         use_container_width=True,
         hide_index=True,
     )
+
 
     # --------------------------------------------------------
     # FOREIGN KEY CHECK
@@ -1489,24 +1755,30 @@ elif st.session_state.page == "db_diagnostic":
         "🔗 Проверка связей"
     )
 
+
     try:
 
         conn = get_connection()
+
         cursor = conn.cursor()
+
 
         cursor.execute(
             "PRAGMA foreign_key_check"
         )
 
+
         fk_errors = cursor.fetchall()
 
         conn.close()
+
 
         if not fk_errors:
 
             st.success(
                 "✅ FOREIGN KEY: ошибок не найдено."
             )
+
 
         else:
 
@@ -1515,7 +1787,9 @@ elif st.session_state.page == "db_diagnostic":
                 f"{len(fk_errors)}"
             )
 
+
             fk_data = []
+
 
             for row in fk_errors:
 
@@ -1528,17 +1802,20 @@ elif st.session_state.page == "db_diagnostic":
                     }
                 )
 
+
             st.dataframe(
                 pd.DataFrame(fk_data),
                 use_container_width=True,
                 hide_index=True,
             )
 
+
     except Exception as e:
 
         st.error(
             f"❌ Ошибка FK-проверки: {e}"
         )
+
 
     # --------------------------------------------------------
     # SQLITE INTEGRITY
@@ -1550,22 +1827,28 @@ elif st.session_state.page == "db_diagnostic":
         "🩺 SQLite Integrity Check"
     )
 
+
     try:
 
         conn = get_connection()
+
         cursor = conn.cursor()
+
 
         cursor.execute(
             "PRAGMA integrity_check"
         )
 
+
         integrity = cursor.fetchone()
 
         conn.close()
 
+
         if integrity:
 
             integrity_value = integrity[0]
+
 
             if integrity_value == "ok":
 
@@ -1580,11 +1863,13 @@ elif st.session_state.page == "db_diagnostic":
                     f"{integrity_value}"
                 )
 
+
     except Exception as e:
 
         st.error(
             f"❌ Ошибка integrity_check: {e}"
         )
+
 
     # --------------------------------------------------------
     # SCHEMA
@@ -1596,30 +1881,36 @@ elif st.session_state.page == "db_diagnostic":
         "🧬 Схема"
     )
 
+
     try:
 
         status = db.get_status()
+
 
         st.write(
             f"**Schema version:** "
             f"{status.get('schema_version', 'unknown')}"
         )
 
+
         st.write(
             f"**Database status:** "
             f"{status.get('status', 'unknown')}"
         )
+
 
         st.write(
             f"**Database file:** "
             f"{status.get('file', db_path)}"
         )
 
+
     except Exception as e:
 
         st.error(
             f"❌ Ошибка получения версии схемы: {e}"
         )
+
 
     # --------------------------------------------------------
     # FINAL
@@ -1628,8 +1919,8 @@ elif st.session_state.page == "db_diagnostic":
     st.divider()
 
     st.success(
-        "🔍 Диагностика завершена. "
-        "Все результаты выше получены в режиме чтения."
+        "🔍 Диагностика БД завершена. "
+        "Режим только чтение."
     )
 
 
@@ -1647,6 +1938,7 @@ elif st.session_state.page == "load_all":
 
         load_all_main()
 
+
     except ImportError as e:
 
         st.error(
@@ -1657,6 +1949,7 @@ elif st.session_state.page == "load_all":
             "Проверьте наличие файла "
             "app/pages/load_all.py"
         )
+
 
     except Exception as e:
 
@@ -1679,11 +1972,13 @@ elif st.session_state.page == "load_calendar":
 
         load_calendar_main()
 
+
     except ImportError as e:
 
         st.error(
             f"❌ Страница календаря не найдена: {e}"
         )
+
 
     except Exception as e:
 
@@ -1706,11 +2001,13 @@ elif st.session_state.page == "load_stats":
 
         load_stats_main()
 
+
     except ImportError as e:
 
         st.error(
             f"❌ Страница статистики не найдена: {e}"
         )
+
 
     except Exception as e:
 
@@ -1729,33 +2026,38 @@ elif st.session_state.page == "system":
         "⚙️ Система"
     )
 
+
     try:
 
         db = FAJDatabase()
 
         status_db = db.get_status()
 
+
         st.subheader(
             "📊 База данных"
         )
 
-        # ----------------------------------------------------
-        # COUNTS
-        # ----------------------------------------------------
 
         system_tables = [
+
             "teams",
             "seasons",
             "rounds",
+
             "matches",
             "match_results",
             "match_statistics",
+
             "team_passports",
+
             "predictions",
             "expert_predictions",
         ]
 
+
         system_data = []
+
 
         for table in system_tables:
 
@@ -1765,12 +2067,14 @@ elif st.session_state.page == "system":
                     table
                 )
 
+
                 system_data.append(
                     {
                         "Таблица": table,
                         "Записей": count,
                     }
                 )
+
 
             except Exception as e:
 
@@ -1781,13 +2085,16 @@ elif st.session_state.page == "system":
                     }
                 )
 
+
         st.dataframe(
             pd.DataFrame(system_data),
             use_container_width=True,
             hide_index=True,
         )
 
+
         st.divider()
+
 
         # ----------------------------------------------------
         # DB FILE
@@ -1799,13 +2106,16 @@ elif st.session_state.page == "system":
             "faj.db",
         )
 
+
         st.subheader(
             "💾 SQLite"
         )
 
+
         st.write(
             f"**Файл:** `{db_path}`"
         )
+
 
         if os.path.exists(db_path):
 
@@ -1814,15 +2124,18 @@ elif st.session_state.page == "system":
                 / (1024 * 1024)
             )
 
+
             st.write(
                 f"**Размер:** {size:.2f} MB"
             )
+
 
         else:
 
             st.warning(
                 "Файл SQLite пока не найден."
             )
+
 
         # ----------------------------------------------------
         # VERSIONS
@@ -1834,27 +2147,33 @@ elif st.session_state.page == "system":
             "📌 Версии"
         )
 
+
         st.write(
             f"**Platform:** "
             f"v{config.PLATFORM_VERSION}"
         )
+
 
         st.write(
             f"**Core:** "
             f"v{config.CORE_VERSION}"
         )
 
+
         st.write(
             f"**Pipeline:** "
             f"v{config.PIPELINE_VERSION}"
         )
 
+
         st.divider()
+
 
         st.caption(
             "Текущее время: "
             f"{datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
         )
+
 
     except Exception as e:
 
@@ -1868,6 +2187,7 @@ elif st.session_state.page == "system":
 # ============================================================
 
 st.divider()
+
 
 st.caption(
     f"⚽ FAJ Platform v{config.PLATFORM_VERSION} · "
