@@ -8,41 +8,42 @@ PREDICTIONS PAGE
 ============================================================
 
 Назначение:
-
-    Работа prediction pipeline FAJ
-    непосредственно с матчами SQLite.
-
-Архитектура:
-
-    SQLite matches
-          ↓
-    PredictionManager
-          ↓
-    Team Passport
-          ↓
-    PredictionPipeline
-          ↓
-    xG / Poisson / Monte Carlo
-          ↓
-    predictions
-    prediction_scores
-    prediction_distributions
+    Запуск FAJ Prediction Manager для матчей,
+    уже находящихся в SQLite.
 
 ВАЖНО:
+    Календарь здесь НЕ загружается.
 
-    Эта страница НЕ загружает календарь.
+ЦЕПОЧКА:
 
-    Календарь уже находится в faj.db.
-
-    Эта страница только запускает прогнозирование.
-============================================================
+    SQLite
+       ↓
+    PredictionManager
+       ↓
+    PassportManager
+       ↓
+    PredictionPipeline
+       ↓
+    XG
+       ↓
+    Poisson
+       ↓
+    Monte Carlo
+       ↓
+    Calibration
+       ↓
+    Confidence
+       ↓
+    Risk
+       ↓
+    SQLite
 """
 
 import streamlit as st
 import pandas as pd
 
 from app.core.prediction_manager import (
-    get_prediction_manager,
+    get_prediction_manager
 )
 
 from app.database import FAJDatabase
@@ -52,45 +53,85 @@ from app.database import FAJDatabase
 # HELPERS
 # ============================================================
 
-def get_rounds(db):
+def get_connection(db):
+    return db._get_connection()
+
+
+def get_season_id(db):
     """
-    Получает доступные туры из SQLite.
+    Получает активный сезон.
+
+    Если active отсутствует,
+    берём последний сезон РПЛ.
     """
 
-    conn = db._get_connection()
+    conn = get_connection(db)
+    cursor = conn.cursor()
 
     try:
 
-        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id
+            FROM seasons
+            WHERE status = 'active'
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        )
+
+        row = cursor.fetchone()
+
+        if row:
+            return row[0]
+
+        cursor.execute(
+            """
+            SELECT id
+            FROM seasons
+            WHERE league = 'РПЛ'
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        )
+
+        row = cursor.fetchone()
+
+        if row:
+            return row[0]
+
+        return None
+
+    finally:
+
+        conn.close()
+
+
+def get_rounds(db, season_id):
+    """
+    Получает туры выбранного сезона.
+    """
+
+    conn = get_connection(db)
+    cursor = conn.cursor()
+
+    try:
 
         cursor.execute(
             """
             SELECT
-                r.id,
-                r.round_number,
-                r.season_id,
-                COUNT(m.id) AS matches_count
-
-            FROM rounds r
-
-            LEFT JOIN matches m
-                ON m.round_id = r.id
-
-            GROUP BY
-                r.id,
-                r.round_number,
-                r.season_id
-
-            ORDER BY
-                r.round_number
-            """
+                id,
+                round_number
+            FROM rounds
+            WHERE season_id = ?
+            ORDER BY round_number
+            """,
+            (season_id,)
         )
-
-        rows = cursor.fetchall()
 
         return [
             dict(row)
-            for row in rows
+            for row in cursor.fetchall()
         ]
 
     finally:
@@ -98,19 +139,15 @@ def get_rounds(db):
         conn.close()
 
 
-def get_round_matches(
-    db,
-    round_id,
-):
+def get_round_matches(db, round_id):
     """
-    Получает матчи выбранного тура.
+    Получает матчи тура.
     """
 
-    conn = db._get_connection()
+    conn = get_connection(db)
+    cursor = conn.cursor()
 
     try:
-
-        cursor = conn.cursor()
 
         cursor.execute(
             """
@@ -118,19 +155,16 @@ def get_round_matches(
                 m.id,
                 m.date,
                 m.status,
-                m.actual_home,
-                m.actual_away,
-
+                m.competition,
                 th.name AS home_team,
                 ta.name AS away_team
-
             FROM matches m
 
             LEFT JOIN teams th
-                ON th.id = m.home_team_id
+                ON m.home_team_id = th.id
 
             LEFT JOIN teams ta
-                ON ta.id = m.away_team_id
+                ON m.away_team_id = ta.id
 
             WHERE m.round_id = ?
 
@@ -138,14 +172,12 @@ def get_round_matches(
                 m.date,
                 m.id
             """,
-            (round_id,),
+            (round_id,)
         )
-
-        rows = cursor.fetchall()
 
         return [
             dict(row)
-            for row in rows
+            for row in cursor.fetchall()
         ]
 
     finally:
@@ -154,37 +186,32 @@ def get_round_matches(
 
 
 # ============================================================
-# PAGE
+# MAIN
 # ============================================================
 
 def main():
 
-    st.title(
-        "📊 ПРОГНОЗЫ FAJ"
-    )
+    st.title("📊 Прогнозы FAJ")
 
     st.caption(
-        "FAJ Platform v12.1 · Prediction Pipeline"
+        "FAJ Platform v12.1 · Prediction Manager → Prediction Pipeline"
+    )
+
+    st.info(
+        """
+        Эта страница работает только с матчами,
+        уже находящимися в SQLite.
+
+        **Календарь здесь не загружается и не изменяется.**
+
+        Прогноз строится через:
+
+        `Passport → Rating → XG → Poisson → Monte Carlo → Calibration → Confidence → Risk`
+        """
     )
 
     # ========================================================
-    # SESSION STATE
-    # ========================================================
-
-    if "predictions" not in st.session_state:
-
-        st.session_state[
-            "predictions"
-        ] = []
-
-    if "prediction_round_id" not in st.session_state:
-
-        st.session_state[
-            "prediction_round_id"
-        ] = None
-
-    # ========================================================
-    # INITIALIZATION
+    # INIT
     # ========================================================
 
     db = FAJDatabase()
@@ -192,169 +219,79 @@ def main():
     pm = get_prediction_manager()
 
     # ========================================================
-    # DATABASE STATUS
+    # SEASON
     # ========================================================
 
-    st.subheader(
-        "💾 Состояние базы"
-    )
+    season_id = get_season_id(db)
 
-    try:
-
-        conn = db._get_connection()
-
-        cursor = conn.cursor()
-
-        cursor.execute(
-            "SELECT COUNT(*) FROM matches"
-        )
-
-        match_count = cursor.fetchone()[0]
-
-        cursor.execute(
-            "SELECT COUNT(*) FROM teams"
-        )
-
-        team_count = cursor.fetchone()[0]
-
-        cursor.execute(
-            "SELECT COUNT(*) FROM team_passports"
-        )
-
-        passport_count = cursor.fetchone()[0]
-
-        conn.close()
-
-        c1, c2, c3 = st.columns(3)
-
-        with c1:
-
-            st.metric(
-                "Матчей",
-                match_count,
-            )
-
-        with c2:
-
-            st.metric(
-                "Команд",
-                team_count,
-            )
-
-        with c3:
-
-            st.metric(
-                "Паспортов",
-                passport_count,
-            )
-
-    except Exception as e:
+    if season_id is None:
 
         st.error(
-            f"❌ Ошибка чтения БД: {e}"
+            "❌ В БД не найден сезон РПЛ."
         )
 
         return
 
     # ========================================================
-    # SAFETY CHECK
+    # ROUNDS
     # ========================================================
 
-    if match_count == 0:
-
-        st.warning(
-            "⚠️ В БД нет матчей. "
-            "Сначала загрузите календарь РПЛ."
-        )
-
-        return
-
-    if passport_count < 16:
-
-        st.warning(
-            f"""
-            ⚠️ В БД только {passport_count}
-            паспортов.
-
-            Для полноценного прогнозирования РПЛ
-            ожидается 16 паспортов.
-            """
-        )
-
-    # ========================================================
-    # LOAD ROUNDS
-    # ========================================================
-
-    rounds = get_rounds(db)
+    rounds = get_rounds(
+        db,
+        season_id
+    )
 
     if not rounds:
 
         st.error(
-            "❌ В БД нет туров."
+            "❌ В БД не найдены туры."
         )
 
         return
 
-    # ========================================================
-    # ROUND SELECTOR
-    # ========================================================
+    round_map = {
+        int(row["round_number"]):
+            int(row["id"])
+        for row in rounds
+    }
 
-    st.divider()
+    round_numbers = sorted(
+        round_map.keys()
+    )
+
+    # ========================================================
+    # SELECT ROUND
+    # ========================================================
 
     st.subheader(
         "🎯 Выбор тура"
     )
 
-    round_numbers = [
-        item["round_number"]
-        for item in rounds
-    ]
-
-    # Сначала пытаемся выбрать 4-й тур,
-    # если он существует.
-    default_index = (
-        round_numbers.index(4)
-        if 4 in round_numbers
-        else 0
-    )
-
-    selected_round_number = st.selectbox(
+    selected_round = st.selectbox(
         "Номер тура",
         round_numbers,
-        index=default_index,
-    )
-
-    selected_round = next(
-        (
-            item
-            for item in rounds
-            if item["round_number"]
-            == selected_round_number
-        ),
-        None,
-    )
-
-    if not selected_round:
-
-        st.error(
-            "❌ Тур не найден."
+        index=(
+            round_numbers.index(4)
+            if 4 in round_numbers
+            else 0
         )
+    )
 
-        return
-
-    round_id = selected_round["id"]
+    round_id = round_map[
+        selected_round
+    ]
 
     # ========================================================
-    # MATCH LIST
+    # MATCHES
     # ========================================================
 
     matches = get_round_matches(
         db,
-        round_id,
+        round_id
     )
 
-    st.subheader(
-        f"📋 Матчи {selected_round_number} тура"
+    st.write(
+        f"**Матчей в туре: {len(matches)}**"
     )
 
     if not matches:
@@ -365,540 +302,378 @@ def main():
 
         return
 
+    # ========================================================
+    # MATCH TABLE
+    # ========================================================
+
     match_rows = []
 
     for match in matches:
 
-        status = (
-            match.get("status")
-            or "unknown"
-        )
-
-        if status in {
-            "finished",
-            "completed",
-            "played",
-        }:
-
-            result_text = (
-                f"{match.get('actual_home')}:"
-                f"{match.get('actual_away')}"
-            )
-
-        else:
-
-            result_text = "—"
-
         match_rows.append(
             {
-                "ID": match["id"],
-                "Дата": match.get(
-                    "date"
-                ),
-                "Хозяева": match.get(
-                    "home_team"
-                ),
-                "Гости": match.get(
-                    "away_team"
-                ),
-                "Статус": status,
-                "Результат": result_text,
+                "ID":
+                    match["id"],
+
+                "Хозяева":
+                    match["home_team"],
+
+                "Гости":
+                    match["away_team"],
+
+                "Дата":
+                    match["date"] or "—",
+
+                "Статус":
+                    match["status"] or "—"
             }
         )
 
     st.dataframe(
         pd.DataFrame(match_rows),
         use_container_width=True,
-        hide_index=True,
+        hide_index=True
     )
 
     # ========================================================
-    # ROUND STATISTICS
-    # ========================================================
-
-    scheduled = [
-        match
-        for match in matches
-        if str(
-            match.get(
-                "status",
-                ""
-            )
-        ).lower()
-        not in {
-            "finished",
-            "completed",
-            "played",
-        }
-    ]
-
-    finished = [
-        match
-        for match in matches
-        if str(
-            match.get(
-                "status",
-                ""
-            )
-        ).lower()
-        in {
-            "finished",
-            "completed",
-            "played",
-        }
-    ]
-
-    c1, c2, c3 = st.columns(3)
-
-    with c1:
-
-        st.metric(
-            "Матчей в туре",
-            len(matches),
-        )
-
-    with c2:
-
-        st.metric(
-            "Предстоящих",
-            len(scheduled),
-        )
-
-    with c3:
-
-        st.metric(
-            "Завершено",
-            len(finished),
-        )
-
-    # ========================================================
-    # PREDICT BUTTON
+    # SINGLE TEST
     # ========================================================
 
     st.divider()
 
     st.subheader(
-        "🧠 Prediction Pipeline"
+        "🧪 Контрольный прогноз"
     )
 
-    st.info(
-        """
-        FAJ возьмёт матчи непосредственно из SQLite,
-        загрузит паспорта команд и передаст их
-        в PredictionPipeline.
+    match_options = {
+        (
+            f'{m["home_team"]} — '
+            f'{m["away_team"]} '
+            f'(ID {m["id"]})'
+        ):
+            m["id"]
+        for m in matches
+    }
 
-        Календарь при этом не изменяется.
-        """
+    selected_match_label = st.selectbox(
+        "Матч для проверки",
+        list(match_options.keys())
     )
+
+    selected_match_id = match_options[
+        selected_match_label
+    ]
 
     if st.button(
-        f"🧠 РАССЧИТАТЬ ПРОГНОЗЫ НА {selected_round_number} ТУР",
-        type="primary",
-        use_container_width=True,
+        "🧪 РАССЧИТАТЬ КОНТРОЛЬНЫЙ ПРОГНОЗ",
+        use_container_width=True
     ):
 
+        with st.spinner(
+            "🧠 Prediction Manager → Pipeline..."
+        ):
+
+            result = pm.predict_by_match_id(
+                selected_match_id
+            )
+
         st.session_state[
-            "predictions"
-        ] = []
-
-        st.session_state[
-            "prediction_round_id"
-        ] = round_id
-
-        if not scheduled:
-
-            st.warning(
-                "⚠️ В этом туре нет "
-                "предстоящих матчей."
-            )
-
-        else:
-
-            progress = st.progress(
-                0
-            )
-
-            status_box = st.empty()
-
-            results = []
-
-            total = len(
-                scheduled
-            )
-
-            for index, match in enumerate(
-                scheduled,
-                start=1,
-            ):
-
-                status_box.info(
-                    f"""
-                    🧠 Расчёт {index}/{total}
-
-                    {match['home_team']}
-                    —
-                    {match['away_team']}
-                    """
-                )
-
-                try:
-
-                    result = (
-                        pm.predict_by_match_id(
-                            match["id"]
-                        )
-                    )
-
-                    results.append(
-                        result
-                    )
-
-                except Exception as e:
-
-                    results.append(
-                        {
-                            "status": "error",
-                            "match_id": match[
-                                "id"
-                            ],
-                            "home_team": match[
-                                "home_team"
-                            ],
-                            "away_team": match[
-                                "away_team"
-                            ],
-                            "message": str(e),
-                        }
-                    )
-
-                progress.progress(
-                    index / total
-                )
-
-            status_box.empty()
-
-            st.session_state[
-                "predictions"
-            ] = results
-
-            successful = [
-                r
-                for r in results
-                if r.get("status")
-                != "error"
-            ]
-
-            errors = [
-                r
-                for r in results
-                if r.get("status")
-                == "error"
-            ]
-
-            st.success(
-                f"""
-                ✅ Расчёт завершён.
-
-                Матчей: {total}
-                Успешно: {len(successful)}
-                Ошибок: {len(errors)}
-                """
-            )
+            "last_prediction_result"
+        ] = result
 
     # ========================================================
-    # RESULTS
+    # LAST RESULT
     # ========================================================
 
-    predictions = (
-        st.session_state.get(
-            "predictions",
-            [],
-        )
+    result = st.session_state.get(
+        "last_prediction_result"
     )
 
-    if not predictions:
+    if result:
 
-        st.info(
-            "ℹ️ Прогнозы ещё не рассчитаны."
+        st.divider()
+
+        st.subheader(
+            "🔬 Результат Pipeline"
         )
 
-        return
-
-    # ========================================================
-    # DISPLAY
-    # ========================================================
-
-    st.divider()
-
-    st.subheader(
-        "📊 РЕЗУЛЬТАТЫ FAJ"
-    )
-
-    for pred in predictions:
-
-        st.markdown(
-            "---"
-        )
-
-        home_team = pred.get(
-            "home_team",
-            "—",
-        )
-
-        away_team = pred.get(
-            "away_team",
-            "—",
-        )
-
-        match_id = pred.get(
-            "match_id",
-            "—",
-        )
-
-        # ----------------------------------------------------
-        # ERROR
-        # ----------------------------------------------------
-
-        if pred.get(
+        if result.get(
             "status"
-        ) == "error":
+        ) != "success":
 
             st.error(
-                f"""
-                ❌ Ошибка
-
-                Матч #{match_id}
-
-                {home_team}
-                —
-                {away_team}
-
-                {pred.get('message', '')}
-                """
+                "❌ Prediction Pipeline вернул ошибку."
             )
 
-            continue
+            st.code(
+                str(
+                    result.get(
+                        "message",
+                        "Unknown error"
+                    )
+                )
+            )
+
+            return
 
         # ----------------------------------------------------
-        # PREDICTION
+        # MAIN METRICS
         # ----------------------------------------------------
 
-        prediction = pred.get(
-            "prediction",
-            pred,
-        )
-
-        probability = pred.get(
-            "probability",
-            prediction.get(
-                "probability",
-                {},
-            ),
-        )
-
-        xg = pred.get(
+        xg = result.get(
             "xg",
-            prediction.get(
-                "xg",
-                {},
-            ),
+            {}
         )
 
-        score = (
-            prediction.get(
-                "score"
-            )
-            or pred.get(
-                "score",
-                "—",
-            )
+        probability = result.get(
+            "probability",
+            {}
         )
 
-        score_probability = (
-            prediction.get(
-                "score_probability",
-                0,
-            )
+        confidence = result.get(
+            "confidence",
+            {}
         )
 
-        # ----------------------------------------------------
-        # HEADER
-        # ----------------------------------------------------
-
-        col1, col2, col3 = st.columns(
-            [2, 1, 2]
+        risk = result.get(
+            "risk",
+            {}
         )
+
+        agreement = result.get(
+            "model_agreement",
+            {}
+        )
+
+        col1, col2, col3 = st.columns(3)
 
         with col1:
 
             st.metric(
-                "🏠 Хозяева",
-                home_team,
-            )
-
-            st.caption(
-                f"xG: "
-                f"{float(xg.get('home', 0)):.2f}"
+                "🏠 xG хозяев",
+                f'{xg.get("home", 0):.2f}'
             )
 
         with col2:
 
-            st.markdown(
-                f"## {score}"
+            st.metric(
+                "🎯 Прогноз",
+                result.get(
+                    "score",
+                    "—"
+                )
             )
-
-            try:
-
-                st.caption(
-                    "Вероятность счёта: "
-                    f"{float(score_probability):.1%}"
-                )
-
-            except (
-                TypeError,
-                ValueError,
-            ):
-
-                st.caption(
-                    "Вероятность счёта: —"
-                )
 
         with col3:
 
             st.metric(
-                "✈️ Гости",
-                away_team,
-            )
-
-            st.caption(
-                f"xG: "
-                f"{float(xg.get('away', 0)):.2f}"
+                "✈️ xG гостей",
+                f'{xg.get("away", 0):.2f}'
             )
 
         # ----------------------------------------------------
-        # 1X2
+        # PROBABILITIES
         # ----------------------------------------------------
 
-        p1 = probability.get(
-            "home",
-            0,
+        st.subheader(
+            "📈 Вероятности"
         )
 
-        px = probability.get(
-            "draw",
-            0,
-        )
+        p1, px, p2 = st.columns(3)
 
-        p2 = probability.get(
-            "away",
-            0,
-        )
-
-        c1, c2, c3 = st.columns(3)
-
-        with c1:
+        with p1:
 
             st.metric(
                 "П1",
-                f"{float(p1):.1%}",
+                f'{probability.get("home", 0) * 100:.1f}%'
             )
 
-        with c2:
+        with px:
 
             st.metric(
                 "X",
-                f"{float(px):.1%}",
+                f'{probability.get("draw", 0) * 100:.1f}%'
             )
 
-        with c3:
+        with p2:
 
             st.metric(
                 "П2",
-                f"{float(p2):.1%}",
+                f'{probability.get("away", 0) * 100:.1f}%'
             )
 
         # ----------------------------------------------------
-        # DETAILS
+        # EXTENDED
         # ----------------------------------------------------
 
-        with st.expander(
-            "📊 Детали прогноза"
-        ):
+        extended = result.get(
+            "extended",
+            {}
+        )
 
-            st.json(
-                pred
+        st.subheader(
+            "📊 Дополнительные показатели"
+        )
+
+        btts = extended.get(
+            "btts",
+            {}
+        )
+
+        totals = extended.get(
+            "total",
+            {}
+        )
+
+        e1, e2, e3, e4 = st.columns(4)
+
+        with e1:
+
+            st.metric(
+                "Обе забьют",
+                f'{btts.get("yes", 0) * 100:.1f}%'
             )
 
-    # ========================================================
-    # FINAL DATABASE STATUS
-    # ========================================================
+        with e2:
 
-    st.divider()
+            st.metric(
+                "ТБ 2.5",
+                f'{totals.get("over_2_5", 0) * 100:.1f}%'
+            )
 
-    st.subheader(
-        "💾 Состояние prediction layer"
-    )
+        with e3:
 
-    try:
+            st.metric(
+                "ТБ 3.5",
+                f'{totals.get("over_3_5", 0) * 100:.1f}%'
+            )
 
-        conn = db._get_connection()
+        with e4:
 
-        cursor = conn.cursor()
+            st.metric(
+                "Вероятность счёта",
+                f'{result.get("score_probability", 0) * 100:.1f}%'
+            )
 
-        cursor.execute(
-            "SELECT COUNT(*) FROM predictions"
+        # ----------------------------------------------------
+        # CONFIDENCE / RISK
+        # ----------------------------------------------------
+
+        st.subheader(
+            "🧠 Уверенность и риск"
         )
-
-        predictions_count = (
-            cursor.fetchone()[0]
-        )
-
-        cursor.execute(
-            "SELECT COUNT(*) FROM prediction_scores"
-        )
-
-        scores_count = (
-            cursor.fetchone()[0]
-        )
-
-        cursor.execute(
-            "SELECT COUNT(*) FROM prediction_distributions"
-        )
-
-        distributions_count = (
-            cursor.fetchone()[0]
-        )
-
-        conn.close()
 
         c1, c2, c3 = st.columns(3)
 
         with c1:
 
             st.metric(
-                "predictions",
-                predictions_count,
+                "Confidence",
+                f'{confidence.get("overall", 0) * 100:.1f}%'
             )
 
         with c2:
 
             st.metric(
-                "prediction_scores",
-                scores_count,
+                "Уровень",
+                confidence.get(
+                    "level",
+                    "—"
+                )
             )
 
         with c3:
 
             st.metric(
-                "prediction_distributions",
-                distributions_count,
+                "Risk",
+                risk.get(
+                    "level",
+                    "—"
+                )
             )
 
-    except Exception as e:
+        st.write(
+            f'**Model Agreement:** '
+            f'{agreement.get("score", 0) * 100:.1f}% '
+            f'({agreement.get("level", "—")})'
+        )
 
-        st.warning(
-            f"⚠️ Не удалось прочитать "
-            f"prediction layer: {e}"
+        # ----------------------------------------------------
+        # TOP SCORES
+        # ----------------------------------------------------
+
+        top_scores = extended.get(
+            "top_scores",
+            []
+        )
+
+        if top_scores:
+
+            st.subheader(
+                "🎯 Топ вероятных счетов"
+            )
+
+            score_rows = []
+
+            for score in top_scores:
+
+                score_rows.append(
+                    {
+                        "Место":
+                            score.get(
+                                "rank"
+                            ),
+
+                        "Счёт":
+                            f'{score.get("home", 0)}:'
+                            f'{score.get("away", 0)}',
+
+                        "Вероятность":
+                            score.get(
+                                "prob_percent",
+                                ""
+                            )
+                    }
+                )
+
+            st.dataframe(
+                pd.DataFrame(
+                    score_rows
+                ),
+                use_container_width=True,
+                hide_index=True
+            )
+
+        # ----------------------------------------------------
+        # DIAGNOSTIC
+        # ----------------------------------------------------
+
+        with st.expander(
+            "🔬 Диагностика Pipeline"
+        ):
+
+            st.json(
+                result.get(
+                    "diagnostic",
+                    {}
+                )
+            )
+
+        # ----------------------------------------------------
+        # FULL RESULT
+        # ----------------------------------------------------
+
+        with st.expander(
+            "📦 Полный результат"
+        ):
+
+            st.json(
+                result
+            )
+
+        st.success(
+            "✅ Контрольный прогноз успешно прошёл "
+            "Prediction Manager → Prediction Pipeline."
         )
 
 
