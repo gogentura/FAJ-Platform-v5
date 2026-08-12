@@ -27,6 +27,7 @@ STREAMLIT MAIN APPLICATION
         +-- Predictions
         +-- Match Laboratory
         +-- Passports
+        +-- Database Diagnostic
         +-- Load All
         +-- Load Calendar
         +-- Load Statistics
@@ -62,8 +63,6 @@ from app.config import config
 # ============================================================
 # STREAMLIT PAGE CONFIG
 # ============================================================
-# ВАЖНО:
-# set_page_config должен выполняться до остальных st.* вызовов.
 
 st.set_page_config(
     page_title=f"FAJ Platform v{config.PLATFORM_VERSION}",
@@ -125,7 +124,6 @@ def go_to_page(page_name: str):
     """
     Единая навигация.
     """
-
     st.session_state.page = page_name
 
 
@@ -158,6 +156,7 @@ def get_db_counts():
         for key, query in queries.items():
 
             try:
+
                 cursor.execute(query)
                 row = cursor.fetchone()
 
@@ -165,6 +164,7 @@ def get_db_counts():
                     result[key] = row[0] or 0
 
             except Exception:
+
                 result[key] = 0
 
         conn.close()
@@ -230,6 +230,23 @@ with st.sidebar:
     ):
 
         go_to_page("passports")
+        st.rerun()
+
+    # --------------------------------------------------------
+    # DIAGNOSTICS
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.caption("🔍 ДИАГНОСТИКА")
+
+    if st.button(
+        "🔍 Диагностика БД",
+        use_container_width=True,
+        key="menu_db_diagnostic",
+    ):
+
+        go_to_page("db_diagnostic")
         st.rerun()
 
     # --------------------------------------------------------
@@ -555,10 +572,6 @@ elif st.session_state.page == "predictions":
 
                         st.session_state.prediction_result = None
 
-        # ----------------------------------------------------
-        # RESULT
-        # ----------------------------------------------------
-
         result = (
             st.session_state.prediction_result
         )
@@ -623,10 +636,6 @@ elif st.session_state.page == "predictions":
                         f"{xg.get('away', 0):.2f}",
                     )
 
-                # ------------------------------------------------
-                # PROBABILITIES
-                # ------------------------------------------------
-
                 st.subheader(
                     "📈 Вероятности"
                 )
@@ -660,10 +669,6 @@ elif st.session_state.page == "predictions":
                         "Исход"
                     )
                 )
-
-                # ------------------------------------------------
-                # EXTENDED
-                # ------------------------------------------------
 
                 extended = result.get(
                     "extended",
@@ -909,6 +914,726 @@ elif st.session_state.page == "passports":
 
 
 # ============================================================
+# DATABASE DIAGNOSTIC
+# ============================================================
+
+elif st.session_state.page == "db_diagnostic":
+
+    st.title(
+        "🔍 Диагностика базы данных"
+    )
+
+    st.caption(
+        "FAJ Database Diagnostic · только чтение"
+    )
+
+    st.info(
+        "Эта диагностика только проверяет состояние БД. "
+        "Она не создаёт, не удаляет и не изменяет данные."
+    )
+
+    # --------------------------------------------------------
+    # DB FILE
+    # --------------------------------------------------------
+
+    st.subheader(
+        "💾 SQLite"
+    )
+
+    db_path = os.path.join(
+        ROOT_DIR,
+        "data",
+        "faj.db",
+    )
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+
+        if os.path.exists(db_path):
+
+            st.success(
+                "✅ faj.db найден"
+            )
+
+        else:
+
+            st.error(
+                "❌ faj.db не найден"
+            )
+
+    with c2:
+
+        st.write(
+            f"**Путь:** `{db_path}`"
+        )
+
+    with c3:
+
+        if os.path.exists(db_path):
+
+            size = (
+                os.path.getsize(db_path)
+                / (1024 * 1024)
+            )
+
+            st.write(
+                f"**Размер:** {size:.2f} MB"
+            )
+
+    # --------------------------------------------------------
+    # TABLE COUNTS
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.subheader(
+        "📊 Состояние таблиц"
+    )
+
+    expected_tables = [
+        "teams",
+        "seasons",
+        "rounds",
+        "matches",
+        "match_results",
+        "match_statistics",
+        "team_base",
+        "team_dynamic",
+        "team_identity",
+        "team_passports",
+        "team_passport_meta",
+        "tactical_matchup",
+        "predictions",
+        "prediction_scores",
+        "prediction_distributions",
+        "prediction_validation",
+        "expert_predictions",
+        "gold_dataset",
+        "learning_records",
+        "learning_events",
+        "audit_log",
+        "team_dynamics",
+        "standings",
+        "diagnostic_history",
+        "journal",
+        "model_parameters",
+        "learning_memory",
+        "xg_memory",
+        "match_snapshots",
+        "player_impact",
+        "team_competition_profile",
+        "team_events",
+        "team_history",
+        "match_events",
+        "players",
+        "player_events",
+        "migrations",
+        "schema_migrations",
+    ]
+
+    table_data = []
+
+    try:
+
+        db = FAJDatabase()
+
+        for table in expected_tables:
+
+            try:
+
+                count = db.get_table_count(
+                    table
+                )
+
+                table_data.append(
+                    {
+                        "Таблица": table,
+                        "Записей": count,
+                        "Статус": "✅",
+                    }
+                )
+
+            except Exception as e:
+
+                table_data.append(
+                    {
+                        "Таблица": table,
+                        "Записей": "-",
+                        "Статус": f"❌ {e}",
+                    }
+                )
+
+        st.dataframe(
+            pd.DataFrame(table_data),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    except Exception as e:
+
+        st.error(
+            f"❌ Ошибка диагностики таблиц: {e}"
+        )
+
+    # --------------------------------------------------------
+    # TEAMS
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.subheader(
+        "🏟️ Команды РПЛ"
+    )
+
+    try:
+
+        teams = db.get_teams(
+            league="РПЛ"
+        )
+
+        team_data = []
+
+        for team in teams:
+
+            team_data.append(
+                {
+                    "ID": team["id"],
+                    "Команда": team["name"],
+                    "Лига": team["league"],
+                    "Статус": "✅",
+                }
+            )
+
+        st.metric(
+            "Команд РПЛ",
+            len(team_data),
+        )
+
+        if team_data:
+
+            st.dataframe(
+                pd.DataFrame(team_data),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        if len(team_data) == 16:
+
+            st.success(
+                "✅ В базе ровно 16 команд РПЛ."
+            )
+
+        else:
+
+            st.warning(
+                f"⚠️ Ожидалось 16 команд, найдено {len(team_data)}."
+            )
+
+    except Exception as e:
+
+        st.error(
+            f"❌ Ошибка проверки команд: {e}"
+        )
+
+    # --------------------------------------------------------
+    # SEASONS
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.subheader(
+        "🏆 Сезоны"
+    )
+
+    try:
+
+        seasons = db.get_seasons()
+
+        season_data = []
+
+        for season in seasons:
+
+            season_data.append(
+                {
+                    "ID": season["id"],
+                    "Название": season["name"],
+                    "Лига": season["league"],
+                    "Год": season["year"],
+                }
+            )
+
+        st.dataframe(
+            pd.DataFrame(season_data),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    except Exception as e:
+
+        st.error(
+            f"❌ Ошибка проверки сезонов: {e}"
+        )
+
+    # --------------------------------------------------------
+    # ROUNDS
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.subheader(
+        "🔢 Туры"
+    )
+
+    try:
+
+        round_count = db.get_table_count(
+            "rounds"
+        )
+
+        st.metric(
+            "Всего туров",
+            round_count,
+        )
+
+        if round_count == 30:
+
+            st.success(
+                "✅ Созданы все 30 туров РПЛ."
+            )
+
+        else:
+
+            st.warning(
+                f"⚠️ Туров найдено: {round_count}. "
+                f"Ожидалось 30."
+            )
+
+    except Exception as e:
+
+        st.error(
+            f"❌ Ошибка проверки туров: {e}"
+        )
+
+    # --------------------------------------------------------
+    # PASSPORTS
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.subheader(
+        "📋 Паспорта"
+    )
+
+    try:
+
+        passport_count = db.get_table_count(
+            "team_passports"
+        )
+
+        meta_count = db.get_table_count(
+            "team_passport_meta"
+        )
+
+        st.write(
+            f"**team_passports:** {passport_count}"
+        )
+
+        st.write(
+            f"**team_passport_meta:** {meta_count}"
+        )
+
+        if passport_count == 16:
+
+            st.success(
+                "✅ Все 16 паспортов присутствуют."
+            )
+
+        else:
+
+            st.warning(
+                f"⚠️ Паспортов: {passport_count}. "
+                f"Ожидалось 16."
+            )
+
+        # Passport details
+
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT
+                t.name AS team_name,
+                tp.version,
+                tp.faj_rating,
+                tp.passport_confidence,
+                tp.source
+            FROM teams t
+            LEFT JOIN team_passports tp
+                ON t.id = tp.team_id
+            WHERE t.league = 'РПЛ'
+            ORDER BY t.name
+            """
+        )
+
+        rows = cursor.fetchall()
+
+        conn.close()
+
+        passport_data = []
+
+        for row in rows:
+
+            passport_data.append(
+                {
+                    "Команда": row["team_name"],
+                    "Версия": row["version"] or "—",
+                    "FAJ Rating": (
+                        round(row["faj_rating"], 1)
+                        if row["faj_rating"] is not None
+                        else "—"
+                    ),
+                    "Confidence": (
+                        round(
+                            row["passport_confidence"],
+                            3,
+                        )
+                        if row["passport_confidence"] is not None
+                        else "—"
+                    ),
+                    "Source": row["source"] or "—",
+                }
+            )
+
+        if passport_data:
+
+            st.dataframe(
+                pd.DataFrame(passport_data),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    except Exception as e:
+
+        st.error(
+            f"❌ Ошибка проверки паспортов: {e}"
+        )
+
+    # --------------------------------------------------------
+    # LEGACY TEAM LAYERS
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.subheader(
+        "🧠 Слои Team Intelligence"
+    )
+
+    intelligence_tables = [
+        "team_base",
+        "team_identity",
+        "team_dynamic",
+        "team_passport_meta",
+    ]
+
+    intelligence_data = []
+
+    for table in intelligence_tables:
+
+        try:
+
+            count = db.get_table_count(
+                table
+            )
+
+            intelligence_data.append(
+                {
+                    "Таблица": table,
+                    "Записей": count,
+                    "Статус": (
+                        "✅"
+                        if count >= 16
+                        else "⚠️"
+                    ),
+                }
+            )
+
+        except Exception as e:
+
+            intelligence_data.append(
+                {
+                    "Таблица": table,
+                    "Записей": "-",
+                    "Статус": f"❌ {e}",
+                }
+            )
+
+    st.dataframe(
+        pd.DataFrame(intelligence_data),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    # --------------------------------------------------------
+    # MATCH / PREDICTION LAYER
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.subheader(
+        "⚽ Match / Prediction Layer"
+    )
+
+    match_tables = [
+        "matches",
+        "match_results",
+        "match_statistics",
+        "predictions",
+        "match_predictions",
+        "prediction_scores",
+        "prediction_distributions",
+        "prediction_validation",
+        "expert_predictions",
+    ]
+
+    match_data = []
+
+    for table in match_tables:
+
+        try:
+
+            count = db.get_table_count(
+                table
+            )
+
+            match_data.append(
+                {
+                    "Таблица": table,
+                    "Записей": count,
+                }
+            )
+
+        except Exception as e:
+
+            match_data.append(
+                {
+                    "Таблица": table,
+                    "Записей": f"Ошибка: {e}",
+                }
+            )
+
+    st.dataframe(
+        pd.DataFrame(match_data),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    # --------------------------------------------------------
+    # LEARNING LAYER
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.subheader(
+        "🧠 Learning Layer"
+    )
+
+    learning_tables = [
+        "gold_dataset",
+        "learning_records",
+        "learning_events",
+        "audit_log",
+        "learning_memory",
+    ]
+
+    learning_data = []
+
+    for table in learning_tables:
+
+        try:
+
+            count = db.get_table_count(
+                table
+            )
+
+            learning_data.append(
+                {
+                    "Таблица": table,
+                    "Записей": count,
+                }
+            )
+
+        except Exception as e:
+
+            learning_data.append(
+                {
+                    "Таблица": table,
+                    "Записей": f"Ошибка: {e}",
+                }
+            )
+
+    st.dataframe(
+        pd.DataFrame(learning_data),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    # --------------------------------------------------------
+    # FOREIGN KEY CHECK
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.subheader(
+        "🔗 Проверка связей"
+    )
+
+    try:
+
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "PRAGMA foreign_key_check"
+        )
+
+        fk_errors = cursor.fetchall()
+
+        conn.close()
+
+        if not fk_errors:
+
+            st.success(
+                "✅ FOREIGN KEY: ошибок не найдено."
+            )
+
+        else:
+
+            st.error(
+                f"❌ Найдено нарушений FK: "
+                f"{len(fk_errors)}"
+            )
+
+            fk_data = []
+
+            for row in fk_errors:
+
+                fk_data.append(
+                    {
+                        "Таблица": row[0],
+                        "Row ID": row[1],
+                        "Parent": row[2],
+                        "Parent Row": row[3],
+                    }
+                )
+
+            st.dataframe(
+                pd.DataFrame(fk_data),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    except Exception as e:
+
+        st.error(
+            f"❌ Ошибка FK-проверки: {e}"
+        )
+
+    # --------------------------------------------------------
+    # SQLITE INTEGRITY
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.subheader(
+        "🩺 SQLite Integrity Check"
+    )
+
+    try:
+
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "PRAGMA integrity_check"
+        )
+
+        integrity = cursor.fetchone()
+
+        conn.close()
+
+        if integrity:
+
+            integrity_value = integrity[0]
+
+            if integrity_value == "ok":
+
+                st.success(
+                    "✅ SQLite integrity_check: OK"
+                )
+
+            else:
+
+                st.error(
+                    f"❌ SQLite integrity_check: "
+                    f"{integrity_value}"
+                )
+
+    except Exception as e:
+
+        st.error(
+            f"❌ Ошибка integrity_check: {e}"
+        )
+
+    # --------------------------------------------------------
+    # SCHEMA
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.subheader(
+        "🧬 Схема"
+    )
+
+    try:
+
+        status = db.get_status()
+
+        st.write(
+            f"**Schema version:** "
+            f"{status.get('schema_version', 'unknown')}"
+        )
+
+        st.write(
+            f"**Database status:** "
+            f"{status.get('status', 'unknown')}"
+        )
+
+        st.write(
+            f"**Database file:** "
+            f"{status.get('file', db_path)}"
+        )
+
+    except Exception as e:
+
+        st.error(
+            f"❌ Ошибка получения версии схемы: {e}"
+        )
+
+    # --------------------------------------------------------
+    # FINAL
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.success(
+        "🔍 Диагностика завершена. "
+        "Все результаты выше получены в режиме чтения."
+    )
+
+
+# ============================================================
 # LOAD ALL
 # ============================================================
 
@@ -1010,63 +1735,57 @@ elif st.session_state.page == "system":
 
         status_db = db.get_status()
 
-        tables = status_db.get(
-            "tables",
-            {},
-        )
-
         st.subheader(
             "📊 База данных"
         )
 
-        c1, c2 = st.columns(2)
+        # ----------------------------------------------------
+        # COUNTS
+        # ----------------------------------------------------
 
-        with c1:
+        system_tables = [
+            "teams",
+            "seasons",
+            "rounds",
+            "matches",
+            "match_results",
+            "match_statistics",
+            "team_passports",
+            "predictions",
+            "expert_predictions",
+        ]
 
-            st.write(
-                "**Основные таблицы**"
-            )
+        system_data = []
 
-            st.write(
-                f"- teams: "
-                f"{tables.get('teams', 0)}"
-            )
+        for table in system_tables:
 
-            st.write(
-                f"- matches: "
-                f"{tables.get('matches', 0)}"
-            )
+            try:
 
-            st.write(
-                f"- match_results: "
-                f"{tables.get('match_results', 0)}"
-            )
+                count = db.get_table_count(
+                    table
+                )
 
-            st.write(
-                f"- match_statistics: "
-                f"{tables.get('match_statistics', 0)}"
-            )
+                system_data.append(
+                    {
+                        "Таблица": table,
+                        "Записей": count,
+                    }
+                )
 
-        with c2:
+            except Exception as e:
 
-            st.write(
-                "**FAJ**"
-            )
+                system_data.append(
+                    {
+                        "Таблица": table,
+                        "Записей": f"Ошибка: {e}",
+                    }
+                )
 
-            st.write(
-                f"- team_passports: "
-                f"{tables.get('team_passports', 0)}"
-            )
-
-            st.write(
-                f"- predictions: "
-                f"{tables.get('predictions', 0)}"
-            )
-
-            st.write(
-                f"- expert_predictions: "
-                f"{tables.get('expert_predictions', 0)}"
-            )
+        st.dataframe(
+            pd.DataFrame(system_data),
+            use_container_width=True,
+            hide_index=True,
+        )
 
         st.divider()
 
