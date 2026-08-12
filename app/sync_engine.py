@@ -389,9 +389,10 @@ class SyncEngine:
 
         for season in seasons:
 
+            # ✅ ИСПРАВЛЕНО: season.get() → season[]
             if (
-                season.get("league") == league
-                and season.get("year") == year
+                season["league"] == league
+                and season["year"] == year
             ):
 
                 season_id = season["id"]
