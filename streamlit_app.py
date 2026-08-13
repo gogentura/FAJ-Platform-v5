@@ -120,6 +120,16 @@ except Exception as e:
 
 
 # ============================================================
+# GITHUB SYNC
+# ============================================================
+
+try:
+    from app.github_db_sync import save_database_to_github
+except Exception as e:
+    save_database_to_github = None
+
+
+# ============================================================
 # DATABASE PATH
 # ============================================================
 
@@ -505,6 +515,41 @@ with st.sidebar:
         key="nav_stats",
     ):
         navigate("load_stats")
+
+
+    # ========================================================
+    # GITHUB SYNC
+    # ========================================================
+
+    st.divider()
+
+    st.caption("💾 GitHub Sync")
+
+    if st.button(
+        "💾 Сохранить БД в GitHub",
+        use_container_width=True,
+        key="nav_save_db",
+    ):
+        try:
+            if save_database_to_github is None:
+                st.error("❌ Модуль github_db_sync не загружен.")
+            else:
+                with st.spinner("⏳ Сохранение faj.db в GitHub..."):
+                    result = save_database_to_github()
+                    st.success(
+                        f"✅ База данных сохранена в GitHub!\n"
+                        f"   Файл: {result['path']}\n"
+                        f"   Размер: {result['size'] // 1024} KB\n"
+                        f"   SHA: {result['sha'][:8]}..."
+                    )
+        except FileNotFoundError as e:
+            st.error(f"❌ {e}")
+        except RuntimeError as e:
+            st.error(f"❌ {e}")
+        except Exception as e:
+            st.error(f"❌ Ошибка сохранения: {e}")
+            with st.expander("Техническая ошибка"):
+                st.exception(e)
 
 
     # ========================================================
