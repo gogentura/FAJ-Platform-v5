@@ -4,17 +4,11 @@
 """
 ===========================================================
 FAJ Platform v12.1
-RPL FIXTURES PARSER
+RPL FIXTURES PARSER v2.1
 ===========================================================
 
 Назначение:
-    Загрузка календаря РПЛ 2026/27.
-
-Источники:
-
-    1. Smart Tables
-    2. Championat
-    3. Soccerland
+    Загрузка и строгая проверка календаря РПЛ 2026/27.
 
 Архитектура:
 
@@ -26,9 +20,9 @@ RPL FIXTURES PARSER
        ↓
     normalization
        ↓
-    validation
-       ↓
     deduplication
+       ↓
+    STRICT VALIDATION
        ↓
     unified match records
        ↓
@@ -40,7 +34,18 @@ RPL FIXTURES PARSER
 
     Этот модуль НЕ изменяет БД.
 
-    Он только загружает и нормализует данные.
+Календарь разрешается передавать дальше
+ТОЛЬКО если:
+
+    30 туров
+    8 матчей в каждом туре
+    240 матчей
+    16 команд
+    каждая команда играет 1 матч в туре
+    нет повторных пар
+    нет зеркальных пар
+    нет неизвестных команд
+    нет матчей команда-команда
 
 ===========================================================
 """
@@ -61,10 +66,6 @@ from app.parsers.rpl_normalizer import (
     normalize_team_name,
 )
 
-
-# ============================================================
-# LOGGING
-# ============================================================
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,8 @@ LEAGUE_NAME = "РПЛ"
 
 EXPECTED_ROUNDS = 30
 EXPECTED_MATCHES = 240
+EXPECTED_TEAMS = 16
+EXPECTED_MATCHES_PER_ROUND = 8
 
 
 # ============================================================
@@ -126,16 +129,15 @@ DEFAULT_HEADERS = {
 # ============================================================
 
 def _empty_result() -> Dict[str, Any]:
-    """
-    Единый объект результата.
-    """
-
     return {
         "matches": [],
         "sources": {},
         "errors": [],
         "warnings": [],
         "duplicates": [],
+        "validation_errors": [],
+        "validation": {},
+        "calendar_valid": False,
         "started_at": None,
         "finished_at": None,
     }
@@ -146,30 +148,13 @@ def _empty_result() -> Dict[str, Any]:
 # ============================================================
 
 class RPLFixturesParser:
-    """
-    Универсальный парсер календаря РПЛ.
 
-    Основной метод:
-
-        parse()
-
-    Возвращает:
-
-        {
-            "matches": [...],
-            "sources": {...},
-            "errors": [...],
-            "warnings": [...],
-            "duplicates": [...],
-        }
-    """
+    VERSION = "2.1"
 
     def __init__(
         self,
         timeout: int = 20,
-        headers: Optional[
-            Dict[str, str]
-        ] = None,
+        headers: Optional[Dict[str, str]] = None,
     ) -> None:
 
         self.timeout = timeout
@@ -191,9 +176,6 @@ class RPLFixturesParser:
     # ========================================================
 
     def parse(self) -> Dict[str, Any]:
-        """
-        Загружает календарь из всех источников.
-        """
 
         result = _empty_result()
 
@@ -219,12 +201,10 @@ class RPLFixturesParser:
             ),
         ]
 
-        all_matches: List[
-            Dict[str, Any]
-        ] = []
+        all_matches: List[Dict[str, Any]] = []
 
         # ----------------------------------------------------
-        # Источники
+        # SOURCES
         # ----------------------------------------------------
 
         for (
@@ -240,9 +220,7 @@ class RPLFixturesParser:
                     source_name,
                 )
 
-                html = self._download(
-                    url
-                )
+                html = self._download(url)
 
                 if not html:
 
@@ -255,8 +233,7 @@ class RPLFixturesParser:
                     }
 
                     result["errors"].append(
-                        f"{source_name}: "
-                        "HTML не получен"
+                        f"{source_name}: HTML не получен"
                     )
 
                     continue
@@ -275,9 +252,7 @@ class RPLFixturesParser:
                     "matches": len(matches),
                 }
 
-                all_matches.extend(
-                    matches
-                )
+                all_matches.extend(matches)
 
             except Exception as exc:
 
@@ -299,7 +274,7 @@ class RPLFixturesParser:
                 )
 
         # ----------------------------------------------------
-        # Объединение
+        # MERGE
         # ----------------------------------------------------
 
         matches, duplicates = (
@@ -309,13 +284,10 @@ class RPLFixturesParser:
         )
 
         result["matches"] = matches
-
-        result["duplicates"] = (
-            duplicates
-        )
+        result["duplicates"] = duplicates
 
         # ----------------------------------------------------
-        # Проверка календаря
+        # STRICT VALIDATION
         # ----------------------------------------------------
 
         self._validate_calendar(
@@ -328,8 +300,13 @@ class RPLFixturesParser:
         )
 
         logger.info(
-            "Итого уникальных матчей: %s",
+            "Парсинг завершён | "
+            "matches=%s | "
+            "duplicates=%s | "
+            "valid=%s",
             len(matches),
+            len(duplicates),
+            result["calendar_valid"],
         )
 
         return result
@@ -342,9 +319,6 @@ class RPLFixturesParser:
         self,
         url: str,
     ) -> Optional[str]:
-        """
-        Загружает HTML.
-        """
 
         try:
 
@@ -386,23 +360,13 @@ class RPLFixturesParser:
             "html.parser",
         )
 
-        matches: List[
-            Dict[str, Any]
-        ] = []
+        matches = []
 
-        # ----------------------------------------------------
-        # TABLES
-        # ----------------------------------------------------
-
-        for table in soup.find_all(
-            "table"
-        ):
+        for table in soup.find_all("table"):
 
             current_round = None
 
-            for row in table.find_all(
-                "tr"
-            ):
+            for row in table.find_all("tr"):
 
                 cells = row.find_all(
                     ["td", "th"]
@@ -418,9 +382,7 @@ class RPLFixturesParser:
                     for cell in cells
                 ]
 
-                row_text = " ".join(
-                    texts
-                )
+                row_text = " ".join(texts)
 
                 detected_round = (
                     self._extract_round(
@@ -429,9 +391,7 @@ class RPLFixturesParser:
                 )
 
                 if detected_round:
-                    current_round = (
-                        detected_round
-                    )
+                    current_round = detected_round
 
                 match = self._parse_row(
                     texts=texts,
@@ -442,13 +402,7 @@ class RPLFixturesParser:
                 )
 
                 if match:
-                    matches.append(
-                        match
-                    )
-
-        # ----------------------------------------------------
-        # FALLBACK
-        # ----------------------------------------------------
+                    matches.append(match)
 
         if not matches:
 
@@ -480,13 +434,7 @@ class RPLFixturesParser:
             "html.parser",
         )
 
-        matches: List[
-            Dict[str, Any]
-        ] = []
-
-        # ----------------------------------------------------
-        # 1. Сначала пробуем таблицы
-        # ----------------------------------------------------
+        matches = []
 
         matches.extend(
             self._parse_tables_generic(
@@ -495,10 +443,6 @@ class RPLFixturesParser:
                 url=url,
             )
         )
-
-        # ----------------------------------------------------
-        # 2. Ищем элементы с "Тур N"
-        # ----------------------------------------------------
 
         if not matches:
 
@@ -517,25 +461,17 @@ class RPLFixturesParser:
                         round_node,
                         "get_text",
                     )
-                    else str(
-                        round_node
-                    )
+                    else str(round_node)
                 )
 
                 round_number = (
-                    self._extract_round(
-                        text
-                    )
+                    self._extract_round(text)
                 )
 
                 if not round_number:
                     continue
 
-                parent = (
-                    round_node.parent
-                    if round_node
-                    else None
-                )
+                parent = round_node.parent
 
                 if not parent:
                     continue
@@ -556,15 +492,10 @@ class RPLFixturesParser:
                         )
                     )
 
-                    if len(
-                        container_text
-                    ) > 40:
-
+                    if len(container_text) > 40:
                         break
 
-                    container = (
-                        container.parent
-                    )
+                    container = container.parent
 
                 if not container:
                     continue
@@ -577,10 +508,6 @@ class RPLFixturesParser:
                         url=url,
                     )
                 )
-
-        # ----------------------------------------------------
-        # 3. Общий fallback
-        # ----------------------------------------------------
 
         if not matches:
 
@@ -612,9 +539,7 @@ class RPLFixturesParser:
             "html.parser",
         )
 
-        matches: List[
-            Dict[str, Any]
-        ] = []
+        matches = []
 
         matches.extend(
             self._parse_tables_generic(
@@ -649,19 +574,13 @@ class RPLFixturesParser:
         url: str,
     ) -> List[Dict[str, Any]]:
 
-        matches: List[
-            Dict[str, Any]
-        ] = []
+        matches = []
 
         current_round = None
 
-        for table in soup.find_all(
-            "table"
-        ):
+        for table in soup.find_all("table"):
 
-            for row in table.find_all(
-                "tr"
-            ):
+            for row in table.find_all("tr"):
 
                 cells = row.find_all(
                     ["td", "th"]
@@ -677,9 +596,7 @@ class RPLFixturesParser:
                     for cell in cells
                 ]
 
-                row_text = " ".join(
-                    texts
-                )
+                row_text = " ".join(texts)
 
                 detected_round = (
                     self._extract_round(
@@ -688,10 +605,7 @@ class RPLFixturesParser:
                 )
 
                 if detected_round:
-
-                    current_round = (
-                        detected_round
-                    )
+                    current_round = detected_round
 
                 match = self._parse_row(
                     texts=texts,
@@ -702,14 +616,12 @@ class RPLFixturesParser:
                 )
 
                 if match:
-                    matches.append(
-                        match
-                    )
+                    matches.append(match)
 
         return matches
 
     # ========================================================
-    # ROW PARSER
+    # ROW
     # ========================================================
 
     def _parse_row(
@@ -719,34 +631,21 @@ class RPLFixturesParser:
         current_round: Optional[int],
         source: str,
         url: str,
-    ) -> Optional[
-        Dict[str, Any]
-    ]:
+    ) -> Optional[Dict[str, Any]]:
 
         if not row_text:
             return None
 
-        # ----------------------------------------------------
-        # Тур
-        # ----------------------------------------------------
-
         round_number = (
-            self._extract_round(
-                row_text
-            )
+            self._extract_round(row_text)
             or current_round
         )
 
-        # ----------------------------------------------------
-        # Команды
-        # ----------------------------------------------------
-
-        (
-            home_team,
-            away_team,
-        ) = self._extract_teams(
-            texts=texts,
-            row_text=row_text,
+        home_team, away_team = (
+            self._extract_teams(
+                texts=texts,
+                row_text=row_text,
+            )
         )
 
         if not home_team or not away_team:
@@ -768,29 +667,13 @@ class RPLFixturesParser:
         if home_team == away_team:
             return None
 
-        # ----------------------------------------------------
-        # Дата
-        # ----------------------------------------------------
-
-        date_value = (
-            self._extract_date(
-                row_text
-            )
+        date_value = self._extract_date(
+            row_text
         )
 
-        # ----------------------------------------------------
-        # Время
-        # ----------------------------------------------------
-
-        time_value = (
-            self._extract_time(
-                row_text
-            )
+        time_value = self._extract_time(
+            row_text
         )
-
-        # ----------------------------------------------------
-        # Счёт
-        # ----------------------------------------------------
 
         score = self._extract_score(
             row_text
@@ -801,9 +684,7 @@ class RPLFixturesParser:
 
         if score is not None:
 
-            home_goals, away_goals = (
-                score
-            )
+            home_goals, away_goals = score
 
         status = (
             "finished"
@@ -839,43 +720,16 @@ class RPLFixturesParser:
         Optional[str],
         Optional[str],
     ]:
-        """
-        Ищет две известные команды РПЛ.
 
-        Для надёжности сначала смотрим отдельные
-        ячейки, затем всю строку.
-        """
+        found = []
 
-        found: List[str] = []
-
-        candidates = []
-
-        # ----------------------------------------------------
-        # Сначала отдельные элементы
-        # ----------------------------------------------------
-
-        candidates.extend(
-            texts
-        )
-
-        # ----------------------------------------------------
-        # Затем вся строка
-        # ----------------------------------------------------
-
-        candidates.append(
-            row_text
-        )
-
-        # ----------------------------------------------------
-        # Проверяем варианты
-        # ----------------------------------------------------
+        candidates = list(texts)
+        candidates.append(row_text)
 
         for candidate in candidates:
 
-            candidate = (
-                self._clean_text(
-                    candidate
-                )
+            candidate = self._clean_text(
+                candidate
             )
 
             if not candidate:
@@ -885,20 +739,14 @@ class RPLFixturesParser:
                 candidate.lower()
             )
 
-            for canonical in (
-                CANONICAL_TEAMS
-            ):
+            for canonical in CANONICAL_TEAMS:
 
                 if canonical in found:
                     continue
 
-                variants = (
-                    self._name_variants(
-                        canonical
-                    )
+                variants = self._name_variants(
+                    canonical
                 )
-
-                matched = False
 
                 for variant in variants:
 
@@ -911,13 +759,9 @@ class RPLFixturesParser:
                             canonical
                         )
 
-                        matched = True
-
                         break
 
-                if matched and len(
-                    found
-                ) >= 2:
+                if len(found) >= 2:
 
                     return (
                         found[0],
@@ -925,13 +769,9 @@ class RPLFixturesParser:
                     )
 
         if len(found) < 2:
-
             return None, None
 
-        return (
-            found[0],
-            found[1],
-        )
+        return found[0], found[1]
 
     # ========================================================
     # NAME VARIANTS
@@ -973,6 +813,10 @@ class RPLFixturesParser:
                 "Локомотив Москва",
             ],
 
+            "Краснодар": [
+                "Краснодар",
+            ],
+
             "Ростов": [
                 "Ростов",
                 "Ростов-на-Дону",
@@ -998,14 +842,18 @@ class RPLFixturesParser:
                 "Факел Воронеж",
             ],
 
-            "Акрон": [
-                "Акрон",
-                "Акрон Тольятти",
+            "Оренбург": [
+                "Оренбург",
             ],
 
             "Балтика": [
                 "Балтика",
                 "Балтика Калининград",
+            ],
+
+            "Акрон": [
+                "Акрон",
+                "Акрон Тольятти",
             ],
 
             "Родина": [
@@ -1017,19 +865,6 @@ class RPLFixturesParser:
                 "Динамо Махачкала",
                 "Динамо Мх",
                 "Динамо (Махачкала)",
-            ],
-
-            "Краснодар": [
-                "Краснодар",
-            ],
-
-            "Оренбург": [
-                "Оренбург",
-            ],
-
-            "Акрон": [
-                "Акрон",
-                "Акрон Тольятти",
             ],
         }
 
@@ -1050,31 +885,23 @@ class RPLFixturesParser:
         if not text:
             return None
 
-        patterns = [
-            r"\b(\d{1,2})[./-](\d{1,2})[./-](20\d{2})\b",
-        ]
+        match = re.search(
+            r"\b(\d{1,2})[./-]"
+            r"(\d{1,2})[./-]"
+            r"(20\d{2})\b",
+            text,
+        )
 
-        for pattern in patterns:
+        if not match:
+            return None
 
-            match = re.search(
-                pattern,
-                text,
-            )
+        day, month, year = match.groups()
 
-            if not match:
-                continue
-
-            day, month, year = (
-                match.groups()
-            )
-
-            return (
-                f"{year}-"
-                f"{int(month):02d}-"
-                f"{int(day):02d}"
-            )
-
-        return None
+        return (
+            f"{year}-"
+            f"{int(month):02d}-"
+            f"{int(day):02d}"
+        )
 
     # ========================================================
     # TIME
@@ -1105,18 +932,10 @@ class RPLFixturesParser:
     def _extract_score(
         self,
         text: str,
-    ) -> Optional[
-        Tuple[int, int]
-    ]:
+    ) -> Optional[Tuple[int, int]]:
 
         if not text:
             return None
-
-        # ----------------------------------------------------
-        # Важное правило:
-        #
-        # "– : –" НЕ является результатом.
-        # ----------------------------------------------------
 
         patterns = [
             r"\b(\d{1,2})\s*:\s*(\d{1,2})\b",
@@ -1125,19 +944,13 @@ class RPLFixturesParser:
 
         for pattern in patterns:
 
-            matches = re.findall(
+            for home, away in re.findall(
                 pattern,
                 text,
-            )
-
-            for home, away in matches:
+            ):
 
                 h = int(home)
                 a = int(away)
-
-                # ------------------------------------------------
-                # Реалистичный диапазон футбольного счёта
-                # ------------------------------------------------
 
                 if h > 15 or a > 15:
                     continue
@@ -1175,16 +988,9 @@ class RPLFixturesParser:
             if not match:
                 continue
 
-            value = int(
-                match.group(1)
-            )
+            value = int(match.group(1))
 
-            if (
-                1
-                <= value
-                <= EXPECTED_ROUNDS
-            ):
-
+            if 1 <= value <= EXPECTED_ROUNDS:
                 return value
 
         return None
@@ -1200,9 +1006,7 @@ class RPLFixturesParser:
         url: str,
     ) -> List[Dict[str, Any]]:
 
-        matches: List[
-            Dict[str, Any]
-        ] = []
+        matches = []
 
         text = soup.get_text(
             "\n",
@@ -1210,9 +1014,7 @@ class RPLFixturesParser:
         )
 
         lines = [
-            self._clean_text(
-                line
-            )
+            self._clean_text(line)
             for line in text.splitlines()
         ]
 
@@ -1227,16 +1029,11 @@ class RPLFixturesParser:
         for line in lines:
 
             detected_round = (
-                self._extract_round(
-                    line
-                )
+                self._extract_round(line)
             )
 
             if detected_round:
-
-                current_round = (
-                    detected_round
-                )
+                current_round = detected_round
 
             match = self._parse_row(
                 texts=[line],
@@ -1247,15 +1044,12 @@ class RPLFixturesParser:
             )
 
             if match:
-
-                matches.append(
-                    match
-                )
+                matches.append(match)
 
         return matches
 
     # ========================================================
-    # CONTAINER MATCH EXTRACTION
+    # CONTAINER
     # ========================================================
 
     def _extract_matches_from_container(
@@ -1266,9 +1060,7 @@ class RPLFixturesParser:
         url: str,
     ) -> List[Dict[str, Any]]:
 
-        matches: List[
-            Dict[str, Any]
-        ] = []
+        matches = []
 
         rows = container.find_all(
             ["tr", "li"]
@@ -1299,9 +1091,7 @@ class RPLFixturesParser:
                     )
                 ]
 
-            row_text = " ".join(
-                texts
-            )
+            row_text = " ".join(texts)
 
             match = self._parse_row(
                 texts=texts,
@@ -1312,41 +1102,30 @@ class RPLFixturesParser:
             )
 
             if match:
-
-                matches.append(
-                    match
-                )
+                matches.append(match)
 
         return matches
 
     # ========================================================
-    # VALIDATION
+    # MATCH VALIDATION
     # ========================================================
 
     def _validate_matches(
         self,
-        matches: List[
-            Dict[str, Any]
-        ],
-    ) -> List[
-        Dict[str, Any]
-    ]:
+        matches: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
 
         result = []
 
         for match in matches:
 
             home = normalize_team_name(
-                match.get(
-                    "home_team"
-                ),
+                match.get("home_team"),
                 strict=True,
             )
 
             away = normalize_team_name(
-                match.get(
-                    "away_team"
-                ),
+                match.get("away_team"),
                 strict=True,
             )
 
@@ -1360,20 +1139,14 @@ class RPLFixturesParser:
                 "round"
             )
 
-            if round_number is None:
-                continue
-
             try:
-
                 round_number = int(
                     round_number
                 )
-
             except (
                 TypeError,
                 ValueError,
             ):
-
                 continue
 
             if not (
@@ -1381,18 +1154,13 @@ class RPLFixturesParser:
                 <= round_number
                 <= EXPECTED_ROUNDS
             ):
-
                 continue
 
             match["home_team"] = home
             match["away_team"] = away
-            match["round"] = (
-                round_number
-            )
+            match["round"] = round_number
 
-            result.append(
-                match
-            )
+            result.append(match)
 
         return result
 
@@ -1402,54 +1170,35 @@ class RPLFixturesParser:
 
     def _merge_matches(
         self,
-        matches: List[
-            Dict[str, Any]
-        ],
+        matches: List[Dict[str, Any]],
     ) -> Tuple[
         List[Dict[str, Any]],
         List[Dict[str, Any]],
     ]:
 
-        unique: Dict[
-            Tuple[Any, ...],
-            Dict[str, Any],
-        ] = {}
+        unique = {}
 
-        duplicates: List[
-            Dict[str, Any]
-        ] = []
+        duplicates = []
 
         for match in matches:
 
             key = (
-                match.get(
-                    "season_year"
-                ),
-                match.get(
-                    "round"
-                ),
-                match.get(
-                    "home_team"
-                ),
-                match.get(
-                    "away_team"
-                ),
+                match.get("season_year"),
+                match.get("round"),
+                match.get("home_team"),
+                match.get("away_team"),
             )
 
             if key not in unique:
 
-                item = dict(
-                    match
-                )
+                item = dict(match)
 
                 item["sources"] = [
                     {
-                        "source": match.get(
-                            "source"
-                        ),
-                        "url": match.get(
-                            "source_url"
-                        ),
+                        "source":
+                            match.get("source"),
+                        "url":
+                            match.get("source_url"),
                     }
                 ]
 
@@ -1457,146 +1206,174 @@ class RPLFixturesParser:
 
                 continue
 
-            # ------------------------------------------------
-            # Дубликат
-            # ------------------------------------------------
-
             existing = unique[key]
 
-            existing_sources = (
-                existing.setdefault(
-                    "sources",
-                    [],
-                )
-            )
-
-            existing_sources.append(
+            existing.setdefault(
+                "sources",
+                [],
+            ).append(
                 {
-                    "source": match.get(
-                        "source"
-                    ),
-                    "url": match.get(
-                        "source_url"
-                    ),
+                    "source":
+                        match.get("source"),
+                    "url":
+                        match.get("source_url"),
                 }
             )
 
             duplicates.append(
                 {
                     "key": key,
-                    "source": match.get(
-                        "source"
-                    ),
+                    "source":
+                        match.get("source"),
                 }
             )
 
-            # ------------------------------------------------
-            # Дополняем дату
-            # ------------------------------------------------
-
             if (
-                not existing.get(
-                    "date"
-                )
-                and match.get(
-                    "date"
-                )
+                not existing.get("date")
+                and match.get("date")
             ):
-
                 existing["date"] = (
                     match["date"]
                 )
 
-            # ------------------------------------------------
-            # Дополняем время
-            # ------------------------------------------------
-
             if (
-                not existing.get(
-                    "time"
-                )
-                and match.get(
-                    "time"
-                )
+                not existing.get("time")
+                and match.get("time")
             ):
-
                 existing["time"] = (
                     match["time"]
                 )
 
-            # ------------------------------------------------
-            # Дополняем результат
-            # ------------------------------------------------
-
             if (
-                existing.get(
-                    "home_goals"
-                )
+                existing.get("home_goals")
                 is None
-                and match.get(
-                    "home_goals"
-                )
+                and match.get("home_goals")
                 is not None
             ):
 
-                existing[
-                    "home_goals"
-                ] = match[
-                    "home_goals"
-                ]
+                existing["home_goals"] = (
+                    match["home_goals"]
+                )
 
-                existing[
-                    "away_goals"
-                ] = match[
-                    "away_goals"
-                ]
+                existing["away_goals"] = (
+                    match["away_goals"]
+                )
 
-                existing[
-                    "status"
-                ] = "finished"
+                existing["status"] = (
+                    "finished"
+                )
 
         return (
-            list(
-                unique.values()
-            ),
+            list(unique.values()),
             duplicates,
         )
 
     # ========================================================
-    # CALENDAR VALIDATION
+    # STRICT CALENDAR VALIDATION
     # ========================================================
 
     def _validate_calendar(
         self,
-        matches: List[
-            Dict[str, Any]
-        ],
+        matches: List[Dict[str, Any]],
         result: Dict[str, Any],
     ) -> None:
-        """
-        Проверяет полноту календаря.
 
-        Для РПЛ:
-            30 туров
-            8 матчей в каждом
-            240 матчей всего.
-        """
+        errors = []
+        warnings = []
+
+        # ----------------------------------------------------
+        # EMPTY
+        # ----------------------------------------------------
 
         if not matches:
 
-            result["warnings"].append(
+            errors.append(
                 "Календарь пуст."
             )
+
+            result["validation_errors"] = errors
+            result["warnings"] = warnings
+            result["calendar_valid"] = False
 
             return
 
         # ----------------------------------------------------
-        # По турам
+        # TEAM SET
+        # ----------------------------------------------------
+
+        expected_teams = set(
+            CANONICAL_TEAMS
+        )
+
+        found_teams = set()
+
+        for match in matches:
+
+            found_teams.add(
+                match["home_team"]
+            )
+
+            found_teams.add(
+                match["away_team"]
+            )
+
+        unknown_teams = (
+            found_teams
+            - expected_teams
+        )
+
+        missing_teams = (
+            expected_teams
+            - found_teams
+        )
+
+        if unknown_teams:
+
+            errors.append(
+                "Неизвестные команды: "
+                + ", ".join(
+                    sorted(unknown_teams)
+                )
+            )
+
+        if missing_teams:
+
+            errors.append(
+                "Команды отсутствуют: "
+                + ", ".join(
+                    sorted(missing_teams)
+                )
+            )
+
+        if len(found_teams) != EXPECTED_TEAMS:
+
+            errors.append(
+                f"Найдено команд: "
+                f"{len(found_teams)} "
+                f"вместо {EXPECTED_TEAMS}."
+            )
+
+        # ----------------------------------------------------
+        # TOTAL
+        # ----------------------------------------------------
+
+        total = len(matches)
+
+        if total != EXPECTED_MATCHES:
+
+            errors.append(
+                f"Календарь содержит "
+                f"{total} матчей вместо "
+                f"{EXPECTED_MATCHES}."
+            )
+
+        # ----------------------------------------------------
+        # ROUND COUNTS
         # ----------------------------------------------------
 
         round_counts = {
-            round_number: 0
-            for round_number in range(
+            number: 0
+            for number in range(
                 1,
                 EXPECTED_ROUNDS + 1,
             )
@@ -1614,58 +1391,303 @@ class RPLFixturesParser:
                     round_number
                 ] += 1
 
-        incomplete_rounds = []
-
         for (
             round_number,
             count,
         ) in round_counts.items():
 
-            if count != 8:
+            if count != EXPECTED_MATCHES_PER_ROUND:
 
-                incomplete_rounds.append(
+                errors.append(
+                    f"Тур {round_number}: "
+                    f"{count} матчей "
+                    f"вместо "
+                    f"{EXPECTED_MATCHES_PER_ROUND}."
+                )
+
+        # ----------------------------------------------------
+        # STRICT ROUND VALIDATION
+        # ----------------------------------------------------
+
+        duplicate_pairs = []
+        duplicate_teams = []
+
+        for round_number in range(
+            1,
+            EXPECTED_ROUNDS + 1,
+        ):
+
+            round_matches = [
+                match
+                for match in matches
+                if match.get("round")
+                == round_number
+            ]
+
+            teams_in_round = {}
+
+            pairs_in_round = set()
+
+            for match in round_matches:
+
+                home = match["home_team"]
+                away = match["away_team"]
+
+                # --------------------------------------------
+                # TEAM APPEARS TWICE
+                # --------------------------------------------
+
+                if home in teams_in_round:
+
+                    duplicate_teams.append(
+                        {
+                            "round":
+                                round_number,
+                            "team":
+                                home,
+                            "first_match":
+                                teams_in_round[
+                                    home
+                                ],
+                            "second_match":
+                                (
+                                    home,
+                                    away
+                                ),
+                        }
+                    )
+
+                else:
+
+                    teams_in_round[home] = (
+                        home,
+                        away
+                    )
+
+                if away in teams_in_round:
+
+                    duplicate_teams.append(
+                        {
+                            "round":
+                                round_number,
+                            "team":
+                                away,
+                            "first_match":
+                                teams_in_round[
+                                    away
+                                ],
+                            "second_match":
+                                (
+                                    home,
+                                    away
+                                ),
+                        }
+                    )
+
+                else:
+
+                    teams_in_round[away] = (
+                        home,
+                        away
+                    )
+
+                # --------------------------------------------
+                # PAIR WITHOUT DIRECTION
+                # --------------------------------------------
+
+                pair = frozenset(
                     {
-                        "round": round_number,
-                        "matches": count,
-                        "expected": 8,
+                        home,
+                        away,
                     }
                 )
 
-        if incomplete_rounds:
+                if pair in pairs_in_round:
 
-            result["warnings"].append(
-                "Найдены неполные туры: "
-                + ", ".join(
-                    (
-                        f"тур {item['round']} "
-                        f"({item['matches']}/8)"
+                    duplicate_pairs.append(
+                        {
+                            "round":
+                                round_number,
+                            "home":
+                                home,
+                            "away":
+                                away,
+                        }
                     )
-                    for item
-                    in incomplete_rounds
-                )
+
+                else:
+
+                    pairs_in_round.add(
+                        pair
+                    )
+
+            # --------------------------------------------
+            # 8 MATCHES MUST MEAN 16 TEAM APPEARANCES
+            # --------------------------------------------
+
+            if len(round_matches) == 8:
+
+                if len(teams_in_round) != 16:
+
+                    errors.append(
+                        f"Тур {round_number}: "
+                        f"участвуют "
+                        f"{len(teams_in_round)} "
+                        f"команд вместо 16."
+                    )
+
+        # ----------------------------------------------------
+        # DUPLICATE PAIRS
+        # ----------------------------------------------------
+
+        for item in duplicate_pairs:
+
+            errors.append(
+                f"Тур {item['round']}: "
+                f"повторная пара "
+                f"{item['home']} — "
+                f"{item['away']}."
             )
 
         # ----------------------------------------------------
-        # Общее количество
+        # DUPLICATE TEAM
         # ----------------------------------------------------
 
-        total = len(matches)
+        for item in duplicate_teams:
 
-        if total != EXPECTED_MATCHES:
+            errors.append(
+                f"Тур {item['round']}: "
+                f"команда {item['team']} "
+                f"играет более одного матча."
+            )
 
-            result["warnings"].append(
-                f"Календарь содержит "
-                f"{total} матчей вместо "
-                f"{EXPECTED_MATCHES}."
+        # ----------------------------------------------------
+        # SAME TEAM
+        # ----------------------------------------------------
+
+        self_matches = []
+
+        for match in matches:
+
+            if (
+                match["home_team"]
+                == match["away_team"]
+            ):
+
+                self_matches.append(match)
+
+                errors.append(
+                    f"Тур {match['round']}: "
+                    f"{match['home_team']} "
+                    f"играет сама с собой."
+                )
+
+        # ----------------------------------------------------
+        # ROUND COMPLETENESS
+        # ----------------------------------------------------
+
+        complete_rounds = sum(
+            1
+            for count
+            in round_counts.values()
+            if count == 8
+        )
+
+        # ----------------------------------------------------
+        # FINAL RESULT
+        # ----------------------------------------------------
+
+        valid = (
+            total == EXPECTED_MATCHES
+            and complete_rounds
+            == EXPECTED_ROUNDS
+            and len(found_teams)
+            == EXPECTED_TEAMS
+            and not unknown_teams
+            and not missing_teams
+            and not duplicate_pairs
+            and not duplicate_teams
+            and not self_matches
+            and not errors
+        )
+
+        result["validation"] = {
+
+            "expected_rounds":
+                EXPECTED_ROUNDS,
+
+            "found_rounds":
+                EXPECTED_ROUNDS,
+
+            "complete_rounds":
+                complete_rounds,
+
+            "expected_matches":
+                EXPECTED_MATCHES,
+
+            "found_matches":
+                total,
+
+            "expected_teams":
+                EXPECTED_TEAMS,
+
+            "found_teams":
+                len(found_teams),
+
+            "duplicate_pairs":
+                len(duplicate_pairs),
+
+            "duplicate_team_appearances":
+                len(duplicate_teams),
+
+            "self_matches":
+                len(self_matches),
+
+            "status":
+                "valid"
+                if valid
+                else "invalid",
+        }
+
+        result["validation_errors"] = errors
+        result["warnings"] = warnings
+        result["calendar_valid"] = valid
+
+        if valid:
+
+            logger.info(
+                "================================================"
+            )
+
+            logger.info(
+                "✅ КАЛЕНДАРЬ ПРОШЁЛ СТРОГУЮ ПРОВЕРКУ"
+            )
+
+            logger.info(
+                "30 туров / 240 матчей / 16 команд"
+            )
+
+            logger.info(
+                "================================================"
             )
 
         else:
 
-            logger.info(
-                "✅ Полный календарь: "
-                "%s/%s матчей",
-                total,
-                EXPECTED_MATCHES,
+            logger.error(
+                "================================================"
+            )
+
+            logger.error(
+                "❌ КАЛЕНДАРЬ НЕ ПРОШЁЛ ПРОВЕРКУ"
+            )
+
+            logger.error(
+                "Найдено ошибок: %s",
+                len(errors),
+            )
+
+            logger.error(
+                "================================================"
             )
 
     # ========================================================
@@ -1695,13 +1717,10 @@ class RPLFixturesParser:
 
 
 # ============================================================
-# CONVENIENCE FUNCTION
+# CONVENIENCE
 # ============================================================
 
 def parse_rpl_fixtures() -> Dict[str, Any]:
-    """
-    Удобная функция для load_all.py.
-    """
 
     parser = RPLFixturesParser()
 
@@ -1730,7 +1749,7 @@ if __name__ == "__main__":
     print()
     print("=" * 70)
     print(
-        "FAJ RPL FIXTURES PARSER v12.1"
+        "FAJ RPL FIXTURES PARSER v12.1 / 2.1"
     )
     print("=" * 70)
 
@@ -1740,18 +1759,61 @@ if __name__ == "__main__":
     )
 
     print(
-        f"Дубликатов: "
+        f"Дубликатов источников: "
         f"{len(result['duplicates'])}"
     )
 
     print(
-        f"Ошибок: "
+        f"Ошибок источников: "
         f"{len(result['errors'])}"
     )
 
     print(
-        f"Предупреждений: "
-        f"{len(result['warnings'])}"
+        f"Ошибок проверки: "
+        f"{len(result['validation_errors'])}"
+    )
+
+    print(
+        f"Календарь корректен: "
+        f"{'ДА' if result['calendar_valid'] else 'НЕТ'}"
+    )
+
+    print()
+    print("ПРОВЕРКА:")
+
+    validation = result.get(
+        "validation",
+        {}
+    )
+
+    print(
+        f"  Туров: "
+        f"{validation.get('complete_rounds', 0)}/30"
+    )
+
+    print(
+        f"  Матчей: "
+        f"{validation.get('found_matches', 0)}/240"
+    )
+
+    print(
+        f"  Команд: "
+        f"{validation.get('found_teams', 0)}/16"
+    )
+
+    print(
+        f"  Повторных пар: "
+        f"{validation.get('duplicate_pairs', 0)}"
+    )
+
+    print(
+        f"  Команд с двумя матчами: "
+        f"{validation.get('duplicate_team_appearances', 0)}"
+    )
+
+    print(
+        f"  Само-матчей: "
+        f"{validation.get('self_matches', 0)}"
     )
 
     print()
@@ -1760,9 +1822,7 @@ if __name__ == "__main__":
     for (
         source,
         info,
-    ) in result[
-        "sources"
-    ].items():
+    ) in result["sources"].items():
 
         print(
             f"  {source}: "
@@ -1771,30 +1831,14 @@ if __name__ == "__main__":
         )
 
     print()
-    print("ПРЕДУПРЕЖДЕНИЯ:")
+    print("ОШИБКИ ПРОВЕРКИ:")
 
-    for warning in result[
-        "warnings"
+    for error in result[
+        "validation_errors"
     ]:
 
         print(
-            f"  ⚠️ {warning}"
-        )
-
-    print()
-    print("ПЕРВЫЕ МАТЧИ:")
-
-    for match in result[
-        "matches"
-    ][:10]:
-
-        print(
-            f"Тур {match.get('round')}: "
-            f"{match.get('home_team')} — "
-            f"{match.get('away_team')} | "
-            f"{match.get('date')} "
-            f"{match.get('time') or ''} | "
-            f"{match.get('status')}"
+            f"  ❌ {error}"
         )
 
     print("=" * 70)
