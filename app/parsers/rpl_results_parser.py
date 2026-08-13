@@ -79,7 +79,7 @@ class RPLResultsParser:
         ),
         "championat": (
             "https://www.championat.com/football/"
-            "_russiapl/tournament/6594/calendar/"
+            "_russiapl/tournament/7096/calendar/"
         ),
         "soccerland": (
             "https://soccerland.ru/russia/"
@@ -125,7 +125,7 @@ class RPLResultsParser:
     def parse(
         self,
         start_round: int = 1,
-        end_round: int = 3,
+        end_round: int = 30,
     ) -> List[Dict[str, Any]]:
         """
         Загружает результаты РПЛ.
@@ -249,25 +249,147 @@ class RPLResultsParser:
 
     def parse_rounds(
         self,
-        start_round: int = 1,
-        end_round: int = 3,
+        rounds: Optional[Any] = None,
+        start_round: Optional[int] = None,
+        end_round: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Совместимый публичный API для load_all.py.
-
-        В предыдущей версии загрузчик вызывал:
-
-            parser.parse_rounds(...)
-
-        Основным методом парсера является parse().
-
-        Поэтому parse_rounds() является безопасным
-        адаптером и передаёт управление в parse().
-
-        Никаких дополнительных операций с БД
-        здесь не выполняется.
+        Совместимый публичный API.
+        Поддерживает:
+            parse_rounds(1, 3)
+            parse_rounds(
+                start_round=1,
+                end_round=3,
+            )
+            parse_rounds(
+                rounds=[1, 2, 3],
+            )
+            parse_rounds(
+                rounds=4,
+            )
+        Важно:
+            метод НЕ изменяет БД.
         """
-
+        # ---------------------------------------------------------
+        # 1. Явно передан rounds
+        # ---------------------------------------------------------
+        if rounds is not None:
+            # Один тур:
+            #
+            # rounds=4
+            #
+            if isinstance(rounds, int):
+                start = rounds
+                end = rounds
+                return self.parse(
+                    start_round=start,
+                    end_round=end,
+                )
+            # Несколько туров:
+            #
+            # rounds=[1, 2, 3]
+            #
+            if isinstance(
+                rounds,
+                (list, tuple, set),
+            ):
+                normalized_rounds = []
+                for value in rounds:
+                    try:
+                        value = int(value)
+                    except (
+                        TypeError,
+                        ValueError,
+                    ):
+                        continue
+                    if 1 <= value <= 30:
+                        normalized_rounds.append(
+                            value
+                        )
+                normalized_rounds = sorted(
+                    set(normalized_rounds)
+                )
+                if not normalized_rounds:
+                    return []
+                # -------------------------------------------------
+                # Если это непрерывный диапазон,
+                # используем один запрос.
+                #
+                # [1,2,3] -> parse(1,3)
+                #
+                # -------------------------------------------------
+                expected = list(
+                    range(
+                        normalized_rounds[0],
+                        normalized_rounds[-1] + 1,
+                    )
+                )
+                if normalized_rounds == expected:
+                    return self.parse(
+                        start_round=normalized_rounds[0],
+                        end_round=normalized_rounds[-1],
+                    )
+                # -------------------------------------------------
+                # Если туры разрозненные:
+                #
+                # [1,3,5]
+                #
+                # парсим каждый отдельно.
+                # -------------------------------------------------
+                result = []
+                for round_number in normalized_rounds:
+                    result.extend(
+                        self.parse(
+                            start_round=round_number,
+                            end_round=round_number,
+                        )
+                    )
+                # -------------------------------------------------
+                # Финальная дедупликация
+                # -------------------------------------------------
+                return self._deduplicate(
+                    result
+                )
+            # -----------------------------------------------------
+            # Неподдерживаемый тип
+            # -----------------------------------------------------
+            raise TypeError(
+                "rounds должен быть int, "
+                "list, tuple или set"
+            )
+        # ---------------------------------------------------------
+        # 2. Старый API:
+        #
+        # parse_rounds(
+        #     start_round=1,
+        #     end_round=3
+        # )
+        # ---------------------------------------------------------
+        if start_round is None:
+            start_round = 1
+        if end_round is None:
+            end_round = start_round
+        try:
+            start_round = int(
+                start_round
+            )
+            end_round = int(
+                end_round
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            raise TypeError(
+                "start_round и end_round "
+                "должны быть целыми числами"
+            )
+        if start_round < 1:
+            start_round = 1
+        if end_round > 30:
+            end_round = 30
+        if end_round < start_round:
+            end_round = start_round
         return self.parse(
             start_round=start_round,
             end_round=end_round,
@@ -1167,7 +1289,7 @@ class RPLResultsParser:
 
 def parse_rpl_results(
     start_round: int = 1,
-    end_round: int = 3,
+    end_round: int = 30,
 ) -> List[Dict[str, Any]]:
     """
     Удобная функция для load_all.py.
