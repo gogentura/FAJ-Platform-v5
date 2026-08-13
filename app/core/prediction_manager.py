@@ -495,7 +495,7 @@ class PredictionManager:
         Не требует наличия поля status.
         """
 
-        conn = self.db._get_connection()
+        conn = self.db.get_connection()  # ✅ ИСПРАВЛЕНО
 
         try:
 
@@ -577,7 +577,7 @@ class PredictionManager:
         Получение матча из SQLite.
         """
 
-        conn = self.db._get_connection()
+        conn = self.db.get_connection()  # ✅ ИСПРАВЛЕНО
 
         try:
 
@@ -646,7 +646,7 @@ class PredictionManager:
         Получение матчей тура.
         """
 
-        conn = self.db._get_connection()
+        conn = self.db.get_connection()  # ✅ ИСПРАВЛЕНО
 
         try:
 
@@ -1083,7 +1083,7 @@ class PredictionManager:
         Находит матч в SQLite.
         """
 
-        conn = self.db._get_connection()
+        conn = self.db.get_connection()  # ✅ ИСПРАВЛЕНО
 
         try:
 
