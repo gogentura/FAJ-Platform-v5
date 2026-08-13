@@ -1545,26 +1545,62 @@ class FAJDatabase:
     # ============================================================
     
     def create_round(self, season_id, number, date_start="", date_end=""):
+        """
+        Идемпотентное создание тура.
+        Безопасно при повторных и параллельных вызовах.
+        UNIQUE(season_id, round_number) является
+        окончательным защитным механизмом.
+        """
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id FROM rounds
-                WHERE season_id = ? AND round_number = ?
-                LIMIT 1
-            """, (season_id, number))
-            existing = cursor.fetchone()
-            if existing:
-                return existing["id"]
-            
-            cursor.execute("""
-                INSERT INTO rounds (
-                    season_id, round_number, date_start, date_end, created_at
-                ) VALUES (?, ?, ?, ?, ?)
-            """, (season_id, number, date_start, date_end, datetime.now().isoformat()))
-            round_id = cursor.lastrowid
+            # ----------------------------------------------------
+            # ATOMIC INSERT
+            # ----------------------------------------------------
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO rounds (
+                    season_id,
+                    round_number,
+                    date_start,
+                    date_end,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    season_id,
+                    number,
+                    date_start,
+                    date_end,
+                    datetime.now().isoformat(),
+                ),
+            )
             conn.commit()
-            return round_id
+            # ----------------------------------------------------
+            # GET ID
+            # ----------------------------------------------------
+            cursor.execute(
+                """
+                SELECT id
+                FROM rounds
+                WHERE season_id = ?
+                  AND round_number = ?
+                LIMIT 1
+                """,
+                (
+                    season_id,
+                    number,
+                ),
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise RuntimeError(
+                    f"Не удалось получить round_id "
+                    f"для season_id={season_id}, "
+                    f"round_number={number}"
+                )
+            return row["id"]
         except Exception:
             conn.rollback()
             raise
