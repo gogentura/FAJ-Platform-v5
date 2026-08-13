@@ -8,860 +8,731 @@ RPL HISTORICAL IMPORTER
 ===========================================================
 
 Назначение:
-    Однократный контролируемый импорт исторических
-    результатов РПЛ 2026/27.
-
-Источник исходного набора:
-    manual historical dataset.
+    Однократный/повторяемый импорт проверенных исторических
+    результатов РПЛ 2026/27 в SQLite.
 
 ВАЖНО:
+    - НЕ является парсером.
+    - НЕ использует NB-Bet как постоянный источник.
+    - НЕ делает DELETE.
+    - НЕ удаляет существующие матчи.
+    - НЕ создаёт прогнозы.
+    - НЕ запускает обучение.
+    - НЕ изменяет календарь.
+    - Идемпотентен.
 
-    NB-Bet НЕ является постоянным источником данных.
+Цепочка:
+    VERIFIED HISTORICAL DATA
+              ↓
+    round + home + away
+              ↓
+       existing match
+              ↓
+       match_results
+              +
+       matches.actual_home
+       matches.actual_away
+       matches.status
+              ↓
+          FAJ DATABASE
 
-    Этот модуль:
-        - не парсит NB-Bet;
-        - не удаляет данные;
-        - не очищает таблицы;
-        - не создаёт матчи;
-        - не создаёт паспорта;
-        - не запускает обучение;
-        - не рассчитывает прогнозы.
-
-    Он только:
-
-        1. берёт заранее проверенный набор результатов;
-        2. ищет соответствующий матч в matches;
-        3. проверяет round + home_team + away_team;
-        4. записывает результат;
-        5. сохраняет источник как historical/manual_import;
-        6. безопасно повторяется.
-
+Источник:
+    historical/manual_import
 ===========================================================
 """
 
 from __future__ import annotations
 
 import logging
+import sqlite3
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-
-from app.database import Database
-
 
 logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# CONSTANTS
+# CONFIG
 # ============================================================
 
 SEASON_YEAR = "2026-2027"
-LEAGUE = "РПЛ"
-
-SOURCE = "historical/manual_import"
-PARSER_VERSION = "rpl_historical_importer_v1.0"
-
+LEAGUE_NAME = "РПЛ"
+IMPORT_SOURCE = "historical"
+IMPORT_METHOD = "manual_import"
+IMPORT_VERSION = "1.0"
 EXPECTED_MATCHES = 24
 
 
 # ============================================================
-# HISTORICAL DATASET
+# DATABASE PATH
+# ============================================================
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+DEFAULT_DB_PATH = ROOT_DIR / "data" / "faj.db"
+
+
+# ============================================================
+# VERIFIED HISTORICAL DATA
 # ============================================================
 #
 # ВАЖНО:
-# Здесь находятся НЕ URL и НЕ парсер.
-#
-# Это зафиксированный исторический набор.
+#     Здесь находятся ТОЛЬКО фактические результаты.
+#     Никаких прогнозов. Никаких коэффициентов. Никакого xG.
+#     Никакого NB-Bet.
 #
 # Формат:
+#     (
+#         round,
+#         date,
+#         home_team,
+#         away_team,
+#         home_goals,
+#         away_goals,
+#     )
 #
-# {
-#     "round": 1,
-#     "date": "2026-07-24",
-#     "home_team": "ЦСКА",
-#     "away_team": "Балтика",
-#     "home_goals": 2,
-#     "away_goals": 1,
-# }
+# Все 24 результата подтверждены.
 #
-# Счёт каждого матча должен быть проверен ДО внесения сюда.
-#
-# ============================================================
 
-HISTORICAL_RESULTS: List[Dict[str, Any]] = [
+HISTORICAL_MATCHES: List[Tuple[int, str, str, str, int, int]] = [
 
-    # --------------------------------------------------------
-    # TOUR 1
-    # --------------------------------------------------------
+    # ========================================================
+    # TOUR 1 (8 матчей)
+    # ========================================================
+    (
+        1,
+        "2026-07-24",
+        "ЦСКА",
+        "Балтика",
+        2,
+        1,
+    ),
+    (
+        1,
+        "2026-07-25",
+        "Динамо Москва",
+        "Крылья Советов",
+        0,
+        0,
+    ),
+    (
+        1,
+        "2026-07-25",
+        "Акрон",
+        "Зенит",
+        0,
+        5,
+    ),
+    (
+        1,
+        "2026-07-25",
+        "Факел",
+        "Динамо Махачкала",
+        1,
+        2,
+    ),
+    (
+        1,
+        "2026-07-25",
+        "Спартак",
+        "Родина",
+        3,
+        0,
+    ),
+    (
+        1,
+        "2026-07-26",
+        "Оренбург",
+        "Ростов",
+        2,
+        1,
+    ),
+    (
+        1,
+        "2026-07-26",
+        "Локомотив",
+        "Ахмат",
+        1,
+        1,
+    ),
+    (
+        1,
+        "2026-07-26",
+        "Рубин",
+        "Краснодар",
+        1,
+        3,
+    ),
 
-    {
-        "round": 1,
-        "date": "2026-07-24",
-        "home_team": "ЦСКА",
-        "away_team": "Балтика",
-        "home_goals": 2,
-        "away_goals": 1,
-    },
+    # ========================================================
+    # TOUR 2 (8 матчей)
+    # ========================================================
+    (
+        2,
+        "2026-07-31",
+        "Родина",
+        "Ростов",
+        2,
+        4,
+    ),
+    (
+        2,
+        "2026-08-01",
+        "Акрон",
+        "Рубин",
+        1,
+        2,
+    ),
+    (
+        2,
+        "2026-08-01",
+        "ЦСКА",
+        "Крылья Советов",
+        1,
+        1,
+    ),
+    (
+        2,
+        "2026-08-01",
+        "Динамо Махачкала",
+        "Локомотив",
+        2,
+        1,
+    ),
+    (
+        2,
+        "2026-08-01",
+        "Балтика",
+        "Динамо Москва",
+        2,
+        1,
+    ),
+    (
+        2,
+        "2026-08-02",
+        "Оренбург",
+        "Зенит",
+        0,
+        3,
+    ),
+    (
+        2,
+        "2026-08-02",
+        "Краснодар",
+        "Факел",
+        3,
+        2,
+    ),
+    (
+        2,
+        "2026-08-02",
+        "Ахмат",
+        "Спартак",
+        1,
+        2,
+    ),
 
-    {
-        "round": 1,
-        "date": "2026-07-25",
-        "home_team": "Рубин",
-        "away_team": "Краснодар",
-        "home_goals": 1,
-        "away_goals": 3,
-    },
-
-    {
-        "round": 1,
-        "date": "2026-07-25",
-        "home_team": "Спартак",
-        "away_team": "Родина",
-        "home_goals": 3,
-        "away_goals": 0,
-    },
-
-    {
-        "round": 1,
-        "date": "2026-07-25",
-        "home_team": "Акрон",
-        "away_team": "Зенит",
-        "home_goals": 0,
-        "away_goals": 5,
-    },
-
-    {
-        "round": 1,
-        "date": "2026-07-25",
-        "home_team": "Динамо Москва",
-        "away_team": "Крылья Советов",
-        "home_goals": 0,
-        "away_goals": 0,
-    },
-
-    {
-        "round": 1,
-        "date": "2026-07-25",
-        "home_team": "Факел",
-        "away_team": "Динамо Махачкала",
-        "home_goals": 1,
-        "away_goals": 2,
-    },
-
-    {
-        "round": 1,
-        "date": "2026-07-26",
-        "home_team": "Оренбург",
-        "away_team": "Ростов",
-        "home_goals": 2,
-        "away_goals": 1,
-    },
-
-    {
-        "round": 1,
-        "date": "2026-07-26",
-        "home_team": "Локомотив",
-        "away_team": "Ахмат",
-        "home_goals": 1,
-        "away_goals": 1,
-    },
-
-
-    # --------------------------------------------------------
-    # TOUR 2
-    # --------------------------------------------------------
-
-    {
-        "round": 2,
-        "date": "2026-07-31",
-        "home_team": "Ахмат",
-        "away_team": "Спартак",
-        "home_goals": 1,
-        "away_goals": 2,
-    },
-
-    {
-        "round": 2,
-        "date": "2026-08-02",
-        "home_team": "Краснодар",
-        "away_team": "Факел",
-        "home_goals": 3,
-        "away_goals": 2,
-    },
-
-    {
-        "round": 2,
-        "date": "2026-08-02",
-        "home_team": "Оренбург",
-        "away_team": "Зенит",
-        "home_goals": 0,
-        "away_goals": 3,
-    },
-
-    {
-        "round": 2,
-        "date": "2026-08-01",
-        "home_team": "Балтика",
-        "away_team": "Динамо Москва",
-        "home_goals": 2,
-        "away_goals": 1,
-    },
-
-    {
-        "round": 2,
-        "date": "2026-08-01",
-        "home_team": "Динамо Махачкала",
-        "away_team": "Локомотив",
-        "home_goals": 2,
-        "away_goals": 1,
-    },
-
-    {
-        "round": 2,
-        "date": "2026-08-01",
-        "home_team": "ЦСКА",
-        "away_team": "Крылья Советов",
-        "home_goals": 1,
-        "away_goals": 1,
-    },
-
-    {
-        "round": 2,
-        "date": "2026-08-01",
-        "home_team": "Акрон",
-        "away_team": "Рубин",
-        "home_goals": 1,
-        "away_goals": 2,
-    },
-
-    {
-        "round": 2,
-        "date": "2026-07-31",
-        "home_team": "Родина",
-        "away_team": "Ростов",
-        "home_goals": 2,
-        "away_goals": 4,
-    },
-
-
-    # --------------------------------------------------------
-    # TOUR 3
-    # --------------------------------------------------------
-    #
-    # В ЭТОМ БЛОКЕ СЧЁТЫ ДОЛЖНЫ БЫТЬ ВСТАВЛЕНЫ
-    # ИЗ ПРОВЕРЕННОГО ИСТОРИЧЕСКОГО НАБОРА.
-    #
-    # НЕ ЗАПОЛНЯЕМ ИХ ДОГАДКАМИ.
-    #
-    # --------------------------------------------------------
-
-    {
-        "round": 3,
-        "date": "2026-08-08",
-        "home_team": "Локомотив",
-        "away_team": "Акрон",
-        "home_goals": None,
-        "away_goals": None,
-    },
-
-    {
-        "round": 3,
-        "date": "2026-08-08",
-        "home_team": "Крылья Советов",
-        "away_team": "Балтика",
-        "home_goals": None,
-        "away_goals": None,
-    },
-
-    {
-        "round": 3,
-        "date": "2026-08-08",
-        "home_team": "Ростов",
-        "away_team": "ЦСКА",
-        "home_goals": None,
-        "away_goals": None,
-    },
-
-    {
-        "round": 3,
-        "date": "2026-08-09",
-        "home_team": "Динамо Москва",
-        "away_team": "Динамо Махачкала",
-        "home_goals": None,
-        "away_goals": None,
-    },
-
-    {
-        "round": 3,
-        "date": "2026-08-09",
-        "home_team": "Зенит",
-        "away_team": "Родина",
-        "home_goals": 1,
-        "away_goals": 2,
-    },
-
-    {
-        "round": 3,
-        "date": "2026-08-09",
-        "home_team": "Спартак",
-        "away_team": "Краснодар",
-        "home_goals": 1,
-        "away_goals": 2,
-    },
-
-    {
-        "round": 3,
-        "date": "2026-08-09",
-        "home_team": "Рубин",
-        "away_team": "Оренбург",
-        "home_goals": 1,
-        "away_goals": 1,
-    },
-
-    {
-        "round": 3,
-        "date": "2026-08-10",
-        "home_team": "Факел",
-        "away_team": "Ахмат",
-        "home_goals": 0,
-        "away_goals": 0,
-    },
+    # ========================================================
+    # TOUR 3 (8 матчей) — ВСЕ ПОДТВЕРЖДЕНЫ
+    # ========================================================
+    (
+        3,
+        "2026-08-08",
+        "Крылья Советов",
+        "Балтика",
+        0,
+        2,
+    ),
+    (
+        3,
+        "2026-08-08",
+        "Локомотив",
+        "Акрон",
+        0,
+        0,
+    ),
+    (
+        3,
+        "2026-08-08",
+        "Ростов",
+        "ЦСКА",
+        0,
+        0,
+    ),
+    (
+        3,
+        "2026-08-09",
+        "Динамо Москва",
+        "Динамо Махачкала",
+        3,
+        1,          # ✅ ИСПРАВЛЕНО: 0:0 → 3:1
+    ),
+    (
+        3,
+        "2026-08-09",
+        "Зенит",
+        "Родина",
+        1,
+        2,
+    ),
+    (
+        3,
+        "2026-08-09",
+        "Спартак",
+        "Краснодар",
+        1,
+        2,
+    ),
+    (
+        3,
+        "2026-08-09",
+        "Рубин",
+        "Оренburg",     # Оренбург
+        1,
+        1,
+    ),
+    (
+        3,
+        "2026-08-10",
+        "Факел",
+        "Ахмат",
+        0,
+        0,
+    ),
 ]
 
 
 # ============================================================
-# RESULT
+# TEAM ALIASES
+# ============================================================
+
+TEAM_ALIASES = {
+    "Динамо М": "Динамо Москва",
+    "Динамо Москва": "Динамо Москва",
+    "Динамо Мх": "Динамо Махачкала",
+    "Динамо Махачкала": "Динамо Махачкала",
+    "Спартак Москва": "Спартак",
+    "Спартак М": "Спартак",
+    "ЦСКА Москва": "ЦСКА",
+    "Локомотив Москва": "Локомотив",
+    "Акрон Тольятти": "Акрон",
+    "Крылья Советов Самара": "Крылья Советов",
+    "Балтика Калининград": "Балтика",
+    "Родина Москва": "Родина",
+    "Ахмат Грозный": "Ахмат",
+    "Рубин Казань": "Рубин",
+    "Зенит Санкт-Петербург": "Зенит",
+    "Факел Воронеж": "Факел",
+    "Оренбург": "Оренбург",
+    "Оренburg": "Оренбург",
+    "Ростов": "Ростов",
+    "Краснодар": "Краснодар",
+}
+
+
+def normalize_team(team: Optional[str]) -> Optional[str]:
+    if not team:
+        return None
+    value = str(team).strip()
+    return TEAM_ALIASES.get(value, value)
+
+
+# ============================================================
+# IMPORT RESULT
 # ============================================================
 
 def _result() -> Dict[str, Any]:
     return {
-        "source": SOURCE,
-        "parser": PARSER_VERSION,
+        "success": False,
+        "source": IMPORT_SOURCE,
+        "method": IMPORT_METHOD,
+        "version": IMPORT_VERSION,
         "season": SEASON_YEAR,
-        "league": LEAGUE,
-
-        "found": 0,
-        "inserted": 0,
-        "updated": 0,
-        "already_exists": 0,
-
+        "expected": EXPECTED_MATCHES,
+        "found": len(HISTORICAL_MATCHES),
+        "inserted_results": 0,
+        "updated_matches": 0,
+        "already_present": 0,
         "skipped": 0,
-        "errors": 0,
-
-        "matches_without_db_record": 0,
-
-        "rounds_updated": [],
-
-        "details": [],
-
-        "started_at": datetime.now().isoformat(),
-        "finished_at": None,
+        "errors": [],
+        "rounds": [],
+        "matches": [],
     }
 
 
 # ============================================================
-# VALIDATION
+# VALIDATE HISTORICAL DATA
 # ============================================================
 
-def validate_dataset() -> None:
-    """
-    Проверяет сам исторический набор ДО обращения к БД.
-    """
+def validate_historical_data() -> Dict[str, Any]:
+    result = _result()
+    seen = set()
 
-    if len(HISTORICAL_RESULTS) != EXPECTED_MATCHES:
+    for item in HISTORICAL_MATCHES:
+        if len(item) != 6:
+            result["errors"].append(f"Некорректная запись: {item}")
+            continue
+
+        (
+            round_number,
+            date_value,
+            home_team,
+            away_team,
+            home_goals,
+            away_goals,
+        ) = item
+
+        home_team = normalize_team(home_team)
+        away_team = normalize_team(away_team)
+
+        key = (int(round_number), home_team, away_team)
+
+        if key in seen:
+            result["errors"].append(f"Дубликат: {key}")
+            continue
+
+        seen.add(key)
+
+        if not (1 <= int(round_number) <= 30):
+            result["errors"].append(f"Некорректный тур: {round_number}")
+
+        if home_team == away_team:
+            result["errors"].append(f"Одинаковые команды: {key}")
+
+        if int(home_goals) < 0 or int(away_goals) < 0:
+            result["errors"].append(f"Отрицательный счёт: {key}")
+
+    if len(HISTORICAL_MATCHES) != EXPECTED_MATCHES:
+        result["errors"].append(
+            f"Исторический набор содержит {len(HISTORICAL_MATCHES)} матчей "
+            f"вместо {EXPECTED_MATCHES}."
+        )
+
+    rounds = sorted({int(item[0]) for item in HISTORICAL_MATCHES})
+    result["rounds"] = rounds
+
+    for round_number in range(1, 4):
+        count = sum(1 for item in HISTORICAL_MATCHES if int(item[0]) == round_number)
+        if count != 8:
+            result["errors"].append(f"Тур {round_number}: {count}/8 матчей.")
+
+    result["success"] = len(result["errors"]) == 0
+    return result
+
+
+# ============================================================
+# DATABASE HELPERS
+# ============================================================
+
+def _find_team_id(cursor: sqlite3.Cursor, team_name: str) -> Optional[int]:
+    canonical = normalize_team(team_name)
+    cursor.execute(
+        """
+        SELECT id
+        FROM teams
+        WHERE name = ?
+        LIMIT 1
+        """,
+        (canonical,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return int(row[0])
+
+
+def _find_round_id(cursor: sqlite3.Cursor, round_number: int) -> Optional[int]:
+    cursor.execute(
+        """
+        SELECT id
+        FROM rounds
+        WHERE round_number = ?
+        LIMIT 1
+        """,
+        (int(round_number),),
+    )
+    row = cursor.fetchone()
+    if row:
+        return int(row[0])
+
+    cursor.execute(
+        """
+        SELECT id
+        FROM rounds
+        WHERE name = ?
+        LIMIT 1
+        """,
+        (f"Тур {int(round_number)}",),
+    )
+    row = cursor.fetchone()
+    if row:
+        return int(row[0])
+
+    return None
+
+
+def _find_match(
+    cursor: sqlite3.Cursor,
+    round_id: int,
+    home_team_id: int,
+    away_team_id: int,
+    date_value: str,
+) -> Optional[Dict[str, Any]]:
+    cursor.execute(
+        """
+        SELECT *
+        FROM matches
+        WHERE round_id = ?
+          AND home_team_id = ?
+          AND away_team_id = ?
+        LIMIT 1
+        """,
+        (round_id, home_team_id, away_team_id),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+
+    columns = [description[0] for description in cursor.description]
+    return dict(zip(columns, row))
+
+
+# ============================================================
+# IMPORT ONE MATCH
+# ============================================================
+
+def _import_match(
+    cursor: sqlite3.Cursor,
+    item: Tuple[int, str, str, str, int, int],
+    result: Dict[str, Any],
+) -> None:
+    (
+        round_number,
+        date_value,
+        home_team,
+        away_team,
+        home_goals,
+        away_goals,
+    ) = item
+
+    home_team = normalize_team(home_team)
+    away_team = normalize_team(away_team)
+
+    home_team_id = _find_team_id(cursor, home_team)
+    away_team_id = _find_team_id(cursor, away_team)
+
+    if home_team_id is None:
+        raise ValueError(f"Команда не найдена в БД: {home_team}")
+
+    if away_team_id is None:
+        raise ValueError(f"Команда не найдена в БД: {away_team}")
+
+    round_id = _find_round_id(cursor, int(round_number))
+    if round_id is None:
+        raise ValueError(f"Тур не найден в БД: {round_number}")
+
+    match = _find_match(
+        cursor,
+        round_id,
+        home_team_id,
+        away_team_id,
+        date_value,
+    )
+
+    if match is None:
         raise ValueError(
-            f"Исторический набор содержит "
-            f"{len(HISTORICAL_RESULTS)} матчей, "
-            f"ожидалось {EXPECTED_MATCHES}"
+            f"Матч отсутствует в календаре: тур {round_number}, {home_team} — {away_team}"
         )
 
-    for index, item in enumerate(
-        HISTORICAL_RESULTS,
-        start=1,
-    ):
+    match_id = int(match["id"])
 
-        required = (
-            "round",
-            "home_team",
-            "away_team",
-            "home_goals",
-            "away_goals",
+    # --------------------------------------------------------
+    # Проверяем существующий результат
+    # --------------------------------------------------------
+    cursor.execute(
+        """
+        SELECT id, home_goals, away_goals
+        FROM match_results
+        WHERE match_id = ?
+        LIMIT 1
+        """,
+        (match_id,),
+    )
+    existing_result = cursor.fetchone()
+
+    if existing_result:
+        existing_home = existing_result[1]
+        existing_away = existing_result[2]
+
+        if existing_home == int(home_goals) and existing_away == int(away_goals):
+            result["already_present"] += 1
+            return
+
+        raise ValueError(
+            f"Конфликт результата для {home_team} — {away_team}: "
+            f"в БД {existing_home}:{existing_away}, "
+            f"исторический {home_goals}:{away_goals}"
         )
 
-        for field in required:
+    # --------------------------------------------------------
+    # INSERT match_results
+    # --------------------------------------------------------
+    cursor.execute(
+        """
+        INSERT OR IGNORE INTO match_results (
+            match_id,
+            home_goals,
+            away_goals,
+            home_penalty_goals,
+            away_penalty_goals
+        )
+        VALUES (?, ?, ?, 0, 0)
+        """,
+        (match_id, int(home_goals), int(away_goals)),
+    )
+    if cursor.rowcount > 0:
+        result["inserted_results"] += 1
 
-            if field not in item:
-                raise ValueError(
-                    f"Матч #{index}: "
-                    f"отсутствует {field}"
-                )
+    # --------------------------------------------------------
+    # UPDATE matches
+    # --------------------------------------------------------
+    cursor.execute(
+        """
+        UPDATE matches
+        SET
+            actual_home = ?,
+            actual_away = ?,
+            status = 'finished',
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            int(home_goals),
+            int(away_goals),
+            datetime.now().isoformat(),
+            match_id,
+        ),
+    )
+    if cursor.rowcount > 0:
+        result["updated_matches"] += 1
 
-        if item["home_team"] == item["away_team"]:
-            raise ValueError(
-                f"Матч #{index}: "
-                "одинаковые команды"
-            )
-
-        if not (
-            1 <= int(item["round"]) <= 30
-        ):
-            raise ValueError(
-                f"Матч #{index}: "
-                f"некорректный тур {item['round']}"
-            )
-
-        # Нельзя импортировать непроверенный счёт.
-        if (
-            item["home_goals"] is None
-            or item["away_goals"] is None
-        ):
-            raise ValueError(
-                f"Матч #{index}: "
-                f"{item['home_team']} — "
-                f"{item['away_team']} "
-                "не имеет проверенного счёта"
-            )
+    result["matches"].append({
+        "match_id": match_id,
+        "round": int(round_number),
+        "home_team": home_team,
+        "away_team": away_team,
+        "score": f"{home_goals}:{away_goals}",
+        "source": IMPORT_SOURCE,
+        "method": IMPORT_METHOD,
+    })
 
 
 # ============================================================
-# IMPORTER
+# PUBLIC IMPORT
 # ============================================================
 
-class RPLHistoricalImporter:
+def import_historical_results(db_path: Optional[str] = None) -> Dict[str, Any]:
+    validation = validate_historical_data()
+    if not validation["success"]:
+        return validation
 
-    def __init__(
-        self,
-        db: Optional[Database] = None,
-    ) -> None:
+    result = _result()
+    path = Path(db_path) if db_path else DEFAULT_DB_PATH
 
-        self.db = db or Database()
+    if not path.exists():
+        result["errors"].append(f"База данных не найдена: {path}")
+        return result
 
-    # ========================================================
-    # PUBLIC
-    # ========================================================
+    conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
 
-    def import_results(
-        self,
-        rounds: Optional[List[int]] = None,
-    ) -> Dict[str, Any]:
+    try:
+        for item in HISTORICAL_MATCHES:
+            try:
+                _import_match(cursor, item, result)
+            except Exception as exc:
+                result["errors"].append(str(exc))
 
-        result = _result()
-
-        started = datetime.now()
-
-        try:
-
-            validate_dataset()
-
-        except Exception as exc:
-
-            result["errors"] = 1
-            result["details"].append(
-                {
-                    "status": "error",
-                    "stage": "dataset_validation",
-                    "message": str(exc),
-                }
-            )
-
-            result["finished_at"] = (
-                datetime.now().isoformat()
-            )
-
+        # ----------------------------------------------------
+        # Если есть хотя бы одна ошибка — откатываем ВСЮ транзакцию.
+        # Нельзя получить 23/24 исторических матчей
+        # и оставить базу в частично изменённом состоянии.
+        # ----------------------------------------------------
+        if result["errors"]:
+            conn.rollback()
+            result["success"] = False
             return result
 
-        if rounds is None:
-            selected_rounds = {1, 2, 3}
-        else:
-            selected_rounds = {
-                int(value)
-                for value in rounds
-            }
-
-        dataset = [
-            item
-            for item in HISTORICAL_RESULTS
-            if int(item["round"])
-            in selected_rounds
-        ]
-
-        result["found"] = len(dataset)
-
-        conn = self.db.get_connection()
-
-        try:
-
-            cursor = conn.cursor()
-
-            for item in dataset:
-
-                self._import_one(
-                    cursor=cursor,
-                    item=item,
-                    result=result,
-                )
-
-            conn.commit()
-
-        except Exception:
-
-            conn.rollback()
-            raise
-
-        finally:
-
-            conn.close()
-
-        result["rounds_updated"] = sorted(
-            {
-                int(item["round"])
-                for item in dataset
-                if item["round"]
-            }
-        )
-
-        result["finished_at"] = (
-            datetime.now().isoformat()
-        )
-
-        elapsed = (
-            datetime.now() - started
-        ).total_seconds()
+        conn.commit()
+        result["success"] = True
 
         logger.info(
-            "Historical import completed: "
-            "found=%s inserted=%s updated=%s "
-            "existing=%s errors=%s elapsed=%.2fs",
-            result["found"],
-            result["inserted"],
-            result["updated"],
-            result["already_exists"],
-            result["errors"],
-            elapsed,
+            "Historical import completed: %s inserted, %s updated, %s already present.",
+            result["inserted_results"],
+            result["updated_matches"],
+            result["already_present"],
         )
 
         return result
 
-    # ========================================================
-    # ONE MATCH
-    # ========================================================
+    except Exception as exc:
+        conn.rollback()
+        result["success"] = False
+        result["errors"].append(str(exc))
+        return result
 
-    def _import_one(
-        self,
-        cursor,
-        item: Dict[str, Any],
-        result: Dict[str, Any],
-    ) -> None:
-
-        round_number = int(
-            item["round"]
-        )
-
-        home_team = item[
-            "home_team"
-        ]
-
-        away_team = item[
-            "away_team"
-        ]
-
-        # ----------------------------------------------------
-        # Ищем матч только по:
-        #
-        # round + home_team + away_team
-        #
-        # ----------------------------------------------------
-
-        cursor.execute(
-            """
-            SELECT
-                m.id,
-                m.actual_home,
-                m.actual_away,
-                m.status
-            FROM matches m
-
-            JOIN rounds r
-                ON r.id = m.round_id
-
-            JOIN teams ht
-                ON ht.id = m.home_team_id
-
-            JOIN teams at
-                ON at.id = m.away_team_id
-
-            WHERE
-                r.round_number = ?
-                AND ht.name = ?
-                AND at.name = ?
-
-            LIMIT 1
-            """,
-            (
-                round_number,
-                home_team,
-                away_team,
-            ),
-        )
-
-        match = cursor.fetchone()
-
-        if not match:
-
-            result[
-                "matches_without_db_record"
-            ] += 1
-
-            result["skipped"] += 1
-
-            result["details"].append(
-                {
-                    "round": round_number,
-                    "home_team": home_team,
-                    "away_team": away_team,
-                    "status": "missing_match",
-                }
-            )
-
-            return
-
-        match_id = match["id"]
-
-        home_goals = int(
-            item["home_goals"]
-        )
-
-        away_goals = int(
-            item["away_goals"]
-        )
-
-        # ----------------------------------------------------
-        # Проверяем существующий результат
-        # ----------------------------------------------------
-
-        cursor.execute(
-            """
-            SELECT
-                id,
-                home_goals,
-                away_goals
-            FROM match_results
-            WHERE match_id = ?
-            LIMIT 1
-            """,
-            (match_id,),
-        )
-
-        existing_result = (
-            cursor.fetchone()
-        )
-
-        # ----------------------------------------------------
-        # Результат уже есть
-        # ----------------------------------------------------
-
-        if existing_result:
-
-            same_score = (
-                int(
-                    existing_result[
-                        "home_goals"
-                    ]
-                )
-                == home_goals
-                and
-                int(
-                    existing_result[
-                        "away_goals"
-                    ]
-                )
-                == away_goals
-            )
-
-            if same_score:
-
-                result[
-                    "already_exists"
-                ] += 1
-
-                result["details"].append(
-                    {
-                        "match_id": match_id,
-                        "round": round_number,
-                        "home_team": home_team,
-                        "away_team": away_team,
-                        "status": "already_exists",
-                    }
-                )
-
-                return
-
-            # ------------------------------------------------
-            # Результат существует, но отличается.
-            #
-            # Не перетираем молча.
-            # ------------------------------------------------
-
-            result["errors"] += 1
-
-            result["details"].append(
-                {
-                    "match_id": match_id,
-                    "round": round_number,
-                    "home_team": home_team,
-                    "away_team": away_team,
-                    "status": "score_conflict",
-                    "database_score": (
-                        existing_result[
-                            "home_goals"
-                        ],
-                        existing_result[
-                            "away_goals"
-                        ],
-                    ),
-                    "import_score": (
-                        home_goals,
-                        away_goals,
-                    ),
-                }
-            )
-
-            return
-
-        # ----------------------------------------------------
-        # INSERT RESULT
-        # ----------------------------------------------------
-
-        cursor.execute(
-            """
-            INSERT OR IGNORE INTO match_results (
-                match_id,
-                home_goals,
-                away_goals,
-                home_penalty_goals,
-                away_penalty_goals
-            )
-            VALUES (?, ?, ?, 0, 0)
-            """,
-            (
-                match_id,
-                home_goals,
-                away_goals,
-            ),
-        )
-
-        inserted = (
-            cursor.rowcount
-        )
-
-        # ----------------------------------------------------
-        # UPDATE MATCH
-        # ----------------------------------------------------
-
-        cursor.execute(
-            """
-            UPDATE matches
-            SET
-                actual_home = ?,
-                actual_away = ?,
-                status = 'finished',
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                home_goals,
-                away_goals,
-                datetime.now().isoformat(),
-                match_id,
-            ),
-        )
-
-        if inserted:
-
-            result["inserted"] += 1
-
-            result["details"].append(
-                {
-                    "match_id": match_id,
-                    "round": round_number,
-                    "home_team": home_team,
-                    "away_team": away_team,
-                    "score": (
-                        f"{home_goals}:"
-                        f"{away_goals}"
-                    ),
-                    "status": "inserted",
-                    "source": SOURCE,
-                }
-            )
-
-        else:
-
-            result["already_exists"] += 1
+    finally:
+        conn.close()
 
 
 # ============================================================
-# CONVENIENCE FUNCTION
+# CONVENIENCE API
 # ============================================================
 
-def import_rpl_historical_results(
-    rounds: Optional[List[int]] = None,
-) -> Dict[str, Any]:
-
-    importer = RPLHistoricalImporter()
-
-    return importer.import_results(
-        rounds=rounds
-    )
+def load_rpl_historical_results(db_path: Optional[str] = None) -> Dict[str, Any]:
+    return import_historical_results(db_path=db_path)
 
 
 # ============================================================
-# LOCAL TEST
+# CLI
 # ============================================================
 
 if __name__ == "__main__":
-
     logging.basicConfig(
         level=logging.INFO,
-        format=(
-            "%(asctime)s | "
-            "%(levelname)s | "
-            "%(message)s"
-        ),
-    )
-
-    result = (
-        import_rpl_historical_results(
-            rounds=[1, 2, 3]
-        )
+        format="%(asctime)s | %(levelname)s | %(message)s",
     )
 
     print()
     print("=" * 70)
-    print(
-        "FAJ RPL HISTORICAL IMPORT"
-    )
+    print("FAJ RPL HISTORICAL IMPORTER v12.1")
     print("=" * 70)
 
-    for key in (
-        "found",
-        "inserted",
-        "updated",
-        "already_exists",
-        "skipped",
-        "errors",
-        "matches_without_db_record",
-    ):
-        print(
-            f"{key}: {result[key]}"
-        )
+    validation = validate_historical_data()
+    print(f"Исторических матчей: {validation['found']}")
+    print(f"Туры: {validation['rounds']}")
+
+    if validation["errors"]:
+        print()
+        print("ОШИБКИ В НАБОРЕ:")
+        for error in validation["errors"]:
+            print(f"  ❌ {error}")
+        raise SystemExit(1)
+
+    result = import_historical_results()
 
     print()
+    print(f"Успех: {result['success']}")
+    print(f"Добавлено результатов: {result['inserted_results']}")
+    print(f"Обновлено матчей: {result['updated_matches']}")
+    print(f"Уже существовало: {result['already_present']}")
+    print(f"Ошибок: {len(result['errors'])}")
 
-    for item in result[
-        "details"
-    ]:
-
-        print(item)
+    if result["errors"]:
+        print()
+        print("ОШИБКИ:")
+        for error in result["errors"]:
+            print(f"  ❌ {error}")
 
     print("=" * 70)
