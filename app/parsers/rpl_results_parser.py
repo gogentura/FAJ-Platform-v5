@@ -247,6 +247,32 @@ class RPLResultsParser:
 
         return result
 
+    def parse_rounds(
+        self,
+        start_round: int = 1,
+        end_round: int = 3,
+    ) -> List[Dict[str, Any]]:
+        """
+        Совместимый публичный API для load_all.py.
+
+        В предыдущей версии загрузчик вызывал:
+
+            parser.parse_rounds(...)
+
+        Основным методом парсера является parse().
+
+        Поэтому parse_rounds() является безопасным
+        адаптером и передаёт управление в parse().
+
+        Никаких дополнительных операций с БД
+        здесь не выполняется.
+        """
+
+        return self.parse(
+            start_round=start_round,
+            end_round=end_round,
+        )
+
     # =========================================================
     # CHAMPIONAT
     # =========================================================
@@ -263,15 +289,14 @@ class RPLResultsParser:
         if not html:
             return []
 
-        soup = BeautifulSoup(html, "html.parser")
+        soup = BeautifulSoup(
+            html,
+            "html.parser",
+        )
 
         matches: List[Dict[str, Any]] = []
 
         current_round: Optional[int] = None
-
-        # -----------------------------------------------------
-        # Ищем потенциальные блоки календаря
-        # -----------------------------------------------------
 
         containers = soup.find_all(
             ["div", "section", "table", "tr"]
@@ -280,15 +305,14 @@ class RPLResultsParser:
         for container in containers:
 
             text = self._clean_text(
-                container.get_text(" ", strip=True)
+                container.get_text(
+                    " ",
+                    strip=True,
+                )
             )
 
             if not text:
                 continue
-
-            # -------------------------------------------------
-            # Определение тура
-            # -------------------------------------------------
 
             round_match = re.search(
                 r"(?:Тур|тур)\s*(\d{1,2})",
@@ -298,6 +322,7 @@ class RPLResultsParser:
             if round_match:
 
                 try:
+
                     detected_round = int(
                         round_match.group(1)
                     )
@@ -312,16 +337,8 @@ class RPLResultsParser:
                 except ValueError:
                     pass
 
-            # -------------------------------------------------
-            # Если тур неизвестен — пропускаем
-            # -------------------------------------------------
-
             if current_round is None:
                 continue
-
-            # -------------------------------------------------
-            # Пытаемся найти счёт
-            # -------------------------------------------------
 
             score = self._extract_score(text)
 
@@ -330,20 +347,12 @@ class RPLResultsParser:
 
             home_goals, away_goals = score
 
-            # -------------------------------------------------
-            # Команды
-            # -------------------------------------------------
-
             teams = self._extract_teams_from_text(text)
 
             if not teams:
                 continue
 
             home_team, away_team = teams
-
-            # -------------------------------------------------
-            # Дата
-            # -------------------------------------------------
 
             date = self._extract_date(text)
 
@@ -379,14 +388,12 @@ class RPLResultsParser:
         if not html:
             return []
 
-        soup = BeautifulSoup(html, "html.parser")
+        soup = BeautifulSoup(
+            html,
+            "html.parser",
+        )
 
         matches: List[Dict[str, Any]] = []
-
-        # -----------------------------------------------------
-        # Smart Tables может использовать таблицы.
-        # Работаем сначала с <tr>.
-        # -----------------------------------------------------
 
         rows = soup.find_all("tr")
 
@@ -395,15 +402,14 @@ class RPLResultsParser:
         for row in rows:
 
             text = self._clean_text(
-                row.get_text(" ", strip=True)
+                row.get_text(
+                    " ",
+                    strip=True,
+                )
             )
 
             if not text:
                 continue
-
-            # -------------------------------------------------
-            # Тур
-            # -------------------------------------------------
 
             round_match = re.search(
                 r"(?:тур|Тур|round|Round)\s*(\d{1,2})",
@@ -419,10 +425,6 @@ class RPLResultsParser:
                 except ValueError:
                     pass
 
-            # -------------------------------------------------
-            # Иногда номер тура находится отдельной ячейкой
-            # -------------------------------------------------
-
             if current_round is None:
 
                 numbers = re.findall(
@@ -432,7 +434,9 @@ class RPLResultsParser:
 
                 if numbers:
 
-                    possible_round = int(numbers[0])
+                    possible_round = int(
+                        numbers[0]
+                    )
 
                     if (
                         start_round
@@ -451,20 +455,12 @@ class RPLResultsParser:
             ):
                 continue
 
-            # -------------------------------------------------
-            # Счёт
-            # -------------------------------------------------
-
             score = self._extract_score(text)
 
             if score is None:
                 continue
 
             home_goals, away_goals = score
-
-            # -------------------------------------------------
-            # Команды
-            # -------------------------------------------------
 
             teams = self._extract_teams_from_text(text)
 
@@ -488,10 +484,6 @@ class RPLResultsParser:
 
             if match:
                 matches.append(match)
-
-        # -----------------------------------------------------
-        # Если таблиц нет — пробуем общий текст.
-        # -----------------------------------------------------
 
         if not matches:
 
@@ -521,13 +513,12 @@ class RPLResultsParser:
         if not html:
             return []
 
-        soup = BeautifulSoup(html, "html.parser")
+        soup = BeautifulSoup(
+            html,
+            "html.parser",
+        )
 
         matches: List[Dict[str, Any]] = []
-
-        # -----------------------------------------------------
-        # Сначала ищем элементы, содержащие счёт.
-        # -----------------------------------------------------
 
         elements = soup.find_all(
             ["div", "li", "tr", "article"]
@@ -538,15 +529,14 @@ class RPLResultsParser:
         for element in elements:
 
             text = self._clean_text(
-                element.get_text(" ", strip=True)
+                element.get_text(
+                    " ",
+                    strip=True,
+                )
             )
 
             if not text:
                 continue
-
-            # -------------------------------------------------
-            # Тур
-            # -------------------------------------------------
 
             round_match = re.search(
                 r"(?:тур|Тур|round|Round)\s*(\d{1,2})",
@@ -638,13 +628,15 @@ class RPLResultsParser:
         for block in text_blocks:
 
             text = self._clean_text(
-                block.get_text(" ", strip=True)
+                block.get_text(
+                    " ",
+                    strip=True,
+                )
             )
 
             if not text:
                 continue
 
-            # Тур
             round_match = re.search(
                 r"(?:Тур|тур|Round|round)\s*(\d{1,2})",
                 text,
@@ -709,7 +701,6 @@ class RPLResultsParser:
         if not text:
             return None
 
-        # 2:1
         patterns = [
             r"\b(\d{1,2})\s*[:\-]\s*(\d{1,2})\b",
             r"\b(\d{1,2})\s*:\s*(\d{1,2})\b",
@@ -726,10 +717,10 @@ class RPLResultsParser:
                 continue
 
             try:
+
                 home = int(match.group(1))
                 away = int(match.group(2))
 
-                # Защита от случайных дат.
                 if home > 15 or away > 15:
                     continue
 
@@ -748,7 +739,6 @@ class RPLResultsParser:
         if not text:
             return None
 
-        # DD.MM.YYYY
         match = re.search(
             r"\b(\d{2})\.(\d{2})\.(\d{4})\b",
             text,
@@ -759,18 +749,20 @@ class RPLResultsParser:
             day, month, year = match.groups()
 
             try:
+
                 dt = datetime(
                     int(year),
                     int(month),
                     int(day),
                 )
 
-                return dt.strftime("%Y-%m-%d")
+                return dt.strftime(
+                    "%Y-%m-%d"
+                )
 
             except ValueError:
                 pass
 
-        # YYYY-MM-DD
         match = re.search(
             r"\b(2026|2027)-(\d{2})-(\d{2})\b",
             text,
@@ -788,7 +780,9 @@ class RPLResultsParser:
                     int(day),
                 )
 
-                return dt.strftime("%Y-%m-%d")
+                return dt.strftime(
+                    "%Y-%m-%d"
+                )
 
             except ValueError:
                 pass
@@ -802,13 +796,6 @@ class RPLResultsParser:
 
         if not text:
             return None
-
-        # -----------------------------------------------------
-        # Список известных названий.
-        #
-        # Здесь специально допускаются варианты.
-        # Нормализатор затем приведёт их к одному имени.
-        # -----------------------------------------------------
 
         known_teams = [
             "Динамо Махачкала",
@@ -862,10 +849,6 @@ class RPLResultsParser:
             "Родина",
         ]
 
-        # -----------------------------------------------------
-        # Сначала ищем длинные названия.
-        # -----------------------------------------------------
-
         found: List[tuple] = []
 
         for team in sorted(
@@ -890,10 +873,9 @@ class RPLResultsParser:
 
                 start = match.start()
 
-                # Не дублируем одно и то же место.
                 duplicate = False
 
-                for existing_team, existing_start in found:
+                for _, existing_start in found:
 
                     if abs(
                         start - existing_start
@@ -909,20 +891,12 @@ class RPLResultsParser:
         if len(found) < 2:
             return None
 
-        # -----------------------------------------------------
-        # Сортировка по позиции в тексте.
-        # -----------------------------------------------------
-
         found.sort(
             key=lambda x: x[1]
         )
 
         home_team = found[0][0]
         away_team = found[1][0]
-
-        # -----------------------------------------------------
-        # Нормализация.
-        # -----------------------------------------------------
 
         home_team, away_team = normalize_team_names(
             home_team,
@@ -1015,18 +989,8 @@ class RPLResultsParser:
 
         result = dict(first)
 
-        # -----------------------------------------------------
-        # Если первый источник не дал дату,
-        # используем второй.
-        # -----------------------------------------------------
-
         if not result.get("date") and second.get("date"):
             result["date"] = second["date"]
-
-        # -----------------------------------------------------
-        # Если первый источник дал нулевой счёт,
-        # но второй дал нормальный — используем второй.
-        # -----------------------------------------------------
 
         first_score = (
             result.get("home_goals"),
@@ -1048,10 +1012,6 @@ class RPLResultsParser:
             result["away_goals"] = second[
                 "away_goals"
             ]
-
-        # -----------------------------------------------------
-        # Сохраняем сведения об источниках.
-        # -----------------------------------------------------
 
         sources = []
 
@@ -1108,15 +1068,13 @@ class RPLResultsParser:
                 match.get("round", 0)
             )
 
-            home = normalize_team_names(
+            normalized = normalize_team_names(
                 match.get("home_team"),
                 match.get("away_team"),
-            )[0]
+            )
 
-            away = normalize_team_names(
-                match.get("home_team"),
-                match.get("away_team"),
-            )[1]
+            home = normalized[0]
+            away = normalized[1]
 
             if not home or not away:
                 return None
@@ -1153,12 +1111,9 @@ class RPLResultsParser:
 
             response.raise_for_status()
 
-            time.sleep(self.request_delay)
-
-            # -------------------------------------------------
-            # Принудительно определяем UTF-8,
-            # если сайт сообщает некорректную кодировку.
-            # -------------------------------------------------
+            time.sleep(
+                self.request_delay
+            )
 
             if not response.encoding:
                 response.encoding = "utf-8"
