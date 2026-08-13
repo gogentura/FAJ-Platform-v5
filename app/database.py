@@ -21,13 +21,21 @@ from contextlib import contextmanager
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-DATA_DIR = "data"
+# ============================================================
+# ПУТЬ К БАЗЕ ДАННЫХ — АБСОЛЮТНЫЙ
+# ============================================================
+
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(ROOT_DIR, "data")
 DB_FILE = os.path.join(DATA_DIR, "faj.db")
 DB_SCHEMA_VERSION = "12.1"
 
+os.makedirs(DATA_DIR, exist_ok=True)
+
+logger.info(f"📁 Database path: {DB_FILE}")
+
 
 def get_connection():
-    os.makedirs(DATA_DIR, exist_ok=True)
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
