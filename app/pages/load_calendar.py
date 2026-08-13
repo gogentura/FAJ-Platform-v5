@@ -82,7 +82,10 @@ def get_connection():
 # ============================================================
 
 if "calendar_parse_result" not in st.session_state:
-    st.session_state.calendar_parse_result = None
+    st.session_state["calendar_parse_result"] = None
+
+if "calendar_db_diagnostic" not in st.session_state:
+    st.session_state["calendar_db_diagnostic"] = None
 
 
 # ============================================================
@@ -501,7 +504,7 @@ def main():
 
                 parse_result = parser.parse()
 
-                st.session_state.calendar_parse_result = (
+                st.session_state["calendar_parse_result"] = (
                     parse_result
                 )
 
@@ -519,8 +522,8 @@ def main():
     # RESULT
     # ========================================================
 
-    result = (
-        st.session_state.calendar_parse_result
+    result = st.session_state.get(
+        "calendar_parse_result"
     )
 
     if not result:
@@ -1158,7 +1161,7 @@ def main():
                 matches
             )
 
-        st.session_state.calendar_db_diagnostic = (
+        st.session_state["calendar_db_diagnostic"] = (
             diagnostic
         )
 
