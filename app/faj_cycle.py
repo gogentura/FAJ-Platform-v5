@@ -2,53 +2,72 @@
 # -*- coding: utf-8 -*-
 
 """
-============================================================
+===========================================================
 FAJ Platform v12.1
 FAJ Cycle — Main Orchestrator
-============================================================
+===========================================================
 
 Назначение:
-    Безопасный полный цикл FAJ:
+    Безопасная оркестрация полного жизненного цикла FAJ.
 
-        1. Bootstrap
-        2. Sync teams + passports
-        3. Parse / validate fixtures
-        4. Load results
-        5. Learning
-        6. Prediction
+Цепочка:
 
-КРИТИЧЕСКИЕ ПРИНЦИПЫ:
+    BOOTSTRAP
+        ↓
+    SYSTEM STATUS
+        ↓
+    TEAMS / PASSPORTS
+        ↓
+    CALENDAR
+        ↓
+    HISTORICAL RESULTS
+        ↓
+    LEARNING
+        ↓
+    NEXT ROUND
+        ↓
+    PREDICTIONS
+
+ВАЖНЫЕ ПРИНЦИПЫ:
 
     - SQLite only
-    - НЕ удаляет данные
-    - НЕ делает DELETE
-    - НЕ делает DROP
-    - Не пересоздаёт существующие сезоны / туры / матчи
-    - Парсеры не изменяют БД
-    - Ошибка критической фазы останавливает последующие фазы
-    - Повторный запуск должен быть безопасным
-============================================================
+    - Никаких DELETE
+    - Никаких DROP
+    - Не пересоздаём существующие rounds
+    - Не пересоздаём существующие matches
+    - Не запускаем sync_teams() автоматически
+    - Парсеры не должны напрямую менять БД
+    - Каждый этап имеет собственный результат
+    - При критической ошибке цикл останавливается
+    - Сначала диагностика, затем запись
+===========================================================
 """
 
 from __future__ import annotations
 
 import logging
-import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional
-
+from typing import Any, Dict, Optional, Tuple
 
 # ============================================================
-# LOGGING
+# IMPORTS
 # ============================================================
 
-logger = logging.getLogger("FAJ.Cycle")
+from app.database import FAJDatabase
 
-if not logger.handlers:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | FAJ.CYCLE | %(message)s",
-    )
+from app.bootstrap import bootstrap_faj
+from app.sync_engine import SyncEngine
+
+from app.parsers.rpl_fixtures_parser import RPLFixturesParser
+from app.parsers.rpl_results_parser import RPLResultsParser
+
+from app.loaders.rpl_historical_importer import (
+    import_historical_results,
+)
+
+from app.learning_engine import run_learning
+
+from app.core.prediction_manager import PredictionManager
 
 
 # ============================================================
@@ -57,24 +76,29 @@ if not logger.handlers:
 
 CYCLE_VERSION = "12.1"
 
-LEAGUE_NAME = "РПЛ"
-SEASON_NAME = "РПЛ 2026-2027"
+LEAGUE = "РПЛ"
+SEASON_YEAR = "2026-2027"
 
 EXPECTED_TEAMS = 16
 EXPECTED_ROUNDS = 30
 EXPECTED_MATCHES = 240
 
+DEFAULT_RESULTS_ROUNDS = (1, 3)
+
+MIN_MATCHES_FOR_LEARNING = 8
+
 
 # ============================================================
-# IMPORTS
+# LOGGING
 # ============================================================
 
-from app.bootstrap import bootstrap_faj
-from app.sync_engine import SyncEngine
-from app.parsers.rpl_fixtures_parser import parse_rpl_fixtures
-from app.parsers.rpl_results_parser import parse_rpl_results
-from app.learning_engine import run_learning
-from app.core.prediction_manager import PredictionManager
+logger = logging.getLogger(__name__)
+
+if not logger.handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | FAJ CYCLE | %(levelname)s | %(message)s",
+    )
 
 
 # ============================================================
@@ -82,13 +106,7 @@ from app.core.prediction_manager import PredictionManager
 # ============================================================
 
 def _now() -> str:
-    """Текущее время в ISO формате."""
-    return datetime.utcnow().isoformat()
-
-
-def _new_cycle_id() -> str:
-    """Уникальный ID запуска цикла."""
-    return f"cycle_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    return datetime.utcnow().isoformat(timespec="seconds")
 
 
 def _phase_result(
@@ -96,9 +114,7 @@ def _phase_result(
     success: bool,
     **kwargs: Any,
 ) -> Dict[str, Any]:
-    """
-    Унифицированный результат фазы.
-    """
+
     result = {
         "phase": phase,
         "success": success,
@@ -110,760 +126,1005 @@ def _phase_result(
     return result
 
 
+def _stop(
+    phase: str,
+    reason: str,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+
+    result = {
+        "success": False,
+        "cycle_version": CYCLE_VERSION,
+        "phase": phase,
+        "reason": reason,
+        "timestamp": _now(),
+    }
+
+    result.update(kwargs)
+
+    logger.error(
+        "FAJ Cycle STOP | phase=%s | reason=%s",
+        phase,
+        reason,
+    )
+
+    return result
+
+
 # ============================================================
-# FAJ CYCLE
+# DATABASE STATUS
 # ============================================================
 
-class FAJCycle:
+def _get_database_status(db: FAJDatabase) -> Dict[str, Any]:
     """
-    Главный оркестратор FAJ Platform.
+    Безопасная диагностика БД.
+
+    Ничего не изменяет.
+    """
+
+    try:
+        status = db.get_status()
+
+        return {
+            "success": True,
+            "status": status,
+        }
+
+    except Exception as exc:
+
+        logger.exception("Ошибка получения статуса БД")
+
+        return {
+            "success": False,
+            "error": str(exc),
+        }
+
+
+# ============================================================
+# TEAM / PASSPORT STATUS
+# ============================================================
+
+def _get_team_status(db: FAJDatabase) -> Dict[str, Any]:
+    """
+    Проверка команд и паспортов.
+
+    ВАЖНО:
+        Здесь НИЧЕГО не создаётся автоматически.
+    """
+
+    try:
+
+        teams = db.get_teams(league=LEAGUE)
+
+        team_count = len(teams)
+
+        passport_count = 0
+
+        try:
+
+            season_id = db.get_season_id(
+                LEAGUE,
+                SEASON_YEAR,
+                "league",
+            )
+
+            if season_id:
+
+                for team in teams:
+
+                    passport = db.get_team_passport(
+                        team["id"],
+                        season_id,
+                    )
+
+                    if passport:
+                        passport_count += 1
+
+        except Exception as exc:
+
+            logger.warning(
+                "Не удалось полностью проверить паспорта: %s",
+                exc,
+            )
+
+        return {
+            "success": True,
+            "teams": team_count,
+            "passports": passport_count,
+            "expected_teams": EXPECTED_TEAMS,
+            "expected_passports": EXPECTED_TEAMS,
+            "ready": (
+                team_count >= EXPECTED_TEAMS
+                and passport_count >= EXPECTED_TEAMS
+            ),
+        }
+
+    except Exception as exc:
+
+        logger.exception("Ошибка проверки команд")
+
+        return {
+            "success": False,
+            "error": str(exc),
+        }
+
+
+# ============================================================
+# SEASON STATUS
+# ============================================================
+
+def _get_season_status(db: FAJDatabase) -> Dict[str, Any]:
+
+    try:
+
+        season_id = db.get_season_id(
+            LEAGUE,
+            SEASON_YEAR,
+            "league",
+        )
+
+        return {
+            "success": True,
+            "exists": season_id is not None,
+            "season_id": season_id,
+        }
+
+    except Exception as exc:
+
+        logger.exception("Ошибка проверки сезона")
+
+        return {
+            "success": False,
+            "error": str(exc),
+        }
+
+
+# ============================================================
+# ROUND STATUS
+# ============================================================
+
+def _get_round_status(
+    db: FAJDatabase,
+    season_id: int,
+) -> Dict[str, Any]:
+
+    try:
+
+        rounds = db.get_rounds(season_id)
+
+        round_numbers = []
+
+        for row in rounds:
+
+            if isinstance(row, dict):
+
+                number = row.get("round_number")
+
+            else:
+
+                number = row["round_number"]
+
+            if number is not None:
+                round_numbers.append(int(number))
+
+        round_numbers = sorted(set(round_numbers))
+
+        return {
+            "success": True,
+            "rounds": len(round_numbers),
+            "expected_rounds": EXPECTED_ROUNDS,
+            "round_numbers": round_numbers,
+            "complete": len(round_numbers) >= EXPECTED_ROUNDS,
+        }
+
+    except Exception as exc:
+
+        logger.exception("Ошибка проверки туров")
+
+        return {
+            "success": False,
+            "error": str(exc),
+        }
+
+
+# ============================================================
+# MATCH STATUS
+# ============================================================
+
+def _get_match_status(
+    db: FAJDatabase,
+    season_id: int,
+) -> Dict[str, Any]:
+
+    try:
+
+        rounds = db.get_rounds(season_id)
+
+        total_matches = 0
+        finished_matches = 0
+
+        round_status = {}
+
+        for round_row in rounds:
+
+            if isinstance(round_row, dict):
+                round_id = round_row["id"]
+                round_number = round_row["round_number"]
+            else:
+                round_id = round_row["id"]
+                round_number = round_row["round_number"]
+
+            matches = db.get_matches(round_id)
+
+            count = len(matches)
+
+            finished = 0
+
+            for match in matches:
+
+                status = match.get("status")
+
+                actual_home = match.get("actual_home")
+                actual_away = match.get("actual_away")
+
+                if (
+                    status == "finished"
+                    or (
+                        actual_home is not None
+                        and actual_away is not None
+                    )
+                ):
+                    finished += 1
+
+            total_matches += count
+            finished_matches += finished
+
+            round_status[int(round_number)] = {
+                "round_id": round_id,
+                "matches": count,
+                "finished": finished,
+            }
+
+        return {
+            "success": True,
+            "matches": total_matches,
+            "finished_matches": finished_matches,
+            "expected_matches": EXPECTED_MATCHES,
+            "complete": total_matches >= EXPECTED_MATCHES,
+            "rounds": round_status,
+        }
+
+    except Exception as exc:
+
+        logger.exception("Ошибка проверки матчей")
+
+        return {
+            "success": False,
+            "error": str(exc),
+        }
+
+
+# ============================================================
+# NEXT ROUND
+# ============================================================
+
+def _find_next_round_without_predictions(
+    db: FAJDatabase,
+    season_id: int,
+) -> Optional[int]:
+    """
+    Находит первый тур, где существуют матчи без прогнозов.
+
+    Уже сыгранные матчи не выбираются.
+    """
+
+    rounds = db.get_rounds(season_id)
+
+    for round_row in sorted(
+        rounds,
+        key=lambda x: int(x["round_number"]),
+    ):
+
+        round_id = round_row["id"]
+        round_number = int(round_row["round_number"])
+
+        matches = db.get_matches(round_id)
+
+        pending = False
+
+        for match in matches:
+
+            status = match.get("status")
+
+            actual_home = match.get("actual_home")
+            actual_away = match.get("actual_away")
+
+            # Уже сыгранный матч пропускаем.
+            if (
+                status == "finished"
+                or (
+                    actual_home is not None
+                    and actual_away is not None
+                )
+            ):
+                continue
+
+            match_id = match["id"]
+
+            prediction = db.get_match_prediction(match_id)
+
+            if not prediction:
+                pending = True
+                break
+
+        if pending:
+            return round_number
+
+    return None
+
+
+# ============================================================
+# CALENDAR
+# ============================================================
+
+def _validate_calendar(
+    db: FAJDatabase,
+    season_id: int,
+) -> Dict[str, Any]:
+    """
+    Проверяет существующий календарь.
+
+    ВАЖНО:
+        Эта функция НЕ создаёт rounds/matches.
+    """
+
+    try:
+
+        round_status = _get_round_status(
+            db,
+            season_id,
+        )
+
+        if not round_status["success"]:
+            return round_status
+
+        match_status = _get_match_status(
+            db,
+            season_id,
+        )
+
+        if not match_status["success"]:
+            return match_status
+
+        errors = []
+
+        if round_status["rounds"] != EXPECTED_ROUNDS:
+
+            errors.append(
+                f"Ожидалось {EXPECTED_ROUNDS} туров, "
+                f"получено {round_status['rounds']}"
+            )
+
+        if match_status["matches"] != EXPECTED_MATCHES:
+
+            errors.append(
+                f"Ожидалось {EXPECTED_MATCHES} матчей, "
+                f"получено {match_status['matches']}"
+            )
+
+        for round_number, data in match_status["rounds"].items():
+
+            if data["matches"] != 8:
+
+                errors.append(
+                    f"Тур {round_number}: "
+                    f"{data['matches']} матчей вместо 8"
+                )
+
+        return {
+            "success": len(errors) == 0,
+            "calendar_valid": len(errors) == 0,
+            "rounds": round_status,
+            "matches": match_status,
+            "validation_errors": errors,
+        }
+
+    except Exception as exc:
+
+        logger.exception("Ошибка проверки календаря")
+
+        return {
+            "success": False,
+            "calendar_valid": False,
+            "error": str(exc),
+        }
+
+
+# ============================================================
+# PARSER DIAGNOSTIC
+# ============================================================
+
+def _inspect_fixture_parser() -> Dict[str, Any]:
+    """
+    Проверяет доступность parser API.
+
+    Парсер здесь НЕ записывает данные в БД.
+    """
+
+    try:
+
+        parser = RPLFixturesParser()
+
+        if not hasattr(parser, "parse"):
+            return {
+                "success": False,
+                "error": (
+                    "RPLFixturesParser не содержит метода parse()"
+                ),
+            }
+
+        return {
+            "success": True,
+            "parser": "RPLFixturesParser",
+            "method": "parse",
+            "available": True,
+        }
+
+    except Exception as exc:
+
+        logger.exception("Ошибка инициализации fixture parser")
+
+        return {
+            "success": False,
+            "error": str(exc),
+        }
+
+
+# ============================================================
+# HISTORICAL RESULTS
+# ============================================================
+
+def _import_historical_results() -> Dict[str, Any]:
+
+    try:
+
+        result = import_historical_results()
+
+        if not isinstance(result, dict):
+
+            return {
+                "success": False,
+                "error": (
+                    "Historical importer вернул "
+                    "не Dict"
+                ),
+            }
+
+        return result
+
+    except Exception as exc:
+
+        logger.exception(
+            "Ошибка исторического импорта"
+        )
+
+        return {
+            "success": False,
+            "error": str(exc),
+        }
+
+
+# ============================================================
+# LEARNING
+# ============================================================
+
+def _run_learning(
+    force: bool = False,
+) -> Dict[str, Any]:
+
+    try:
+
+        result = run_learning(
+            force=force,
+        )
+
+        if not isinstance(result, dict):
+
+            return {
+                "success": False,
+                "error": (
+                    "Learning Engine вернул "
+                    "не Dict"
+                ),
+            }
+
+        return result
+
+    except Exception as exc:
+
+        logger.exception(
+            "Ошибка Learning Engine"
+        )
+
+        return {
+            "success": False,
+            "error": str(exc),
+        }
+
+
+# ============================================================
+# PREDICTION
+# ============================================================
+
+def _run_prediction(
+    db: FAJDatabase,
+    season_id: int,
+    prediction_round: Optional[int] = None,
+) -> Dict[str, Any]:
+
+    try:
+
+        manager = PredictionManager()
+
+        if prediction_round is None:
+
+            prediction_round = (
+                _find_next_round_without_predictions(
+                    db,
+                    season_id,
+                )
+            )
+
+        if prediction_round is None:
+
+            return {
+                "success": True,
+                "predictions_created": 0,
+                "round": None,
+                "message": (
+                    "Нет тура с матчами без прогнозов."
+                ),
+            }
+
+        rounds = db.get_rounds(season_id)
+
+        round_id = None
+
+        for row in rounds:
+
+            if int(row["round_number"]) == int(
+                prediction_round
+            ):
+                round_id = row["id"]
+                break
+
+        if round_id is None:
+
+            return {
+                "success": False,
+                "error": (
+                    f"Тур {prediction_round} "
+                    "не найден в БД."
+                ),
+            }
+
+        # Проверяем наличие API PredictionManager.
+        if not hasattr(manager, "predict_round"):
+
+            return {
+                "success": False,
+                "error": (
+                    "PredictionManager не содержит "
+                    "метода predict_round()."
+                ),
+            }
+
+        predictions = manager.predict_round(
+            round_id,
+            include_finished=False,
+        )
+
+        if predictions is None:
+            predictions = []
+
+        return {
+            "success": True,
+            "round": prediction_round,
+            "round_id": round_id,
+            "predictions_created": len(predictions),
+            "predictions": predictions,
+        }
+
+    except Exception as exc:
+
+        logger.exception(
+            "Ошибка PredictionManager"
+        )
+
+        return {
+            "success": False,
+            "error": str(exc),
+        }
+
+
+# ============================================================
+# MAIN CYCLE
+# ============================================================
+
+def run_faj_cycle(
+    db_path: Optional[str] = None,
+    results_rounds: Tuple[int, int] = DEFAULT_RESULTS_ROUNDS,
+    force_learning: bool = False,
+    prediction_round: Optional[int] = None,
+    dry_run: bool = True,
+) -> Dict[str, Any]:
+    """
+    Полный цикл FAJ.
+
+    Параметры:
+
+        db_path:
+            Зарезервировано для совместимости.
+            FAJDatabase использует собственный DB_FILE.
+
+        results_rounds:
+            Диапазон исторических результатов.
+
+        force_learning:
+            Принудительный запуск обучения.
+
+        prediction_round:
+            Конкретный тур для прогноза.
+            Если None — определяется автоматически.
+
+        dry_run:
+            True  = только диагностика.
+            False = разрешить операции записи.
 
     ВАЖНО:
 
-    Этот класс НЕ реализует бизнес-логику отдельных модулей.
+        Первый запуск рекомендуется делать:
 
-    Он только управляет порядком:
+            dry_run=True
 
-        Bootstrap
-            ↓
-        Sync
-            ↓
-        Fixtures
-            ↓
-        Results
-            ↓
-        Learning
-            ↓
-        Prediction
+        После проверки состояния:
+
+            dry_run=False
     """
 
-    def __init__(self):
-        self.cycle_id = _new_cycle_id()
+    started_at = _now()
 
-        self.results: Dict[str, Any] = {
-            "success": False,
-            "cycle_id": self.cycle_id,
-            "version": CYCLE_VERSION,
-            "started_at": _now(),
-            "finished_at": None,
-            "phases": {},
-            "errors": [],
-            "warnings": [],
+    logger.info("=" * 70)
+    logger.info(
+        "FAJ CYCLE v%s START",
+        CYCLE_VERSION,
+    )
+    logger.info(
+        "dry_run=%s",
+        dry_run,
+    )
+    logger.info("=" * 70)
+
+    result: Dict[str, Any] = {
+        "success": False,
+        "cycle_version": CYCLE_VERSION,
+        "started_at": started_at,
+        "finished_at": None,
+        "dry_run": dry_run,
+        "phase": None,
+        "bootstrap": None,
+        "database": None,
+        "system": None,
+        "teams": None,
+        "season": None,
+        "calendar": None,
+        "results": None,
+        "learning": None,
+        "predictions": None,
+        "errors": [],
+        "warnings": [],
+    }
+
+    # ========================================================
+    # 1. DATABASE
+    # ========================================================
+
+    result["phase"] = "database"
+
+    try:
+
+        db = FAJDatabase()
+
+        database_status = _get_database_status(db)
+
+        result["database"] = database_status
+
+        if not database_status["success"]:
+
+            return _stop(
+                "database",
+                "Не удалось получить статус БД.",
+                **result,
+            )
+
+    except Exception as exc:
+
+        logger.exception(
+            "Критическая ошибка БД"
+        )
+
+        return _stop(
+            "database",
+            str(exc),
+            **result,
+        )
+
+    # ========================================================
+    # 2. BOOTSTRAP
+    # ========================================================
+
+    result["phase"] = "bootstrap"
+
+    try:
+
+        bootstrap = bootstrap_faj()
+
+        result["bootstrap"] = bootstrap
+
+        if not bootstrap.get("ready", False):
+
+            return _stop(
+                "bootstrap",
+                "Bootstrap сообщил, что система не готова.",
+                **result,
+            )
+
+    except Exception as exc:
+
+        logger.exception(
+            "Ошибка bootstrap"
+        )
+
+        return _stop(
+            "bootstrap",
+            str(exc),
+            **result,
+        )
+
+    # ========================================================
+    # 3. TEAMS / PASSPORTS
+    # ========================================================
+
+    result["phase"] = "teams"
+
+    team_status = _get_team_status(db)
+
+    result["teams"] = team_status
+
+    if not team_status["success"]:
+
+        return _stop(
+            "teams",
+            "Не удалось проверить команды/паспорта.",
+            **result,
+        )
+
+    if not team_status["ready"]:
+
+        return _stop(
+            "teams",
+            (
+                "Недостаточно команд или паспортов. "
+                "Автоматическая синхронизация отключена "
+                "для безопасности."
+            ),
+            **result,
+        )
+
+    # ========================================================
+    # 4. SEASON
+    # ========================================================
+
+    result["phase"] = "season"
+
+    season_status = _get_season_status(db)
+
+    result["season"] = season_status
+
+    if not season_status["success"]:
+
+        return _stop(
+            "season",
+            "Ошибка проверки сезона.",
+            **result,
+        )
+
+    if not season_status["exists"]:
+
+        return _stop(
+            "season",
+            (
+                f"Сезон {LEAGUE} "
+                f"{SEASON_YEAR} не найден."
+            ),
+            **result,
+        )
+
+    season_id = season_status["season_id"]
+
+    # ========================================================
+    # 5. CALENDAR
+    # ========================================================
+
+    result["phase"] = "calendar"
+
+    calendar = _validate_calendar(
+        db,
+        season_id,
+    )
+
+    result["calendar"] = calendar
+
+    if not calendar.get(
+        "calendar_valid",
+        False,
+    ):
+
+        # Проверяем parser API только для диагностики.
+        parser_status = _inspect_fixture_parser()
+
+        result["calendar"]["parser"] = parser_status
+
+        return _stop(
+            "calendar",
+            (
+                "Существующий календарь "
+                "не прошёл валидацию. "
+                "Оркестратор ничего не пересоздаёт."
+            ),
+            **result,
+        )
+
+    # ========================================================
+    # 6. DRY RUN
+    # ========================================================
+
+    if dry_run:
+
+        result["phase"] = "dry_run"
+
+        next_round = (
+            _find_next_round_without_predictions(
+                db,
+                season_id,
+            )
+        )
+
+        result["predictions"] = {
+            "success": True,
+            "dry_run": True,
+            "next_round": next_round,
+            "message": (
+                "Диагностический режим. "
+                "Запись результатов, обучение "
+                "и прогнозирование не выполнялись."
+            ),
         }
 
-        logger.info(
-            "FAJ Cycle %s started",
-            self.cycle_id,
-        )
-
-    # ========================================================
-    # 1. BOOTSTRAP
-    # ========================================================
-
-    def bootstrap(self) -> Dict[str, Any]:
-        """
-        Проверка состояния FAJ.
-
-        Bootstrap НЕ должен считаться ошибкой только потому,
-        что календарь ещё отсутствует.
-
-        Это важно для восстановления БД.
-        """
-
-        logger.info("PHASE 1: Bootstrap")
-
-        try:
-            result = bootstrap_faj()
-
-            if not isinstance(result, dict):
-                return _phase_result(
-                    "bootstrap",
-                    False,
-                    error="bootstrap_faj() returned invalid result",
-                )
-
-            teams = result.get("teams", 0)
-            passports = result.get("passports", 0)
-            season = result.get("season", False)
-            db_exists = result.get("db_exists", False)
-
-            # Критические условия
-            critical_errors = []
-
-            if not db_exists:
-                critical_errors.append("Database does not exist")
-
-            if teams < EXPECTED_TEAMS:
-                critical_errors.append(
-                    f"Not enough teams: {teams}/{EXPECTED_TEAMS}"
-                )
-
-            if passports < EXPECTED_TEAMS:
-                critical_errors.append(
-                    f"Not enough passports: {passports}/{EXPECTED_TEAMS}"
-                )
-
-            if not season:
-                critical_errors.append(
-                    f"Season '{SEASON_NAME}' is missing"
-                )
-
-            if critical_errors:
-                phase = _phase_result(
-                    "bootstrap",
-                    False,
-                    details=result,
-                    errors=critical_errors,
-                )
-
-                self.results["errors"].extend(critical_errors)
-
-                return phase
-
-            return _phase_result(
-                "bootstrap",
-                True,
-                details=result,
-                note=(
-                    "Existing matches are not required for bootstrap. "
-                    "Calendar may be loaded in the next phase."
-                ),
-            )
-
-        except Exception as exc:
-            logger.exception("Bootstrap failed")
-
-            error = f"Bootstrap exception: {exc}"
-
-            self.results["errors"].append(error)
-
-            return _phase_result(
-                "bootstrap",
-                False,
-                error=error,
-            )
-
-    # ========================================================
-    # 2. SYNC
-    # ========================================================
-
-    def sync(self) -> Dict[str, Any]:
-        """
-        Синхронизация команд и паспортов.
-
-        Не запускаем sync без необходимости.
-        """
-
-        logger.info("PHASE 2: Sync")
-
-        try:
-            sync_engine = SyncEngine()
-
-            status = sync_engine.get_status(
-                league=LEAGUE_NAME
-            )
-
-            teams = status.get("teams", 0)
-            passports = status.get(
-                "team_passports",
-                status.get("passports", 0),
-            )
-
-            logger.info(
-                "Current state: teams=%s passports=%s",
-                teams,
-                passports,
-            )
-
-            # Полная синхронизация требуется,
-            # если отсутствует часть команд/паспортов.
-            if (
-                teams < EXPECTED_TEAMS
-                or passports < EXPECTED_TEAMS
-            ):
-                logger.info(
-                    "Synchronization required"
-                )
-
-                sync_result = sync_engine.sync_teams(
-                    league=LEAGUE_NAME
-                )
-
-                return _phase_result(
-                    "sync",
-                    True,
-                    action="sync_teams",
-                    details=sync_result,
-                )
-
-            logger.info(
-                "Teams and passports already exist. "
-                "Synchronization skipped."
-            )
-
-            return _phase_result(
-                "sync",
-                True,
-                action="skipped",
-                teams=teams,
-                passports=passports,
-            )
-
-        except Exception as exc:
-            logger.exception("Sync failed")
-
-            error = f"Sync exception: {exc}"
-
-            self.results["errors"].append(error)
-
-            return _phase_result(
-                "sync",
-                False,
-                error=error,
-            )
-
-    # ========================================================
-    # 3. FIXTURES
-    # ========================================================
-
-    def load_calendar(self) -> Dict[str, Any]:
-        """
-        Парсинг и валидация календаря.
-
-        ВАЖНО:
-        parser НЕ должен непосредственно менять БД.
-
-        Поэтому на этом этапе мы только получаем
-        и проверяем календарь.
-
-        Реальная запись должна выполняться через
-        существующий database/load_calendar механизм.
-        """
-
-        logger.info("PHASE 3: Fixtures")
-
-        try:
-            fixtures = parse_rpl_fixtures()
-
-            if not isinstance(fixtures, dict):
-                error = (
-                    "parse_rpl_fixtures() returned invalid result"
-                )
-
-                self.results["errors"].append(error)
-
-                return _phase_result(
-                    "calendar",
-                    False,
-                    error=error,
-                )
-
-            if not fixtures.get("calendar_valid", False):
-
-                validation_errors = fixtures.get(
-                    "validation_errors",
-                    [],
-                )
-
-                error = (
-                    "RPL calendar validation failed"
-                )
-
-                self.results["errors"].append(error)
-
-                return _phase_result(
-                    "calendar",
-                    False,
-                    error=error,
-                    validation_errors=validation_errors,
-                    details=fixtures,
-                )
-
-            matches = fixtures.get("matches", [])
-
-            if len(matches) != EXPECTED_MATCHES:
-                error = (
-                    f"Invalid number of fixtures: "
-                    f"{len(matches)}/{EXPECTED_MATCHES}"
-                )
-
-                self.results["errors"].append(error)
-
-                return _phase_result(
-                    "calendar",
-                    False,
-                    error=error,
-                    matches=len(matches),
-                )
-
-            logger.info(
-                "Calendar validated successfully: %s matches",
-                len(matches),
-            )
-
-            return _phase_result(
-                "calendar",
-                True,
-                matches=len(matches),
-                rounds=EXPECTED_ROUNDS,
-                details=fixtures,
-                note=(
-                    "Parser validated the calendar. "
-                    "Database loading must use an idempotent loader."
-                ),
-            )
-
-        except Exception as exc:
-            logger.exception("Calendar phase failed")
-
-            error = f"Calendar exception: {exc}"
-
-            self.results["errors"].append(error)
-
-            return _phase_result(
-                "calendar",
-                False,
-                error=error,
-            )
-
-    # ========================================================
-    # 4. RESULTS
-    # ========================================================
-
-    def load_results(
-        self,
-        start_round: int = 1,
-        end_round: int = 30,
-    ) -> Dict[str, Any]:
-        """
-        Получение фактических результатов.
-
-        По умолчанию проверяем весь сезон.
-
-        ВАЖНО:
-        parser только получает данные.
-        Запись должна выполняться idempotent loader'ом.
-        """
+        result["success"] = True
+        result["phase"] = "dry_run_complete"
+        result["finished_at"] = _now()
 
         logger.info(
-            "PHASE 4: Results (%s-%s)",
-            start_round,
-            end_round,
+            "FAJ CYCLE DRY RUN COMPLETE"
         )
 
-        try:
-            results = parse_rpl_results(
-                start_round=start_round,
-                end_round=end_round,
-            )
-
-            if results is None:
-                results = []
-
-            if not isinstance(results, list):
-                error = (
-                    "parse_rpl_results() returned invalid result"
-                )
-
-                self.results["errors"].append(error)
-
-                return _phase_result(
-                    "results",
-                    False,
-                    error=error,
-                )
-
-            logger.info(
-                "Parsed %s finished matches",
-                len(results),
-            )
-
-            if not results:
-                return _phase_result(
-                    "results",
-                    True,
-                    matches=0,
-                    action="no_results",
-                    note=(
-                        "No finished results available. "
-                        "Learning will be handled separately."
-                    ),
-                )
-
-            return _phase_result(
-                "results",
-                True,
-                matches=len(results),
-                start_round=start_round,
-                end_round=end_round,
-                details=results,
-                note=(
-                    "Results parsed successfully. "
-                    "Database persistence must be idempotent."
-                ),
-            )
-
-        except Exception as exc:
-            logger.exception("Results phase failed")
-
-            error = f"Results exception: {exc}"
-
-            self.results["errors"].append(error)
-
-            return _phase_result(
-                "results",
-                False,
-                error=error,
-            )
+        return result
 
     # ========================================================
-    # 5. LEARNING
+    # 7. HISTORICAL RESULTS
     # ========================================================
 
-    def learn(self, force: bool = False) -> Dict[str, Any]:
-        """
-        Пакетное обучение.
+    result["phase"] = "results"
 
-        LearningEngine самостоятельно решает,
-        достаточно ли фактических матчей.
-        """
+    logger.info(
+        "Импорт исторических результатов..."
+    )
 
-        logger.info(
-            "PHASE 5: Learning (force=%s)",
-            force,
+    historical = _import_historical_results()
+
+    result["results"] = historical
+
+    if not historical.get("success", False):
+
+        return _stop(
+            "results",
+            "Исторический импорт завершился ошибкой.",
+            **result,
         )
-
-        try:
-            result = run_learning(
-                force=force
-            )
-
-            if not isinstance(result, dict):
-                error = (
-                    "run_learning() returned invalid result"
-                )
-
-                self.results["errors"].append(error)
-
-                return _phase_result(
-                    "learning",
-                    False,
-                    error=error,
-                )
-
-            if not result.get("success", False):
-
-                # Недостаточно данных для обучения —
-                # это не обязательно авария всего цикла.
-                matches_analyzed = result.get(
-                    "matches_analyzed",
-                    0,
-                )
-
-                if matches_analyzed < 8:
-
-                    warning = (
-                        "Not enough matches for learning: "
-                        f"{matches_analyzed}/8"
-                    )
-
-                    self.results["warnings"].append(
-                        warning
-                    )
-
-                    return _phase_result(
-                        "learning",
-                        True,
-                        action="skipped",
-                        reason=warning,
-                        details=result,
-                    )
-
-                error = (
-                    "Learning engine returned success=False"
-                )
-
-                self.results["errors"].append(error)
-
-                return _phase_result(
-                    "learning",
-                    False,
-                    error=error,
-                    details=result,
-                )
-
-            return _phase_result(
-                "learning",
-                True,
-                details=result,
-            )
-
-        except Exception as exc:
-            logger.exception("Learning failed")
-
-            error = f"Learning exception: {exc}"
-
-            self.results["errors"].append(error)
-
-            return _phase_result(
-                "learning",
-                False,
-                error=error,
-            )
 
     # ========================================================
-    # 6. PREDICTION
+    # 8. LEARNING
     # ========================================================
 
-    def predict(
-        self,
-        round_id: Optional[int] = None,
-        include_finished: bool = False,
-    ) -> Dict[str, Any]:
-        """
-        Генерация прогнозов.
+    result["phase"] = "learning"
 
-        Если round_id не передан, автоматический поиск
-        следующего тура здесь НЕ выполняем через догадки.
+    logger.info(
+        "Запуск Learning Engine..."
+    )
 
-        Сначала получаем состояние БД через PredictionManager.
-        """
+    learning = _run_learning(
+        force=force_learning,
+    )
 
-        logger.info(
-            "PHASE 6: Prediction"
+    result["learning"] = learning
+
+    if not learning.get("success", False):
+
+        return _stop(
+            "learning",
+            "Learning Engine завершился ошибкой.",
+            **result,
         )
-
-        try:
-            manager = PredictionManager()
-
-            status = manager.status()
-
-            logger.info(
-                "PredictionManager status: %s",
-                status,
-            )
-
-            if round_id is None:
-                return _phase_result(
-                    "prediction",
-                    True,
-                    action="skipped",
-                    reason=(
-                        "round_id was not provided. "
-                        "No round was guessed automatically."
-                    ),
-                    manager_status=status,
-                )
-
-            predictions = manager.predict_round(
-                round_id=round_id,
-                include_finished=include_finished,
-            )
-
-            if predictions is None:
-                predictions = []
-
-            return _phase_result(
-                "prediction",
-                True,
-                round_id=round_id,
-                predictions=predictions,
-                count=len(predictions),
-                manager_status=status,
-            )
-
-        except Exception as exc:
-            logger.exception("Prediction failed")
-
-            error = f"Prediction exception: {exc}"
-
-            self.results["errors"].append(error)
-
-            return _phase_result(
-                "prediction",
-                False,
-                error=error,
-            )
 
     # ========================================================
-    # FULL CYCLE
+    # 9. PREDICTIONS
     # ========================================================
 
-    def run(
-        self,
-        *,
-        results_start_round: int = 1,
-        results_end_round: int = 30,
-        learning_force: bool = False,
-        prediction_round_id: Optional[int] = None,
-        include_finished: bool = False,
-    ) -> Dict[str, Any]:
-        """
-        Полный FAJ Cycle.
+    result["phase"] = "predictions"
 
-        Порядок:
+    logger.info(
+        "Запуск Prediction Manager..."
+    )
 
-            Bootstrap
-            ↓
-            Sync
-            ↓
-            Fixtures
-            ↓
-            Results
-            ↓
-            Learning
-            ↓
-            Prediction
-        """
+    predictions = _run_prediction(
+        db=db,
+        season_id=season_id,
+        prediction_round=prediction_round,
+    )
 
-        logger.info(
-            "================================================"
+    result["predictions"] = predictions
+
+    if not predictions.get("success", False):
+
+        return _stop(
+            "predictions",
+            "Prediction Manager завершился ошибкой.",
+            **result,
         )
-        logger.info(
-            "FAJ CYCLE v%s START",
-            CYCLE_VERSION,
-        )
-        logger.info(
-            "Cycle ID: %s",
-            self.cycle_id,
-        )
-        logger.info(
-            "================================================"
-        )
-
-        # ----------------------------------------------------
-        # PHASE 1
-        # ----------------------------------------------------
-
-        bootstrap = self.bootstrap()
-
-        self.results["phases"]["bootstrap"] = bootstrap
-
-        if not bootstrap["success"]:
-            return self._finish(False)
-
-        # ----------------------------------------------------
-        # PHASE 2
-        # ----------------------------------------------------
-
-        sync = self.sync()
-
-        self.results["phases"]["sync"] = sync
-
-        if not sync["success"]:
-            return self._finish(False)
-
-        # ----------------------------------------------------
-        # PHASE 3
-        # ----------------------------------------------------
-
-        calendar = self.load_calendar()
-
-        self.results["phases"]["calendar"] = calendar
-
-        if not calendar["success"]:
-            return self._finish(False)
-
-        # ----------------------------------------------------
-        # PHASE 4
-        # ----------------------------------------------------
-
-        results = self.load_results(
-            start_round=results_start_round,
-            end_round=results_end_round,
-        )
-
-        self.results["phases"]["results"] = results
-
-        if not results["success"]:
-            return self._finish(False)
-
-        # ----------------------------------------------------
-        # PHASE 5
-        # ----------------------------------------------------
-
-        learning = self.learn(
-            force=learning_force
-        )
-
-        self.results["phases"]["learning"] = learning
-
-        if not learning["success"]:
-            return self._finish(False)
-
-        # ----------------------------------------------------
-        # PHASE 6
-        # ----------------------------------------------------
-
-        prediction = self.predict(
-            round_id=prediction_round_id,
-            include_finished=include_finished,
-        )
-
-        self.results["phases"]["prediction"] = prediction
-
-        if not prediction["success"]:
-            return self._finish(False)
-
-        # ----------------------------------------------------
-        # COMPLETE
-        # ----------------------------------------------------
-
-        return self._finish(True)
 
     # ========================================================
-    # FINISH
+    # 10. COMPLETE
     # ========================================================
 
-    def _finish(
-        self,
-        success: bool,
-    ) -> Dict[str, Any]:
-        """
-        Завершение цикла.
-        """
+    result["success"] = True
+    result["phase"] = "completed"
+    result["finished_at"] = _now()
 
-        self.results["success"] = success
-        self.results["finished_at"] = _now()
+    logger.info("=" * 70)
+    logger.info(
+        "FAJ CYCLE v%s COMPLETE",
+        CYCLE_VERSION,
+    )
+    logger.info("=" * 70)
 
-        if success:
-            logger.info(
-                "FAJ Cycle %s COMPLETED",
-                self.cycle_id,
-            )
-        else:
-            logger.error(
-                "FAJ Cycle %s FAILED",
-                self.cycle_id,
-            )
-
-        return self.results
+    return result
 
 
 # ============================================================
 # CONVENIENCE API
 # ============================================================
 
-def run_faj_cycle(
-    *,
-    results_start_round: int = 1,
-    results_end_round: int = 30,
-    learning_force: bool = False,
-    prediction_round_id: Optional[int] = None,
-    include_finished: bool = False,
+def run_cycle(
+    dry_run: bool = True,
+    force_learning: bool = False,
+    prediction_round: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """
-    Удобный публичный API FAJ Cycle.
-    """
 
-    cycle = FAJCycle()
-
-    return cycle.run(
-        results_start_round=results_start_round,
-        results_end_round=results_end_round,
-        learning_force=learning_force,
-        prediction_round_id=prediction_round_id,
-        include_finished=include_finished,
+    return run_faj_cycle(
+        dry_run=dry_run,
+        force_learning=force_learning,
+        prediction_round=prediction_round,
     )
 
 
@@ -873,62 +1134,100 @@ def run_faj_cycle(
 
 if __name__ == "__main__":
 
-    result = run_faj_cycle(
-        results_start_round=1,
-        results_end_round=30,
-        learning_force=False,
-        prediction_round_id=None,
-        include_finished=False,
+    print()
+    print("=" * 70)
+    print("FAJ PLATFORM v12.1")
+    print("FAJ CYCLE")
+    print("=" * 70)
+    print()
+    print(
+        "Режим: DRY RUN"
+    )
+    print(
+        "База данных НЕ изменяется."
+    )
+    print()
+
+    cycle_result = run_faj_cycle(
+        dry_run=True,
     )
 
     print()
-    print("=" * 60)
+    print("=" * 70)
     print("FAJ CYCLE RESULT")
-    print("=" * 60)
+    print("=" * 70)
 
     print(
-        f"Success: {result['success']}"
+        f"Success: {cycle_result.get('success')}"
     )
 
     print(
-        f"Cycle ID: {result['cycle_id']}"
+        f"Phase: {cycle_result.get('phase')}"
     )
 
-    print(
-        f"Started: {result['started_at']}"
-    )
+    if cycle_result.get("teams"):
 
-    print(
-        f"Finished: {result['finished_at']}"
-    )
-
-    print()
-
-    for phase_name, phase_result in result[
-        "phases"
-    ].items():
+        teams = cycle_result["teams"]
 
         print(
-            f"[{phase_name.upper()}] "
-            f"{'OK' if phase_result.get('success') else 'FAILED'}"
+            f"Teams: "
+            f"{teams.get('teams', 0)}"
         )
 
-    if result["warnings"]:
-        print()
-        print("WARNINGS:")
+        print(
+            f"Passports: "
+            f"{teams.get('passports', 0)}"
+        )
 
-        for warning in result["warnings"]:
+    if cycle_result.get("season"):
+
+        season = cycle_result["season"]
+
+        print(
+            f"Season: "
+            f"{season.get('exists')}"
+        )
+
+    if cycle_result.get("calendar"):
+
+        calendar = cycle_result["calendar"]
+
+        if calendar.get("rounds"):
+
             print(
-                f"  - {warning}"
+                f"Rounds: "
+                f"{calendar['rounds'].get('rounds', 0)}"
             )
 
-    if result["errors"]:
+        if calendar.get("matches"):
+
+            print(
+                f"Matches: "
+                f"{calendar['matches'].get('matches', 0)}"
+            )
+
+            print(
+                f"Finished: "
+                f"{calendar['matches'].get('finished_matches', 0)}"
+            )
+
+    if cycle_result.get("predictions"):
+
+        print(
+            f"Next round: "
+            f"{cycle_result['predictions'].get('next_round')}"
+        )
+
+    if cycle_result.get("errors"):
+
         print()
         print("ERRORS:")
 
-        for error in result["errors"]:
+        for error in cycle_result["errors"]:
+
             print(
                 f"  - {error}"
             )
 
-    print("=" * 60)
+    print()
+    print("=" * 70)
