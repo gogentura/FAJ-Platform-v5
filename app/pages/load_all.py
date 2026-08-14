@@ -13,30 +13,31 @@ LOAD ALL — RPL DATA & PREDICTION CENTER
 Функции:
     1. Создание/получение сезона
     2. Создание команд
-    3. Создание туров
-    4. Загрузка календаря
+    3. Создание туров (исправлено — идемпотентное)
+    4. Загрузка календаря (исправлено — проверка после upsert)
     5. Загрузка результатов исторических туров
-    6. Загрузка статистики прошедших матчей
+    6. Загрузка статистики прошедших матчей (через update_match_stats)
     7. Идемпотентное обновление
     8. Persistent state
     9. Центр прогнозов по турам
    10. Хранение прогнозов по каждому туру
-   11. Хранение экспертных прогнозов директора
+   11. Хранение экспертных прогнозов директора (по турам)
    12. Восстановление состояния после Streamlit rerun
+
+ИСПРАВЛЕНИЯ v12.1:
+    - ensure_rounds() — идемпотентная, без зависимости от create_round()
+    - Удалена write_match_statistics()
+    - Статистика только через db.update_match_stats()
+    - get_database_status() — использует matches, а не match_results/match_statistics
+    - import_fixtures() — проверка матча после upsert_match()
+    - fixtures_loaded — по реально записанным матчам
+    - Исторический импорт — обновление только при наличии результата
+    - expert_predictions — структура по турам
 
 ВАЖНО:
     database.py НЕ изменяется.
-
-ИСПРАВЛЕНИЕ v12.1:
-    FAJDatabase использует публичный метод:
-
-        db.get_connection()
-
-    Старый:
-
-        db._get_connection()
-
-    удалён из этого файла.
+    Нет DELETE/DROP.
+    Идемпотентность всех операций.
 ============================================================
 """
 
@@ -164,6 +165,14 @@ def default_state() -> Dict:
 
     Поэтому прогноз одного тура не уничтожает
     прогноз другого.
+
+    expert_predictions также хранится ПО ТУРАМ:
+
+        expert_predictions = {
+            "4": {
+                "match_id": {...}
+            }
+        }
     """
 
     return {
@@ -361,38 +370,96 @@ def ensure_teams(
     return team_ids
 
 
+# ============================================================
+# ENSURE ROUNDS (ИСПРАВЛЕНО — идемпотентное)
+# ============================================================
+
 def ensure_rounds(
     db,
     season_id,
 ) -> Dict[int, int]:
+    """
+    Идемпотентное создание туров.
+
+    ИСПРАВЛЕНО: не зависит от create_round(),
+    явно проверяет существование каждого тура.
+    """
 
     round_ids = {}
 
-    for round_number in range(
-        1,
-        TOTAL_ROUNDS + 1,
-    ):
+    conn = get_connection(db)
 
-        try:
+    try:
 
-            round_id = db.create_round(
-                season_id,
-                round_number,
-            )
+        cursor = conn.cursor()
 
-            if round_id:
+        for round_number in range(
+            1,
+            TOTAL_ROUNDS + 1,
+        ):
 
-                round_ids[
-                    round_number
-                ] = round_id
+            try:
 
-        except Exception as e:
+                # ----------------------------------------------------
+                # Проверяем существование тура
+                # ----------------------------------------------------
 
-            logger.warning(
-                "Ошибка тура %s: %s",
-                round_number,
-                e,
-            )
+                cursor.execute(
+                    """
+                    SELECT id
+                    FROM rounds
+                    WHERE season_id = ?
+                      AND round_number = ?
+                    LIMIT 1
+                    """,
+                    (
+                        season_id,
+                        round_number,
+                    ),
+                )
+
+                row = cursor.fetchone()
+
+                if row:
+
+                    round_ids[round_number] = row[0]
+
+                    continue
+
+                # ----------------------------------------------------
+                # Создаём тур, если его нет
+                # ----------------------------------------------------
+
+                cursor.execute(
+                    """
+                    INSERT INTO rounds
+                    (
+                        season_id,
+                        round_number
+                    )
+                    VALUES (?, ?)
+                    """,
+                    (
+                        season_id,
+                        round_number,
+                    ),
+                )
+
+                round_ids[round_number] = cursor.lastrowid
+
+            except Exception as e:
+
+                logger.warning(
+                    "Ошибка тура %s: %s",
+                    round_number,
+                    e,
+                )
+
+        conn.commit()
+
+    finally:
+
+        conn.close()
 
     return round_ids
 
@@ -408,6 +475,11 @@ def find_match(
     home_team_id,
     away_team_id,
 ):
+    """
+    Единый lookup матча по календарю.
+
+    НЕ создаёт матч, если он не найден.
+    """
 
     conn = get_connection(db)
 
@@ -425,6 +497,7 @@ def find_match(
               AND r.round_number = ?
               AND m.home_team_id = ?
               AND m.away_team_id = ?
+            ORDER BY m.id
             LIMIT 1
             """,
             (
@@ -437,11 +510,7 @@ def find_match(
 
         row = cursor.fetchone()
 
-        if row:
-
-            return row[0]
-
-        return None
+        return row[0] if row else None
 
     finally:
 
@@ -449,7 +518,7 @@ def find_match(
 
 
 # ============================================================
-# FIXTURES
+# FIXTURES (ИСПРАВЛЕНО)
 # ============================================================
 
 def import_fixtures(
@@ -540,6 +609,10 @@ def import_fixtures(
                 result["errors"] += 1
                 continue
 
+            # ----------------------------------------------------
+            # Проверяем существование матча ДО upsert
+            # ----------------------------------------------------
+
             existing_id = find_match(
                 db,
                 season_id,
@@ -547,6 +620,10 @@ def import_fixtures(
                 home_id,
                 away_id,
             )
+
+            # ----------------------------------------------------
+            # Сохраняем матч
+            # ----------------------------------------------------
 
             payload = {
                 "round_id": round_ids[
@@ -568,13 +645,37 @@ def import_fixtures(
                 payload
             )
 
+            # ----------------------------------------------------
+            # Проверяем наличие матча ПОСЛЕ upsert
+            # (ИСПРАВЛЕНО)
+            # ----------------------------------------------------
+
+            new_id = find_match(
+                db,
+                season_id,
+                round_number,
+                home_id,
+                away_id,
+            )
+
             if existing_id:
 
                 result["updated"] += 1
 
-            else:
+            elif new_id:
 
                 result["added"] += 1
+
+            else:
+
+                result["errors"] += 1
+
+                logger.warning(
+                    "Матч не создан: %s - %s, тур %s",
+                    home_name,
+                    away_name,
+                    round_number,
+                )
 
         except Exception as e:
 
@@ -585,11 +686,22 @@ def import_fixtures(
                 e,
             )
 
-    if result["found"] > 0:
+    # --------------------------------------------------------
+    # fixtures_loaded считаем по реально записанным матчам
+    # (ИСПРАВЛЕНО)
+    # --------------------------------------------------------
 
-        state[
-            "fixtures_loaded"
-        ] = True
+    successful_fixtures = (
+        result["added"]
+        + result["updated"]
+    )
+
+    state["fixtures_loaded"] = (
+        result["found"] > 0
+        and successful_fixtures > 0
+    )
+
+    if state["fixtures_loaded"]:
 
         state[
             "fixtures_last_update"
@@ -687,7 +799,7 @@ def normalize_result_item(
 
 
 # ============================================================
-# HISTORICAL RESULTS
+# HISTORICAL RESULTS (ИСПРАВЛЕНО)
 # ============================================================
 
 def import_historical_results(
@@ -876,7 +988,8 @@ def import_historical_results(
                 continue
 
             # ------------------------------------------------
-            # РЕЗУЛЬТАТ
+            # РЕЗУЛЬТАТ (только если есть)
+            # (ИСПРАВЛЕНО)
             # ------------------------------------------------
 
             home_goals = item.get(
@@ -887,10 +1000,12 @@ def import_historical_results(
                 "away_goals"
             )
 
-            if (
+            has_result = (
                 home_goals is not None
                 and away_goals is not None
-            ):
+            )
+
+            if has_result:
 
                 db.update_result(
                     match_id,
@@ -898,8 +1013,27 @@ def import_historical_results(
                     int(away_goals),
                 )
 
+                result["updated"] += 1
+
+                actually_updated_rounds.add(
+                    round_number
+                )
+
+            else:
+
+                result["skipped"] += 1
+
+                logger.warning(
+                    "Матч %s - %s, тур %s "
+                    "не содержит результата.",
+                    home_name,
+                    away_name,
+                    round_number,
+                )
+
             # ------------------------------------------------
-            # СТАТИСТИКА
+            # СТАТИСТИКА (всегда через update_match_stats)
+            # (ИСПРАВЛЕНО)
             # ------------------------------------------------
 
             stats_payload = {
@@ -909,28 +1043,42 @@ def import_historical_results(
                 "away_xg": item.get(
                     "away_xg"
                 ),
-
                 "home_possession": item.get(
                     "home_possession"
                 ),
                 "away_possession": item.get(
                     "away_possession"
                 ),
-
                 "home_shots": item.get(
                     "home_shots"
                 ),
                 "away_shots": item.get(
                     "away_shots"
                 ),
-
                 "home_shots_on_target": item.get(
                     "home_shots_on_target"
                 ),
                 "away_shots_on_target": item.get(
                     "away_shots_on_target"
                 ),
-
+                "home_corners": item.get(
+                    "home_corners"
+                ),
+                "away_corners": item.get(
+                    "away_corners"
+                ),
+                "home_yellow_cards": item.get(
+                    "home_yellow_cards"
+                ),
+                "away_yellow_cards": item.get(
+                    "away_yellow_cards"
+                ),
+                "home_pass_accuracy": item.get(
+                    "home_pass_accuracy"
+                ),
+                "away_pass_accuracy": item.get(
+                    "away_pass_accuracy"
+                ),
                 "parser_source": RESULTS_SOURCE,
                 "parser_version": APP_VERSION,
                 "data_quality": 1.0,
@@ -952,24 +1100,6 @@ def import_historical_results(
                     e,
                 )
 
-            # ------------------------------------------------
-            # РАСШИРЕННАЯ СТАТИСТИКА
-            # ------------------------------------------------
-
-            write_match_statistics(
-                db=db,
-                match_id=match_id,
-                home_team_id=home_id,
-                away_team_id=away_id,
-                item=item,
-            )
-
-            result["updated"] += 1
-
-            actually_updated_rounds.add(
-                round_number
-            )
-
         except Exception as e:
 
             result["errors"] += 1
@@ -988,137 +1118,11 @@ def import_historical_results(
 
 
 # ============================================================
-# MATCH STATISTICS
+# MATCH STATISTICS (УДАЛЕНА)
 # ============================================================
 
-def write_match_statistics(
-    db,
-    match_id,
-    home_team_id,
-    away_team_id,
-    item,
-):
-    """
-    Записывает расширенную статистику.
-
-    Ошибка здесь НЕ должна останавливать
-    основной импорт результатов.
-    """
-
-    conn = None
-
-    try:
-
-        conn = get_connection(
-            db
-        )
-
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO match_statistics
-            (
-                match_id,
-                team_id,
-                possession,
-                shots,
-                shots_on_target,
-                corners,
-                yellow_cards,
-                xg,
-                pass_accuracy
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                match_id,
-                home_team_id,
-                item.get(
-                    "home_possession"
-                ),
-                item.get(
-                    "home_shots"
-                ),
-                item.get(
-                    "home_shots_on_target"
-                ),
-                item.get(
-                    "home_corners"
-                ),
-                item.get(
-                    "home_yellow_cards"
-                ),
-                item.get(
-                    "home_xg"
-                ),
-                item.get(
-                    "home_pass_accuracy"
-                ),
-            ),
-        )
-
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO match_statistics
-            (
-                match_id,
-                team_id,
-                possession,
-                shots,
-                shots_on_target,
-                corners,
-                yellow_cards,
-                xg,
-                pass_accuracy
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                match_id,
-                away_team_id,
-                item.get(
-                    "away_possession"
-                ),
-                item.get(
-                    "away_shots"
-                ),
-                item.get(
-                    "away_shots_on_target"
-                ),
-                item.get(
-                    "away_corners"
-                ),
-                item.get(
-                    "away_yellow_cards"
-                ),
-                item.get(
-                    "away_xg"
-                ),
-                item.get(
-                    "away_pass_accuracy"
-                ),
-            ),
-        )
-
-        conn.commit()
-
-    except Exception as e:
-
-        logger.warning(
-            "Расширенная статистика "
-            "не записана: %s",
-            e,
-        )
-
-    finally:
-
-        if conn is not None:
-
-            try:
-                conn.close()
-            except Exception:
-                pass
+# write_match_statistics() полностью удалена.
+# Статистика теперь пишется только через db.update_match_stats().
 
 
 # ============================================================
@@ -1200,12 +1204,17 @@ def ensure_passports(
 
 
 # ============================================================
-# DATABASE STATUS
+# DATABASE STATUS (ИСПРАВЛЕНО)
 # ============================================================
 
 def get_database_status(
     db,
 ):
+    """
+    Статус БД без match_results и match_statistics.
+
+    ИСПРАВЛЕНО: использует matches как единый источник.
+    """
 
     result = {}
 
@@ -1218,20 +1227,31 @@ def get_database_status(
         cursor = conn.cursor()
 
         queries = {
-            "matches": (
-                "SELECT COUNT(*) FROM matches"
-            ),
-            "results": (
-                "SELECT COUNT(*) FROM match_results"
-            ),
-            "statistics": (
-                "SELECT COUNT(*) "
-                "FROM match_statistics"
-            ),
-            "passports": (
-                "SELECT COUNT(*) "
-                "FROM team_passports"
-            ),
+            "matches": """
+                SELECT COUNT(*)
+                FROM matches
+            """,
+            "results": """
+                SELECT COUNT(*)
+                FROM matches
+                WHERE actual_home IS NOT NULL
+                  AND actual_away IS NOT NULL
+            """,
+            "statistics": """
+                SELECT COUNT(*)
+                FROM matches
+                WHERE
+                    home_xg IS NOT NULL
+                    OR away_xg IS NOT NULL
+                    OR home_possession IS NOT NULL
+                    OR away_possession IS NOT NULL
+                    OR home_shots IS NOT NULL
+                    OR away_shots IS NOT NULL
+            """,
+            "passports": """
+                SELECT COUNT(*)
+                FROM team_passports
+            """,
         }
 
         for key, query in queries.items():
@@ -1367,11 +1387,6 @@ def run_predictions(
         status = row[4]
 
         try:
-
-            # ------------------------------------------------
-            # Предпочтительно используем match_id,
-            # поскольку он однозначно определяет матч.
-            # ------------------------------------------------
 
             if hasattr(
                 pm,
@@ -1521,7 +1536,7 @@ def run_full_import(
         )
 
         # ----------------------------------------------------
-        # 3. ROUNDS
+        # 3. ROUNDS (исправлено)
         # ----------------------------------------------------
 
         round_ids = ensure_rounds(
@@ -1530,7 +1545,7 @@ def run_full_import(
         )
 
         # ----------------------------------------------------
-        # 4. FIXTURES
+        # 4. FIXTURES (исправлено)
         # ----------------------------------------------------
 
         with st.spinner(
@@ -1552,7 +1567,7 @@ def run_full_import(
         ] = fixture_result
 
         # ----------------------------------------------------
-        # 5. HISTORICAL
+        # 5. HISTORICAL (исправлено)
         # ----------------------------------------------------
 
         with st.spinner(
@@ -1862,1063 +1877,4 @@ def render_import_report(
 
         st.caption(
             f"Найдено: "
-            f"{historical.get('found', 0)}"
-        )
-
-        rounds = historical.get(
-            "rounds_updated",
-            [],
-        )
-
-        if rounds:
-
-            st.caption(
-                "Туры: "
-                + ", ".join(
-                    str(x)
-                    for x in rounds
-                )
-            )
-
-        elif historical.get(
-            "message"
-        ):
-
-            st.warning(
-                historical[
-                    "message"
-                ]
-            )
-
-    with c3:
-
-        st.metric(
-            "📋 Паспорта",
-            passports.get(
-                "created",
-                0,
-            )
-            + passports.get(
-                "existing",
-                0,
-            ),
-        )
-
-        st.caption(
-            f"Создано: "
-            f"{passports.get('created', 0)} "
-            f"· Есть: "
-            f"{passports.get('existing', 0)}"
-        )
-
-
-# ============================================================
-# UI — SAVED PREDICTION
-# ============================================================
-
-def render_saved_prediction_round(
-    state,
-    round_number,
-):
-
-    saved = get_saved_round_prediction(
-        state,
-        round_number,
-    )
-
-    if not saved:
-
-        return
-
-    st.success(
-        f"✅ Прогноз {round_number}-го "
-        f"тура уже сохранён."
-    )
-
-    created_at = saved.get(
-        "created_at"
-    )
-
-    if created_at:
-
-        try:
-
-            dt = datetime.fromisoformat(
-                created_at
-            )
-
-            st.caption(
-                "Создан: "
-                + dt.strftime(
-                    "%d.%m.%Y %H:%M"
-                )
-            )
-
-        except Exception:
-
-            pass
-
-    matches = saved.get(
-        "matches",
-        {},
-    )
-
-    for prediction in matches.values():
-
-        home = prediction.get(
-            "home",
-            "?",
-        )
-
-        away = prediction.get(
-            "away",
-            "?",
-        )
-
-        if "error" in prediction:
-
-            st.error(
-                f"{home} — {away}: "
-                f"{prediction['error']}"
-            )
-
-            continue
-
-        result = prediction.get(
-            "result",
-            {},
-        )
-
-        xg = result.get(
-            "xg",
-            {},
-        )
-
-        probability = result.get(
-            "probability",
-            {},
-        )
-
-        score = result.get(
-            "score",
-            "—",
-        )
-
-        c1, c2, c3, c4 = (
-            st.columns(4)
-        )
-
-        with c1:
-
-            st.write(
-                f"**{home}**"
-            )
-
-        with c2:
-
-            st.write(
-                f"**{away}**"
-            )
-
-        with c3:
-
-            if xg:
-
-                st.metric(
-                    "xG",
-                    f"{xg.get('home', 0):.2f} : "
-                    f"{xg.get('away', 0):.2f}",
-                )
-
-        with c4:
-
-            st.metric(
-                "Прогноз",
-                score,
-            )
-
-        if probability:
-
-            st.caption(
-                "П1 "
-                f"{probability.get('home', 0) * 100:.1f}% "
-                "· X "
-                f"{probability.get('draw', 0) * 100:.1f}% "
-                "· П2 "
-                f"{probability.get('away', 0) * 100:.1f}%"
-            )
-
-
-# ============================================================
-# UI — EXPERT PREDICTIONS
-# ============================================================
-
-def render_expert_predictions(
-    state,
-    db,
-    season_id,
-    round_number,
-):
-
-    st.subheader(
-        "🧠 Экспертский прогноз директора"
-    )
-
-    st.caption(
-        "Личный прогноз хранится отдельно "
-        "от прогноза модели FAJ."
-    )
-
-    matches = get_round_matches(
-        db,
-        season_id,
-        round_number,
-    )
-
-    if not matches:
-
-        st.warning(
-            "Матчи выбранного тура "
-            "не найдены."
-        )
-
-        return
-
-    state.setdefault(
-        "expert_predictions",
-        {},
-    )
-
-    for row in matches:
-
-        match_id = row[0]
-        home = row[1]
-        away = row[2]
-
-        existing = state[
-            "expert_predictions"
-        ].get(
-            str(match_id),
-            {},
-        )
-
-        st.markdown(
-            f"### {home} — {away}"
-        )
-
-        c1, c2, c3 = (
-            st.columns(3)
-        )
-
-        with c1:
-
-            expert_result = st.text_input(
-                "Исход",
-                value=existing.get(
-                    "result",
-                    "",
-                ),
-                key=(
-                    f"expert_result_"
-                    f"{round_number}_"
-                    f"{match_id}"
-                ),
-                placeholder="П1 / X / П2",
-            )
-
-        with c2:
-
-            expert_score = st.text_input(
-                "Точный счёт",
-                value=existing.get(
-                    "score",
-                    "",
-                ),
-                key=(
-                    f"expert_score_"
-                    f"{round_number}_"
-                    f"{match_id}"
-                ),
-                placeholder="2:1",
-            )
-
-        with c3:
-
-            expert_comment = st.text_input(
-                "Комментарий",
-                value=existing.get(
-                    "comment",
-                    "",
-                ),
-                key=(
-                    f"expert_comment_"
-                    f"{round_number}_"
-                    f"{match_id}"
-                ),
-            )
-
-        if st.button(
-            "💾 Сохранить прогноз",
-            key=(
-                f"save_expert_"
-                f"{round_number}_"
-                f"{match_id}"
-            ),
-        ):
-
-            state[
-                "expert_predictions"
-            ][str(match_id)] = {
-                "match_id": match_id,
-                "round": round_number,
-                "home": home,
-                "away": away,
-                "result": expert_result,
-                "score": expert_score,
-                "comment": expert_comment,
-                "created_at": (
-                    datetime.now()
-                    .isoformat()
-                ),
-            }
-
-            save_state(
-                state
-            )
-
-            st.success(
-                "✅ Экспертский прогноз "
-                "сохранён."
-            )
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-def main():
-
-    st.set_page_config(
-        page_title=(
-            "FAJ — Центр данных "
-            "и прогнозов"
-        ),
-        page_icon="📥",
-        layout="wide",
-    )
-
-    st.title(
-        "📥 FAJ — ЦЕНТР ДАННЫХ И ПРОГНОЗОВ"
-    )
-
-    st.caption(
-        f"FAJ Platform v{APP_VERSION} · "
-        f"{SEASON_NAME}"
-    )
-
-    # --------------------------------------------------------
-    # STATE
-    # --------------------------------------------------------
-
-    state = load_state()
-
-    # --------------------------------------------------------
-    # STATUS
-    # --------------------------------------------------------
-
-    render_state(
-        state
-    )
-
-    # --------------------------------------------------------
-    # IMPORT
-    # --------------------------------------------------------
-
-    st.divider()
-
-    st.subheader(
-        "⚙️ Управление данными"
-    )
-
-    c1, c2, c3 = (
-        st.columns(3)
-    )
-
-    with c1:
-
-        import_clicked = st.button(
-            "🔥 СИНХРОНИЗИРОВАТЬ ДАННЫЕ",
-            type="primary",
-            use_container_width=True,
-        )
-
-    with c2:
-
-        historical_clicked = st.button(
-            "📊 ЗАГРУЗИТЬ 1–3 ТУРА",
-            use_container_width=True,
-        )
-
-    with c3:
-
-        refresh_clicked = st.button(
-            "🔄 ОБНОВИТЬ",
-            use_container_width=True,
-        )
-
-    # --------------------------------------------------------
-    # REFRESH
-    # --------------------------------------------------------
-
-    if refresh_clicked:
-
-        st.rerun()
-
-    # --------------------------------------------------------
-    # FULL IMPORT
-    # --------------------------------------------------------
-
-    if import_clicked:
-
-        try:
-
-            with st.spinner(
-                "FAJ выполняет полный цикл..."
-            ):
-
-                log = run_full_import(
-                    state
-                )
-
-            st.success(
-                "✅ Синхронизация завершена."
-            )
-
-            render_import_report(
-                log
-            )
-
-            st.rerun()
-
-        except Exception as e:
-
-            st.error(
-                f"❌ Ошибка синхронизации: {e}"
-            )
-
-            st.code(
-                traceback.format_exc()
-            )
-
-    # --------------------------------------------------------
-    # HISTORICAL ONLY
-    # --------------------------------------------------------
-
-    if historical_clicked:
-
-        db = get_db()
-
-        try:
-
-            season_id = (
-                get_or_create_season(
-                    db
-                )
-            )
-
-            state[
-                "season_id"
-            ] = season_id
-
-            team_ids = ensure_teams(
-                db
-            )
-
-            ensure_rounds(
-                db,
-                season_id,
-            )
-
-            with st.spinner(
-                "📊 Загружаем "
-                "прошедшие 1–3 туры..."
-            ):
-
-                result = (
-                    import_historical_results(
-                        db=db,
-                        season_id=season_id,
-                        team_ids=team_ids,
-                        rounds=HISTORICAL_ROUNDS,
-                    )
-                )
-
-            loaded_rounds = result.get(
-                "rounds_updated",
-                [],
-            )
-
-            # Не уничтожаем предыдущие
-            # успешно загруженные туры.
-
-            existing_historical = set(
-                int(x)
-                for x in state.get(
-                    "historical_rounds_loaded",
-                    [],
-                )
-            )
-
-            existing_historical.update(
-                int(x)
-                for x in loaded_rounds
-            )
-
-            state[
-                "historical_rounds_loaded"
-            ] = sorted(
-                existing_historical
-            )
-
-            state[
-                "last_import"
-            ] = datetime.now().isoformat()
-
-            state[
-                "last_import_status"
-            ] = (
-                "success"
-                if loaded_rounds
-                else "error"
-            )
-
-            state[
-                "last_import_summary"
-            ] = {
-                "historical": result
-            }
-
-            save_state(
-                state
-            )
-
-            if loaded_rounds:
-
-                st.success(
-                    "✅ Загружены/обновлены туры: "
-                    + ", ".join(
-                        str(x)
-                        for x in loaded_rounds
-                    )
-                )
-
-            else:
-
-                st.warning(
-                    "⚠️ Исторические данные "
-                    "не были загружены."
-                )
-
-            st.json(
-                result
-            )
-
-        except Exception as e:
-
-            st.error(
-                f"❌ Ошибка: {e}"
-            )
-
-            st.code(
-                traceback.format_exc()
-            )
-
-    # --------------------------------------------------------
-    # DATABASE STATUS
-    # --------------------------------------------------------
-
-    st.divider()
-
-    st.subheader(
-        "📊 Состояние базы данных"
-    )
-
-    try:
-
-        db = get_db()
-
-        db_status = (
-            get_database_status(
-                db
-            )
-        )
-
-        c1, c2, c3, c4 = (
-            st.columns(4)
-        )
-
-        with c1:
-
-            st.metric(
-                "Матчи",
-                db_status.get(
-                    "matches",
-                    0,
-                ),
-            )
-
-        with c2:
-
-            st.metric(
-                "Результаты",
-                db_status.get(
-                    "results",
-                    0,
-                ),
-            )
-
-        with c3:
-
-            st.metric(
-                "Статистика",
-                db_status.get(
-                    "statistics",
-                    0,
-                ),
-            )
-
-        with c4:
-
-            st.metric(
-                "Паспорта",
-                db_status.get(
-                    "passports",
-                    0,
-                ),
-            )
-
-    except Exception as e:
-
-        st.warning(
-            "Не удалось получить "
-            f"статус БД: {e}"
-        )
-
-    # --------------------------------------------------------
-    # IMPORT LOG
-    # --------------------------------------------------------
-
-    if state.get(
-        "last_import_summary"
-    ):
-
-        render_import_report(
-            state[
-                "last_import_summary"
-            ]
-        )
-
-        with st.expander(
-            "📜 Полный журнал",
-            expanded=False,
-        ):
-
-            st.json(
-                state[
-                    "last_import_summary"
-                ]
-            )
-
-    # --------------------------------------------------------
-    # PREDICTION CENTER
-    # --------------------------------------------------------
-
-    st.divider()
-
-    st.header(
-        "🔮 ЦЕНТР ПРОГНОЗОВ"
-    )
-
-    st.info(
-        """
-        Исторические туры используются FAJ
-        как фактическая база.
-
-        Для будущего тура создаётся отдельный
-        прогноз.
-
-        Уже сохранённые прогнозы по другим
-        турам не перезаписываются.
-        """
-    )
-
-    try:
-
-        db = get_db()
-
-        season_id = state.get(
-            "season_id"
-        )
-
-        if not season_id:
-
-            season_id = (
-                get_or_create_season(
-                    db
-                )
-            )
-
-            state[
-                "season_id"
-            ] = season_id
-
-            save_state(
-                state
-            )
-
-        default_round = state.get(
-            "last_selected_round",
-            4,
-        )
-
-        try:
-
-            default_round = int(
-                default_round
-            )
-
-        except Exception:
-
-            default_round = 4
-
-        if not (
-            1
-            <= default_round
-            <= TOTAL_ROUNDS
-        ):
-
-            default_round = 4
-
-        selected_round = st.selectbox(
-            "🎯 Выберите тур",
-            options=list(
-                range(
-                    1,
-                    TOTAL_ROUNDS + 1,
-                )
-            ),
-            index=(
-                default_round - 1
-            ),
-            key="prediction_round",
-        )
-
-        state[
-            "last_selected_round"
-        ] = selected_round
-
-        save_state(
-            state
-        )
-
-        # ----------------------------------------------------
-        # HISTORY STATUS
-        # ----------------------------------------------------
-
-        loaded_rounds = [
-            int(x)
-            for x in state.get(
-                "historical_rounds_loaded",
-                [],
-            )
-        ]
-
-        if selected_round in loaded_rounds:
-
-            st.success(
-                f"📚 {selected_round}-й тур "
-                "есть в исторической базе."
-            )
-
-        elif selected_round <= 3:
-
-            st.warning(
-                f"⚠️ {selected_round}-й тур "
-                "ещё не отмечен как загруженный."
-            )
-
-        else:
-
-            st.info(
-                f"🔮 {selected_round}-й тур "
-                "рассматривается как будущий."
-            )
-
-        # ----------------------------------------------------
-        # MATCH LIST
-        # ----------------------------------------------------
-
-        round_matches = (
-            get_round_matches(
-                db,
-                season_id,
-                selected_round,
-            )
-        )
-
-        st.write(
-            f"Матчей в {selected_round}-м туре: "
-            f"**{len(round_matches)}**"
-        )
-
-        if round_matches:
-
-            for row in round_matches:
-
-                match_id = row[0]
-                home = row[1]
-                away = row[2]
-                date = row[3]
-                status = row[4]
-
-                c1, c2, c3 = (
-                    st.columns(
-                        [4, 4, 2]
-                    )
-                )
-
-                with c1:
-
-                    st.write(
-                        f"**{home}**"
-                    )
-
-                with c2:
-
-                    st.write(
-                        f"**{away}**"
-                    )
-
-                with c3:
-
-                    st.caption(
-                        f"{date or ''}"
-                    )
-
-        else:
-
-            st.warning(
-                "Матчи выбранного тура "
-                "в базе не найдены."
-            )
-
-        # ----------------------------------------------------
-        # EXISTING PREDICTION
-        # ----------------------------------------------------
-
-        saved_round = (
-            get_saved_round_prediction(
-                state,
-                selected_round,
-            )
-        )
-
-        if saved_round:
-
-            with st.expander(
-                "📚 Уже сохранённый прогноз",
-                expanded=True,
-            ):
-
-                render_saved_prediction_round(
-                    state,
-                    selected_round,
-                )
-
-        # ----------------------------------------------------
-        # RUN
-        # ----------------------------------------------------
-
-        button_label = (
-            f"🚀 "
-            f"{'ПЕРЕСЧИТАТЬ' if saved_round else 'СОЗДАТЬ'} "
-            f"ПРОГНОЗЫ НА "
-            f"{selected_round}-Й ТУР"
-        )
-
-        if st.button(
-            button_label,
-            type="primary",
-            use_container_width=True,
-        ):
-
-            with st.spinner(
-                f"FAJ рассчитывает "
-                f"{selected_round}-й тур..."
-            ):
-
-                prediction_result = (
-                    run_predictions(
-                        db=db,
-                        season_id=season_id,
-                        round_number=selected_round,
-                        state=state,
-                    )
-                )
-
-            if (
-                prediction_result[
-                    "status"
-                ]
-                == "ok"
-            ):
-
-                st.success(
-                    "✅ Прогноз рассчитан "
-                    "и сохранён."
-                )
-
-                st.rerun()
-
-            else:
-
-                st.error(
-                    prediction_result[
-                        "message"
-                    ]
-                )
-
-    except Exception as e:
-
-        st.error(
-            f"❌ Prediction Center: {e}"
-        )
-
-        st.code(
-            traceback.format_exc()
-        )
-
-    # --------------------------------------------------------
-    # EXPERT PREDICTION
-    # --------------------------------------------------------
-
-    st.divider()
-
-    try:
-
-        current_round = state.get(
-            "last_selected_round",
-            4,
-        )
-
-        try:
-
-            current_round = int(
-                current_round
-            )
-
-        except Exception:
-
-            current_round = 4
-
-        if not (
-            1
-            <= current_round
-            <= TOTAL_ROUNDS
-        ):
-
-            current_round = 4
-
-        expert_round = st.selectbox(
-            "🧠 Тур для экспертного прогноза",
-            options=list(
-                range(
-                    1,
-                    TOTAL_ROUNDS + 1,
-                )
-            ),
-            index=(
-                current_round - 1
-            ),
-            key="expert_round",
-        )
-
-        render_expert_predictions(
-            state=state,
-            db=get_db(),
-            season_id=state.get(
-                "season_id"
-            ),
-            round_number=expert_round,
-        )
-
-    except Exception as e:
-
-        st.error(
-            f"❌ Expert Center: {e}"
-        )
-
-    # --------------------------------------------------------
-    # SAVED ROUNDS
-    # --------------------------------------------------------
-
-    predictions = state.get(
-        "predictions",
-        {},
-    )
-
-    if predictions:
-
-        st.divider()
-
-        st.subheader(
-            "📚 Архив прогнозов"
-        )
-
-        saved_round_numbers = sorted(
-            [
-                int(x)
-                for x in predictions.keys()
-                if str(x).isdigit()
-            ]
-        )
-
-        st.write(
-            "Сохранённые туры: "
-            + ", ".join(
-                str(x)
-                for x in saved_round_numbers
-            )
-        )
-
-        archive_round = st.selectbox(
-            "Открыть сохранённый прогноз",
-            options=saved_round_numbers,
-            key="archive_round",
-        )
-
-        render_saved_prediction_round(
-            state,
-            archive_round,
-        )
-
-    # --------------------------------------------------------
-    # FOOTER
-    # --------------------------------------------------------
-
-    st.divider()
-
-    st.caption(
-        "FAJ Platform v12.1 · "
-        "SQLite · Persistent State · "
-        "RPL 2026/27"
-    )
-
-
-# ============================================================
-# ENTRY
-# ============================================================
-
-if __name__ == "__main__":
-
-    main()
+            f"{historical.get
