@@ -4,7 +4,7 @@
 """
 =====================================================
 FAJ Platform v12.1
-Prediction Manager v1.8
+Prediction Manager v1.9
 =====================================================
 
 РОЛЬ:
@@ -27,6 +27,12 @@ Prediction Manager v1.8
     prediction_scores
     prediction_distributions
 
+ИСПРАВЛЕНИЯ v1.9:
+    1. _get_current_season_id() — убран опасный fallback
+    2. _validate_passport_for_prediction() — добавлен "form"
+    3. FINISHED_STATUSES — расширен
+    4. _find_match_by_teams() — оставлен только как fallback
+
 ВАЖНО:
 
     PredictionManager НЕ загружает календарь.
@@ -42,7 +48,7 @@ Prediction Manager v1.8
 """
 
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Set
 
 from app.core.prediction_pipeline import (
     PredictionPipeline,
@@ -65,12 +71,22 @@ logger = logging.getLogger(__name__)
 
 class PredictionManager:
     """
-    Prediction Manager v1.8.
+    Prediction Manager v1.9.
 
     Управляет полным циклом прогнозирования.
     """
 
-    VERSION = "1.8"
+    VERSION = "1.9"
+
+    # ИСПРАВЛЕНО: расширенный список статусов завершённых матчей
+    FINISHED_STATUSES: Set[str] = {
+        "finished",
+        "completed",
+        "played",
+        "ft",
+        "ended",
+        "full time",
+    }
 
     def __init__(
         self,
@@ -116,6 +132,10 @@ class PredictionManager:
     ) -> Dict[str, Any]:
         """
         Полный прогноз одного матча.
+
+        ВНИМАНИЕ:
+            Основной способ вызова — через predict_by_match_id().
+            Этот метод рекомендуется использовать только как fallback.
         """
 
         logger.info(
@@ -279,7 +299,7 @@ class PredictionManager:
             }
 
     # ============================================================
-    # PREDICT BY MATCH ID
+    # PREDICT BY MATCH ID (ОСНОВНОЙ МЕТОД)
     # ============================================================
 
     def predict_by_match_id(
@@ -288,6 +308,8 @@ class PredictionManager:
     ) -> Dict[str, Any]:
         """
         Прогноз непосредственно по match_id.
+
+        Это ОСНОВНОЙ способ вызова прогноза в FAJ.
         """
 
         match = self._get_match(
@@ -368,15 +390,12 @@ class PredictionManager:
 
             # ----------------------------------------------------
             # Не прогнозируем завершённые матчи
+            # ИСПРАВЛЕНО: расширенный список статусов
             # ----------------------------------------------------
 
             if (
                 not include_finished
-                and status in {
-                    "finished",
-                    "completed",
-                    "played",
-                }
+                and status in self.FINISHED_STATUSES
             ):
 
                 logger.info(
@@ -480,7 +499,7 @@ class PredictionManager:
         return results
 
     # ============================================================
-    # SEASON
+    # SEASON (ИСПРАВЛЕНО — убран опасный fallback)
     # ============================================================
 
     def _get_current_season_id(
@@ -489,20 +508,19 @@ class PredictionManager:
         """
         Получает текущий сезон.
 
-        Сначала ищет сезон 2026-2027.
-        Затем fallback по последнему ID.
+        Ищет сезон 2026-2027.
 
-        Не требует наличия поля status.
+        ИСПРАВЛЕНО: убран опасный fallback по последнему ID.
         """
 
-        conn = self.db.get_connection()  # ✅ ИСПРАВЛЕНО
+        conn = self.db.get_connection()
 
         try:
 
             cursor = conn.cursor()
 
             # ------------------------------------------------
-            # Основной вариант
+            # Ищем сезон 2026-2027
             # ------------------------------------------------
 
             cursor.execute(
@@ -536,28 +554,12 @@ class PredictionManager:
                 return season_id
 
             # ------------------------------------------------
-            # Fallback
+            # ИСПРАВЛЕНО: больше НЕ используем fallback
             # ------------------------------------------------
 
-            cursor.execute(
-                """
-                SELECT id
-                FROM seasons
-                ORDER BY id DESC
-                LIMIT 1
-                """
+            logger.error(
+                "Season 2026-2027 not found in database"
             )
-
-            row = cursor.fetchone()
-
-            if row:
-
-                logger.warning(
-                    "Fallback season detected: %s",
-                    row[0],
-                )
-
-                return row[0]
 
             return None
 
@@ -577,7 +579,7 @@ class PredictionManager:
         Получение матча из SQLite.
         """
 
-        conn = self.db.get_connection()  # ✅ ИСПРАВЛЕНО
+        conn = self.db.get_connection()
 
         try:
 
@@ -646,7 +648,7 @@ class PredictionManager:
         Получение матчей тура.
         """
 
-        conn = self.db.get_connection()  # ✅ ИСПРАВЛЕНО
+        conn = self.db.get_connection()
 
         try:
 
@@ -798,7 +800,7 @@ class PredictionManager:
         }
 
     # ============================================================
-    # PASSPORT VALIDATION
+    # PASSPORT VALIDATION (ИСПРАВЛЕНО — добавлен form)
     # ============================================================
 
     def _validate_passport_for_prediction(
@@ -808,6 +810,8 @@ class PredictionManager:
     ) -> None:
         """
         Проверка минимально необходимых полей.
+
+        ИСПРАВЛЕНО: добавлен "form" в обязательные поля.
         """
 
         if not isinstance(
@@ -819,11 +823,13 @@ class PredictionManager:
                 f"Invalid passport for {team_name}"
             )
 
+        # ИСПРАВЛЕНО: добавлен "form"
         required = [
             "attack",
             "defense",
             "control",
             "goalkeeper",
+            "form",
         ]
 
         missing = []
@@ -866,7 +872,7 @@ class PredictionManager:
         Сохранение прогноза.
 
         Если match_id не передан,
-        пытаемся найти матч по командам.
+        пытаемся найти матч по командам (только как fallback).
         """
 
         if not getattr(
@@ -883,8 +889,13 @@ class PredictionManager:
 
         try:
 
+            # =================================================
+            # MATCH ID
+            # =================================================
+
             if match_id is None:
 
+                # Используем find_match только как fallback
                 match_id = (
                     self._find_match_by_teams(
                         home_team,
@@ -1071,7 +1082,7 @@ class PredictionManager:
             return None
 
     # ============================================================
-    # FIND MATCH
+    # FIND MATCH (только как fallback)
     # ============================================================
 
     def _find_match_by_teams(
@@ -1081,9 +1092,13 @@ class PredictionManager:
     ) -> Optional[int]:
         """
         Находит матч в SQLite.
+
+        ВНИМАНИЕ:
+            Этот метод используется ТОЛЬКО как fallback.
+            Основной способ — через match_id.
         """
 
-        conn = self.db.get_connection()  # ✅ ИСПРАВЛЕНО
+        conn = self.db.get_connection()
 
         try:
 
