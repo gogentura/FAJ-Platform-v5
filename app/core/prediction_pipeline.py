@@ -4,7 +4,7 @@
 """
 =====================================================
 FAJ Platform v12.1
-Prediction Pipeline v2.1
+Prediction Pipeline v2.2
 =====================================================
 
 РОЛЬ:
@@ -30,11 +30,13 @@ Prediction Pipeline v2.1
         ↓
     Final Prediction
 
-ИСПРАВЛЕНИЯ v2.1:
-    1. Rating используется как контекст, а не математический фактор в XG
-    2. Model Agreement — правильная формула (среднее расхождение)
-    3. BTTS/O2.5/O3.5 — единый источник из score_matrix
-    4. Расширенные метрики используют те же значения, что и основной результат
+ИСПРАВЛЕНИЯ v2.2:
+    1. Исправлен вызов XGModel: home_rating_context → home_rating
+    2. Исправлен вызов XGModel: away_rating_context → away_rating
+    3. League унифицирован: "RPL" → "РПЛ"
+    4. most_likely_score: "prob" → "probability"
+    5. Единый источник BTTS/O2.5/O3.5 — из score_matrix
+    6. Добавлен "form" в required поля паспорта
 
 ВАЖНО:
     Pipeline НЕ работает с БД.
@@ -68,12 +70,12 @@ logger = logging.getLogger(__name__)
 
 class PredictionPipeline:
     """
-    FAJ Prediction Pipeline v2.1.
+    FAJ Prediction Pipeline v2.2.
 
     Чистый расчёт без обращения к БД.
     """
 
-    VERSION = "2.1"
+    VERSION = "2.2"
 
     def __init__(self):
 
@@ -108,7 +110,7 @@ class PredictionPipeline:
         away_rating: float,
         home_team: str = "",
         away_team: str = "",
-        league: str = "RPL"
+        league: str = "РПЛ"  # ИСПРАВЛЕНО: "RPL" → "РПЛ"
     ) -> Dict[str, Any]:
 
         start_time = time.perf_counter()
@@ -162,15 +164,15 @@ class PredictionPipeline:
 
             # ====================================================
             # 1. XG (rating как контекст)
+            # ИСПРАВЛЕНО: home_rating_context → home_rating
+            # ИСПРАВЛЕНО: away_rating_context → away_rating
             # ====================================================
 
             xg_result = self.xg_model.calculate(
                 home_passport=home_passport,
                 away_passport=away_passport,
-                # rating передаётся как контекст силы команды,
-                # а не как математический фактор, дублирующий паспорт
-                home_rating_context=home_rating,
-                away_rating_context=away_rating
+                home_rating=home_rating,
+                away_rating=away_rating
             )
 
             if not isinstance(xg_result, dict):
@@ -428,7 +430,35 @@ class PredictionPipeline:
             }
 
             # ====================================================
-            # 6. RAW PREDICTION
+            # 6. EXTENDED METRICS (ВЫНЕСЕНО ВПЕРЁД)
+            # Единый источник BTTS/O2.5/O3.5 из score_matrix
+            # ====================================================
+
+            score_matrix = poisson_result.get(
+                "score_matrix",
+                {}
+            )
+
+            extended = (
+                self._calculate_extended_metrics(
+                    home_xg=home_xg,
+                    away_xg=away_xg,
+                    poisson_top_scores=
+                        poisson_result.get(
+                            "top_scores",
+                            []
+                        ),
+                    score_matrix=score_matrix
+                )
+            )
+
+            # Используем единые значения из extended
+            btts_prob = extended.get("btts", {}).get("yes", 0.0)
+            over_25 = extended.get("total", {}).get("over_2_5", 0.0)
+
+            # ====================================================
+            # 7. RAW PREDICTION
+            # Используем единые значения BTTS/O2.5 из extended
             # ====================================================
 
             raw_prediction = {
@@ -480,21 +510,13 @@ class PredictionPipeline:
                         )
                 },
 
-                "btts":
-                    poisson_result.get(
-                        "btts_probability",
-                        0
-                    ),
-
-                "over_2_5":
-                    poisson_result.get(
-                        "over_2_5",
-                        0
-                    )
+                # ИСПРАВЛЕНО: единый источник из extended
+                "btts": btts_prob,
+                "over_2_5": over_25
             }
 
             # ====================================================
-            # 7. CALIBRATION
+            # 8. CALIBRATION
             # ====================================================
 
             calibrated = (
@@ -552,7 +574,7 @@ class PredictionPipeline:
             away_prob = max(0.0, min(1.0, away_prob))
 
             # ====================================================
-            # 8. CONFIDENCE (с учётом rating)
+            # 9. CONFIDENCE (с учётом rating)
             # ====================================================
 
             confidence_result = (
@@ -569,7 +591,7 @@ class PredictionPipeline:
             )
 
             # ====================================================
-            # 9. RISK (с учётом rating)
+            # 10. RISK (с учётом rating)
             # ====================================================
 
             risk_result = (
@@ -585,32 +607,6 @@ class PredictionPipeline:
                     away_rating=away_rating
                 )
             )
-
-            # ====================================================
-            # 10. EXTENDED METRICS (единый источник)
-            # ====================================================
-
-            score_matrix = poisson_result.get(
-                "score_matrix",
-                {}
-            )
-
-            extended = (
-                self._calculate_extended_metrics(
-                    home_xg=home_xg,
-                    away_xg=away_xg,
-                    poisson_top_scores=
-                        poisson_result.get(
-                            "top_scores",
-                            []
-                        ),
-                    score_matrix=score_matrix
-                )
-            )
-
-            # Используем единые значения из extended
-            btts_prob = extended.get("btts", {}).get("yes", 0.0)
-            over_25 = extended.get("total", {}).get("over_2_5", 0.0)
 
             # ====================================================
             # 11. FINAL RESULT
@@ -834,11 +830,13 @@ class PredictionPipeline:
             ("away", away_passport)
         ):
 
+            # ИСПРАВЛЕНО: добавлен "form"
             required = [
                 "attack",
                 "defense",
                 "control",
-                "goalkeeper"
+                "goalkeeper",
+                "form",
             ]
 
             missing = [
@@ -903,7 +901,7 @@ class PredictionPipeline:
         )
 
     # ============================================================
-    # AGREEMENT (ИСПРАВЛЕНО)
+    # AGREEMENT
     # ============================================================
 
     def _calculate_model_agreement(
@@ -967,7 +965,7 @@ class PredictionPipeline:
         return "LOW"
 
     # ============================================================
-    # EXTENDED METRICS (ЕДИНЫЙ ИСТОЧНИК)
+    # EXTENDED METRICS
     # ============================================================
 
     def _calculate_extended_metrics(
@@ -1249,6 +1247,7 @@ class PredictionPipeline:
 
         # --------------------------------------------------------
         # MOST LIKELY SCORE
+        # ИСПРАВЛЕНО: "prob" → "probability"
         # --------------------------------------------------------
 
         if top_scores:
@@ -1258,7 +1257,7 @@ class PredictionPipeline:
                     top_scores[0]["home"],
                 "away":
                     top_scores[0]["away"],
-                "prob":
+                "probability":  # ИСПРАВЛЕНО: prob → probability
                     top_scores[0]["probability"]
             }
 
@@ -1267,7 +1266,7 @@ class PredictionPipeline:
             most_likely = {
                 "home": 0,
                 "away": 0,
-                "prob": 0.0
+                "probability": 0.0  # ИСПРАВЛЕНО: prob → probability
             }
 
         return {
