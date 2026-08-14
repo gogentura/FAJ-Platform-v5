@@ -37,6 +37,7 @@ Prediction Pipeline v2.2
     4. most_likely_score: "prob" → "probability"
     5. Единый источник BTTS/O2.5/O3.5 — из score_matrix
     6. Добавлен "form" в required поля паспорта
+    7. Убраны лишние параметры в вызове ConfidenceEngine
 
 ВАЖНО:
     Pipeline НЕ работает с БД.
@@ -110,7 +111,7 @@ class PredictionPipeline:
         away_rating: float,
         home_team: str = "",
         away_team: str = "",
-        league: str = "РПЛ"  # ИСПРАВЛЕНО: "RPL" → "РПЛ"
+        league: str = "РПЛ"
     ) -> Dict[str, Any]:
 
         start_time = time.perf_counter()
@@ -406,7 +407,7 @@ class PredictionPipeline:
                 )
 
             # ====================================================
-            # 5. MODEL AGREEMENT (исправленная формула)
+            # 5. MODEL AGREEMENT
             # ====================================================
 
             agreement_score = (
@@ -430,8 +431,7 @@ class PredictionPipeline:
             }
 
             # ====================================================
-            # 6. EXTENDED METRICS (ВЫНЕСЕНО ВПЕРЁД)
-            # Единый источник BTTS/O2.5/O3.5 из score_matrix
+            # 6. EXTENDED METRICS (Единый источник BTTS/O2.5/O3.5)
             # ====================================================
 
             score_matrix = poisson_result.get(
@@ -452,13 +452,12 @@ class PredictionPipeline:
                 )
             )
 
-            # Используем единые значения из extended
+            # Единые значения из extended
             btts_prob = extended.get("btts", {}).get("yes", 0.0)
             over_25 = extended.get("total", {}).get("over_2_5", 0.0)
 
             # ====================================================
             # 7. RAW PREDICTION
-            # Используем единые значения BTTS/O2.5 из extended
             # ====================================================
 
             raw_prediction = {
@@ -574,7 +573,8 @@ class PredictionPipeline:
             away_prob = max(0.0, min(1.0, away_prob))
 
             # ====================================================
-            # 9. CONFIDENCE (с учётом rating)
+            # 9. CONFIDENCE
+            # ИСПРАВЛЕНО: убраны лишние параметры home_rating/away_rating
             # ====================================================
 
             confidence_result = (
@@ -584,14 +584,12 @@ class PredictionPipeline:
                         "home": home_prob,
                         "draw": draw_prob,
                         "away": away_prob
-                    },
-                    home_rating=home_rating,
-                    away_rating=away_rating
+                    }
                 )
             )
 
             # ====================================================
-            # 10. RISK (с учётом rating)
+            # 10. RISK
             # ====================================================
 
             risk_result = (
@@ -602,9 +600,7 @@ class PredictionPipeline:
                         "draw": draw_prob,
                         "away": away_prob
                     },
-                    confidence=confidence_result,
-                    home_rating=home_rating,
-                    away_rating=away_rating
+                    confidence=confidence_result
                 )
             )
 
@@ -1257,7 +1253,7 @@ class PredictionPipeline:
                     top_scores[0]["home"],
                 "away":
                     top_scores[0]["away"],
-                "probability":  # ИСПРАВЛЕНО: prob → probability
+                "probability":
                     top_scores[0]["probability"]
             }
 
@@ -1266,7 +1262,7 @@ class PredictionPipeline:
             most_likely = {
                 "home": 0,
                 "away": 0,
-                "probability": 0.0  # ИСПРАВЛЕНО: prob → probability
+                "probability": 0.0
             }
 
         return {
