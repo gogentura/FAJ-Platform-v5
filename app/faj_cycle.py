@@ -56,8 +56,8 @@ from typing import Any, Dict, List, Optional
 # ============================================================
 
 from app.database import get_connection
-from app.core import PredictionManager
-from app.learning_engine import LearningEngine
+from app.core.prediction_manager import get_prediction_manager
+from app.learning_engine import run_learning
 
 try:
     from app.rpl_historical_importer import (
@@ -642,9 +642,6 @@ def _run_learning(
 ) -> bool:
     """
     Запускает LearningEngine.
-
-    Никакого ручного изменения параметров
-    здесь нет.
     """
 
     _log_step(
@@ -658,69 +655,36 @@ def _run_learning(
 
     try:
 
-        engine = LearningEngine()
+        # Используем run_learning() из learning_engine.py
+        learning_result = run_learning()
 
-        learning_result = None
-
-        # ----------------------------------------------------
-        # Наиболее вероятные публичные интерфейсы
-        # ----------------------------------------------------
-
-        if hasattr(
-            engine,
-            "run",
-        ):
-
-            learning_result = engine.run()
-
-        elif hasattr(
-            engine,
-            "train",
-        ):
-
-            learning_result = engine.train()
-
-        elif hasattr(
-            engine,
-            "learn",
-        ):
-
-            learning_result = engine.learn()
-
-        else:
-
-            raise AttributeError(
-                "LearningEngine не содержит "
-                "run(), train() или learn()"
-            )
-
-        result["learning"][
-            "result"
-        ] = learning_result
-
-        # ----------------------------------------------------
-        # Если engine вернул success
-        # ----------------------------------------------------
+        result["learning"]["result"] = learning_result
 
         if isinstance(
             learning_result,
             dict,
         ):
 
-            result["learning"][
-                "success"
-            ] = bool(
+            result["learning"]["success"] = bool(
                 learning_result.get(
                     "success",
                     True,
                 )
             )
 
+            errors = learning_result.get(
+                "errors",
+                [],
+            )
+
+            if errors:
+                result["learning"]["errors"].extend(
+                    [str(x) for x in errors]
+                )
+
         else:
 
-            result["learning"][
-                "success"
-            ] = True
+            result["learning"]["success"] = True
 
         if not result["learning"]["success"]:
 
@@ -786,9 +750,6 @@ def _run_predictions(
 ) -> bool:
     """
     Запускает PredictionManager.
-
-    PredictionManager является владельцем
-    расчёта и сохранения прогнозов.
     """
 
     _log_step(
@@ -804,118 +765,16 @@ def _run_predictions(
 
     try:
 
-        manager = PredictionManager()
+        manager = get_prediction_manager()
 
-        prediction_result = None
-
-        # ----------------------------------------------------
-        # Пытаемся использовать публичный интерфейс
-        # менеджера, не вмешиваясь в его внутренности.
-        # ----------------------------------------------------
-
-        if hasattr(
-            manager,
-            "run",
-        ):
-
-            prediction_result = manager.run(
-                league=DEFAULT_LEAGUE,
-                season=DEFAULT_SEASON,
-                round_number=NEXT_PREDICTION_ROUND,
-            )
-
-        elif hasattr(
-            manager,
-            "generate_predictions",
-        ):
-
-            prediction_result = (
-                manager.generate_predictions(
-                    league=DEFAULT_LEAGUE,
-                    season=DEFAULT_SEASON,
-                    round_number=NEXT_PREDICTION_ROUND,
-                )
-            )
-
-        elif hasattr(
-            manager,
-            "predict_round",
-        ):
-
-            prediction_result = (
-                manager.predict_round(
-                    DEFAULT_LEAGUE,
-                    DEFAULT_SEASON,
-                    NEXT_PREDICTION_ROUND,
-                )
-            )
-
-        elif hasattr(
-            manager,
-            "generate",
-        ):
-
-            prediction_result = manager.generate(
-                league=DEFAULT_LEAGUE,
-                season=DEFAULT_SEASON,
-                round_number=NEXT_PREDICTION_ROUND,
-            )
-
-        else:
-
-            raise AttributeError(
-                "PredictionManager не содержит "
-                "поддерживаемого метода запуска"
-            )
+        # Используем predict_round() для 4-го тура
+        prediction_result = manager.predict_round(4)
 
         result["predictions"][
             "result"
         ] = prediction_result
 
-        # ----------------------------------------------------
-        # Определяем количество прогнозов
-        # ----------------------------------------------------
-
         if isinstance(
-            prediction_result,
-            dict,
-        ):
-
-            count = (
-                prediction_result.get(
-                    "count",
-                )
-                or prediction_result.get(
-                    "predictions_count",
-                )
-                or prediction_result.get(
-                    "created",
-                )
-                or 0
-            )
-
-            try:
-                result["predictions"][
-                    "count"
-                ] = int(count)
-            except (
-                TypeError,
-                ValueError,
-            ):
-                result["predictions"][
-                    "count"
-                ] = 0
-
-            result["predictions"][
-                "success"
-            ] = bool(
-                prediction_result.get(
-                    "success",
-                    True,
-                )
-            )
-
-        elif isinstance(
             prediction_result,
             (list, tuple),
         ):
@@ -927,6 +786,27 @@ def _run_predictions(
             result["predictions"][
                 "success"
             ] = True
+
+        elif isinstance(
+            prediction_result,
+            dict,
+        ):
+
+            result["predictions"][
+                "count"
+            ] = prediction_result.get(
+                "count",
+                0,
+            )
+
+            result["predictions"][
+                "success"
+            ] = bool(
+                prediction_result.get(
+                    "success",
+                    True,
+                )
+            )
 
         else:
 
@@ -1009,7 +889,6 @@ def _final_validation(
 
     _read_final_state(result)
 
-    # Базовая готовность БД
     database_ok = (
         result["database"]["connected"]
         and not result["database"][
@@ -1072,14 +951,6 @@ def _final_validation(
 def run_faj_cycle() -> Dict[str, Any]:
     """
     Главная функция FAJ.
-
-    Использование:
-
-        from app.faj_cycle import run_faj_cycle
-
-        result = run_faj_cycle()
-
-    Возвращает полный диагностический словарь.
     """
 
     result = _new_result()
@@ -1105,53 +976,29 @@ def run_faj_cycle() -> Dict[str, Any]:
 
     try:
 
-        # ====================================================
-        # STEP 1 — DATABASE
-        # ====================================================
-
         if not _check_database(result):
-
             return _finish_result(
                 result,
                 started,
             )
-
-        # ====================================================
-        # STEP 2 — HISTORICAL RESULTS
-        # ====================================================
 
         if not _run_historical_import(result):
-
             return _finish_result(
                 result,
                 started,
             )
-
-        # ====================================================
-        # STEP 3 — LEARNING
-        # ====================================================
 
         if not _run_learning(result):
-
             return _finish_result(
                 result,
                 started,
             )
-
-        # ====================================================
-        # STEP 4 — PREDICTIONS
-        # ====================================================
 
         if not _run_predictions(result):
-
             return _finish_result(
                 result,
                 started,
             )
-
-        # ====================================================
-        # STEP 5 — FINAL VALIDATION
-        # ====================================================
 
         _final_validation(result)
 
@@ -1228,6 +1075,54 @@ def _finish_result(
     )
 
     return result
+
+
+# ============================================================
+# FAJ CYCLE CLASS (для Streamlit)
+# ============================================================
+
+class FAJCycle:
+    """
+    Класс-обёртка для FAJ Cycle.
+    
+    Используется в streamlit_app.py для мягкого подключения.
+    """
+    
+    VERSION = FAJ_CYCLE_VERSION
+    
+    def __init__(self):
+        self.version = self.VERSION
+    
+    def run(self) -> Dict[str, Any]:
+        """
+        Запуск FAJ Cycle.
+        
+        Returns:
+            Dict с полной диагностикой цикла.
+        """
+        return run_faj_cycle()
+    
+    def run_cycle(self) -> Dict[str, Any]:
+        """
+        Альтернативный метод для совместимости.
+        """
+        return run_faj_cycle()
+    
+    def execute(self) -> Dict[str, Any]:
+        """
+        Альтернативный метод для совместимости.
+        """
+        return run_faj_cycle()
+    
+    def status(self) -> Dict[str, Any]:
+        """
+        Диагностический статус.
+        """
+        return {
+            "version": self.VERSION,
+            "available": True,
+            "status": "READY",
+        }
 
 
 # ============================================================
