@@ -4,7 +4,7 @@
 """
 =====================================================
 FAJ Platform v12.1
-Passport Manager v2.0
+Passport Manager v2.1
 =====================================================
 
 РОЛЬ:
@@ -19,6 +19,12 @@ Passport Manager v2.0
     - обучение паспорта
     - расчёт FAJ Rating
     - расчёт Passport Confidence
+
+ИСПРАВЛЕНИЯ v2.1:
+    1. SERVICE_FIELS — убраны results_strength, opponent_strength, matches_count
+    2. Эти поля теперь хранятся в team_passports как отдельные колонки
+    3. matches_count передаётся как аргумент, а не через changes
+    4. _absolute_form остаётся как служебное поле
 
 ВАЖНО v2.0:
 
@@ -38,7 +44,7 @@ Passport Manager v2.0
 
     6. results_strength и opponent_strength —
        служебные значения для расчёта рейтинга.
-       Они НЕ являются параметрами паспорта.
+       Они НЕ являются параметрами паспорта, но ХРАНЯТСЯ в БД.
 
     7. Служебные поля никогда не проходят
        через opponent_factor.
@@ -69,10 +75,10 @@ logger = logging.getLogger(__name__)
 class PassportManager:
 
     """
-    Passport Manager v2.0
+    Passport Manager v2.1
     """
 
-    VERSION = "2.0"
+    VERSION = "2.1"
 
     # ============================================================
     # GLOBAL SETTINGS
@@ -113,15 +119,16 @@ class PassportManager:
     }
 
     # ============================================================
-    # SERVICE FIELDS
+    # SERVICE FIELDS (исправлено v2.1)
     # ============================================================
 
+    # Только _absolute_form — временное служебное поле,
+    # которое не хранится в БД.
+    #
+    # results_strength, opponent_strength, matches_count
+    # теперь хранятся в team_passports как отдельные колонки.
     SERVICE_FIELDS = {
         "_absolute_form",
-        "results_strength",
-        "opponent_strength",
-        "matches_count",
-        "created_at",
     }
 
     # ============================================================
@@ -185,7 +192,7 @@ class PassportManager:
         PassportManager НЕ создаёт таблицы.
         """
 
-        conn = self.db.get_connection()  # ✅ ИСПРАВЛЕНО
+        conn = self.db.get_connection()
         cursor = conn.cursor()
 
         try:
@@ -241,6 +248,9 @@ class PassportManager:
                 "version",
                 "source",
                 "created_at",
+                "results_strength",    # НОВОЕ v2.1
+                "opponent_strength",   # НОВОЕ v2.1
+                "matches_count",       # НОВОЕ v2.1
             }
 
             missing = required_columns - columns
@@ -271,7 +281,7 @@ class PassportManager:
         season_id: int
     ) -> Optional[Dict[str, Any]]:
 
-        conn = self.db.get_connection()  # ✅ ИСПРАВЛЕНО
+        conn = self.db.get_connection()
         cursor = conn.cursor()
 
         try:
@@ -313,7 +323,7 @@ class PassportManager:
         season_id: Optional[int] = None
     ) -> Optional[Dict[str, Any]]:
 
-        conn = self.db.get_connection()  # ✅ ИСПРАВЛЕНО
+        conn = self.db.get_connection()
         cursor = conn.cursor()
 
         try:
@@ -375,7 +385,7 @@ class PassportManager:
         limit: int = 10
     ) -> list:
 
-        conn = self.db.get_connection()  # ✅ ИСПРАВЛЕНО
+        conn = self.db.get_connection()
         cursor = conn.cursor()
 
         try:
@@ -421,7 +431,7 @@ class PassportManager:
         season_id: int
     ) -> list:
 
-        conn = self.db.get_connection()  # ✅ ИСПРАВЛЕНО
+        conn = self.db.get_connection()
         cursor = conn.cursor()
 
         try:
@@ -603,7 +613,7 @@ class PassportManager:
         )
 
     # ============================================================
-    # CREATE PASSPORT
+    # CREATE PASSPORT (исправлено v2.1)
     # ============================================================
 
     def create_passport(
@@ -621,9 +631,13 @@ class PassportManager:
         data содержит АБСОЛЮТНЫЕ значения.
 
         Этот метод НЕ применяет LEARNING_RATE.
+
+        ИСПРАВЛЕНО v2.1:
+            results_strength, opponent_strength, matches_count
+            теперь сохраняются в team_passports.
         """
 
-        conn = self.db.get_connection()  # ✅ ИСПРАВЛЕНО
+        conn = self.db.get_connection()
         cursor = conn.cursor()
 
         try:
@@ -640,7 +654,7 @@ class PassportManager:
             )
 
             # ----------------------------------------------------
-            # Служебные значения
+            # Служебные значения (теперь хранятся в БД)
             # ----------------------------------------------------
 
             results_strength = (
@@ -649,6 +663,10 @@ class PassportManager:
 
             opponent_strength = (
                 data.get("opponent_strength")
+            )
+
+            matches_count = (
+                data.get("matches_count", 0)
             )
 
             form = clamped_data.get(
@@ -678,13 +696,6 @@ class PassportManager:
                 or datetime.now().isoformat()
             )
 
-            matches_count = (
-                data.get(
-                    "matches_count",
-                    0
-                )
-            )
-
             passport_confidence = (
                 self._calculate_confidence(
                     clamped_data,
@@ -694,7 +705,7 @@ class PassportManager:
             )
 
             # ----------------------------------------------------
-            # INSERT
+            # INSERT (с новыми колонками)
             # ----------------------------------------------------
 
             cursor.execute("""
@@ -737,13 +748,18 @@ class PassportManager:
 
                     version,
                     source,
-                    created_at
+                    created_at,
+
+                    results_strength,
+                    opponent_strength,
+                    matches_count
                 )
 
                 VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?
                 )
             """, (
 
@@ -850,7 +866,11 @@ class PassportManager:
 
                 source,
 
-                created_at
+                created_at,
+
+                results_strength,
+                opponent_strength,
+                matches_count
             ))
 
             conn.commit()
@@ -858,13 +878,14 @@ class PassportManager:
             logger.info(
                 "Passport created | "
                 "team=%s | season=%s | "
-                "version=%s | rating=%.1f | source=%s",
-
+                "version=%s | rating=%.1f | source=%s | "
+                "matches=%s",
                 team_id,
                 season_id,
                 next_version,
                 faj_rating,
-                source
+                source,
+                matches_count
             )
 
         finally:
@@ -877,7 +898,7 @@ class PassportManager:
         )
 
     # ============================================================
-    # UPDATE PASSPORT — LEARNING
+    # UPDATE PASSPORT — LEARNING (исправлено v2.1)
     # ============================================================
 
     def update_passport(
@@ -907,13 +928,11 @@ class PassportManager:
                 old + learning_delta
 
         Служебные поля:
-            _absolute_form
-            results_strength
-            opponent_strength
-            matches_count
-            created_at
+            _absolute_form (временное, не хранится в БД)
 
-        НЕ считаются DELTA.
+        ИСПРАВЛЕНО v2.1:
+            matches_count передаётся как аргумент, а не через changes
+            results_strength и opponent_strength сохраняются в БД
         """
 
         current = self.get_current_passport(
@@ -951,26 +970,29 @@ class PassportManager:
             )
         )
 
+        # --------------------------------------------------------
+        # Служебные поля из current (сохраняются)
+        # --------------------------------------------------------
+
         results_strength = (
             weighted_changes.pop(
                 "results_strength",
-                None
+                current.get("results_strength")
             )
         )
 
         opponent_strength = (
             weighted_changes.pop(
                 "opponent_strength",
-                None
+                current.get("opponent_strength")
             )
         )
 
-        new_matches_count = (
-            weighted_changes.pop(
-                "matches_count",
-                matches_count
-            )
-        )
+        # --------------------------------------------------------
+        # matches_count (ТОЛЬКО из аргумента)
+        # --------------------------------------------------------
+
+        new_matches_count = matches_count
 
         # --------------------------------------------------------
         # ABSOLUTE FORM
@@ -1047,26 +1069,6 @@ class PassportManager:
             )
 
         # --------------------------------------------------------
-        # PRESERVE HISTORY SIGNALS
-        # --------------------------------------------------------
-
-        if results_strength is None:
-
-            results_strength = (
-                current.get(
-                    "results_strength"
-                )
-            )
-
-        if opponent_strength is None:
-
-            opponent_strength = (
-                current.get(
-                    "opponent_strength"
-                )
-            )
-
-        # --------------------------------------------------------
         # CONFIDENCE
         # --------------------------------------------------------
 
@@ -1095,7 +1097,7 @@ class PassportManager:
         )
 
         # --------------------------------------------------------
-        # SERVICE DATA
+        # СОХРАНЯЕМ СЛУЖЕБНЫЕ ПОЛЯ В new_data
         # --------------------------------------------------------
 
         new_data["results_strength"] = (
@@ -1118,7 +1120,7 @@ class PassportManager:
         )
 
     # ============================================================
-    # UPDATE AFTER MATCH
+    # UPDATE AFTER MATCH (исправлено v2.1)
     # ============================================================
 
     def update_after_match(
@@ -1194,12 +1196,9 @@ class PassportManager:
         )
 
         # --------------------------------------------------------
-        # MATCH COUNT
+        # match_count передаётся как аргумент
+        # НЕ через changes (ИСПРАВЛЕНО v2.1)
         # --------------------------------------------------------
-
-        changes["matches_count"] = (
-            matches_count + 1
-        )
 
         return self.update_passport(
             team_id=team_id,
@@ -1268,7 +1267,7 @@ class PassportManager:
         for key, value in changes.items():
 
             # ----------------------------------------------------
-            # SERVICE FIELD
+            # SERVICE FIELD (только _absolute_form)
             # ----------------------------------------------------
 
             if key in self.SERVICE_FIELDS:
