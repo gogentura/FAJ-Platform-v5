@@ -35,18 +35,9 @@ FAJ XG Model v1.7
             × Away Control Factor
             × Away Form Factor
 
-ГДЕ:
-
-    Attack Factor = attack / 70 (0.85–1.15)
-    Defense Factor = 70 / defense (0.85–1.15)
-    GK Factor = 70 / goalkeeper (0.85–1.15)
-    Form Factor = form / 50 (0.85–1.15)
-    Control Factor: разница контроля распределяется между командами
-
 ИСПРАВЛЕНИЯ v1.7:
-    1. Версия обновлена до v1.7 (соответствует комментарию)
-    2. В components добавлены home_rating, away_rating, rating_used_for_xg
-    3. Model Version обновлена до FAJ_XG_v1.7
+    1. Версия обновлена до v1.7
+    2. В components добавлены home_rating, away_rating, rating_used_for_xg: False
 
 ВАЖНО:
     - FAJ Rating НЕ участвует в расчёте xG (только диагностика)
@@ -74,8 +65,8 @@ class XGModel:
     Rating используется ТОЛЬКО для диагностики.
     """
 
-    VERSION = "1.7"  # ИСПРАВЛЕНО: v1.6 → v1.7
-    MODEL_VERSION = "FAJ_XG_v1.7"  # ИСПРАВЛЕНО
+    VERSION = "1.7"
+    MODEL_VERSION = "FAJ_XG_v1.7"
 
     # ============================================================
     # MODEL CONSTANTS
@@ -228,7 +219,6 @@ class XGModel:
 
             # ============================================================
             # 7. РЕЗУЛЬТАТ
-            # ИСПРАВЛЕНО: добавлены home_rating, away_rating, rating_used_for_xg
             # ============================================================
 
             return {
@@ -247,7 +237,6 @@ class XGModel:
                     "home_form_factor": round(home_form_factor, 3),
                     "away_form_factor": round(away_form_factor, 3),
                     "home_advantage": round(self.HOME_ADVANTAGE, 3),
-                    # НОВЫЕ ПОЛЯ v1.7
                     "home_rating": round(float(home_rating), 2),
                     "away_rating": round(float(away_rating), 2),
                     "rating_used_for_xg": False,
@@ -306,7 +295,6 @@ class XGModel:
             logger.warning(f"Passport is not a dict: {type(passport)}")
             return params
 
-        # Извлечение параметров из плоской структуры
         for key in ["attack", "defense", "control", "goalkeeper", "form"]:
             value = passport.get(key)
             if value is not None:
@@ -330,28 +318,24 @@ class XGModel:
     # ============================================================
 
     def _calculate_attack_factor(self, attack: float) -> float:
-        """Attack Factor = attack / 70 (0.85–1.15)"""
         if attack <= 0:
             return self.FACTOR_MIN
         factor = attack / 70.0
         return max(self.FACTOR_MIN, min(self.FACTOR_MAX, factor))
 
     def _calculate_defense_factor(self, defense: float) -> float:
-        """Defense Factor = 70 / defense (0.85–1.15)"""
         if defense <= 0:
             return self.FACTOR_MAX
         factor = 70.0 / defense
         return max(self.FACTOR_MIN, min(self.FACTOR_MAX, factor))
 
     def _calculate_keeper_factor(self, goalkeeper: float) -> float:
-        """GK Factor = 70 / goalkeeper (0.85–1.15)"""
         if goalkeeper <= 0:
             return self.FACTOR_MAX
         factor = 70.0 / goalkeeper
         return max(self.FACTOR_MIN, min(self.FACTOR_MAX, factor))
 
     def _calculate_form_factor(self, form: float) -> float:
-        """Form Factor = form / 50 (0.85–1.15)"""
         if form <= 0:
             return self.FACTOR_MIN
         factor = form / 50.0
@@ -362,24 +346,12 @@ class XGModel:
         home_control: float,
         away_control: float
     ) -> tuple:
-        """
-        Control Factors: разница контроля распределяется между командами.
-
-        Пример:
-            home_control = 80, away_control = 60
-            diff = 20
-            home_factor = 1 + 20/200 = 1.10
-            away_factor = 1 - 20/200 = 0.90
-        """
         diff = home_control - away_control
-
-        # Ограничиваем разницу
         diff = max(-50, min(50, diff))
 
         home_factor = 1.0 + (diff / 200.0)
         away_factor = 1.0 - (diff / 200.0)
 
-        # Ограничиваем факторы
         home_factor = max(self.FACTOR_MIN, min(self.FACTOR_MAX, home_factor))
         away_factor = max(self.FACTOR_MIN, min(self.FACTOR_MAX, away_factor))
 
@@ -390,7 +362,6 @@ class XGModel:
     # ============================================================
 
     def status(self) -> Dict[str, Any]:
-        """Диагностический статус модели."""
         return {
             "model": self.MODEL_VERSION,
             "version": self.VERSION,
@@ -410,70 +381,7 @@ _xg_model_instance: Optional[XGModel] = None
 
 
 def get_xg_model() -> XGModel:
-    """Синглтон для XGModel."""
     global _xg_model_instance
     if _xg_model_instance is None:
         _xg_model_instance = XGModel()
     return _xg_model_instance
-
-
-# ================================================================
-# SELF TEST
-# ================================================================
-
-if __name__ == "__main__":
-    print("\n" + "=" * 60)
-    print("FAJ XG Model v1.7 — SELF TEST")  # ИСПРАВЛЕНО: v1.6 → v1.7
-    print("=" * 60)
-
-    model = XGModel()
-
-    print("\n📊 Status:")
-    print(model.status())
-
-    # Тестовые паспорта
-    home_passport = {
-        "attack": 75.0,
-        "defense": 65.0,
-        "control": 70.0,
-        "goalkeeper": 68.0,
-        "form": 55.0
-    }
-
-    away_passport = {
-        "attack": 60.0,
-        "defense": 72.0,
-        "control": 55.0,
-        "goalkeeper": 70.0,
-        "form": 48.0
-    }
-
-    print("\n📋 Тестовые данные:")
-    print(f"  Home: attack=75, defense=65, control=70, gk=68, form=55")
-    print(f"  Away: attack=60, defense=72, control=55, gk=70, form=48")
-
-    # Тест с рейтингами
-    result = model.calculate(
-        home_passport,
-        away_passport,
-        home_rating=85.0,
-        away_rating=72.0
-    )
-
-    print("\n📊 Результат:")
-    print(f"  Home xG: {result['home_xg']:.3f}")
-    print(f"  Away xG: {result['away_xg']:.3f}")
-
-    print("\n🔧 Компоненты:")
-    for key, value in result.get("components", {}).items():
-        print(f"  {key}: {value:.3f}")
-
-    # Проверка новых полей
-    print("\n📈 Диагностика рейтингов:")
-    components = result.get("components", {})
-    print(f"  Home Rating: {components.get('home_rating', 'N/A')}")
-    print(f"  Away Rating: {components.get('away_rating', 'N/A')}")
-    print(f"  Rating used for xG: {components.get('rating_used_for_xg', 'N/A')}")
-
-    print("\n✅ XG Model v1.7 готов к работе.")
-    print("=" * 60)
