@@ -3,7 +3,7 @@
 
 """
 =====================================================
-FAJ XG Model v1.6
+FAJ XG Model v1.7
 =====================================================
 
 РОЛЬ:
@@ -13,7 +13,7 @@ FAJ XG Model v1.6
 
     Team Passport (плоская структура)
           ↓
-    FAJ XG Model v1.6
+    FAJ XG Model v1.7
           ↓
     home_xg
     away_xg
@@ -43,12 +43,18 @@ FAJ XG Model v1.6
     Form Factor = form / 50 (0.85–1.15)
     Control Factor: разница контроля распределяется между командами
 
+ИСПРАВЛЕНИЯ v1.7:
+    1. Версия обновлена до v1.7 (соответствует комментарию)
+    2. В components добавлены home_rating, away_rating, rating_used_for_xg
+    3. Model Version обновлена до FAJ_XG_v1.7
+
 ВАЖНО:
-    - FAJ Rating НЕ участвует в расчёте xG
+    - FAJ Rating НЕ участвует в расчёте xG (только диагностика)
     - Home Advantage = 1.12 (только для хозяев)
     - Диапазон xG: 0.10 – 4.00
     - Паспорт — плоская структура (v1.7)
     - Форма — абсолютное значение 0–100
+    - Rating передаётся только для диагностики
 =====================================================
 """
 
@@ -62,13 +68,14 @@ logger = logging.getLogger(__name__)
 
 class XGModel:
     """
-    FAJ XG Model v1.6
+    FAJ XG Model v1.7
 
     Расчёт xG на основе паспортов команд.
+    Rating используется ТОЛЬКО для диагностики.
     """
 
-    VERSION = "1.6"
-    MODEL_VERSION = "FAJ_XG_v1.6"
+    VERSION = "1.7"  # ИСПРАВЛЕНО: v1.6 → v1.7
+    MODEL_VERSION = "FAJ_XG_v1.7"  # ИСПРАВЛЕНО
 
     # ============================================================
     # MODEL CONSTANTS
@@ -121,11 +128,11 @@ class XGModel:
         Args:
             home_passport: паспорт домашней команды (плоская структура)
             away_passport: паспорт гостевой команды (плоская структура)
-            home_rating: рейтинг хозяев (только для диагностики)
-            away_rating: рейтинг гостей (только для диагностики)
+            home_rating: рейтинг хозяев (ТОЛЬКО для диагностики)
+            away_rating: рейтинг гостей (ТОЛЬКО для диагностики)
 
         Returns:
-            Dict с home_xg, away_xg и компонентами
+            Dict с home_xg, away_xg, components и diagnostic
         """
         try:
             # ============================================================
@@ -221,6 +228,7 @@ class XGModel:
 
             # ============================================================
             # 7. РЕЗУЛЬТАТ
+            # ИСПРАВЛЕНО: добавлены home_rating, away_rating, rating_used_for_xg
             # ============================================================
 
             return {
@@ -239,6 +247,10 @@ class XGModel:
                     "home_form_factor": round(home_form_factor, 3),
                     "away_form_factor": round(away_form_factor, 3),
                     "home_advantage": round(self.HOME_ADVANTAGE, 3),
+                    # НОВЫЕ ПОЛЯ v1.7
+                    "home_rating": round(float(home_rating), 2),
+                    "away_rating": round(float(away_rating), 2),
+                    "rating_used_for_xg": False,
                 },
                 "diagnostic": {
                     "home_attack": round(home_attack, 1),
@@ -411,7 +423,7 @@ def get_xg_model() -> XGModel:
 
 if __name__ == "__main__":
     print("\n" + "=" * 60)
-    print("FAJ XG Model v1.6 — SELF TEST")
+    print("FAJ XG Model v1.7 — SELF TEST")  # ИСПРАВЛЕНО: v1.6 → v1.7
     print("=" * 60)
 
     model = XGModel()
@@ -440,7 +452,13 @@ if __name__ == "__main__":
     print(f"  Home: attack=75, defense=65, control=70, gk=68, form=55")
     print(f"  Away: attack=60, defense=72, control=55, gk=70, form=48")
 
-    result = model.calculate(home_passport, away_passport)
+    # Тест с рейтингами
+    result = model.calculate(
+        home_passport,
+        away_passport,
+        home_rating=85.0,
+        away_rating=72.0
+    )
 
     print("\n📊 Результат:")
     print(f"  Home xG: {result['home_xg']:.3f}")
@@ -450,5 +468,12 @@ if __name__ == "__main__":
     for key, value in result.get("components", {}).items():
         print(f"  {key}: {value:.3f}")
 
-    print("\n✅ XG Model v1.6 готов к работе.")
+    # Проверка новых полей
+    print("\n📈 Диагностика рейтингов:")
+    components = result.get("components", {})
+    print(f"  Home Rating: {components.get('home_rating', 'N/A')}")
+    print(f"  Away Rating: {components.get('away_rating', 'N/A')}")
+    print(f"  Rating used for xG: {components.get('rating_used_for_xg', 'N/A')}")
+
+    print("\n✅ XG Model v1.7 готов к работе.")
     print("=" * 60)
