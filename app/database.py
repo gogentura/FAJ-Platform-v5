@@ -216,6 +216,10 @@ def run_migrations():
     if dynamic_exists:
         ensure_column("team_dynamic", "last_sync", "TEXT")
     
+    # ============================================================
+    # ДОБАВЛЕНИЕ КОЛОНОК В team_passports (v2.1)
+    # ============================================================
+    
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
@@ -237,7 +241,13 @@ def run_migrations():
         ensure_column("team_passports", "faj_rating", "REAL DEFAULT 0.0")
         ensure_column("team_passports", "source", "TEXT DEFAULT 'manual'")
         ensure_column("team_passports", "updated_at", "TEXT")
-        logger.info("✅ Проверены колонки team_passports")
+        
+        # НОВЫЕ КОЛОНКИ ДЛЯ PASSPORT MANAGER v2.1
+        ensure_column("team_passports", "results_strength", "REAL")
+        ensure_column("team_passports", "opponent_strength", "REAL")
+        ensure_column("team_passports", "matches_count", "INTEGER DEFAULT 0")
+        
+        logger.info("✅ Проверены колонки team_passports (включая v2.1)")
     
     conn = get_connection()
     cursor = conn.cursor()
@@ -506,6 +516,7 @@ def init_database():
     
     # ============================================================
     # TEAM PASSPORTS — ОСНОВНОЙ ПАСПОРТ FAJ v12.x
+    # С НОВЫМИ КОЛОНКАМИ ДЛЯ v2.1
     # ============================================================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS team_passports (
@@ -537,6 +548,9 @@ def init_database():
             source TEXT DEFAULT 'manual',
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT,
+            results_strength REAL,
+            opponent_strength REAL,
+            matches_count INTEGER DEFAULT 0,
             FOREIGN KEY(team_id) REFERENCES teams(id),
             FOREIGN KEY(season_id) REFERENCES seasons(id),
             UNIQUE(team_id, season_id, version)
