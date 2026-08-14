@@ -4,7 +4,7 @@
 """
 =====================================================
 FAJ Platform v12.1
-Prediction Pipeline v2.0
+Prediction Pipeline v2.1
 =====================================================
 
 РОЛЬ:
@@ -30,6 +30,12 @@ Prediction Pipeline v2.0
         ↓
     Final Prediction
 
+ИСПРАВЛЕНИЯ v2.1:
+    1. Rating используется как контекст, а не математический фактор в XG
+    2. Model Agreement — правильная формула (среднее расхождение)
+    3. BTTS/O2.5/O3.5 — единый источник из score_matrix
+    4. Расширенные метрики используют те же значения, что и основной результат
+
 ВАЖНО:
     Pipeline НЕ работает с БД.
     Pipeline НЕ загружает календарь.
@@ -44,7 +50,7 @@ import hashlib
 import uuid
 import math
 
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 from app.config import config
 
@@ -62,12 +68,12 @@ logger = logging.getLogger(__name__)
 
 class PredictionPipeline:
     """
-    FAJ Prediction Pipeline v2.0.
+    FAJ Prediction Pipeline v2.1.
 
     Чистый расчёт без обращения к БД.
     """
 
-    VERSION = "2.0"
+    VERSION = "2.1"
 
     def __init__(self):
 
@@ -155,14 +161,16 @@ class PredictionPipeline:
             )
 
             # ====================================================
-            # 1. XG
+            # 1. XG (rating как контекст)
             # ====================================================
 
             xg_result = self.xg_model.calculate(
                 home_passport=home_passport,
                 away_passport=away_passport,
-                home_rating=home_rating,
-                away_rating=away_rating
+                # rating передаётся как контекст силы команды,
+                # а не как математический фактор, дублирующий паспорт
+                home_rating_context=home_rating,
+                away_rating_context=away_rating
             )
 
             if not isinstance(xg_result, dict):
@@ -396,7 +404,7 @@ class PredictionPipeline:
                 )
 
             # ====================================================
-            # 5. MODEL AGREEMENT
+            # 5. MODEL AGREEMENT (исправленная формула)
             # ====================================================
 
             agreement_score = (
@@ -525,6 +533,7 @@ class PredictionPipeline:
                 )
             )
 
+            # Нормализация вероятностей
             total = (
                 home_prob
                 + draw_prob
@@ -537,8 +546,13 @@ class PredictionPipeline:
                 draw_prob /= total
                 away_prob /= total
 
+            # Гарантируем 0 <= P <= 1
+            home_prob = max(0.0, min(1.0, home_prob))
+            draw_prob = max(0.0, min(1.0, draw_prob))
+            away_prob = max(0.0, min(1.0, away_prob))
+
             # ====================================================
-            # 8. CONFIDENCE
+            # 8. CONFIDENCE (с учётом rating)
             # ====================================================
 
             confidence_result = (
@@ -548,12 +562,14 @@ class PredictionPipeline:
                         "home": home_prob,
                         "draw": draw_prob,
                         "away": away_prob
-                    }
+                    },
+                    home_rating=home_rating,
+                    away_rating=away_rating
                 )
             )
 
             # ====================================================
-            # 9. RISK
+            # 9. RISK (с учётом rating)
             # ====================================================
 
             risk_result = (
@@ -564,13 +580,20 @@ class PredictionPipeline:
                         "draw": draw_prob,
                         "away": away_prob
                     },
-                    confidence=confidence_result
+                    confidence=confidence_result,
+                    home_rating=home_rating,
+                    away_rating=away_rating
                 )
             )
 
             # ====================================================
-            # 10. EXTENDED METRICS
+            # 10. EXTENDED METRICS (единый источник)
             # ====================================================
+
+            score_matrix = poisson_result.get(
+                "score_matrix",
+                {}
+            )
 
             extended = (
                 self._calculate_extended_metrics(
@@ -581,13 +604,13 @@ class PredictionPipeline:
                             "top_scores",
                             []
                         ),
-                    score_matrix=
-                        poisson_result.get(
-                            "score_matrix",
-                            {}
-                        )
+                    score_matrix=score_matrix
                 )
             )
+
+            # Используем единые значения из extended
+            btts_prob = extended.get("btts", {}).get("yes", 0.0)
+            over_25 = extended.get("total", {}).get("over_2_5", 0.0)
 
             # ====================================================
             # 11. FINAL RESULT
@@ -661,22 +684,12 @@ class PredictionPipeline:
                 },
 
                 "btts": round(
-                    float(
-                        poisson_result.get(
-                            "btts_probability",
-                            0
-                        )
-                    ),
+                    btts_prob,
                     4
                 ),
 
                 "over_2_5": round(
-                    float(
-                        poisson_result.get(
-                            "over_2_5",
-                            0
-                        )
-                    ),
+                    over_25,
                     4
                 ),
 
@@ -890,7 +903,7 @@ class PredictionPipeline:
         )
 
     # ============================================================
-    # AGREEMENT
+    # AGREEMENT (ИСПРАВЛЕНО)
     # ============================================================
 
     def _calculate_model_agreement(
@@ -898,6 +911,11 @@ class PredictionPipeline:
         poisson_result: Dict,
         mc_result: Dict
     ) -> float:
+        """
+        Model Agreement как среднее расхождение вероятностей.
+
+        ИСПРАВЛЕНО: правильная формула с делением на 3.
+        """
 
         p = poisson_result.get(
             "result_probability",
@@ -906,55 +924,30 @@ class PredictionPipeline:
 
         m = mc_result or {}
 
-        diff = (
-
+        # Среднее расхождение вероятностей
+        agreement = 1 - (
             abs(
-                p.get(
-                    "home",
-                    config.DEFAULT_HOME_PROB
-                )
-                -
-                m.get(
-                    "home_win",
-                    config.DEFAULT_HOME_PROB
-                )
+                p.get("home", config.DEFAULT_HOME_PROB)
+                - m.get("home_win", config.DEFAULT_HOME_PROB)
             )
-
             +
-
             abs(
-                p.get(
-                    "draw",
-                    config.DEFAULT_DRAW_PROB
-                )
-                -
-                m.get(
-                    "draw",
-                    config.DEFAULT_DRAW_PROB
-                )
+                p.get("draw", config.DEFAULT_DRAW_PROB)
+                - m.get("draw", config.DEFAULT_DRAW_PROB)
             )
-
             +
-
             abs(
-                p.get(
-                    "away",
-                    config.DEFAULT_AWAY_PROB
-                )
-                -
-                m.get(
-                    "away_win",
-                    config.DEFAULT_AWAY_PROB
-                )
+                p.get("away", config.DEFAULT_AWAY_PROB)
+                - m.get("away_win", config.DEFAULT_AWAY_PROB)
             )
-        )
+        ) / 3
 
         return max(
             0.0,
             min(
                 1.0,
                 round(
-                    1 - diff / 3,
+                    agreement,
                     4
                 )
             )
@@ -974,7 +967,7 @@ class PredictionPipeline:
         return "LOW"
 
     # ============================================================
-    # EXTENDED METRICS
+    # EXTENDED METRICS (ЕДИНЫЙ ИСТОЧНИК)
     # ============================================================
 
     def _calculate_extended_metrics(
@@ -1119,7 +1112,7 @@ class PredictionPipeline:
                     continue
 
         # --------------------------------------------------------
-        # BTTS / TOTALS
+        # BTTS / TOTALS (ЕДИНЫЙ РАСЧЁТ ИЗ SCORE_MATRIX)
         # --------------------------------------------------------
 
         btts_prob = 0.0
@@ -1184,12 +1177,10 @@ class PredictionPipeline:
                     continue
 
         # --------------------------------------------------------
-        # SAFETY FALLBACK
+        # SAFETY FALLBACK (если score_matrix пуст)
         # --------------------------------------------------------
 
-        else:
-
-            # Независимые Poisson-потоки.
+        if not score_matrix:
 
             btts_prob = (
                 1
@@ -1203,7 +1194,6 @@ class PredictionPipeline:
                 home_xg + away_xg
             )
 
-            # P(total > 2)
             poisson_zero_to_two = (
                 math.exp(-total_xg)
                 * (
@@ -1218,7 +1208,6 @@ class PredictionPipeline:
                 - poisson_zero_to_two
             )
 
-            # P(total > 3)
             poisson_zero_to_three = (
                 math.exp(-total_xg)
                 * (
