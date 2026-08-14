@@ -2,31 +2,71 @@
 # -*- coding: utf-8 -*-
 
 """
+============================================================
 FAJ Platform v12.1
-RPL Historical Importer
+FAJ CYCLE
+============================================================
 
-Импорт проверенных исторических результатов РПЛ 2026/27
-за туры 1-3 в существующий календарь SQLite.
+Главный оркестратор FAJ.
 
-ПРИНЦИПЫ:
-- DELETE отсутствует
-- календарь не создаётся
-- матчи не создаются
-- прогнозы не создаются
-- паспорта не создаются
-- обучение не запускается
-- конфликтующие результаты не перезаписываются
-- импорт идемпотентен
-- вся операция атомарна
+ЦИКЛ:
+
+    FAJ Cycle
+        │
+        ├── 1. Проверка БД
+        │
+        ├── 2. Загрузка новых результатов
+        │
+        ├── 3. Обучение Learning Engine
+        │
+        ├── 4. Расчёт прогнозов
+        │
+        └── 5. Финальная диагностика
+
+ВАЖНЫЕ ПРИНЦИПЫ:
+
+    - SQLite
+    - используется существующая БД
+    - database.py НЕ изменяется
+    - DELETE отсутствует
+    - DROP отсутствует
+    - календарь не создаётся
+    - паспорта не создаются
+    - динамические данные не уничтожаются
+    - цикл максимально идемпотентен
+    - каждый этап возвращает диагностику
+    - ошибка одного этапа не маскируется
+    - Streamlit получает единый результат
+
+============================================================
 """
 
 from __future__ import annotations
 
 import logging
 import sqlite3
+import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
+
+
+# ============================================================
+# IMPORTS
+# ============================================================
+
+from app.database import get_connection
+from app.core import PredictionManager
+from app.learning_engine import LearningEngine
+
+try:
+    from app.rpl_historical_importer import (
+        load_rpl_historical_results,
+        get_historical_import_status,
+    )
+except ImportError:
+    load_rpl_historical_results = None
+    get_historical_import_status = None
 
 
 logger = logging.getLogger(__name__)
@@ -36,1137 +76,1298 @@ logger = logging.getLogger(__name__)
 # CONFIG
 # ============================================================
 
-SEASON_YEAR = "2026-2027"
-LEAGUE_NAME = "РПЛ"
+FAJ_CYCLE_VERSION = "12.1"
 
-IMPORT_SOURCE = "historical"
-IMPORT_METHOD = "manual_import"
-IMPORT_VERSION = "1.2"
+DEFAULT_LEAGUE = "РПЛ"
+DEFAULT_SEASON = "2026-2027"
 
-EXPECTED_MATCHES = 24
-EXPECTED_ROUNDS = (1, 2, 3)
+EXPECTED_HISTORICAL_RESULTS = 24
+NEXT_PREDICTION_ROUND = 4
 
 
 # ============================================================
-# DATABASE
+# DATABASE TABLES
 # ============================================================
 
-# app/faj_cycle.py -> parents[1] = корень проекта
-ROOT_DIR = Path(__file__).resolve().parents[1]
-
-DEFAULT_DB_PATH = ROOT_DIR / "data" / "faj.db"
-
-
-# ============================================================
-# VERIFIED HISTORICAL RESULTS
-# ============================================================
-
-HISTORICAL_MATCHES: List[
-    Tuple[int, str, str, str, int, int]
-] = [
-
-    # ТУР 1
-    (1, "2026-07-24", "ЦСКА", "Балтика", 2, 1),
-    (1, "2026-07-25", "Динамо Москва", "Крылья Советов", 0, 0),
-    (1, "2026-07-25", "Акрон", "Зенит", 0, 5),
-    (1, "2026-07-25", "Факел", "Динамо Махачкала", 1, 2),
-    (1, "2026-07-25", "Спартак", "Родина", 3, 0),
-    (1, "2026-07-26", "Оренбург", "Ростов", 2, 1),
-    (1, "2026-07-26", "Локомотив", "Ахмат", 1, 1),
-    (1, "2026-07-26", "Рубин", "Краснодар", 1, 3),
-
-    # ТУР 2
-    (2, "2026-07-31", "Родина", "Ростов", 2, 4),
-    (2, "2026-08-01", "Акрон", "Рубин", 1, 2),
-    (2, "2026-08-01", "ЦСКА", "Крылья Советов", 1, 1),
-    (2, "2026-08-01", "Динамо Махачкала", "Локомотив", 2, 1),
-    (2, "2026-08-01", "Балтика", "Динамо Москва", 2, 1),
-    (2, "2026-08-02", "Оренбург", "Зенит", 0, 3),
-    (2, "2026-08-02", "Краснодар", "Факел", 3, 2),
-    (2, "2026-08-02", "Ахмат", "Спартак", 1, 2),
-
-    # ТУР 3
-    (3, "2026-08-08", "Крылья Советов", "Балтика", 0, 2),
-    (3, "2026-08-08", "Локомотив", "Акрон", 0, 0),
-    (3, "2026-08-09", "Ростов", "ЦСКА", 0, 0),
-    (3, "2026-08-09", "Динамо Москва", "Динамо Махачкала", 3, 1),
-    (3, "2026-08-09", "Зенит", "Родина", 1, 2),
-    (3, "2026-08-10", "Спартак", "Краснодар", 1, 2),
-    (3, "2026-08-10", "Рубин", "Оренбург", 1, 1),
-    (3, "2026-08-11", "Факел", "Ахмат", 0, 0),
-]
+EXPECTED_TABLES = (
+    "teams",
+    "seasons",
+    "rounds",
+    "matches",
+    "match_results",
+    "predictions",
+    "prediction_scores",
+    "prediction_distributions",
+    "learning_memory",
+    "model_parameters",
+)
 
 
 # ============================================================
-# TEAM NORMALIZATION
+# RESULT FACTORY
 # ============================================================
 
-TEAM_ALIASES: Dict[str, str] = {
-    "Динамо М": "Динамо Москва",
-    "Динамо Москва": "Динамо Москва",
-    "Динамо (Москва)": "Динамо Москва",
-    "Динамо-Москва": "Динамо Москва",
+def _new_result() -> Dict[str, Any]:
+    """
+    Единый формат результата FAJ Cycle.
+    """
 
-    "Динамо Мх": "Динамо Махачкала",
-    "Динамо Махачкала": "Динамо Махачкала",
-    "Динамо (Махачкала)": "Динамо Махачкала",
-    "Динамо-Махачкала": "Динамо Махачкала",
-
-    "Спартак Москва": "Спартак",
-    "Спартак М": "Спартак",
-    "Спартак-Москва": "Спартак",
-    "Спартак": "Спартак",
-
-    "ЦСКА Москва": "ЦСКА",
-    "ПФК ЦСКА": "ЦСКА",
-    "ЦСКА": "ЦСКА",
-
-    "Локомотив Москва": "Локомотив",
-    "Локомотив": "Локомотив",
-
-    "Акрон Тольятти": "Акрон",
-    "Акрон": "Акрон",
-
-    "Крылья Советов Самара": "Крылья Советов",
-    "Крылья Советов": "Крылья Советов",
-
-    "Балтика Калининград": "Балтика",
-    "Балтика": "Балтика",
-
-    "Родина Москва": "Родина",
-    "Родина": "Родина",
-
-    "Ахмат Грозный": "Ахмат",
-    "Ахмат": "Ахмат",
-
-    "Рубин Казань": "Рубин",
-    "Рубин": "Рубин",
-
-    "Зенит Санкт-Петербург": "Зенит",
-    "Зенит": "Зенит",
-
-    "Факел Воронеж": "Факел",
-    "Факел": "Факел",
-
-    "Оренбург": "Оренбург",
-    "Оренburg": "Оренбург",
-
-    "Ростов": "Ростов",
-    "Краснодар": "Краснодар",
-}
-
-
-def normalize_team(team: Optional[str]) -> Optional[str]:
-    if team is None:
-        return None
-
-    value = str(team).strip()
-
-    if not value:
-        return None
-
-    return TEAM_ALIASES.get(value, value)
-
-
-# ============================================================
-# RESULT
-# ============================================================
-
-def _empty_result() -> Dict[str, Any]:
     return {
         "success": False,
-        "source": IMPORT_SOURCE,
-        "method": IMPORT_METHOD,
-        "version": IMPORT_VERSION,
-        "season": SEASON_YEAR,
-        "league": LEAGUE_NAME,
-        "expected": EXPECTED_MATCHES,
-        "found": len(HISTORICAL_MATCHES),
-        "inserted_results": 0,
-        "updated_matches": 0,
-        "already_present": 0,
+        "ready": False,
+
+        "cycle": FAJ_CYCLE_VERSION,
+
+        "started_at": None,
+        "finished_at": None,
+
+        "duration_seconds": 0.0,
+
+        "database": {
+            "connected": False,
+            "tables": {},
+            "missing_tables": [],
+        },
+
+        "historical": {
+            "available": False,
+            "success": False,
+            "expected": EXPECTED_HISTORICAL_RESULTS,
+            "inserted": 0,
+            "already_present": 0,
+            "updated": 0,
+            "errors": [],
+        },
+
+        "learning": {
+            "started": False,
+            "success": False,
+            "result": None,
+            "errors": [],
+        },
+
+        "predictions": {
+            "started": False,
+            "success": False,
+            "count": 0,
+            "result": None,
+            "errors": [],
+        },
+
+        "final": {
+            "teams": 0,
+            "results": 0,
+            "predictions": 0,
+            "learning_records": 0,
+            "model_parameters": 0,
+        },
+
+        "steps": [],
+
         "errors": [],
-        "rounds": [],
-        "rounds_imported": [],
-        "matches": [],
+
+        "messages": [],
     }
 
 
 # ============================================================
-# VALIDATION
+# LOGGING
 # ============================================================
 
-def validate_historical_data() -> Dict[str, Any]:
+def _log_step(
+    result: Dict[str, Any],
+    step: str,
+    status: str,
+    message: str,
+) -> None:
 
-    result = _empty_result()
-    seen = set()
+    entry = {
+        "step": step,
+        "status": status,
+        "message": message,
+        "time": datetime.now().isoformat(),
+    }
 
-    for item in HISTORICAL_MATCHES:
+    result["steps"].append(entry)
+    result["messages"].append(message)
 
-        if len(item) != 6:
-            result["errors"].append(
-                f"Некорректная запись: {item}"
+    if status == "success":
+        logger.info(message)
+
+    elif status == "warning":
+        logger.warning(message)
+
+    else:
+        logger.error(message)
+
+
+# ============================================================
+# DATABASE CONNECTION
+# ============================================================
+
+def _check_database(
+    result: Dict[str, Any],
+) -> bool:
+    """
+    Проверяет существующую БД.
+
+    Ничего не создаёт и не изменяет.
+    """
+
+    _log_step(
+        result,
+        "database",
+        "running",
+        "🔌 Проверка подключения к FAJ Database...",
+    )
+
+    conn = None
+
+    try:
+
+        conn = get_connection()
+
+        if conn is None:
+            raise RuntimeError(
+                "get_connection() вернул None"
             )
-            continue
 
+        result["database"]["connected"] = True
+
+        _log_step(
+            result,
+            "database",
+            "success",
+            "✅ Подключение к БД успешно",
+        )
+
+        cursor = conn.cursor()
+
+        existing_tables = {}
+
+        for table in EXPECTED_TABLES:
+
+            cursor.execute(
+                """
+                SELECT 1
+                FROM sqlite_master
+                WHERE type = 'table'
+                AND name = ?
+                LIMIT 1
+                """,
+                (table,),
+            )
+
+            exists = cursor.fetchone() is not None
+
+            existing_tables[table] = exists
+
+            if not exists:
+                result["database"][
+                    "missing_tables"
+                ].append(table)
+
+        result["database"]["tables"] = existing_tables
+
+        if result["database"]["missing_tables"]:
+
+            missing = ", ".join(
+                result["database"]["missing_tables"]
+            )
+
+            _log_step(
+                result,
+                "database",
+                "warning",
+                f"⚠️ Отсутствуют таблицы: {missing}",
+            )
+
+        else:
+
+            _log_step(
+                result,
+                "database",
+                "success",
+                "✅ Все необходимые таблицы обнаружены",
+            )
+
+        return True
+
+    except Exception as exc:
+
+        message = (
+            f"❌ Ошибка подключения к БД: {exc}"
+        )
+
+        result["errors"].append(message)
+
+        _log_step(
+            result,
+            "database",
+            "error",
+            message,
+        )
+
+        logger.exception(
+            "FAJ Cycle database check failed"
+        )
+
+        return False
+
+    finally:
+
+        if conn is not None:
+
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+# ============================================================
+# DATABASE COUNTS
+# ============================================================
+
+def _count_table(
+    cursor: sqlite3.Cursor,
+    table: str,
+) -> int:
+
+    try:
+
+        cursor.execute(
+            f'SELECT COUNT(*) FROM "{table}"'
+        )
+
+        row = cursor.fetchone()
+
+        if row is None:
+            return 0
+
+        return int(row[0])
+
+    except Exception:
+
+        return 0
+
+
+def _read_final_state(
+    result: Dict[str, Any],
+) -> None:
+    """
+    Читает фактическое состояние БД.
+
+    Только SELECT.
+    """
+
+    conn = None
+
+    try:
+
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        result["final"]["teams"] = _count_table(
+            cursor,
+            "teams",
+        )
+
+        result["final"]["results"] = _count_table(
+            cursor,
+            "match_results",
+        )
+
+        result["final"]["predictions"] = _count_table(
+            cursor,
+            "predictions",
+        )
+
+        result["final"]["learning_records"] = (
+            _count_table(
+                cursor,
+                "learning_memory",
+            )
+        )
+
+        result["final"]["model_parameters"] = (
+            _count_table(
+                cursor,
+                "model_parameters",
+            )
+        )
+
+    except Exception as exc:
+
+        logger.warning(
+            "Unable to read final FAJ state: %s",
+            exc,
+        )
+
+    finally:
+
+        if conn is not None:
+
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+# ============================================================
+# HISTORICAL RESULTS
+# ============================================================
+
+def _run_historical_import(
+    result: Dict[str, Any],
+) -> bool:
+    """
+    Загружает проверенные исторические результаты.
+
+    Импортёр сам отвечает за:
+        - идемпотентность
+        - транзакцию
+        - конфликт результатов
+        - отсутствие DELETE
+    """
+
+    _log_step(
+        result,
+        "historical",
+        "running",
+        "📥 Проверка исторических результатов...",
+    )
+
+    if load_rpl_historical_results is None:
+
+        message = (
+            "⚠️ Historical Importer не подключён"
+        )
+
+        result["historical"]["errors"].append(
+            message
+        )
+
+        _log_step(
+            result,
+            "historical",
+            "warning",
+            message,
+        )
+
+        return True
+
+    try:
+
+        status = None
+
+        if get_historical_import_status:
+
+            try:
+                status = (
+                    get_historical_import_status()
+                )
+            except Exception as exc:
+
+                logger.warning(
+                    "Historical status failed: %s",
+                    exc,
+                )
+
+        if status:
+
+            result["historical"][
+                "available"
+            ] = True
+
+            if status.get("conflicts", 0) > 0:
+
+                conflicts = status[
+                    "conflicts"
+                ]
+
+                message = (
+                    "❌ Обнаружены конфликты "
+                    f"исторических результатов: "
+                    f"{conflicts}"
+                )
+
+                result["historical"][
+                    "errors"
+                ].append(message)
+
+                _log_step(
+                    result,
+                    "historical",
+                    "error",
+                    message,
+                )
+
+                return False
+
+        import_result = (
+            load_rpl_historical_results()
+        )
+
+        if not isinstance(
+            import_result,
+            dict,
+        ):
+
+            raise RuntimeError(
+                "Historical Importer "
+                "вернул некорректный результат"
+            )
+
+        result["historical"][
+            "available"
+        ] = True
+
+        result["historical"][
+            "success"
+        ] = bool(
+            import_result.get(
+                "success",
+                False,
+            )
+        )
+
+        result["historical"][
+            "inserted"
+        ] = int(
+            import_result.get(
+                "inserted_results",
+                0,
+            )
+            or 0
+        )
+
+        result["historical"][
+            "already_present"
+        ] = int(
+            import_result.get(
+                "already_present",
+                0,
+            )
+            or 0
+        )
+
+        result["historical"][
+            "updated"
+        ] = int(
+            import_result.get(
+                "updated_matches",
+                0,
+            )
+            or 0
+        )
+
+        errors = import_result.get(
+            "errors",
+            [],
+        )
+
+        if errors:
+            result["historical"][
+                "errors"
+            ].extend(
+                [str(x) for x in errors]
+            )
+
+        if not result["historical"]["success"]:
+
+            message = (
+                "❌ Исторический импорт "
+                "завершился ошибкой"
+            )
+
+            _log_step(
+                result,
+                "historical",
+                "error",
+                message,
+            )
+
+            return False
+
+        message = (
+            "✅ Исторические результаты: "
+            f"добавлено="
+            f"{result['historical']['inserted']}, "
+            f"уже было="
+            f"{result['historical']['already_present']}"
+        )
+
+        _log_step(
+            result,
+            "historical",
+            "success",
+            message,
+        )
+
+        return True
+
+    except Exception as exc:
+
+        message = (
+            f"❌ Ошибка исторического импорта: "
+            f"{exc}"
+        )
+
+        result["historical"][
+            "errors"
+        ].append(message)
+
+        result["errors"].append(message)
+
+        _log_step(
+            result,
+            "historical",
+            "error",
+            message,
+        )
+
+        logger.exception(
+            "Historical import failed"
+        )
+
+        return False
+
+
+# ============================================================
+# LEARNING ENGINE
+# ============================================================
+
+def _run_learning(
+    result: Dict[str, Any],
+) -> bool:
+    """
+    Запускает LearningEngine.
+
+    Никакого ручного изменения параметров
+    здесь нет.
+    """
+
+    _log_step(
+        result,
+        "learning",
+        "running",
+        "🧠 Запуск Learning Engine...",
+    )
+
+    result["learning"]["started"] = True
+
+    try:
+
+        engine = LearningEngine()
+
+        learning_result = None
+
+        # ----------------------------------------------------
+        # Наиболее вероятные публичные интерфейсы
+        # ----------------------------------------------------
+
+        if hasattr(
+            engine,
+            "run",
+        ):
+
+            learning_result = engine.run()
+
+        elif hasattr(
+            engine,
+            "train",
+        ):
+
+            learning_result = engine.train()
+
+        elif hasattr(
+            engine,
+            "learn",
+        ):
+
+            learning_result = engine.learn()
+
+        else:
+
+            raise AttributeError(
+                "LearningEngine не содержит "
+                "run(), train() или learn()"
+            )
+
+        result["learning"][
+            "result"
+        ] = learning_result
+
+        # ----------------------------------------------------
+        # Если engine вернул success
+        # ----------------------------------------------------
+
+        if isinstance(
+            learning_result,
+            dict,
+        ):
+
+            result["learning"][
+                "success"
+            ] = bool(
+                learning_result.get(
+                    "success",
+                    True,
+                )
+            )
+
+        else:
+
+            result["learning"][
+                "success"
+            ] = True
+
+        if not result["learning"]["success"]:
+
+            message = (
+                "❌ Learning Engine "
+                "вернул success=False"
+            )
+
+            result["learning"][
+                "errors"
+            ].append(message)
+
+            _log_step(
+                result,
+                "learning",
+                "error",
+                message,
+            )
+
+            return False
+
+        _log_step(
+            result,
+            "learning",
+            "success",
+            "✅ Learning Engine завершил работу",
+        )
+
+        return True
+
+    except Exception as exc:
+
+        message = (
+            f"❌ Ошибка Learning Engine: {exc}"
+        )
+
+        result["learning"][
+            "errors"
+        ].append(message)
+
+        result["errors"].append(message)
+
+        _log_step(
+            result,
+            "learning",
+            "error",
+            message,
+        )
+
+        logger.exception(
+            "Learning Engine failed"
+        )
+
+        return False
+
+
+# ============================================================
+# PREDICTION MANAGER
+# ============================================================
+
+def _run_predictions(
+    result: Dict[str, Any],
+) -> bool:
+    """
+    Запускает PredictionManager.
+
+    PredictionManager является владельцем
+    расчёта и сохранения прогнозов.
+    """
+
+    _log_step(
+        result,
+        "predictions",
+        "running",
+        "🔮 Запуск Prediction Manager...",
+    )
+
+    result["predictions"][
+        "started"
+    ] = True
+
+    try:
+
+        manager = PredictionManager()
+
+        prediction_result = None
+
+        # ----------------------------------------------------
+        # Пытаемся использовать публичный интерфейс
+        # менеджера, не вмешиваясь в его внутренности.
+        # ----------------------------------------------------
+
+        if hasattr(
+            manager,
+            "run",
+        ):
+
+            prediction_result = manager.run(
+                league=DEFAULT_LEAGUE,
+                season=DEFAULT_SEASON,
+                round_number=NEXT_PREDICTION_ROUND,
+            )
+
+        elif hasattr(
+            manager,
+            "generate_predictions",
+        ):
+
+            prediction_result = (
+                manager.generate_predictions(
+                    league=DEFAULT_LEAGUE,
+                    season=DEFAULT_SEASON,
+                    round_number=NEXT_PREDICTION_ROUND,
+                )
+            )
+
+        elif hasattr(
+            manager,
+            "predict_round",
+        ):
+
+            prediction_result = (
+                manager.predict_round(
+                    DEFAULT_LEAGUE,
+                    DEFAULT_SEASON,
+                    NEXT_PREDICTION_ROUND,
+                )
+            )
+
+        elif hasattr(
+            manager,
+            "generate",
+        ):
+
+            prediction_result = manager.generate(
+                league=DEFAULT_LEAGUE,
+                season=DEFAULT_SEASON,
+                round_number=NEXT_PREDICTION_ROUND,
+            )
+
+        else:
+
+            raise AttributeError(
+                "PredictionManager не содержит "
+                "поддерживаемого метода запуска"
+            )
+
+        result["predictions"][
+            "result"
+        ] = prediction_result
+
+        # ----------------------------------------------------
+        # Определяем количество прогнозов
+        # ----------------------------------------------------
+
+        if isinstance(
+            prediction_result,
+            dict,
+        ):
+
+            count = (
+                prediction_result.get(
+                    "count",
+                )
+                or prediction_result.get(
+                    "predictions_count",
+                )
+                or prediction_result.get(
+                    "created",
+                )
+                or 0
+            )
+
+            try:
+                result["predictions"][
+                    "count"
+                ] = int(count)
+            except (
+                TypeError,
+                ValueError,
+            ):
+                result["predictions"][
+                    "count"
+                ] = 0
+
+            result["predictions"][
+                "success"
+            ] = bool(
+                prediction_result.get(
+                    "success",
+                    True,
+                )
+            )
+
+        elif isinstance(
+            prediction_result,
+            (list, tuple),
+        ):
+
+            result["predictions"][
+                "count"
+            ] = len(prediction_result)
+
+            result["predictions"][
+                "success"
+            ] = True
+
+        else:
+
+            result["predictions"][
+                "success"
+            ] = True
+
+        if not result["predictions"]["success"]:
+
+            message = (
+                "❌ Prediction Manager "
+                "вернул success=False"
+            )
+
+            result["predictions"][
+                "errors"
+            ].append(message)
+
+            _log_step(
+                result,
+                "predictions",
+                "error",
+                message,
+            )
+
+            return False
+
+        _log_step(
+            result,
+            "predictions",
+            "success",
+            "✅ Prediction Manager завершил работу",
+        )
+
+        return True
+
+    except Exception as exc:
+
+        message = (
+            f"❌ Ошибка Prediction Manager: {exc}"
+        )
+
+        result["predictions"][
+            "errors"
+        ].append(message)
+
+        result["errors"].append(message)
+
+        _log_step(
+            result,
+            "predictions",
+            "error",
+            message,
+        )
+
+        logger.exception(
+            "Prediction Manager failed"
+        )
+
+        return False
+
+
+# ============================================================
+# FINAL VALIDATION
+# ============================================================
+
+def _final_validation(
+    result: Dict[str, Any],
+) -> bool:
+    """
+    Финальная проверка состояния системы.
+    """
+
+    _log_step(
+        result,
+        "final",
+        "running",
+        "🔍 Финальная проверка FAJ Cycle...",
+    )
+
+    _read_final_state(result)
+
+    # Базовая готовность БД
+    database_ok = (
+        result["database"]["connected"]
+        and not result["database"][
+            "missing_tables"
+        ]
+    )
+
+    historical_ok = (
+        result["historical"]["success"]
+    )
+
+    learning_ok = (
+        result["learning"]["success"]
+    )
+
+    predictions_ok = (
+        result["predictions"]["success"]
+    )
+
+    result["ready"] = (
+        database_ok
+        and historical_ok
+        and learning_ok
+        and predictions_ok
+    )
+
+    if result["ready"]:
+
+        _log_step(
+            result,
+            "final",
+            "success",
+            (
+                "✅ FAJ Cycle полностью завершён: "
+                f"результаты="
+                f"{result['final']['results']}, "
+                f"прогнозы="
+                f"{result['final']['predictions']}, "
+                f"learning="
+                f"{result['final']['learning_records']}"
+            ),
+        )
+
+        return True
+
+    _log_step(
+        result,
+        "final",
+        "error",
+        "❌ FAJ Cycle не прошёл финальную проверку",
+    )
+
+    return False
+
+
+# ============================================================
+# PUBLIC API
+# ============================================================
+
+def run_faj_cycle() -> Dict[str, Any]:
+    """
+    Главная функция FAJ.
+
+    Использование:
+
+        from app.faj_cycle import run_faj_cycle
+
+        result = run_faj_cycle()
+
+    Возвращает полный диагностический словарь.
+    """
+
+    result = _new_result()
+
+    started = datetime.now()
+
+    result["started_at"] = (
+        started.isoformat()
+    )
+
+    logger.info(
+        "=" * 70
+    )
+
+    logger.info(
+        "🚀 FAJ CYCLE v%s START",
+        FAJ_CYCLE_VERSION,
+    )
+
+    logger.info(
+        "=" * 70
+    )
+
+    try:
+
+        # ====================================================
+        # STEP 1 — DATABASE
+        # ====================================================
+
+        if not _check_database(result):
+
+            return _finish_result(
+                result,
+                started,
+            )
+
+        # ====================================================
+        # STEP 2 — HISTORICAL RESULTS
+        # ====================================================
+
+        if not _run_historical_import(result):
+
+            return _finish_result(
+                result,
+                started,
+            )
+
+        # ====================================================
+        # STEP 3 — LEARNING
+        # ====================================================
+
+        if not _run_learning(result):
+
+            return _finish_result(
+                result,
+                started,
+            )
+
+        # ====================================================
+        # STEP 4 — PREDICTIONS
+        # ====================================================
+
+        if not _run_predictions(result):
+
+            return _finish_result(
+                result,
+                started,
+            )
+
+        # ====================================================
+        # STEP 5 — FINAL VALIDATION
+        # ====================================================
+
+        _final_validation(result)
+
+        return _finish_result(
+            result,
+            started,
+        )
+
+    except Exception as exc:
+
+        message = (
+            f"❌ Критическая ошибка FAJ Cycle: "
+            f"{exc}"
+        )
+
+        result["errors"].append(message)
+
+        _log_step(
+            result,
+            "cycle",
+            "error",
+            message,
+        )
+
+        logger.error(
+            traceback.format_exc()
+        )
+
+        return _finish_result(
+            result,
+            started,
+        )
+
+
+# ============================================================
+# FINISH
+# ============================================================
+
+def _finish_result(
+    result: Dict[str, Any],
+    started: datetime,
+) -> Dict[str, Any]:
+
+    finished = datetime.now()
+
+    result["finished_at"] = (
+        finished.isoformat()
+    )
+
+    result["duration_seconds"] = round(
         (
-            round_number,
-            date_value,
-            home_team,
-            away_team,
-            home_goals,
-            away_goals,
-        ) = item
+            finished - started
+        ).total_seconds(),
+        3,
+    )
 
-        try:
-            round_number = int(round_number)
-            home_goals = int(home_goals)
-            away_goals = int(away_goals)
-        except (TypeError, ValueError):
-            result["errors"].append(
-                f"Некорректные числовые значения: {item}"
-            )
-            continue
+    result["success"] = bool(
+        result["ready"]
+    )
 
-        home_team = normalize_team(home_team)
-        away_team = normalize_team(away_team)
+    logger.info(
+        "=" * 70
+    )
 
-        key = (
-            round_number,
-            home_team,
-            away_team,
-        )
+    logger.info(
+        "FAJ CYCLE FINISHED | success=%s "
+        "| duration=%.3fs",
+        result["success"],
+        result["duration_seconds"],
+    )
 
-        if key in seen:
-            result["errors"].append(
-                f"Дубликат матча: {key}"
-            )
-            continue
-
-        seen.add(key)
-
-        if round_number not in EXPECTED_ROUNDS:
-            result["errors"].append(
-                f"Недопустимый тур: {round_number}"
-            )
-
-        if not date_value:
-            result["errors"].append(
-                f"Нет даты: {key}"
-            )
-
-        if not home_team or not away_team:
-            result["errors"].append(
-                f"Не определена команда: {key}"
-            )
-
-        if home_team == away_team:
-            result["errors"].append(
-                f"Одинаковые команды: {key}"
-            )
-
-        if home_goals < 0 or away_goals < 0:
-            result["errors"].append(
-                f"Отрицательный счёт: {key}"
-            )
-
-    if len(HISTORICAL_MATCHES) != EXPECTED_MATCHES:
-        result["errors"].append(
-            f"Количество матчей: "
-            f"{len(HISTORICAL_MATCHES)}, "
-            f"ожидалось {EXPECTED_MATCHES}"
-        )
-
-    result["rounds"] = sorted({
-        int(item[0])
-        for item in HISTORICAL_MATCHES
-    })
-
-    for round_number in EXPECTED_ROUNDS:
-
-        count = sum(
-            1
-            for item in HISTORICAL_MATCHES
-            if int(item[0]) == round_number
-        )
-
-        if count != 8:
-            result["errors"].append(
-                f"Тур {round_number}: {count}/8"
-            )
-
-    result["success"] = not result["errors"]
+    logger.info(
+        "=" * 70
+    )
 
     return result
 
 
 # ============================================================
-# DB HELPERS
+# ALIASES
 # ============================================================
 
-def _table_exists(
-    cursor: sqlite3.Cursor,
-    table_name: str,
-) -> bool:
+def run_cycle() -> Dict[str, Any]:
+    """
+    Короткий alias для Streamlit.
+    """
 
-    cursor.execute(
-        """
-        SELECT 1
-        FROM sqlite_master
-        WHERE type = 'table'
-        AND name = ?
-        LIMIT 1
-        """,
-        (table_name,),
-    )
+    return run_faj_cycle()
 
-    return cursor.fetchone() is not None
 
+def execute_faj_cycle() -> Dict[str, Any]:
+    """
+    Дополнительный совместимый alias.
+    """
 
-def _table_columns(
-    cursor: sqlite3.Cursor,
-    table_name: str,
-) -> List[str]:
-
-    cursor.execute(
-        f'PRAGMA table_info("{table_name}")'
-    )
-
-    return [
-        row[1]
-        for row in cursor.fetchall()
-    ]
-
-
-# ============================================================
-# TEAM
-# ============================================================
-
-def _find_team_id(
-    cursor: sqlite3.Cursor,
-    team_name: str,
-) -> Optional[int]:
-
-    canonical = normalize_team(team_name)
-
-    if not canonical:
-        return None
-
-    cursor.execute(
-        """
-        SELECT id
-        FROM teams
-        WHERE name = ?
-        LIMIT 1
-        """,
-        (canonical,),
-    )
-
-    row = cursor.fetchone()
-
-    if row:
-        return int(row[0])
-
-    aliases = [
-        alias
-        for alias, normalized in TEAM_ALIASES.items()
-        if normalized == canonical
-    ]
-
-    for alias in aliases:
-
-        cursor.execute(
-            """
-            SELECT id
-            FROM teams
-            WHERE name = ?
-            LIMIT 1
-            """,
-            (alias,),
-        )
-
-        row = cursor.fetchone()
-
-        if row:
-            return int(row[0])
-
-    return None
-
-
-# ============================================================
-# ROUND
-# ============================================================
-
-def _find_round_id(
-    cursor: sqlite3.Cursor,
-    round_number: int,
-) -> Optional[int]:
-
-    if not _table_exists(cursor, "rounds"):
-        return None
-
-    columns = _table_columns(cursor, "rounds")
-
-    round_number = int(round_number)
-
-    # Если схема имеет season_id — сначала ищем сезон.
-    if "season_id" in columns and _table_exists(
-        cursor,
-        "seasons",
-    ):
-
-        season_columns = _table_columns(
-            cursor,
-            "seasons",
-        )
-
-        season_id = None
-
-        for column in (
-            "name",
-            "season",
-            "season_name",
-            "year",
-        ):
-
-            if column not in season_columns:
-                continue
-
-            cursor.execute(
-                f'''
-                SELECT id
-                FROM seasons
-                WHERE "{column}" = ?
-                LIMIT 1
-                ''',
-                (SEASON_YEAR,),
-            )
-
-            row = cursor.fetchone()
-
-            if row:
-                season_id = int(row[0])
-                break
-
-        if season_id is not None:
-
-            if "round_number" in columns:
-
-                cursor.execute(
-                    """
-                    SELECT id
-                    FROM rounds
-                    WHERE season_id = ?
-                    AND round_number = ?
-                    LIMIT 1
-                    """,
-                    (season_id, round_number),
-                )
-
-                row = cursor.fetchone()
-
-                if row:
-                    return int(row[0])
-
-            if "name" in columns:
-
-                cursor.execute(
-                    """
-                    SELECT id
-                    FROM rounds
-                    WHERE season_id = ?
-                    AND name = ?
-                    LIMIT 1
-                    """,
-                    (
-                        season_id,
-                        f"Тур {round_number}",
-                    ),
-                )
-
-                row = cursor.fetchone()
-
-                if row:
-                    return int(row[0])
-
-    # Старые/простые схемы.
-    if "round_number" in columns:
-
-        cursor.execute(
-            """
-            SELECT id
-            FROM rounds
-            WHERE round_number = ?
-            LIMIT 1
-            """,
-            (round_number,),
-        )
-
-        row = cursor.fetchone()
-
-        if row:
-            return int(row[0])
-
-    if "name" in columns:
-
-        for name in (
-            f"Тур {round_number}",
-            f"{round_number} тур",
-            str(round_number),
-            f"Round {round_number}",
-        ):
-
-            cursor.execute(
-                """
-                SELECT id
-                FROM rounds
-                WHERE name = ?
-                LIMIT 1
-                """,
-                (name,),
-            )
-
-            row = cursor.fetchone()
-
-            if row:
-                return int(row[0])
-
-    return None
-
-
-# ============================================================
-# MATCH
-# ============================================================
-
-def _find_match(
-    cursor: sqlite3.Cursor,
-    round_id: int,
-    home_team_id: int,
-    away_team_id: int,
-) -> Optional[Dict[str, Any]]:
-
-    cursor.execute(
-        """
-        SELECT *
-        FROM matches
-        WHERE round_id = ?
-        AND home_team_id = ?
-        AND away_team_id = ?
-        LIMIT 1
-        """,
-        (
-            round_id,
-            home_team_id,
-            away_team_id,
-        ),
-    )
-
-    row = cursor.fetchone()
-
-    if not row:
-        return None
-
-    columns = [
-        description[0]
-        for description in cursor.description
-    ]
-
-    return dict(zip(columns, row))
-
-
-# ============================================================
-# EXISTING RESULT
-# ============================================================
-
-def _get_existing_result(
-    cursor: sqlite3.Cursor,
-    match_id: int,
-) -> Optional[Dict[str, Any]]:
-
-    cursor.execute(
-        """
-        SELECT
-            id,
-            match_id,
-            home_goals,
-            away_goals
-        FROM match_results
-        WHERE match_id = ?
-        LIMIT 1
-        """,
-        (match_id,),
-    )
-
-    row = cursor.fetchone()
-
-    if not row:
-        return None
-
-    return {
-        "id": row[0],
-        "match_id": row[1],
-        "home_goals": row[2],
-        "away_goals": row[3],
-    }
-
-
-# ============================================================
-# UPDATE MATCH RESULT FIELDS
-# ============================================================
-
-def _update_match_actual(
-    cursor: sqlite3.Cursor,
-    match_id: int,
-    home_goals: int,
-    away_goals: int,
-) -> None:
-
-    columns = _table_columns(
-        cursor,
-        "matches",
-    )
-
-    assignments = []
-    values = []
-
-    if "actual_home" in columns:
-        assignments.append("actual_home = ?")
-        values.append(home_goals)
-
-    if "actual_away" in columns:
-        assignments.append("actual_away = ?")
-        values.append(away_goals)
-
-    if "status" in columns:
-        assignments.append("status = 'finished'")
-
-    if "updated_at" in columns:
-        assignments.append("updated_at = ?")
-        values.append(datetime.now().isoformat())
-
-    if not assignments:
-        return
-
-    values.append(match_id)
-
-    cursor.execute(
-        f"""
-        UPDATE matches
-        SET {", ".join(assignments)}
-        WHERE id = ?
-        """,
-        values,
-    )
-
-
-# ============================================================
-# IMPORT ONE
-# ============================================================
-
-def _import_match(
-    cursor: sqlite3.Cursor,
-    item: Tuple[int, str, str, str, int, int],
-    result: Dict[str, Any],
-) -> None:
-
-    (
-        round_number,
-        date_value,
-        home_team,
-        away_team,
-        home_goals,
-        away_goals,
-    ) = item
-
-    home_team = normalize_team(home_team)
-    away_team = normalize_team(away_team)
-
-    home_team_id = _find_team_id(
-        cursor,
-        home_team,
-    )
-
-    away_team_id = _find_team_id(
-        cursor,
-        away_team,
-    )
-
-    if home_team_id is None:
-        raise ValueError(
-            f"Команда не найдена в БД: {home_team}"
-        )
-
-    if away_team_id is None:
-        raise ValueError(
-            f"Команда не найдена в БД: {away_team}"
-        )
-
-    round_id = _find_round_id(
-        cursor,
-        round_number,
-    )
-
-    if round_id is None:
-        raise ValueError(
-            f"Тур не найден в БД: {round_number}"
-        )
-
-    match = _find_match(
-        cursor,
-        round_id,
-        home_team_id,
-        away_team_id,
-    )
-
-    if match is None:
-        raise ValueError(
-            "Матч отсутствует в календаре: "
-            f"тур {round_number}, "
-            f"{home_team} — {away_team}"
-        )
-
-    match_id = int(match["id"])
-
-    existing = _get_existing_result(
-        cursor,
-        match_id,
-    )
-
-    # --------------------------------------------------------
-    # Уже есть результат
-    # --------------------------------------------------------
-
-    if existing is not None:
-
-        if (
-            int(existing["home_goals"]) == home_goals
-            and
-            int(existing["away_goals"]) == away_goals
-        ):
-
-            result["already_present"] += 1
-
-            _update_match_actual(
-                cursor,
-                match_id,
-                home_goals,
-                away_goals,
-            )
-
-            result["matches"].append({
-                "match_id": match_id,
-                "round": round_number,
-                "home_team": home_team,
-                "away_team": away_team,
-                "score": f"{home_goals}:{away_goals}",
-                "status": "already_present",
-            })
-
-            return
-
-        raise ValueError(
-            f"КОНФЛИКТ результата: "
-            f"{home_team} — {away_team}. "
-            f"БД={existing['home_goals']}:"
-            f"{existing['away_goals']}; "
-            f"источник={home_goals}:{away_goals}"
-        )
-
-    # --------------------------------------------------------
-    # Новый результат
-    # --------------------------------------------------------
-
-    result_columns = _table_columns(
-        cursor,
-        "match_results",
-    )
-
-    required = {
-        "match_id",
-        "home_goals",
-        "away_goals",
-    }
-
-    if not required.issubset(set(result_columns)):
-        raise RuntimeError(
-            "Таблица match_results не содержит "
-            "обязательные поля: "
-            f"{required - set(result_columns)}"
-        )
-
-    columns = [
-        "match_id",
-        "home_goals",
-        "away_goals",
-    ]
-
-    values = [
-        match_id,
-        home_goals,
-        away_goals,
-    ]
-
-    if "home_penalty_goals" in result_columns:
-        columns.append("home_penalty_goals")
-        values.append(0)
-
-    if "away_penalty_goals" in result_columns:
-        columns.append("away_penalty_goals")
-        values.append(0)
-
-    placeholders = ", ".join(
-        ["?"] * len(columns)
-    )
-
-    cursor.execute(
-        f"""
-        INSERT INTO match_results
-        ({", ".join(columns)})
-        VALUES ({placeholders})
-        """,
-        values,
-    )
-
-    result["inserted_results"] += 1
-
-    _update_match_actual(
-        cursor,
-        match_id,
-        home_goals,
-        away_goals,
-    )
-
-    result["updated_matches"] += 1
-
-    result["matches"].append({
-        "match_id": match_id,
-        "round": round_number,
-        "date": date_value,
-        "home_team": home_team,
-        "away_team": away_team,
-        "home_goals": home_goals,
-        "away_goals": away_goals,
-        "score": f"{home_goals}:{away_goals}",
-        "status": "imported",
-        "source": IMPORT_SOURCE,
-        "method": IMPORT_METHOD,
-    })
-
-
-# ============================================================
-# PUBLIC IMPORT
-# ============================================================
-
-def import_historical_results(
-    db_path: Optional[str] = None,
-) -> Dict[str, Any]:
-
-    validation = validate_historical_data()
-
-    if not validation["success"]:
-        return validation
-
-    result = _empty_result()
-
-    path = (
-        Path(db_path)
-        if db_path
-        else DEFAULT_DB_PATH
-    )
-
-    if not path.exists():
-
-        result["errors"].append(
-            f"База данных не найдена: {path}"
-        )
-
-        return result
-
-    conn = sqlite3.connect(str(path))
-
-    try:
-
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-
-        required_tables = (
-            "teams",
-            "rounds",
-            "matches",
-            "match_results",
-        )
-
-        for table in required_tables:
-
-            if not _table_exists(cursor, table):
-                raise RuntimeError(
-                    f"Отсутствует таблица БД: {table}"
-                )
-
-        # Один transaction на все 24 матча.
-        for item in HISTORICAL_MATCHES:
-
-            try:
-                _import_match(
-                    cursor,
-                    item,
-                    result,
-                )
-            except Exception as exc:
-                result["errors"].append(str(exc))
-
-        if result["errors"]:
-
-            conn.rollback()
-
-            result["success"] = False
-
-            # Важно: счётчики откатываем логически тоже.
-            result["inserted_results"] = 0
-            result["updated_matches"] = 0
-
-            return result
-
-        conn.commit()
-
-        result["rounds_imported"] = sorted({
-            int(item["round"])
-            for item in result["matches"]
-        })
-
-        result["success"] = True
-
-        logger.info(
-            "Historical import: inserted=%s "
-            "already=%s updated=%s",
-            result["inserted_results"],
-            result["already_present"],
-            result["updated_matches"],
-        )
-
-        return result
-
-    except Exception as exc:
-
-        conn.rollback()
-
-        result["success"] = False
-        result["errors"].append(str(exc))
-
-        return result
-
-    finally:
-        conn.close()
-
-
-def load_rpl_historical_results(
-    db_path: Optional[str] = None,
-) -> Dict[str, Any]:
-
-    return import_historical_results(db_path)
-
-
-# ============================================================
-# STATUS
-# ============================================================
-
-def get_historical_import_status(
-    db_path: Optional[str] = None,
-) -> Dict[str, Any]:
-
-    result = {
-        "success": False,
-        "expected": EXPECTED_MATCHES,
-        "present": 0,
-        "missing": 0,
-        "conflicts": 0,
-        "errors": [],
-        "matches": [],
-    }
-
-    path = (
-        Path(db_path)
-        if db_path
-        else DEFAULT_DB_PATH
-    )
-
-    if not path.exists():
-
-        result["errors"].append(
-            f"База данных не найдена: {path}"
-        )
-
-        return result
-
-    conn = sqlite3.connect(str(path))
-
-    try:
-
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-
-        for item in HISTORICAL_MATCHES:
-
-            (
-                round_number,
-                date_value,
-                home_team,
-                away_team,
-                home_goals,
-                away_goals,
-            ) = item
-
-            home_team = normalize_team(home_team)
-            away_team = normalize_team(away_team)
-
-            home_team_id = _find_team_id(
-                cursor,
-                home_team,
-            )
-
-            away_team_id = _find_team_id(
-                cursor,
-                away_team,
-            )
-
-            if (
-                home_team_id is None
-                or away_team_id is None
-            ):
-                result["missing"] += 1
-                continue
-
-            round_id = _find_round_id(
-                cursor,
-                round_number,
-            )
-
-            if round_id is None:
-                result["missing"] += 1
-                continue
-
-            match = _find_match(
-                cursor,
-                round_id,
-                home_team_id,
-                away_team_id,
-            )
-
-            if match is None:
-                result["missing"] += 1
-                continue
-
-            existing = _get_existing_result(
-                cursor,
-                int(match["id"]),
-            )
-
-            if existing is None:
-                result["missing"] += 1
-                continue
-
-            if (
-                int(existing["home_goals"]) == home_goals
-                and
-                int(existing["away_goals"]) == away_goals
-            ):
-
-                result["present"] += 1
-                status = "present"
-
-            else:
-
-                result["conflicts"] += 1
-                status = "conflict"
-
-            result["matches"].append({
-                "round": round_number,
-                "home_team": home_team,
-                "away_team": away_team,
-                "score": f"{home_goals}:{away_goals}",
-                "db_score": (
-                    f"{existing['home_goals']}:"
-                    f"{existing['away_goals']}"
-                ),
-                "status": status,
-            })
-
-        result["success"] = not result["errors"]
-
-        return result
-
-    except Exception as exc:
-
-        result["errors"].append(str(exc))
-        return result
-
-    finally:
-        conn.close()
+    return run_faj_cycle()
 
 
 # ============================================================
 # CLI
 # ============================================================
 
+def _print_result(
+    result: Dict[str, Any],
+) -> None:
+
+    print()
+    print("=" * 70)
+    print("FAJ CYCLE v12.1")
+    print("=" * 70)
+
+    print(
+        f"Успех:       {result['success']}"
+    )
+
+    print(
+        f"Готов:       {result['ready']}"
+    )
+
+    print(
+        f"Время:       "
+        f"{result['duration_seconds']} сек."
+    )
+
+    print()
+    print("DATABASE")
+    print(
+        f"  connected: "
+        f"{result['database']['connected']}"
+    )
+
+    print()
+    print("HISTORICAL")
+    print(
+        f"  inserted: "
+        f"{result['historical']['inserted']}"
+    )
+
+    print(
+        f"  already: "
+        f"{result['historical']['already_present']}"
+    )
+
+    print()
+    print("LEARNING")
+    print(
+        f"  success: "
+        f"{result['learning']['success']}"
+    )
+
+    print()
+    print("PREDICTIONS")
+    print(
+        f"  success: "
+        f"{result['predictions']['success']}"
+    )
+
+    print(
+        f"  count: "
+        f"{result['predictions']['count']}"
+    )
+
+    print()
+    print("FINAL DATABASE STATE")
+
+    for key, value in result[
+        "final"
+    ].items():
+
+        print(
+            f"  {key}: {value}"
+        )
+
+    print()
+
+    if result["errors"]:
+
+        print("ERRORS:")
+
+        for error in result["errors"]:
+
+            print(
+                f"  ❌ {error}"
+            )
+
+    print()
+    print("STEPS:")
+
+    for step in result["steps"]:
+
+        print(
+            f"  [{step['status']}] "
+            f"{step['step']}: "
+            f"{step['message']}"
+        )
+
+    print("=" * 70)
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
 if __name__ == "__main__":
 
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(message)s",
+        format=(
+            "%(asctime)s | "
+            "%(levelname)s | "
+            "%(message)s"
+        ),
     )
 
-    print("=" * 70)
-    print("FAJ RPL HISTORICAL IMPORTER v12.1")
-    print("=" * 70)
+    cycle_result = run_faj_cycle()
 
-    validation = validate_historical_data()
-
-    print(
-        f"Исторических матчей: "
-        f"{validation['found']}"
+    _print_result(
+        cycle_result
     )
-    print(
-        f"Туры: {validation['rounds']}"
-    )
-
-    if validation["errors"]:
-
-        for error in validation["errors"]:
-            print(f"❌ {error}")
-
-        raise SystemExit(1)
-
-    status = get_historical_import_status()
-
-    print()
-    print(
-        f"Уже присутствует: {status['present']}"
-    )
-    print(
-        f"Отсутствует: {status['missing']}"
-    )
-    print(
-        f"Конфликтов: {status['conflicts']}"
-    )
-
-    print()
-    print("Запуск импорта...")
-
-    result = import_historical_results()
-
-    print()
-    print(f"Успех: {result['success']}")
-    print(
-        f"Добавлено: {result['inserted_results']}"
-    )
-    print(
-        f"Уже было: {result['already_present']}"
-    )
-    print(
-        f"Ошибок: {len(result['errors'])}"
-    )
-
-    for error in result["errors"]:
-        print(f"❌ {error}")
-
-    print("=" * 70)
