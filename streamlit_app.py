@@ -4,61 +4,45 @@
 """
 ============================================================
 FAJ Platform v12.1
-STREAMLIT MAIN APPLICATION
+STREAMLIT MAIN APPLICATION — SAFE UI
 ============================================================
 
-Главная точка входа FAJ Platform.
+НАЗНАЧЕНИЕ:
 
-АРХИТЕКТУРА:
+    Streamlit является ТОЛЬКО UI-слоем FAJ.
 
-    streamlit_app.py
-            |
-            +-- Auto Bootstrap
-            |
-            +-- Главная
-            |
-            +-- Прогнозы
-            |      |
-            |      +-- PredictionManager
-            |              |
-            |              +-- PredictionPipeline
-            |                      |
-            |                      +-- xG
-            |                      +-- Poisson
-            |                      +-- Monte Carlo
-            |
-            +-- Match Laboratory
-            |
-            +-- Паспорта
-            |
-            +-- System Trace
-            |
-            +-- Database Diagnostic
-            |
-            +-- Load All
-            +-- Load Calendar
-            +-- Load Statistics
-            |
-            +-- System
+    Он НЕ содержит:
+        - математическое ядро;
+        - xG;
+        - Poisson;
+        - Monte Carlo;
+        - обучение;
+        - загрузчики;
+        - бизнес-логику БД.
+
+    Он вызывает существующие модули FAJ.
 
 ПРИНЦИПЫ:
 
-    - SQLite only
-    - database.py — единый источник схемы
-    - persistent state хранится в БД
-    - Streamlit rerun не должен обнулять БД
-    - streamlit_app.py не содержит математическое ядро
-    - streamlit_app.py не содержит загрузчики
-    - streamlit_app.py не содержит обучение
-    - диагностика БД работает только на чтение
-    - System Trace работает только на чтение
-    - никаких DELETE / DROP / очистки исторических данных
+    SQLite only
+    database.py — существующий источник схемы
+    Streamlit rerun безопасен
+    Bootstrap НЕ запускается повторно при каждом rerun
+    Диагностика БД — READ ONLY
+    System Trace — READ ONLY
+    Никаких DELETE / DROP / очистки истории
+    GitHub Sync — только по явной кнопке пользователя
+
+ВАЖНО:
+
+    streamlit_app.py не изменяет схему БД.
+    streamlit_app.py не создаёт таблицы.
+    streamlit_app.py не удаляет данные.
 ============================================================
 """
 
 import os
 import sys
-import sqlite3
 from datetime import datetime
 
 import pandas as pd
@@ -99,38 +83,34 @@ st.set_page_config(
 
 
 # ============================================================
-# DATABASE
+# EXISTING DATABASE INTERFACE
 # ============================================================
 
 try:
     from app.database import get_connection, FAJDatabase
 except Exception as e:
-    st.error(f"❌ Не удалось загрузить app.database: {e}")
+    st.error(f"❌ Не удалось подключить существующий интерфейс БД: {e}")
     st.stop()
 
 
 # ============================================================
-# PREDICTION MANAGER
+# OPTIONAL MODULES
 # ============================================================
 
 try:
     from app.core.prediction_manager import get_prediction_manager
-except Exception as e:
+except Exception:
     get_prediction_manager = None
 
 
-# ============================================================
-# GITHUB SYNC
-# ============================================================
-
 try:
     from app.github_db_sync import save_database_to_github
-except Exception as e:
+except Exception:
     save_database_to_github = None
 
 
 # ============================================================
-# DATABASE PATH
+# DATABASE FILE PATH
 # ============================================================
 
 DB_PATH = os.path.join(
@@ -144,28 +124,32 @@ DB_PATH = os.path.join(
 # SESSION STATE
 # ============================================================
 
-if "page" not in st.session_state:
-    st.session_state.page = "home"
+DEFAULT_SESSION_STATE = {
+    "page": "home",
+    "prediction_result": None,
+    "bootstrap_result": None,
+    "bootstrap_attempted": False,
+    "bootstrap_error": False,
+}
 
-if "prediction_result" not in st.session_state:
-    st.session_state.prediction_result = None
+for key, value in DEFAULT_SESSION_STATE.items():
+
+    if key not in st.session_state:
+        st.session_state[key] = value
 
 
 # ============================================================
 # NAVIGATION
 # ============================================================
 
-def go_to_page(page_name):
-    """
-    Единая навигация приложения.
-    """
-    st.session_state.page = page_name
-
-
 def navigate(page_name, clear_prediction=False):
     """
-    Переключение страницы.
+    Безопасное переключение страницы.
+
+    st.rerun() вызывается только после
+    пользовательского действия.
     """
+
     st.session_state.page = page_name
 
     if clear_prediction:
@@ -175,36 +159,88 @@ def navigate(page_name, clear_prediction=False):
 
 
 # ============================================================
-# AUTO BOOTSTRAP
+# BOOTSTRAP
 # ============================================================
 
-bootstrap_result = {
-    "ready": True,
-    "messages": [],
-}
+def run_bootstrap():
+    """
+    Запускает существующий FAJ Bootstrap.
 
-try:
+    ВАЖНО:
 
-    from app.bootstrap import bootstrap_faj
+        Эта функция НЕ вызывается автоматически
+        на каждый Streamlit rerun.
 
-    result = bootstrap_faj()
+    Результат сохраняется в session_state.
+    """
 
-    if isinstance(result, dict):
-        bootstrap_result = result
-    else:
-        bootstrap_result = {
-            "ready": True,
-            "messages": [str(result)],
+    try:
+
+        from app.bootstrap import bootstrap_faj
+
+        with st.spinner(
+            "🚀 Проверка FAJ Bootstrap..."
+        ):
+
+            result = bootstrap_faj()
+
+        if isinstance(result, dict):
+
+            st.session_state.bootstrap_result = result
+
+        else:
+
+            st.session_state.bootstrap_result = {
+                "ready": True,
+                "messages": [str(result)],
+            }
+
+        st.session_state.bootstrap_attempted = True
+        st.session_state.bootstrap_error = False
+
+    except Exception as e:
+
+        st.session_state.bootstrap_result = {
+            "ready": False,
+            "messages": [
+                f"❌ Ошибка Auto Bootstrap: {e}"
+            ],
         }
 
-except Exception as e:
+        st.session_state.bootstrap_attempted = True
+        st.session_state.bootstrap_error = True
 
-    bootstrap_result = {
+
+# ============================================================
+# FIRST BOOTSTRAP
+# ============================================================
+
+# КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ:
+#
+# Bootstrap выполняется один раз за Streamlit session.
+#
+# При:
+#   - selectbox
+#   - button
+#   - navigation
+#   - st.rerun()
+#
+# он повторно НЕ запускается.
+
+if not st.session_state.bootstrap_attempted:
+
+    run_bootstrap()
+
+
+bootstrap_result = (
+    st.session_state.bootstrap_result
+    or {
         "ready": False,
         "messages": [
-            f"Ошибка Auto Bootstrap: {e}"
+            "Bootstrap ещё не запускался."
         ],
     }
+)
 
 
 # ============================================================
@@ -213,28 +249,25 @@ except Exception as e:
 
 def database_exists():
     """
-    Проверяет наличие SQLite-файла.
-    Только чтение.
+    Только проверка наличия существующего SQLite-файла.
     """
+
     return os.path.exists(DB_PATH)
 
 
 def get_db_connection():
     """
-    Получает соединение с БД через единый database.py.
+    Получает соединение через существующий интерфейс.
     """
+
     return get_connection()
 
 
 def get_db_counts():
     """
-    Базовые счётчики БД.
+    READ ONLY.
 
-    ВАЖНО:
-        Функция только читает БД.
-
-    Если конкретной таблицы нет,
-    она просто получает значение 0.
+    Получает базовые счётчики.
     """
 
     result = {
@@ -244,12 +277,17 @@ def get_db_counts():
         "predictions": 0,
     }
 
+    conn = None
+
     try:
 
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # Количество таблиц
+        # ----------------------------------------------------
+        # TABLES
+        # ----------------------------------------------------
+
         try:
 
             cursor.execute(
@@ -269,7 +307,10 @@ def get_db_counts():
         except Exception:
             pass
 
-        # Отдельные таблицы
+        # ----------------------------------------------------
+        # COUNTS
+        # ----------------------------------------------------
+
         table_map = {
             "teams": "teams",
             "matches": "matches",
@@ -281,7 +322,7 @@ def get_db_counts():
             try:
 
                 cursor.execute(
-                    f"SELECT COUNT(*) FROM {table}"
+                    f"SELECT COUNT(*) FROM [{table}]"
                 )
 
                 row = cursor.fetchone()
@@ -293,22 +334,29 @@ def get_db_counts():
 
                 result[key] = 0
 
-        conn.close()
-
     except Exception:
         pass
+
+    finally:
+
+        if conn is not None:
+
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     return result
 
 
 def get_all_tables():
     """
-    Возвращает реальные таблицы SQLite.
-
-    Только чтение.
+    READ ONLY.
     """
 
     tables = []
+
+    conn = None
 
     try:
 
@@ -334,33 +382,40 @@ def get_all_tables():
             except Exception:
                 pass
 
-        conn.close()
-
     except Exception:
         pass
+
+    finally:
+
+        if conn is not None:
+
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     return tables
 
 
 def get_table_count(table_name):
     """
-    Безопасно получает количество записей в таблице.
+    READ ONLY.
+
+    table_name берётся только из sqlite_master.
     """
+
+    conn = None
 
     try:
 
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # table_name получен только из sqlite_master
-        # и используется исключительно для SELECT.
         cursor.execute(
             f"SELECT COUNT(*) FROM [{table_name}]"
         )
 
         row = cursor.fetchone()
-
-        conn.close()
 
         if row:
             return row[0] or 0
@@ -368,16 +423,26 @@ def get_table_count(table_name):
     except Exception:
         pass
 
+    finally:
+
+        if conn is not None:
+
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     return None
 
 
 def get_table_columns(table_name):
     """
-    Получает структуру таблицы SQLite.
-    Только чтение.
+    READ ONLY.
     """
 
     columns = []
+
+    conn = None
 
     try:
 
@@ -403,10 +468,17 @@ def get_table_columns(table_name):
                 }
             )
 
-        conn.close()
-
     except Exception:
         pass
+
+    finally:
+
+        if conn is not None:
+
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     return columns
 
@@ -436,7 +508,10 @@ with st.sidebar:
         use_container_width=True,
         key="nav_home",
     ):
-        navigate("home", clear_prediction=True)
+        navigate(
+            "home",
+            clear_prediction=True,
+        )
 
     if st.button(
         "📊 Прогнозы",
@@ -451,7 +526,6 @@ with st.sidebar:
         key="nav_match_lab",
     ):
         navigate("match_analysis")
-
 
     if st.button(
         "📋 Паспорта",
@@ -476,7 +550,6 @@ with st.sidebar:
     ):
         navigate("system_trace")
 
-
     if st.button(
         "🔍 Диагностика БД",
         use_container_width=True,
@@ -500,7 +573,6 @@ with st.sidebar:
     ):
         navigate("load_all")
 
-
     if st.button(
         "📅 Календарь",
         use_container_width=True,
@@ -508,13 +580,46 @@ with st.sidebar:
     ):
         navigate("load_calendar")
 
-
     if st.button(
         "📊 Статистика",
         use_container_width=True,
         key="nav_stats",
     ):
         navigate("load_stats")
+
+
+    # ========================================================
+    # BOOTSTRAP CONTROL
+    # ========================================================
+
+    st.divider()
+
+    st.caption("🚀 Bootstrap")
+
+    bootstrap_ready = bool(
+        bootstrap_result.get("ready")
+    )
+
+    if bootstrap_ready:
+
+        st.success("🟢 FAJ готов")
+
+    else:
+
+        st.warning("🟡 Требуется внимание")
+
+
+    if st.button(
+        "🔄 Повторить Bootstrap",
+        use_container_width=True,
+        key="manual_bootstrap",
+    ):
+
+        # Только явное действие пользователя.
+        st.session_state.bootstrap_attempted = False
+        st.session_state.bootstrap_result = None
+
+        st.rerun()
 
 
     # ========================================================
@@ -530,25 +635,65 @@ with st.sidebar:
         use_container_width=True,
         key="nav_save_db",
     ):
+
         try:
+
             if save_database_to_github is None:
-                st.error("❌ Модуль github_db_sync не загружен.")
+
+                st.error(
+                    "❌ Модуль github_db_sync не загружен."
+                )
+
             else:
-                with st.spinner("⏳ Сохранение faj.db в GitHub..."):
+
+                with st.spinner(
+                    "⏳ Сохранение faj.db в GitHub..."
+                ):
+
                     result = save_database_to_github()
-                    st.success(
-                        f"✅ База данных сохранена в GitHub!\n"
-                        f"   Файл: {result['path']}\n"
-                        f"   Размер: {result['size'] // 1024} KB\n"
-                        f"   SHA: {result['sha'][:8]}..."
+
+                st.success(
+                    "✅ База данных сохранена в GitHub!"
+                )
+
+                if isinstance(result, dict):
+
+                    st.caption(
+                        f"Файл: {result.get('path', '—')}"
                     )
+
+                    if result.get("size") is not None:
+
+                        st.caption(
+                            f"Размер: "
+                            f"{result['size'] // 1024} KB"
+                        )
+
+                    if result.get("sha"):
+
+                        st.caption(
+                            f"SHA: "
+                            f"{result['sha'][:8]}..."
+                        )
+
         except FileNotFoundError as e:
+
             st.error(f"❌ {e}")
+
         except RuntimeError as e:
+
             st.error(f"❌ {e}")
+
         except Exception as e:
-            st.error(f"❌ Ошибка сохранения: {e}")
-            with st.expander("Техническая ошибка"):
+
+            st.error(
+                f"❌ Ошибка сохранения: {e}"
+            )
+
+            with st.expander(
+                "Техническая ошибка"
+            ):
+
                 st.exception(e)
 
 
@@ -622,7 +767,7 @@ if st.session_state.page == "home":
     st.divider()
 
     # --------------------------------------------------------
-    # BOOTSTRAP
+    # BOOTSTRAP STATUS
     # --------------------------------------------------------
 
     st.subheader("🚀 Состояние системы")
@@ -636,22 +781,24 @@ if st.session_state.page == "home":
     else:
 
         st.warning(
-            "⚠️ Auto Bootstrap сообщает о проблеме"
+            "⚠️ Bootstrap сообщает о проблеме"
         )
 
-        messages = bootstrap_result.get(
-            "messages",
-            [],
-        )
+    messages = bootstrap_result.get(
+        "messages",
+        [],
+    )
 
-        if messages:
+    if messages:
 
-            with st.expander(
-                "📋 Детали Bootstrap"
-            ):
+        with st.expander(
+            "📋 Bootstrap Status",
+            expanded=False,
+        ):
 
-                for message in messages:
-                    st.text(str(message))
+            for message in messages:
+
+                st.text(str(message))
 
 
     # --------------------------------------------------------
@@ -667,28 +814,24 @@ if st.session_state.page == "home":
     c1, c2, c3, c4 = st.columns(4)
 
     with c1:
-
         st.metric(
             "🏟️ Команды",
             counts["teams"],
         )
 
     with c2:
-
         st.metric(
             "⚽ Матчи",
             counts["matches"],
         )
 
     with c3:
-
         st.metric(
             "🔮 Прогнозы",
             counts["predictions"],
         )
 
     with c4:
-
         st.metric(
             "🗄️ Таблицы",
             counts["tables"],
@@ -756,19 +899,19 @@ if st.session_state.page == "home":
 
     st.code(
         """
-Streamlit
+Streamlit UI
     │
-    ├── Auto Bootstrap
+    ├── Bootstrap
+    │      └── запускается один раз за session
     │
     ├── Predictions
     │      │
     │      └── PredictionManager
     │              │
     │              └── PredictionPipeline
-    │                      │
-    │                      ├── xG Model
-    │                      ├── Poisson Model
-    │                      └── Monte Carlo Model
+    │                      ├── xG
+    │                      ├── Poisson
+    │                      └── Monte Carlo
     │
     ├── Match Laboratory
     │
@@ -778,9 +921,7 @@ Streamlit
     │
     ├── System Trace
     │
-    └── SQLite
-           │
-           └── database.py
+    └── Existing SQLite layer
         """,
         language="text",
     )
@@ -851,7 +992,6 @@ elif st.session_state.page == "predictions":
         ):
             navigate("load_all")
 
-
     else:
 
         col1, col2 = st.columns(2)
@@ -919,6 +1059,7 @@ elif st.session_state.page == "predictions":
                         with st.expander(
                             "Техническая информация"
                         ):
+
                             st.exception(e)
 
 
@@ -957,7 +1098,6 @@ elif st.session_state.page == "predictions":
                     f"⚽ {home_team} — {away_team}"
                 )
 
-
                 xg = result.get(
                     "xg",
                     {},
@@ -967,7 +1107,6 @@ elif st.session_state.page == "predictions":
                     "probability",
                     {},
                 )
-
 
                 # ------------------------------------------------
                 # MAIN RESULT
@@ -1020,7 +1159,7 @@ elif st.session_state.page == "predictions":
 
 
                 # ------------------------------------------------
-                # RESULT PROBABILITIES
+                # PROBABILITIES
                 # ------------------------------------------------
 
                 st.subheader(
@@ -1083,9 +1222,7 @@ elif st.session_state.page == "predictions":
 
                     with c1:
 
-                        st.write(
-                            "### ⚽ Обе забьют"
-                        )
+                        st.write("### ⚽ Обе забьют")
 
                         btts = extended.get(
                             "btts",
@@ -1121,9 +1258,7 @@ elif st.session_state.page == "predictions":
 
                     with c2:
 
-                        st.write(
-                            "### 📊 Тоталы"
-                        )
+                        st.write("### 📊 Тоталы")
 
                         total = extended.get(
                             "total",
@@ -1243,10 +1378,6 @@ elif st.session_state.page == "match_analysis":
             f"❌ Match Laboratory не найден: {e}"
         )
 
-        st.info(
-            "Проверь файл app/pages/match_analysis.py"
-        )
-
     except Exception as e:
 
         st.error(
@@ -1299,7 +1430,6 @@ elif st.session_state.page == "passports":
         )
 
         conn.close()
-
 
         if passport_df.empty:
 
@@ -1364,6 +1494,7 @@ elif st.session_state.page == "passports":
         with st.expander(
             "Техническая ошибка"
         ):
+
             st.exception(e)
 
 
@@ -1381,7 +1512,7 @@ elif st.session_state.page == "system_trace":
 
     st.info(
         "System Trace работает в режиме чтения. "
-        "Он показывает реальные связи файлов и не изменяет проект."
+        "Он не изменяет данные."
     )
 
     try:
@@ -1396,11 +1527,6 @@ elif st.session_state.page == "system_trace":
             f"❌ System Trace не найден: {e}"
         )
 
-        st.info(
-            "Ожидаемый файл: "
-            "app/pages/system_trace.py"
-        )
-
     except Exception as e:
 
         st.error(
@@ -1410,6 +1536,7 @@ elif st.session_state.page == "system_trace":
         with st.expander(
             "Техническая ошибка"
         ):
+
             st.exception(e)
 
 
@@ -1419,19 +1546,19 @@ elif st.session_state.page == "system_trace":
 
 elif st.session_state.page == "database":
 
-    st.title("🔍 Диагностика базы данных")
+    st.title("🔍 Диагностика БД")
 
     st.caption(
         "FAJ Database Diagnostic · READ ONLY"
     )
 
     st.info(
-        "⚠️ Эта страница ничего не удаляет, "
-        "не очищает и не изменяет в базе данных."
+        "⚠️ Эта страница только читает состояние БД. "
+        "Она не выполняет DELETE, DROP, ALTER или очистку данных."
     )
 
     # --------------------------------------------------------
-    # DATABASE FILE
+    # FILE
     # --------------------------------------------------------
 
     st.subheader("💾 SQLite")
@@ -1448,13 +1575,11 @@ elif st.session_state.page == "database":
 
             st.error("❌ faj.db не найден")
 
-
     with c2:
 
         st.write(
             f"**Путь:** `{DB_PATH}`"
         )
-
 
     with c3:
 
@@ -1485,32 +1610,16 @@ elif st.session_state.page == "database":
     c1, c2, c3, c4 = st.columns(4)
 
     with c1:
-
-        st.metric(
-            "Команды",
-            counts["teams"],
-        )
+        st.metric("Команды", counts["teams"])
 
     with c2:
-
-        st.metric(
-            "Матчи",
-            counts["matches"],
-        )
+        st.metric("Матчи", counts["matches"])
 
     with c3:
-
-        st.metric(
-            "Прогнозы",
-            counts["predictions"],
-        )
+        st.metric("Прогнозы", counts["predictions"])
 
     with c4:
-
-        st.metric(
-            "Таблицы",
-            counts["tables"],
-        )
+        st.metric("Таблицы", counts["tables"])
 
 
     # --------------------------------------------------------
@@ -1519,7 +1628,7 @@ elif st.session_state.page == "database":
 
     st.divider()
 
-    st.subheader("🗄️ Реальные таблицы БД")
+    st.subheader("🗄️ Реальные таблицы")
 
     tables = get_all_tables()
 
@@ -1535,25 +1644,19 @@ elif st.session_state.page == "database":
 
         for table in tables:
 
-            count = get_table_count(table)
-
             table_rows.append(
                 {
                     "Таблица": table,
                     "Записей": (
-                        count
-                        if count is not None
+                        get_table_count(table)
+                        if get_table_count(table) is not None
                         else "—"
                     ),
                 }
             )
 
-        table_df = pd.DataFrame(
-            table_rows
-        )
-
         st.dataframe(
-            table_df,
+            pd.DataFrame(table_rows),
             use_container_width=True,
             hide_index=True,
         )
@@ -1567,9 +1670,7 @@ elif st.session_state.page == "database":
 
         st.divider()
 
-        st.subheader(
-            "🔬 Инспектор таблицы"
-        )
+        st.subheader("🔬 Инспектор таблицы")
 
         selected_table = st.selectbox(
             "Выберите таблицу",
@@ -1654,7 +1755,7 @@ elif st.session_state.page == "database":
     except Exception as e:
 
         st.error(
-            f"❌ Ошибка FOREIGN KEY check: {e}"
+            f"❌ Ошибка Foreign Key Check: {e}"
         )
 
 
@@ -1664,9 +1765,7 @@ elif st.session_state.page == "database":
 
     st.divider()
 
-    st.subheader(
-        "🩺 SQLite Integrity Check"
-    )
+    st.subheader("🩺 SQLite Integrity Check")
 
     try:
 
@@ -1705,15 +1804,10 @@ elif st.session_state.page == "database":
         )
 
 
-    # --------------------------------------------------------
-    # FINAL
-    # --------------------------------------------------------
-
     st.divider()
 
     st.success(
-        "🔍 Диагностика завершена. "
-        "Режим READ ONLY."
+        "🔍 Диагностика завершена. READ ONLY."
     )
 
 
@@ -1750,6 +1844,7 @@ elif st.session_state.page == "load_all":
         with st.expander(
             "Техническая ошибка"
         ):
+
             st.exception(e)
 
 
@@ -1786,6 +1881,7 @@ elif st.session_state.page == "load_calendar":
         with st.expander(
             "Техническая ошибка"
         ):
+
             st.exception(e)
 
 
@@ -1822,6 +1918,7 @@ elif st.session_state.page == "load_stats":
         with st.expander(
             "Техническая ошибка"
         ):
+
             st.exception(e)
 
 
@@ -1836,6 +1933,7 @@ elif st.session_state.page == "system":
     st.caption(
         "FAJ Platform · System Status"
     )
+
 
     # --------------------------------------------------------
     # VERSIONS
@@ -1865,6 +1963,52 @@ elif st.session_state.page == "system":
             "Pipeline",
             f"v{config.PIPELINE_VERSION}",
         )
+
+
+    # --------------------------------------------------------
+    # BOOTSTRAP
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.subheader("🚀 Bootstrap")
+
+    if bootstrap_result.get("ready"):
+
+        st.success(
+            "🟢 FAJ Bootstrap: READY"
+        )
+
+    else:
+
+        st.warning(
+            "🟡 FAJ Bootstrap: NOT READY"
+        )
+
+    bootstrap_messages = bootstrap_result.get(
+        "messages",
+        [],
+    )
+
+    if bootstrap_messages:
+
+        with st.expander(
+            "Bootstrap details"
+        ):
+
+            for message in bootstrap_messages:
+
+                st.text(str(message))
+
+    if st.button(
+        "🔄 Выполнить Bootstrap заново",
+        key="system_bootstrap",
+    ):
+
+        st.session_state.bootstrap_attempted = False
+        st.session_state.bootstrap_result = None
+
+        st.rerun()
 
 
     # --------------------------------------------------------
@@ -1903,7 +2047,7 @@ elif st.session_state.page == "system":
 
 
     # --------------------------------------------------------
-    # DATABASE STATUS
+    # EXISTING DATABASE STATUS
     # --------------------------------------------------------
 
     st.divider()
@@ -1917,7 +2061,7 @@ elif st.session_state.page == "system":
         if isinstance(status, dict):
 
             st.subheader(
-                "📊 Статус database.py"
+                "📊 Статус системы"
             )
 
             status_rows = []
@@ -1942,18 +2086,18 @@ elif st.session_state.page == "system":
     except Exception as e:
 
         st.warning(
-            f"⚠️ Статус БД недоступен: {e}"
+            f"⚠️ Статус недоступен: {e}"
         )
 
 
     # --------------------------------------------------------
-    # TABLE SUMMARY
+    # SUMMARY
     # --------------------------------------------------------
 
     st.divider()
 
     st.subheader(
-        "🗄️ Краткая статистика БД"
+        "🗄️ Краткая статистика"
     )
 
     counts = get_db_counts()
