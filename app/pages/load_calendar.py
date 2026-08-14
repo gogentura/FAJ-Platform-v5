@@ -4,1642 +4,835 @@
 """
 ============================================================
 FAJ Platform v12.1
-LOAD CALENDAR PAGE
+LOAD CALENDAR — ИДЕМПОТЕНТНАЯ ЗАГРУЗКА КАЛЕНДАРЯ РПЛ
 ============================================================
 
 Назначение:
-    Диагностика и загрузка календаря РПЛ 2026/27.
+    Чистая загрузка календаря РПЛ.
 
-АЛГОРИТМ:
-
-    1. Получаем календарь из парсера.
-    2. Показываем источники.
-    3. Показываем разбивку по 30 турам.
-    4. Проверяем каждый найденный матч против SQLite.
-    5. Показываем причины пропусков.
-    6. Если календарь неполный — загрузка блокируется.
-    7. Если календарь полный — разрешается запись.
+Цепочка:
+    Parser
+      ↓
+    normalize team names
+      ↓
+    season
+      ↓
+    rounds (идемпотентные)
+      ↓
+    find existing match
+      ↓
+    upsert match
+      ↓
+    verify match
+      ↓
+    240 матчей
 
 ВАЖНО:
-    - Никакой автоматической очистки БД.
-    - DELETE отсутствует.
-    - DROP отсутствует.
-    - Существующие данные не удаляются.
-    - Существующие матчи не перезаписываются.
+    - Только календарь (НЕ результаты, НЕ статистика, НЕ паспорта)
+    - Идемпотентность — повторный запуск не создаёт дубли
+    - НЕ меняет статус finished → scheduled
+    - Нормализация названий команд
+    - Проверка после upsert_match()
+    - Нет DELETE/DROP
+    - database.py НЕ изменяется
 ============================================================
 """
 
 import os
-import sqlite3
-from collections import defaultdict, Counter
+import json
+import logging
+import traceback
+from datetime import datetime
+from typing import Dict, Optional, Any
 
-import pandas as pd
 import streamlit as st
 
+from app.database import FAJDatabase
 from app.parsers.rpl_fixtures_parser import RPLFixturesParser
 
 
 # ============================================================
-# PATH
+# CONFIG
 # ============================================================
 
-ROOT_DIR = os.path.dirname(
-    os.path.dirname(
-        os.path.dirname(
-            os.path.abspath(__file__)
-        )
-    )
+APP_VERSION = "12.1"
+
+SEASON_NAME = "РПЛ 2026-2027"
+SEASON_YEAR = "2026-2027"
+LEAGUE = "РПЛ"
+
+TOTAL_ROUNDS = 30
+TOTAL_TEAMS = 16
+EXPECTED_MATCHES = 240
+
+DATA_DIR = "data"
+STATE_FILE = os.path.join(
+    DATA_DIR,
+    "calendar_state.json",
 )
 
-DB_PATH = os.path.join(
-    ROOT_DIR,
-    "data",
-    "faj.db",
+FIXTURES_SOURCE = (
+    "championat.com / smart-tables.ru / soccerland.ru"
 )
 
 
 # ============================================================
-# DATABASE
+# LOGGING
 # ============================================================
 
-def get_connection():
+logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# RPL TEAMS
+# ============================================================
+
+RPL_TEAMS = [
+    "Зенит",
+    "Спартак",
+    "ЦСКА",
+    "Динамо Москва",
+    "Локомотив",
+    "Краснодар",
+    "Ростов",
+    "Ахмат",
+    "Рубин",
+    "Крылья Советов",
+    "Оренбург",
+    "Факел",
+    "Акрон",
+    "Балтика",
+    "Родина",
+    "Динамо Махачкала",
+]
+
+# ============================================================
+# TEAM ALIASES (НОВОЕ)
+# ============================================================
+
+TEAM_ALIASES = {
+    "Динамо М": "Динамо Москва",
+    "Динамо Москва": "Динамо Москва",
+    "Динамо (Москва)": "Динамо Москва",
+    "Динамо-Москва": "Динамо Москва",
+    "Динамо Мх": "Динамо Махачкала",
+    "Динамо Махачкала": "Динамо Махачкала",
+    "Динамо (Махачкала)": "Динамо Махачкала",
+    "Динамо-Махачкала": "Динамо Махачкала",
+    "Спартак": "Спартак",
+    "Спартак М": "Спартак",
+    "Спартак Москва": "Спартак",
+    "Спартак-Москва": "Спартак",
+    "Зенит": "Зенит",
+    "Зенит Санкт-Петербург": "Зенит",
+    "ЦСКА": "ЦСКА",
+    "ПФК ЦСКА": "ЦСКА",
+    "ЦСКА Москва": "ЦСКА",
+    "Локомотив": "Локомотив",
+    "Локомотив М": "Локомотив",
+    "Локомотив Москва": "Локомотив",
+    "Краснодар": "Краснодар",
+    "Ростов": "Ростов",
+    "Ростов-на-Дону": "Ростов",
+    "Ахмат": "Ахмат",
+    "Ахмат Грозный": "Ахмат",
+    "Рубин": "Рубин",
+    "Рубин Казань": "Рубин",
+    "Крылья Советов": "Крылья Советов",
+    "Крылья Советов Самара": "Крылья Советов",
+    "Оренбург": "Оренбург",
+    "Факел": "Факел",
+    "Факел Воронеж": "Факел",
+    "Акрон": "Акрон",
+    "Акрон Тольятти": "Акрон",
+    "Балтика": "Балтика",
+    "Балтика Калининград": "Балтика",
+    "Родина": "Родина",
+    "Родина Москва": "Родина",
+}
+
+
+# ============================================================
+# DATABASE CONNECTION (ИСПРАВЛЕНО)
+# ============================================================
+
+def get_connection(db):
     """
-    Подключение к SQLite.
+    Единая точка получения SQLite connection.
+
+    ИСПРАВЛЕНО: использует публичный метод db.get_connection()
+    вместо приватного _get_connection().
     """
 
+    return db.get_connection()
+
+
+# ============================================================
+# STATE
+# ============================================================
+
+def ensure_data_dir():
     os.makedirs(
-        os.path.dirname(DB_PATH),
+        DATA_DIR,
         exist_ok=True,
     )
 
-    conn = sqlite3.connect(DB_PATH)
 
-    return conn
-
-
-# ============================================================
-# SESSION STATE
-# ============================================================
-
-if "calendar_parse_result" not in st.session_state:
-    st.session_state["calendar_parse_result"] = None
-
-if "calendar_db_diagnostic" not in st.session_state:
-    st.session_state["calendar_db_diagnostic"] = None
-
-
-# ============================================================
-# HELPERS
-# ============================================================
-
-def get_team_id(cursor, team_name):
-    """
-    Возвращает ID команды РПЛ.
-    """
-
-    cursor.execute(
-        """
-        SELECT id
-        FROM teams
-        WHERE name = ?
-        AND league = 'РПЛ'
-        LIMIT 1
-        """,
-        (team_name,),
-    )
-
-    row = cursor.fetchone()
-
-    if row:
-        return row[0]
-
-    return None
-
-
-def get_season_id(cursor):
-    """
-    Возвращает ID сезона 2026-2027.
-
-    Ничего не создаёт.
-    """
-
-    cursor.execute(
-        """
-        SELECT id
-        FROM seasons
-        WHERE (
-            name = 'РПЛ 2026-2027'
-            OR name = '2026-2027'
-        )
-        AND league = 'РПЛ'
-        ORDER BY id
-        LIMIT 1
-        """
-    )
-
-    row = cursor.fetchone()
-
-    if row:
-        return row[0]
-
-    return None
-
-
-def get_round_id(cursor, season_id, round_number):
-    """
-    Возвращает ID тура.
-
-    Ничего не создаёт.
-    """
-
-    cursor.execute(
-        """
-        SELECT id
-        FROM rounds
-        WHERE season_id = ?
-        AND round_number = ?
-        LIMIT 1
-        """,
-        (
-            season_id,
-            round_number,
-        ),
-    )
-
-    row = cursor.fetchone()
-
-    if row:
-        return row[0]
-
-    return None
-
-
-def check_existing_match(
-    cursor,
-    round_id,
-    home_id,
-    away_id,
-):
-    """
-    Проверяет наличие матча в БД.
-    """
-
-    cursor.execute(
-        """
-        SELECT id
-        FROM matches
-        WHERE round_id = ?
-        AND home_team_id = ?
-        AND away_team_id = ?
-        LIMIT 1
-        """,
-        (
-            round_id,
-            home_id,
-            away_id,
-        ),
-    )
-
-    row = cursor.fetchone()
-
-    if row:
-        return row[0]
-
-    return None
-
-
-# ============================================================
-# DATABASE DIAGNOSTICS
-# ============================================================
-
-def diagnose_matches(matches):
-    """
-    Проверяет все найденные парсером матчи
-    против текущей SQLite БД.
-
-    НИЧЕГО НЕ ИЗМЕНЯЕТ.
-    """
-
-    result = {
-        "ready": [],
-        "existing": [],
-        "problems": [],
-        "total": len(matches),
+def default_state() -> Dict:
+    return {
+        "version": APP_VERSION,
+        "season": SEASON_NAME,
+        "season_id": None,
+        "last_import": None,
+        "last_import_status": "never",
+        "fixtures_loaded": False,
+        "fixtures_count": 0,
+        "fixtures_expected": EXPECTED_MATCHES,
+        "fixtures_last_update": None,
+        "messages": [],
     }
 
-    conn = get_connection()
-    cursor = conn.cursor()
+
+def load_state() -> Dict:
+    ensure_data_dir()
+
+    if not os.path.exists(STATE_FILE):
+        return default_state()
 
     try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            state = json.load(f)
 
-        season_id = get_season_id(cursor)
+        base = default_state()
+        if isinstance(state, dict):
+            base.update(state)
 
-        if not season_id:
+        return base
 
-            for match in matches:
+    except Exception as e:
+        logger.error("Ошибка чтения state: %s", e)
+        return default_state()
 
-                result["problems"].append(
-                    {
-                        "Тур": match.get("round"),
-                        "Хозяева": match.get(
-                            "home_team",
-                            "",
-                        ),
-                        "Гости": match.get(
-                            "away_team",
-                            "",
-                        ),
-                        "Причина": (
-                            "Сезон РПЛ 2026-2027 "
-                            "не найден в БД"
-                        ),
-                    }
+
+def save_state(state: Dict):
+    ensure_data_dir()
+
+    temp_file = STATE_FILE + ".tmp"
+
+    try:
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+
+        os.replace(temp_file, STATE_FILE)
+
+    except Exception as e:
+        logger.error("Ошибка сохранения state: %s", e)
+
+
+# ============================================================
+# DATABASE HELPERS
+# ============================================================
+
+def get_db():
+    return FAJDatabase()
+
+
+def get_or_create_season(db):
+    return db.create_season(
+        name=SEASON_NAME,
+        league=LEAGUE,
+        year=SEASON_YEAR,
+    )
+
+
+def ensure_teams(db) -> Dict[str, int]:
+    team_ids = {}
+
+    for name in RPL_TEAMS:
+        try:
+            team_id = db.get_team_id(name, LEAGUE)
+
+            if not team_id:
+                db.add_team(name, LEAGUE)
+                team_id = db.get_team_id(name, LEAGUE)
+
+            if team_id:
+                team_ids[name] = team_id
+
+        except Exception as e:
+            logger.error("Ошибка команды %s: %s", name, e)
+
+    return team_ids
+
+
+# ============================================================
+# ENSURE ROUNDS (ИСПРАВЛЕНО — идемпотентное)
+# ============================================================
+
+def ensure_rounds(db, season_id) -> Dict[int, int]:
+    """
+    Идемпотентное создание туров.
+
+    ИСПРАВЛЕНО: явно проверяет существование каждого тура.
+    """
+
+    round_ids = {}
+
+    conn = get_connection(db)
+
+    try:
+        cursor = conn.cursor()
+
+        for round_number in range(1, TOTAL_ROUNDS + 1):
+            try:
+                # Проверяем существование тура
+                cursor.execute(
+                    """
+                    SELECT id
+                    FROM rounds
+                    WHERE season_id = ?
+                      AND round_number = ?
+                    LIMIT 1
+                    """,
+                    (season_id, round_number),
                 )
 
-            return result
+                row = cursor.fetchone()
 
-        for match in matches:
+                if row:
+                    round_ids[round_number] = row[0]
+                    continue
 
-            home_name = match.get(
-                "home_team"
-            )
+                # Создаём тур, если его нет
+                cursor.execute(
+                    """
+                    INSERT INTO rounds (
+                        season_id,
+                        round_number
+                    )
+                    VALUES (?, ?)
+                    """,
+                    (season_id, round_number),
+                )
 
-            away_name = match.get(
-                "away_team"
-            )
+                round_ids[round_number] = cursor.lastrowid
 
-            round_number = match.get(
-                "round"
-            )
+            except Exception as e:
+                logger.warning("Ошибка тура %s: %s", round_number, e)
 
-            # ------------------------------------------------
-            # TEAM CHECK
-            # ------------------------------------------------
+        conn.commit()
 
-            home_id = get_team_id(
-                cursor,
-                home_name,
-            )
+    finally:
+        conn.close()
 
-            away_id = get_team_id(
-                cursor,
-                away_name,
-            )
+    return round_ids
+
+
+# ============================================================
+# MATCH LOOKUP (НОВОЕ)
+# ============================================================
+
+def find_match(
+    db,
+    season_id,
+    round_number,
+    home_team_id,
+    away_team_id,
+):
+    """
+    Единый lookup матча по календарю.
+
+    НЕ создаёт матч, если он не найден.
+    """
+
+    conn = get_connection(db)
+
+    try:
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT m.id
+            FROM matches m
+            JOIN rounds r
+                ON r.id = m.round_id
+            WHERE r.season_id = ?
+              AND r.round_number = ?
+              AND m.home_team_id = ?
+              AND m.away_team_id = ?
+            LIMIT 1
+            """,
+            (
+                season_id,
+                round_number,
+                home_team_id,
+                away_team_id,
+            ),
+        )
+
+        row = cursor.fetchone()
+
+        return row[0] if row else None
+
+    finally:
+        conn.close()
+
+
+# ============================================================
+# IMPORT FIXTURES (ИСПРАВЛЕНО)
+# ============================================================
+
+def import_fixtures(
+    db,
+    season_id,
+    team_ids,
+    round_ids,
+    state,
+):
+
+    result = {
+        "source": FIXTURES_SOURCE,
+        "found": 0,
+        "added": 0,
+        "updated": 0,
+        "errors": 0,
+        "unknown_teams": [],
+        "message": "",
+    }
+
+    parser = RPLFixturesParser()
+
+    fixtures_result = parser.parse()
+
+    if not fixtures_result:
+        result["message"] = "Парсер календаря не вернул матчи."
+        return result
+
+    fixtures = fixtures_result.get("matches", [])
+
+    if not fixtures:
+        result["message"] = "Парсер вернул пустой календарь."
+        return result
+
+    result["found"] = len(fixtures)
+
+    for match in fixtures:
+        try:
+            round_number = int(match["round"])
+
+            if round_number not in round_ids:
+                result["errors"] += 1
+                continue
+
+            # =====================================================
+            # НОРМАЛИЗАЦИЯ НАЗВАНИЙ КОМАНД (НОВОЕ)
+            # =====================================================
+
+            raw_home = match["home_team"]
+            raw_away = match["away_team"]
+
+            home_name = TEAM_ALIASES.get(raw_home, raw_home)
+            away_name = TEAM_ALIASES.get(raw_away, raw_away)
+
+            home_id = team_ids.get(home_name)
+            away_id = team_ids.get(away_name)
 
             if not home_id:
-
-                result["problems"].append(
-                    {
-                        "Тур": round_number,
-                        "Хозяева": home_name,
-                        "Гости": away_name,
-                        "Причина": (
-                            f"Команда хозяев "
-                            f"'{home_name}' "
-                            f"не найдена в teams"
-                        ),
-                    }
-                )
-
+                result["unknown_teams"].append(home_name)
+                result["errors"] += 1
                 continue
 
             if not away_id:
-
-                result["problems"].append(
-                    {
-                        "Тур": round_number,
-                        "Хозяева": home_name,
-                        "Гости": away_name,
-                        "Причина": (
-                            f"Команда гостей "
-                            f"'{away_name}' "
-                            f"не найдена в teams"
-                        ),
-                    }
-                )
-
+                result["unknown_teams"].append(away_name)
+                result["errors"] += 1
                 continue
 
-            # ------------------------------------------------
-            # ROUND CHECK
-            # ------------------------------------------------
+            # =====================================================
+            # ПРОВЕРКА СУЩЕСТВОВАНИЯ МАТЧА ДО upsert (НОВОЕ)
+            # =====================================================
 
-            if round_number is None:
-
-                result["problems"].append(
-                    {
-                        "Тур": "—",
-                        "Хозяева": home_name,
-                        "Гости": away_name,
-                        "Причина": (
-                            "У матча отсутствует "
-                            "номер тура"
-                        ),
-                    }
-                )
-
-                continue
-
-            try:
-
-                round_number = int(
-                    round_number
-                )
-
-            except (
-                TypeError,
-                ValueError,
-            ):
-
-                result["problems"].append(
-                    {
-                        "Тур": round_number,
-                        "Хозяева": home_name,
-                        "Гости": away_name,
-                        "Причина": (
-                            "Некорректный номер тура"
-                        ),
-                    }
-                )
-
-                continue
-
-            if not 1 <= round_number <= 30:
-
-                result["problems"].append(
-                    {
-                        "Тур": round_number,
-                        "Хозяева": home_name,
-                        "Гости": away_name,
-                        "Причина": (
-                            "Тур находится "
-                            "вне диапазона 1-30"
-                        ),
-                    }
-                )
-
-                continue
-
-            # ------------------------------------------------
-            # ROUND ID
-            # ------------------------------------------------
-
-            round_id = get_round_id(
-                cursor,
+            existing_id = find_match(
+                db,
                 season_id,
                 round_number,
+                home_id,
+                away_id,
             )
 
-            if not round_id:
+            # =====================================================
+            # ФОРМИРУЕМ PAYLOAD (без статуса, если нет данных)
+            # =====================================================
 
-                result["problems"].append(
-                    {
-                        "Тур": round_number,
-                        "Хозяева": home_name,
-                        "Гости": away_name,
-                        "Причина": (
-                            f"Тур {round_number} "
-                            "не найден в таблице rounds"
-                        ),
-                    }
-                )
+            payload = {
+                "round_id": round_ids[round_number],
+                "home_team_id": home_id,
+                "away_team_id": away_id,
+                "date": match.get("date"),
+                "competition": LEAGUE,
+            }
 
-                continue
+            # Статус только если parser реально его передал
+            status = match.get("status")
+            if status:
+                payload["status"] = status
 
-            # ------------------------------------------------
-            # EXISTING MATCH
-            # ------------------------------------------------
+            # =====================================================
+            # СОХРАНЯЕМ МАТЧ
+            # =====================================================
 
-            existing_id = check_existing_match(
-                cursor,
-                round_id,
+            db.upsert_match(payload)
+
+            # =====================================================
+            # ПРОВЕРЯЕМ МАТЧ ПОСЛЕ upsert (НОВОЕ)
+            # =====================================================
+
+            new_id = find_match(
+                db,
+                season_id,
+                round_number,
                 home_id,
                 away_id,
             )
 
             if existing_id:
-
-                result["existing"].append(
-                    {
-                        "Тур": round_number,
-                        "Хозяева": home_name,
-                        "Гости": away_name,
-                        "ID матча": existing_id,
-                        "Статус": "Уже в БД",
-                    }
-                )
-
+                result["updated"] += 1
+            elif new_id:
+                result["added"] += 1
             else:
-
-                result["ready"].append(
-                    {
-                        "match": match,
-                        "season_id": season_id,
-                        "round_id": round_id,
-                        "home_id": home_id,
-                        "away_id": away_id,
-                    }
+                result["errors"] += 1
+                logger.warning(
+                    "Матч не создан: %s - %s, тур %s",
+                    home_name,
+                    away_name,
+                    round_number,
                 )
+
+        except Exception as e:
+            result["errors"] += 1
+            logger.exception("Ошибка импорта календаря: %s", e)
+
+    # ============================================================
+    # ОБНОВЛЯЕМ STATE
+    # ============================================================
+
+    successful_fixtures = result["added"] + result["updated"]
+
+    state["fixtures_loaded"] = (
+        result["found"] > 0
+        and successful_fixtures > 0
+    )
+
+    state["fixtures_count"] = successful_fixtures
+    state["fixtures_expected"] = EXPECTED_MATCHES
+
+    if state["fixtures_loaded"]:
+        state["fixtures_last_update"] = datetime.now().isoformat()
+
+    return result
+
+
+# ============================================================
+# DATABASE STATUS (ИСПРАВЛЕНО)
+# ============================================================
+
+def get_database_status(db):
+    result = {}
+
+    conn = get_connection(db)
+
+    try:
+        cursor = conn.cursor()
+
+        queries = {
+            "matches": "SELECT COUNT(*) FROM matches",
+            "teams": "SELECT COUNT(*) FROM teams",
+            "rounds": "SELECT COUNT(*) FROM rounds",
+        }
+
+        for key, query in queries.items():
+            try:
+                cursor.execute(query)
+                row = cursor.fetchone()
+                result[key] = row[0] if row else 0
+            except Exception:
+                result[key] = 0
 
     finally:
-
         conn.close()
 
     return result
 
 
 # ============================================================
-# PAGE
+# MAIN
 # ============================================================
 
 def main():
-
-    st.title(
-        "📅 ЗАГРУЗКА КАЛЕНДАРЯ РПЛ"
+    st.set_page_config(
+        page_title="FAJ — Загрузка календаря",
+        page_icon="📅",
+        layout="wide",
     )
+
+    st.title("📅 FAJ — ЗАГРУЗКА КАЛЕНДАРЯ РПЛ")
 
     st.caption(
-        "FAJ Platform v12.1 · "
-        "RPL Fixtures Parser"
+        f"FAJ Platform v{APP_VERSION} · {SEASON_NAME}"
     )
 
-    st.info(
-        """
-        Сначала система получает календарь из источников
-        и проводит полную диагностику.
+    # ============================================================
+    # STATE
+    # ============================================================
 
-        **На этапе проверки база данных НЕ изменяется.**
+    state = load_state()
 
-        Будут проверены:
-        - все 30 туров;
-        - количество матчей;
-        - команды;
-        - существующие матчи;
-        - причины пропусков.
+    # ============================================================
+    # СОСТОЯНИЕ
+    # ============================================================
 
-        Загрузка в SQLite разрешается только после
-        успешной проверки полного календаря.
-        """
-    )
+    col1, col2, col3, col4 = st.columns(4)
 
-    st.divider()
+    with col1:
+        status = state.get("last_import_status", "never")
+        if status == "success":
+            st.metric("Импорт", "✅ OK")
+        elif status == "error":
+            st.metric("Импорт", "❌ ОШИБКА")
+        else:
+            st.metric("Импорт", "⏳ Не запускался")
 
-    # ========================================================
-    # PARSE
-    # ========================================================
+    with col2:
+        fixtures_count = state.get("fixtures_count", 0)
+        fixtures_expected = state.get("fixtures_expected", EXPECTED_MATCHES)
+        st.metric(
+            "Матчи календаря",
+            f"{fixtures_count}/{fixtures_expected}",
+        )
 
-    if st.button(
-        "🔎 ПОЛУЧИТЬ И ПРОВЕРИТЬ КАЛЕНДАРЬ",
-        type="primary",
-        use_container_width=True,
-    ):
+    with col3:
+        loaded = state.get("fixtures_loaded", False)
+        st.metric(
+            "Календарь",
+            "✅ Загружен" if loaded else "⏳ Не загружен",
+        )
 
-        with st.spinner(
-            "🌐 Загружаем календарь из источников..."
-        ):
-
+    with col4:
+        last_update = state.get("fixtures_last_update")
+        if last_update:
             try:
+                dt = datetime.fromisoformat(last_update)
+                value = dt.strftime("%d.%m %H:%M")
+            except Exception:
+                value = "есть"
+        else:
+            value = "—"
+        st.metric("Последнее обновление", value)
 
-                parser = RPLFixturesParser()
-
-                parse_result = parser.parse()
-
-                st.session_state["calendar_parse_result"] = (
-                    parse_result
-                )
-
-            except Exception as e:
-
-                st.error(
-                    f"❌ Ошибка парсера: {e}"
-                )
-
-                st.exception(e)
-
-                return
-
-    # ========================================================
-    # RESULT
-    # ========================================================
-
-    result = st.session_state.get(
-        "calendar_parse_result"
-    )
-
-    if not result:
-
-        return
-
-    matches = result.get(
-        "matches",
-        [],
-    )
-
-    sources = result.get(
-        "sources",
-        {},
-    )
-
-    errors = result.get(
-        "errors",
-        [],
-    )
-
-    duplicates = result.get(
-        "duplicates",
-        [],
-    )
-
-    # ========================================================
-    # GENERAL STATISTICS
-    # ========================================================
-
-    st.subheader(
-        "📊 Результат парсинга"
-    )
-
-    difference = 240 - len(matches)
-
-    c1, c2, c3, c4 = st.columns(4)
-
-    with c1:
-
-        st.metric(
-            "Найдено уникальных",
-            len(matches),
-        )
-
-    with c2:
-
-        st.metric(
-            "Ожидается",
-            240,
-        )
-
-    with c3:
-
-        st.metric(
-            "Дубликатов",
-            len(duplicates),
-        )
-
-    with c4:
-
-        st.metric(
-            "Недостаёт",
-            max(difference, 0),
-        )
-
-    # ========================================================
-    # SOURCE STATISTICS
-    # ========================================================
-
-    st.subheader(
-        "🌐 Источники"
-    )
-
-    source_rows = []
-
-    for source_name, info in sources.items():
-
-        source_rows.append(
-            {
-                "Источник": source_name,
-                "Статус": info.get(
-                    "status",
-                    "",
-                ),
-                "Матчей": info.get(
-                    "matches",
-                    0,
-                ),
-            }
-        )
-
-    if source_rows:
-
-        st.dataframe(
-            pd.DataFrame(
-                source_rows
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    # ========================================================
-    # ERRORS
-    # ========================================================
-
-    if errors:
-
-        st.warning(
-            "⚠️ Есть ошибки источников."
-        )
-
-        with st.expander(
-            "📋 Показать ошибки"
-        ):
-
-            for error in errors:
-
-                st.write(
-                    f"- {error}"
-                )
-
-    # ========================================================
-    # DUPLICATES
-    # ========================================================
-
-    if duplicates:
-
-        with st.expander(
-            f"⚠️ Дубликаты: {len(duplicates)}"
-        ):
-
-            for duplicate in duplicates:
-
-                st.write(
-                    duplicate
-                )
-
-    # ========================================================
-    # ROUND ANALYSIS
-    # ========================================================
+    # ============================================================
+    # КНОПКИ
+    # ============================================================
 
     st.divider()
 
-    st.subheader(
-        "🏆 РАЗБИВКА ПО 30 ТУРАМ"
-    )
+    col1, col2, col3 = st.columns(3)
 
-    rounds = defaultdict(list)
-
-    unknown_round = []
-
-    for match in matches:
-
-        round_number = match.get(
-            "round"
+    with col1:
+        import_clicked = st.button(
+            "🔥 ЗАГРУЗИТЬ КАЛЕНДАРЬ",
+            type="primary",
+            use_container_width=True,
         )
 
-        if round_number is None:
+    with col2:
+        refresh_clicked = st.button(
+            "🔄 ОБНОВИТЬ",
+            use_container_width=True,
+        )
 
-            unknown_round.append(
-                match
-            )
+    with col3:
+        clear_clicked = st.button(
+            "🗑️ ОЧИСТИТЬ STATE (НЕ БД)",
+            use_container_width=True,
+        )
 
-            continue
+    if refresh_clicked:
+        st.rerun()
+
+    if clear_clicked:
+        state = default_state()
+        save_state(state)
+        st.success("✅ State очищен")
+        st.rerun()
+
+    # ============================================================
+    # ИМПОРТ
+    # ============================================================
+
+    if import_clicked:
+        db = get_db()
 
         try:
+            with st.spinner("📅 Загружаем календарь РПЛ..."):
+                # 1. SEASON
+                season_id = get_or_create_season(db)
+                state["season_id"] = season_id
 
-            round_number = int(
-                round_number
-            )
+                # 2. TEAMS
+                team_ids = ensure_teams(db)
 
-        except (
-            TypeError,
-            ValueError,
-        ):
+                # 3. ROUNDS (исправлено)
+                round_ids = ensure_rounds(db, season_id)
 
-            unknown_round.append(
-                match
-            )
-
-            continue
-
-        rounds[
-            round_number
-        ].append(match)
-
-    round_rows = []
-
-    for round_number in range(
-        1,
-        31,
-    ):
-
-        round_matches = rounds.get(
-            round_number,
-            [],
-        )
-
-        count = len(
-            round_matches
-        )
-
-        expected = 8
-
-        missing = max(
-            expected - count,
-            0,
-        )
-
-        if count == 8:
-
-            status = "✅ ПОЛНЫЙ"
-
-        elif count == 0:
-
-            status = "❌ ПУСТО"
-
-        elif count < 8:
-
-            status = (
-                f"⚠️ НЕПОЛНЫЙ "
-                f"({count}/8)"
-            )
-
-        else:
-
-            status = (
-                f"⚠️ БОЛЬШЕ 8 "
-                f"({count}/8)"
-            )
-
-        round_rows.append(
-            {
-                "Тур": round_number,
-                "Матчей": count,
-                "Ожидается": expected,
-                "Не хватает": missing,
-                "Статус": status,
-            }
-        )
-
-    round_df = pd.DataFrame(
-        round_rows
-    )
-
-    st.dataframe(
-        round_df,
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    # ========================================================
-    # ROUND SUMMARY
-    # ========================================================
-
-    total_first_30 = sum(
-        len(
-            rounds.get(
-                number,
-                [],
-            )
-        )
-        for number in range(
-            1,
-            31,
-        )
-    )
-
-    complete_rounds = sum(
-        1
-        for row in round_rows
-        if row["Матчей"] == 8
-    )
-
-    incomplete_rounds = [
-        row
-        for row in round_rows
-        if row["Матчей"] != 8
-    ]
-
-    st.write(
-        f"**Матчей в турах 1–30: "
-        f"{total_first_30} / 240**"
-    )
-
-    st.write(
-        f"**Полных туров: "
-        f"{complete_rounds} / 30**"
-    )
-
-    if unknown_round:
-
-        st.warning(
-            f"⚠️ Матчей без корректного тура: "
-            f"{len(unknown_round)}"
-        )
-
-    # ========================================================
-    # INCOMPLETE ROUNDS
-    # ========================================================
-
-    if incomplete_rounds:
-
-        st.warning(
-            "⚠️ Неполные туры обнаружены."
-        )
-
-        incomplete_df = pd.DataFrame(
-            incomplete_rounds
-        )
-
-        st.dataframe(
-            incomplete_df,
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    # ========================================================
-    # DETAILED ROUND VIEW
-    # ========================================================
-
-    st.divider()
-
-    st.subheader(
-        "📋 МАТЧИ ПО ТУРАМ"
-    )
-
-    for round_number in range(
-        1,
-        31,
-    ):
-
-        round_matches = rounds.get(
-            round_number,
-            [],
-        )
-
-        count = len(
-            round_matches
-        )
-
-        if count == 8:
-
-            title = (
-                f"Тур {round_number} "
-                f"✅ 8/8"
-            )
-
-        elif count == 0:
-
-            title = (
-                f"Тур {round_number} "
-                f"❌ 0/8"
-            )
-
-        else:
-
-            title = (
-                f"Тур {round_number} "
-                f"⚠️ {count}/8"
-            )
-
-        with st.expander(
-            title,
-            expanded=False,
-        ):
-
-            if not round_matches:
-
-                st.warning(
-                    "Матчи этого тура не найдены."
+                # 4. FIXTURES (исправлено)
+                fixture_result = import_fixtures(
+                    db=db,
+                    season_id=season_id,
+                    team_ids=team_ids,
+                    round_ids=round_ids,
+                    state=state,
                 )
 
-                continue
-
-            rows = []
-
-            for index, match in enumerate(
-                round_matches,
-                start=1,
-            ):
-
-                rows.append(
-                    {
-                        "№": index,
-                        "Хозяева": match.get(
-                            "home_team",
-                            "",
-                        ),
-                        "Гости": match.get(
-                            "away_team",
-                            "",
-                        ),
-                        "Дата": match.get(
-                            "date",
-                            "",
-                        ),
-                        "Время": match.get(
-                            "time",
-                            "",
-                        ),
-                        "Статус": match.get(
-                            "status",
-                            "",
-                        ),
-                        "Счёт": (
-                            f"{match.get('home_goals')}:"
-                            f"{match.get('away_goals')}"
-                            if (
-                                match.get(
-                                    "home_goals"
-                                )
-                                is not None
-                                and match.get(
-                                    "away_goals"
-                                ) is not None
-                            )
-                            else "—"
-                        ),
-                        "Источник": match.get(
-                            "source",
-                            "",
-                        ),
-                    }
+                # 5. STATE
+                state["last_import"] = datetime.now().isoformat()
+                state["last_import_status"] = (
+                    "success" if fixture_result.get("added", 0) > 0
+                    or fixture_result.get("updated", 0) > 0
+                    else "error"
                 )
 
-            st.dataframe(
-                pd.DataFrame(rows),
-                use_container_width=True,
-                hide_index=True,
-            )
-
-    # ========================================================
-    # UNKNOWN ROUND MATCHES
-    # ========================================================
-
-    if unknown_round:
-
-        st.divider()
-
-        st.subheader(
-            "⚠️ МАТЧИ БЕЗ НОМЕРА ТУРА"
-        )
-
-        unknown_rows = []
-
-        for match in unknown_round:
-
-            unknown_rows.append(
-                {
-                    "Хозяева": match.get(
-                        "home_team",
-                        "",
-                    ),
-                    "Гости": match.get(
-                        "away_team",
-                        "",
-                    ),
-                    "Дата": match.get(
-                        "date",
-                        "",
-                    ),
-                    "Источник": match.get(
-                        "source",
-                        "",
-                    ),
-                }
-            )
-
-        st.dataframe(
-            pd.DataFrame(
-                unknown_rows
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    # ========================================================
-    # RAW MATCH LIST
-    # ========================================================
-
-    with st.expander(
-        "🔍 Полный список найденных матчей"
-    ):
-
-        raw_rows = []
-
-        for match in matches:
-
-            raw_rows.append(
-                {
-                    "Тур": match.get(
-                        "round"
-                    ),
-                    "Хозяева": match.get(
-                        "home_team"
-                    ),
-                    "Гости": match.get(
-                        "away_team"
-                    ),
-                    "Дата": match.get(
-                        "date"
-                    ),
-                    "Время": match.get(
-                        "time"
-                    ),
-                    "Статус": match.get(
-                        "status"
-                    ),
-                    "Счёт": (
-                        f"{match.get('home_goals')}:"
-                        f"{match.get('away_goals')}"
-                        if (
-                            match.get(
-                                "home_goals"
-                            )
-                            is not None
-                            and match.get(
-                                "away_goals"
-                            ) is not None
-                        )
-                        else "—"
-                    ),
-                    "Источник": match.get(
-                        "source"
-                    ),
-                }
-            )
-
-        st.dataframe(
-            pd.DataFrame(
-                raw_rows
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    # ========================================================
-    # DATABASE STATUS
-    # ========================================================
-
-    st.divider()
-
-    st.subheader(
-        "💾 Текущее состояние SQLite"
-    )
-
-    try:
-
-        conn = get_connection()
-
-        cursor = conn.cursor()
-
-        cursor.execute(
-            "SELECT COUNT(*) FROM matches"
-        )
-
-        db_matches = cursor.fetchone()[0]
-
-        cursor.execute(
-            "SELECT COUNT(*) FROM rounds"
-        )
-
-        db_rounds = cursor.fetchone()[0]
-
-        cursor.execute(
-            "SELECT COUNT(*) FROM teams"
-        )
-
-        db_teams = cursor.fetchone()[0]
-
-        conn.close()
-
-        c1, c2, c3 = st.columns(3)
-
-        with c1:
-
-            st.metric(
-                "Матчей в БД сейчас",
-                db_matches,
-            )
-
-        with c2:
-
-            st.metric(
-                "Туров в БД сейчас",
-                db_rounds,
-            )
-
-        with c3:
-
-            st.metric(
-                "Команд в БД",
-                db_teams,
-            )
-
-    except Exception as e:
-
-        st.error(
-            f"❌ Не удалось прочитать БД: {e}"
-        )
-
-        return
-
-    # ========================================================
-    # MATCH DATABASE DIAGNOSTICS
-    # ========================================================
-
-    st.divider()
-
-    st.subheader(
-        "🔬 ПРОВЕРКА НА ВОЗМОЖНОСТЬ ЗАГРУЗКИ"
-    )
-
-    st.info(
-        """
-        Сейчас проверяем найденные матчи против SQLite.
-
-        Эта проверка **ничего не записывает и ничего
-        не изменяет**.
-        """
-    )
-
-    if st.button(
-        "🔬 ПРОВЕРИТЬ ВСЕ МАТЧИ ПРОТИВ БД",
-        use_container_width=True,
-    ):
-
-        with st.spinner(
-            "🔍 Проверяем команды, туры и существующие матчи..."
-        ):
-
-            diagnostic = diagnose_matches(
-                matches
-            )
-
-        st.session_state["calendar_db_diagnostic"] = (
-            diagnostic
-        )
-
-    diagnostic = st.session_state.get(
-        "calendar_db_diagnostic"
-    )
-
-    if diagnostic:
-
-        ready_count = len(
-            diagnostic.get(
-                "ready",
-                [],
-            )
-        )
-
-        existing_count = len(
-            diagnostic.get(
-                "existing",
-                [],
-            )
-        )
-
-        problem_count = len(
-            diagnostic.get(
-                "problems",
-                [],
-            )
-        )
-
-        c1, c2, c3 = st.columns(3)
-
-        with c1:
-
-            st.metric(
-                "Готовы к загрузке",
-                ready_count,
-            )
-
-        with c2:
-
-            st.metric(
-                "Уже в БД",
-                existing_count,
-            )
-
-        with c3:
-
-            st.metric(
-                "Проблемных",
-                problem_count,
-            )
-
-        # ----------------------------------------------------
-        # PROBLEMS
-        # ----------------------------------------------------
-
-        problems = diagnostic.get(
-            "problems",
-            [],
-        )
-
-        if problems:
-
-            st.error(
-                f"❌ Найдено проблемных матчей: "
-                f"{len(problems)}"
-            )
-
-            st.subheader(
-                "🚨 ПРИЧИНЫ ПРОПУСКОВ"
-            )
-
-            problems_df = pd.DataFrame(
-                problems
-            )
-
-            st.dataframe(
-                problems_df,
-                use_container_width=True,
-                hide_index=True,
-            )
-
-            # ------------------------------------------------
-            # REASON SUMMARY
-            # ------------------------------------------------
-
-            reason_counter = Counter(
-                item.get(
-                    "Причина",
-                    "",
-                )
-                for item in problems
-            )
-
-            st.subheader(
-                "📊 Сводка причин"
-            )
-
-            reason_rows = []
-
-            for reason, count in (
-                reason_counter.most_common()
-            ):
-
-                reason_rows.append(
-                    {
-                        "Причина": reason,
-                        "Количество": count,
-                    }
+                # Сохраняем результат
+                state["last_import_summary"] = fixture_result
+
+                if state.get("messages") is None:
+                    state["messages"] = []
+
+                state["messages"].append(
+                    f"{datetime.now().isoformat()}: "
+                    f"Найдено {fixture_result.get('found', 0)}, "
+                    f"добавлено {fixture_result.get('added', 0)}, "
+                    f"обновлено {fixture_result.get('updated', 0)}, "
+                    f"ошибок {fixture_result.get('errors', 0)}"
                 )
 
-            st.dataframe(
-                pd.DataFrame(
-                    reason_rows
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
+                save_state(state)
 
-        else:
+                # ====================================================
+                # ОТОБРАЖЕНИЕ РЕЗУЛЬТАТА
+                # ====================================================
 
-            st.success(
-                "✅ Все найденные матчи "
-                "проходят проверку команд и туров."
-            )
+                st.success("✅ Загрузка календаря завершена.")
 
-        # ----------------------------------------------------
-        # EXISTING
-        # ----------------------------------------------------
+                col1, col2, col3, col4 = st.columns(4)
 
-        existing = diagnostic.get(
-            "existing",
-            [],
-        )
-
-        if existing:
-
-            with st.expander(
-                f"📋 Уже существующие матчи: "
-                f"{len(existing)}"
-            ):
-
-                st.dataframe(
-                    pd.DataFrame(existing),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-    # ========================================================
-    # FINAL SAFETY GATE
-    # ========================================================
-
-    st.divider()
-
-    if len(matches) != 240:
-
-        st.warning(
-            f"""
-            ⚠️ ЗАГРУЗКА ЗАБЛОКИРОВАНА
-
-            Парсер нашёл {len(matches)} уникальных матчей.
-
-            Ожидается: 240.
-
-            Разница: {abs(240 - len(matches))}.
-
-            Сначала необходимо установить,
-            какие матчи отсутствуют.
-            """
-        )
-
-        return
-
-    if incomplete_rounds:
-
-        st.warning(
-            "⚠️ ЗАГРУЗКА ЗАБЛОКИРОВАНА."
-
-            " Есть неполные туры."
-        )
-
-        return
-
-    # ========================================================
-    # DATABASE DIAGNOSTIC GATE
-    # ========================================================
-
-    diagnostic = st.session_state.get(
-        "calendar_db_diagnostic"
-    )
-
-    if not diagnostic:
-
-        st.info(
-            """
-            🔬 Перед загрузкой необходимо выполнить
-            проверку матчей против БД.
-
-            Нажми кнопку:
-
-            **🔬 ПРОВЕРИТЬ ВСЕ МАТЧИ ПРОТИВ БД**
-            """
-        )
-
-        return
-
-    if diagnostic.get(
-        "problems"
-    ):
-
-        st.warning(
-            """
-            ⚠️ ЗАГРУЗКА ЗАБЛОКИРОВАНА
-
-            Найдены матчи, которые не проходят
-            проверку БД.
-
-            Сначала исправляем причину.
-            """
-        )
-
-        return
-
-    # ========================================================
-    # READY
-    # ========================================================
-
-    st.success(
-        "✅ КАЛЕНДАРЬ ПРОШЁЛ ВСЕ ПРОВЕРКИ."
-    )
-
-    st.info(
-        f"""
-        Готово к загрузке:
-
-        • Матчей: {len(matches)}
-        • Туров: 30
-        • Проблем: 0
-
-        Существующие данные удаляться не будут.
-        """
-    )
-
-    # ========================================================
-    # WRITE TO DATABASE
-    # ========================================================
-
-    if st.button(
-        "💾 ЗАГРУЗИТЬ ПОДТВЕРЖДЁННЫЙ КАЛЕНДАРЬ В БД",
-        type="primary",
-        use_container_width=True,
-    ):
-
-        conn = get_connection()
-
-        cursor = conn.cursor()
-
-        loaded = 0
-        skipped = 0
-        results_loaded = 0
-        existing = 0
-
-        try:
-
-            # =================================================
-            # SEASON
-            # =================================================
-
-            season_id = get_season_id(
-                cursor
-            )
-
-            if not season_id:
-
-                raise RuntimeError(
-                    "Сезон РПЛ 2026-2027 "
-                    "не найден в БД."
-                )
-
-            # =================================================
-            # MATCHES
-            # =================================================
-
-            for item in diagnostic.get(
-                "ready",
-                [],
-            ):
-
-                match = item["match"]
-
-                season_id = item[
-                    "season_id"
-                ]
-
-                round_id = item[
-                    "round_id"
-                ]
-
-                home_id = item[
-                    "home_id"
-                ]
-
-                away_id = item[
-                    "away_id"
-                ]
-
-                status = match.get(
-                    "status",
-                    "scheduled",
-                )
-
-                date_value = match.get(
-                    "date"
-                )
-
-                home_goals = match.get(
-                    "home_goals"
-                )
-
-                away_goals = match.get(
-                    "away_goals"
-                )
-
-                # ---------------------------------------------
-                # MATCH
-                # ---------------------------------------------
-
-                cursor.execute(
-                    """
-                    INSERT OR IGNORE INTO matches
-                    (
-                        round_id,
-                        home_team_id,
-                        away_team_id,
-                        competition,
-                        status,
-                        date,
-                        actual_home,
-                        actual_away
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        round_id,
-                        home_id,
-                        away_id,
-                        "РПЛ",
-                        status,
-                        date_value,
-                        home_goals,
-                        away_goals,
-                    ),
-                )
-
-                if cursor.rowcount == 1:
-
-                    loaded += 1
-
-                else:
-
-                    existing += 1
-
-                # ---------------------------------------------
-                # RESULT
-                # ---------------------------------------------
-
-                cursor.execute(
-                    """
-                    SELECT id
-                    FROM matches
-                    WHERE round_id = ?
-                    AND home_team_id = ?
-                    AND away_team_id = ?
-                    LIMIT 1
-                    """,
-                    (
-                        round_id,
-                        home_id,
-                        away_id,
-                    ),
-                )
-
-                match_row = cursor.fetchone()
-
-                if not match_row:
-
-                    skipped += 1
-
-                    continue
-
-                match_id = match_row[0]
-
-                if (
-                    home_goals is not None
-                    and away_goals is not None
-                ):
-
-                    cursor.execute(
-                        """
-                        INSERT OR IGNORE INTO match_results
-                        (
-                            match_id,
-                            home_goals,
-                            away_goals
-                        )
-                        VALUES (?, ?, ?)
-                        """,
-                        (
-                            match_id,
-                            home_goals,
-                            away_goals,
-                        ),
+                with col1:
+                    st.metric(
+                        "Найдено матчей",
+                        fixture_result.get("found", 0),
                     )
 
-                    if cursor.rowcount == 1:
+                with col2:
+                    st.metric(
+                        "Добавлено",
+                        fixture_result.get("added", 0),
+                    )
 
-                        results_loaded += 1
+                with col3:
+                    st.metric(
+                        "Обновлено",
+                        fixture_result.get("updated", 0),
+                    )
 
-            conn.commit()
+                with col4:
+                    st.metric(
+                        "Ошибок",
+                        fixture_result.get("errors", 0),
+                    )
 
-            # =================================================
-            # FINAL STATUS
-            # =================================================
+                # Проверка полноты календаря (НОВОЕ)
+                fixtures_count = state.get("fixtures_count", 0)
 
-            st.success(
-                "🎉 КАЛЕНДАРЬ ЗАГРУЖЕН В SQLITE!"
-            )
+                if fixtures_count < EXPECTED_MATCHES:
+                    st.warning(
+                        f"⚠️ Календарь неполный: "
+                        f"{fixtures_count} из {EXPECTED_MATCHES} матчей."
+                    )
+                elif fixtures_count == EXPECTED_MATCHES:
+                    st.success(
+                        f"✅ Полный календарь: {EXPECTED_MATCHES} матчей."
+                    )
 
-            c1, c2, c3, c4 = st.columns(4)
+                if fixture_result.get("unknown_teams"):
+                    st.warning(
+                        "Неизвестные команды: "
+                        + ", ".join(fixture_result["unknown_teams"])
+                    )
 
-            with c1:
+                if fixture_result.get("message"):
+                    st.info(fixture_result["message"])
 
-                st.metric(
-                    "Новых матчей",
-                    loaded,
-                )
+                with st.expander("📊 Детали импорта", expanded=False):
+                    st.json(fixture_result)
 
-            with c2:
-
-                st.metric(
-                    "Уже существовали",
-                    existing,
-                )
-
-            with c3:
-
-                st.metric(
-                    "Пропущено",
-                    skipped,
-                )
-
-            with c4:
-
-                st.metric(
-                    "Новых результатов",
-                    results_loaded,
-                )
+                st.rerun()
 
         except Exception as e:
+            st.error(f"❌ Ошибка: {e}")
+            st.code(traceback.format_exc())
 
-            conn.rollback()
+            state["last_import_status"] = "error"
+            save_state(state)
 
-            st.error(
-                f"❌ Ошибка записи в БД: {e}"
-            )
+    # ============================================================
+    # СТАТУС БД
+    # ============================================================
 
-            st.exception(e)
+    st.divider()
+    st.subheader("📊 Состояние базы данных")
 
-        finally:
+    try:
+        db = get_db()
+        db_status = get_database_status(db)
 
-            conn.close()
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.metric("Матчи", db_status.get("matches", 0))
+
+        with col2:
+            st.metric("Команды", db_status.get("teams", 0))
+
+        with col3:
+            st.metric("Туры", db_status.get("rounds", 0))
+
+    except Exception as e:
+        st.warning(f"Не удалось получить статус БД: {e}")
+
+    # ============================================================
+    # ЖУРНАЛ
+    # ============================================================
+
+    if state.get("messages"):
+        st.divider()
+        st.subheader("📜 Журнал")
+
+        for msg in state["messages"][-10:]:
+            st.caption(msg)
+
+    # ============================================================
+    # FOOTER
+    # ============================================================
+
+    st.divider()
+    st.caption(
+        "FAJ Platform v12.1 · "
+        "SQLite · Идемпотентная загрузка · "
+        "RPL 2026/27"
+    )
 
 
 # ============================================================
-# ENTRY POINT
+# ENTRY
 # ============================================================
 
 if __name__ == "__main__":
-
     main()
