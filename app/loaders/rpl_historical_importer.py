@@ -10,47 +10,54 @@ RPL Historical Importer
 НАЗНАЧЕНИЕ
 ----------
 Импорт проверенных исторических результатов РПЛ 2026/27
-за 1-3 туры непосредственно в SQLite.
+за 1-3 туры в существующий календарь SQLite.
 
-Это НЕ парсер.
+ВАЖНО
+-----
+Этот модуль НЕ является FAJ Cycle.
 
-Исторические результаты являются фиксированным набором
-проверенных данных и не зависят от NB-Bet после импорта.
+RPL Historical Importer отвечает ТОЛЬКО за:
+    verified historical results
+            ↓
+    existing calendar match
+            ↓
+    match_results
+            +
+    actual result fields in matches
 
-ЦЕПОЧКА
--------
-Verified historical data
-        ↓
-round + home_team + away_team
-        ↓
-existing match in calendar
-        ↓
-match_results
-        +
-matches.actual_home
-matches.actual_away
-matches.status
-        ↓
-FAJ database
+НЕ ДЕЛАЕТ:
+    - создание сезонов
+    - создание туров
+    - создание команд
+    - создание матчей
+    - создание прогнозов
+    - создание паспортов
+    - обучение
+    - пересчёт модели
+    - запуск FAJ Cycle
+    - DELETE
 
 ПРИНЦИПЫ
 --------
+- SQLite only
+- существующий календарь является источником матчей
 - DELETE отсутствует
-- существующие матчи не удаляются
-- календарь не создаётся
-- прогнозы не создаются
-- обучение не запускается
-- паспорта не создаются
-- конфликтующие результаты не перезаписываются
+- отсутствующий матч считается ошибкой
+- отсутствующая команда считается ошибкой
+- отсутствующий тур считается ошибкой
+- конфликт результата считается ошибкой
+- существующий идентичный результат не перезаписывается
 - импорт идемпотентен
-- вся операция выполняется одной транзакцией
-- при ошибке импорт полностью откатывается
+- вся операция атомарна
+- при любой ошибке выполняется rollback
+- исторические результаты не зависят от NB-Bet
+- исторические результаты не запускают обучение
 
-Источник данных:
-    historical/manual_import
+Источник:
+    historical / manual_import
 
 Версия:
-    1.1
+    1.2
 ===========================================================
 """
 
@@ -75,40 +82,39 @@ LEAGUE_NAME = "РПЛ"
 
 IMPORT_SOURCE = "historical"
 IMPORT_METHOD = "manual_import"
-IMPORT_VERSION = "1.1"
+IMPORT_VERSION = "1.2"
 
 EXPECTED_MATCHES = 24
 EXPECTED_ROUNDS = (1, 2, 3)
 
 
 # ============================================================
-# DATABASE
+# DATABASE PATH
 # ============================================================
 
-ROOT_DIR = Path(__file__).resolve().parents[2]
+# Для:
+#
+# project/
+# ├── app/
+# │   └── rpl_historical.py
+# └── data/
+#     └── faj.db
+#
+# parents[1] = корень проекта
+#
+# Для более глубоко расположенного модуля путь также
+# пытаемся определить безопасно.
+# ============================================================
 
-DEFAULT_DB_PATH = ROOT_DIR / "data" / "faj.db"
+FILE_PATH = Path(__file__).resolve()
+
+PROJECT_ROOT = FILE_PATH.parents[1]
+
+DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "faj.db"
 
 
 # ============================================================
 # VERIFIED HISTORICAL RESULTS
-# ============================================================
-#
-# Формат:
-#
-# (
-#     round,
-#     date,
-#     home_team,
-#     away_team,
-#     home_goals,
-#     away_goals,
-# )
-#
-# Всего:
-#     24 матча
-#     8 матчей в каждом туре
-#
 # ============================================================
 
 HISTORICAL_MATCHES: List[
@@ -191,7 +197,6 @@ HISTORICAL_MATCHES: List[
         3,
     ),
 
-
     # ========================================================
     # ТУР 2
     # ========================================================
@@ -267,7 +272,6 @@ HISTORICAL_MATCHES: List[
         1,
         2,
     ),
-
 
     # ========================================================
     # ТУР 3
@@ -407,10 +411,10 @@ TEAM_ALIASES: Dict[str, str] = {
 }
 
 
-def normalize_team(team: Optional[str]) -> Optional[str]:
-    """
-    Приводит название команды к каноническому названию FAJ.
-    """
+def normalize_team(
+    team: Optional[str],
+) -> Optional[str]:
+    """Приводит название команды к каноническому имени FAJ."""
 
     if team is None:
         return None
@@ -420,14 +424,18 @@ def normalize_team(team: Optional[str]) -> Optional[str]:
     if not value:
         return None
 
-    return TEAM_ALIASES.get(value, value)
+    return TEAM_ALIASES.get(
+        value,
+        value,
+    )
 
 
 # ============================================================
-# RESULT STRUCTURE
+# RESULT
 # ============================================================
 
 def _empty_result() -> Dict[str, Any]:
+
     return {
         "success": False,
 
@@ -445,8 +453,6 @@ def _empty_result() -> Dict[str, Any]:
         "updated_matches": 0,
         "already_present": 0,
 
-        "skipped": 0,
-
         "errors": [],
 
         "rounds": [],
@@ -462,8 +468,8 @@ def _empty_result() -> Dict[str, Any]:
 
 def validate_historical_data() -> Dict[str, Any]:
     """
-    Проверяет внутренний набор исторических результатов
-    до подключения к БД.
+    Проверяет фиксированный исторический набор
+    до обращения к SQLite.
     """
 
     result = _empty_result()
@@ -473,9 +479,11 @@ def validate_historical_data() -> Dict[str, Any]:
     for item in HISTORICAL_MATCHES:
 
         if len(item) != 6:
+
             result["errors"].append(
                 f"Некорректная запись: {item}"
             )
+
             continue
 
         (
@@ -488,17 +496,38 @@ def validate_historical_data() -> Dict[str, Any]:
         ) = item
 
         try:
-            round_number = int(round_number)
-            home_goals = int(home_goals)
-            away_goals = int(away_goals)
-        except (TypeError, ValueError):
-            result["errors"].append(
-                f"Некорректные числовые значения: {item}"
+
+            round_number = int(
+                round_number
             )
+
+            home_goals = int(
+                home_goals
+            )
+
+            away_goals = int(
+                away_goals
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+
+            result["errors"].append(
+                f"Некорректные числовые значения: "
+                f"{item}"
+            )
+
             continue
 
-        home_team = normalize_team(home_team)
-        away_team = normalize_team(away_team)
+        home_team = normalize_team(
+            home_team
+        )
+
+        away_team = normalize_team(
+            away_team
+        )
 
         key = (
             round_number,
@@ -507,53 +536,69 @@ def validate_historical_data() -> Dict[str, Any]:
         )
 
         if key in seen:
+
             result["errors"].append(
                 f"Дубликат матча: {key}"
             )
+
             continue
 
         seen.add(key)
 
         if round_number not in EXPECTED_ROUNDS:
+
             result["errors"].append(
-                f"Недопустимый тур: {round_number}"
+                f"Недопустимый тур: "
+                f"{round_number}"
             )
 
         if not date_value:
+
             result["errors"].append(
                 f"Нет даты: {key}"
             )
 
-        if home_team is None or away_team is None:
+        if (
+            home_team is None
+            or away_team is None
+        ):
+
             result["errors"].append(
-                f"Не определена команда: {key}"
+                f"Не определена команда: "
+                f"{key}"
             )
 
         if home_team == away_team:
+
             result["errors"].append(
-                f"Одинаковые команды: {key}"
+                f"Одинаковые команды: "
+                f"{key}"
             )
 
-        if home_goals < 0 or away_goals < 0:
+        if (
+            home_goals < 0
+            or away_goals < 0
+        ):
+
             result["errors"].append(
-                f"Отрицательный счёт: {key}"
+                f"Отрицательный счёт: "
+                f"{key}"
             )
 
     if len(HISTORICAL_MATCHES) != EXPECTED_MATCHES:
+
         result["errors"].append(
             "Количество исторических матчей: "
             f"{len(HISTORICAL_MATCHES)}, "
-            f"ожидалось {EXPECTED_MATCHES}."
+            f"ожидалось {EXPECTED_MATCHES}"
         )
 
-    rounds = sorted(
+    result["rounds"] = sorted(
         {
             int(item[0])
             for item in HISTORICAL_MATCHES
         }
     )
-
-    result["rounds"] = rounds
 
     for round_number in EXPECTED_ROUNDS:
 
@@ -564,20 +609,19 @@ def validate_historical_data() -> Dict[str, Any]:
         )
 
         if count != 8:
+
             result["errors"].append(
                 f"Тур {round_number}: "
-                f"{count}/8 матчей."
+                f"{count}/8 матчей"
             )
 
-    result["success"] = (
-        len(result["errors"]) == 0
-    )
+    result["success"] = not result["errors"]
 
     return result
 
 
 # ============================================================
-# DATABASE SCHEMA HELPERS
+# SCHEMA HELPERS
 # ============================================================
 
 def _table_exists(
@@ -587,7 +631,7 @@ def _table_exists(
 
     cursor.execute(
         """
-        SELECT name
+        SELECT 1
         FROM sqlite_master
         WHERE type = 'table'
           AND name = ?
@@ -623,7 +667,9 @@ def _find_team_id(
     team_name: str,
 ) -> Optional[int]:
 
-    canonical = normalize_team(team_name)
+    canonical = normalize_team(
+        team_name
+    )
 
     if not canonical:
         return None
@@ -641,15 +687,15 @@ def _find_team_id(
     row = cursor.fetchone()
 
     if row:
+
         return int(row[0])
 
-    # --------------------------------------------------------
-    # Дополнительная попытка через aliases
-    # --------------------------------------------------------
+    # Дополнительный поиск через aliases.
 
     aliases = [
         alias
-        for alias, normalized in TEAM_ALIASES.items()
+        for alias, normalized
+        in TEAM_ALIASES.items()
         if normalized == canonical
     ]
 
@@ -668,6 +714,55 @@ def _find_team_id(
         row = cursor.fetchone()
 
         if row:
+
+            return int(row[0])
+
+    return None
+
+
+# ============================================================
+# SEASON LOOKUP
+# ============================================================
+
+def _find_season_id(
+    cursor: sqlite3.Cursor,
+) -> Optional[int]:
+
+    if not _table_exists(
+        cursor,
+        "seasons",
+    ):
+        return None
+
+    columns = _table_columns(
+        cursor,
+        "seasons",
+    )
+
+    for column in (
+        "name",
+        "season",
+        "season_name",
+        "year",
+    ):
+
+        if column not in columns:
+            continue
+
+        cursor.execute(
+            f'''
+            SELECT id
+            FROM seasons
+            WHERE "{column}" = ?
+            LIMIT 1
+            ''',
+            (SEASON_YEAR,),
+        )
+
+        row = cursor.fetchone()
+
+        if row:
+
             return int(row[0])
 
     return None
@@ -682,18 +777,20 @@ def _find_round_id(
     round_number: int,
 ) -> Optional[int]:
     """
-    Находит тур максимально безопасно.
+    Только чтение.
 
-    Если в rounds есть season_id, пытаемся сначала
-    использовать сезон 2026/27.
-
-    Если season_id отсутствует, работаем со старой
-    структурой rounds.
-
-    Никаких изменений таблицы rounds здесь не выполняется.
+    Никаких INSERT/UPDATE/DELETE в rounds.
     """
 
-    round_number = int(round_number)
+    round_number = int(
+        round_number
+    )
+
+    if not _table_exists(
+        cursor,
+        "rounds",
+    ):
+        return None
 
     columns = _table_columns(
         cursor,
@@ -701,51 +798,14 @@ def _find_round_id(
     )
 
     # --------------------------------------------------------
-    # 1. Есть season_id
+    # SEASON-SCOPED SEARCH
     # --------------------------------------------------------
 
     if "season_id" in columns:
 
-        # Сначала пытаемся найти сезон.
-        season_id = None
-
-        if _table_exists(
-            cursor,
-            "seasons",
-        ):
-
-            season_columns = _table_columns(
-                cursor,
-                "seasons",
-            )
-
-            possible_columns = [
-                "name",
-                "season",
-                "season_name",
-                "year",
-            ]
-
-            for column in possible_columns:
-
-                if column not in season_columns:
-                    continue
-
-                cursor.execute(
-                    f'''
-                    SELECT id
-                    FROM seasons
-                    WHERE "{column}" = ?
-                    LIMIT 1
-                    ''',
-                    (SEASON_YEAR,),
-                )
-
-                row = cursor.fetchone()
-
-                if row:
-                    season_id = int(row[0])
-                    break
+        season_id = _find_season_id(
+            cursor
+        )
 
         if season_id is not None:
 
@@ -768,31 +828,42 @@ def _find_round_id(
                 row = cursor.fetchone()
 
                 if row:
+
                     return int(row[0])
 
             if "name" in columns:
 
-                cursor.execute(
-                    """
-                    SELECT id
-                    FROM rounds
-                    WHERE season_id = ?
-                      AND name = ?
-                    LIMIT 1
-                    """,
-                    (
-                        season_id,
-                        f"Тур {round_number}",
-                    ),
+                possible_names = (
+                    f"Тур {round_number}",
+                    f"{round_number} тур",
+                    str(round_number),
+                    f"Round {round_number}",
                 )
 
-                row = cursor.fetchone()
+                for name in possible_names:
 
-                if row:
-                    return int(row[0])
+                    cursor.execute(
+                        """
+                        SELECT id
+                        FROM rounds
+                        WHERE season_id = ?
+                          AND name = ?
+                        LIMIT 1
+                        """,
+                        (
+                            season_id,
+                            name,
+                        ),
+                    )
+
+                    row = cursor.fetchone()
+
+                    if row:
+
+                        return int(row[0])
 
     # --------------------------------------------------------
-    # 2. Обычная структура rounds.round_number
+    # LEGACY / SIMPLE SCHEMA
     # --------------------------------------------------------
 
     if "round_number" in columns:
@@ -810,20 +881,17 @@ def _find_round_id(
         row = cursor.fetchone()
 
         if row:
-            return int(row[0])
 
-    # --------------------------------------------------------
-    # 3. rounds.name
-    # --------------------------------------------------------
+            return int(row[0])
 
     if "name" in columns:
 
-        possible_names = [
+        possible_names = (
             f"Тур {round_number}",
             f"{round_number} тур",
-            f"{round_number}",
+            str(round_number),
             f"Round {round_number}",
-        ]
+        )
 
         for name in possible_names:
 
@@ -840,6 +908,7 @@ def _find_round_id(
             row = cursor.fetchone()
 
             if row:
+
                 return int(row[0])
 
     return None
@@ -854,17 +923,7 @@ def _find_match(
     round_id: int,
     home_team_id: int,
     away_team_id: int,
-    date_value: str,
 ) -> Optional[Dict[str, Any]]:
-    """
-    Основной ключ:
-        round_id + home_team_id + away_team_id
-
-    Дата НЕ является обязательной частью ключа.
-
-    Это важно, потому что дата в календаре могла быть
-    сохранена с другим временем или форматом.
-    """
 
     cursor.execute(
         """
@@ -885,6 +944,7 @@ def _find_match(
     row = cursor.fetchone()
 
     if not row:
+
         return None
 
     columns = [
@@ -923,6 +983,7 @@ def _get_existing_result(
     row = cursor.fetchone()
 
     if not row:
+
         return None
 
     return {
@@ -931,6 +992,175 @@ def _get_existing_result(
         "home_goals": row[2],
         "away_goals": row[3],
     }
+
+
+# ============================================================
+# UPDATE MATCH ACTUAL RESULT
+# ============================================================
+
+def _update_match_actual(
+    cursor: sqlite3.Cursor,
+    match_id: int,
+    home_goals: int,
+    away_goals: int,
+) -> None:
+    """
+    Обновляет только те поля matches, которые реально
+    присутствуют в текущей SQLite-схеме.
+
+    Это позволяет Historical Importer работать с v12.1
+    без жёсткой привязки к одной версии database.py.
+    """
+
+    columns = _table_columns(
+        cursor,
+        "matches",
+    )
+
+    assignments: List[str] = []
+    values: List[Any] = []
+
+    if "actual_home" in columns:
+
+        assignments.append(
+            "actual_home = ?"
+        )
+
+        values.append(
+            int(home_goals)
+        )
+
+    if "actual_away" in columns:
+
+        assignments.append(
+            "actual_away = ?"
+        )
+
+        values.append(
+            int(away_goals)
+        )
+
+    if "status" in columns:
+
+        assignments.append(
+            "status = ?"
+        )
+
+        values.append(
+            "finished"
+        )
+
+    if "updated_at" in columns:
+
+        assignments.append(
+            "updated_at = ?"
+        )
+
+        values.append(
+            datetime.now().isoformat()
+        )
+
+    if not assignments:
+
+        return
+
+    values.append(
+        int(match_id)
+    )
+
+    cursor.execute(
+        f"""
+        UPDATE matches
+        SET {", ".join(assignments)}
+        WHERE id = ?
+        """,
+        values,
+    )
+
+
+# ============================================================
+# INSERT MATCH RESULT
+# ============================================================
+
+def _insert_match_result(
+    cursor: sqlite3.Cursor,
+    match_id: int,
+    home_goals: int,
+    away_goals: int,
+) -> None:
+    """
+    Добавляет новый результат.
+
+    Использует только реально существующие обязательные
+    поля таблицы match_results.
+    """
+
+    columns = _table_columns(
+        cursor,
+        "match_results",
+    )
+
+    required = {
+        "match_id",
+        "home_goals",
+        "away_goals",
+    }
+
+    missing = (
+        required
+        - set(columns)
+    )
+
+    if missing:
+
+        raise RuntimeError(
+            "match_results не содержит "
+            f"обязательные поля: {missing}"
+        )
+
+    insert_columns = [
+        "match_id",
+        "home_goals",
+        "away_goals",
+    ]
+
+    values: List[Any] = [
+        int(match_id),
+        int(home_goals),
+        int(away_goals),
+    ]
+
+    # Не все версии схемы содержат penalty-поля.
+
+    if "home_penalty_goals" in columns:
+
+        insert_columns.append(
+            "home_penalty_goals"
+        )
+
+        values.append(0)
+
+    if "away_penalty_goals" in columns:
+
+        insert_columns.append(
+            "away_penalty_goals"
+        )
+
+        values.append(0)
+
+    placeholders = ", ".join(
+        "?"
+        for _ in insert_columns
+    )
+
+    cursor.execute(
+        f"""
+        INSERT INTO match_results
+        ({", ".join(insert_columns)})
+        VALUES ({placeholders})
+        """,
+        values,
+    )
 
 
 # ============================================================
@@ -952,17 +1182,23 @@ def _import_match(
         away_goals,
     ) = item
 
-    home_team = normalize_team(home_team)
-    away_team = normalize_team(away_team)
+    home_team = normalize_team(
+        home_team
+    )
+
+    away_team = normalize_team(
+        away_team
+    )
 
     if not home_team or not away_team:
+
         raise ValueError(
-            f"Не удалось нормализовать команды: "
+            "Не удалось нормализовать команды: "
             f"{home_team} — {away_team}"
         )
 
     # --------------------------------------------------------
-    # TEAM IDS
+    # TEAMS
     # --------------------------------------------------------
 
     home_team_id = _find_team_id(
@@ -976,27 +1212,33 @@ def _import_match(
     )
 
     if home_team_id is None:
+
         raise ValueError(
-            f"Команда не найдена в БД: {home_team}"
+            f"Команда не найдена в БД: "
+            f"{home_team}"
         )
 
     if away_team_id is None:
+
         raise ValueError(
-            f"Команда не найдена в БД: {away_team}"
+            f"Команда не найдена в БД: "
+            f"{away_team}"
         )
 
     # --------------------------------------------------------
-    # ROUND ID
+    # ROUND
     # --------------------------------------------------------
 
     round_id = _find_round_id(
         cursor,
-        int(round_number),
+        round_number,
     )
 
     if round_id is None:
+
         raise ValueError(
-            f"Тур не найден в БД: {round_number}"
+            f"Тур не найден в БД: "
+            f"{round_number}"
         )
 
     # --------------------------------------------------------
@@ -1008,12 +1250,13 @@ def _import_match(
         round_id,
         home_team_id,
         away_team_id,
-        date_value,
     )
 
     if match is None:
+
         raise ValueError(
-            "Матч отсутствует в календаре: "
+            "Матч отсутствует "
+            "в существующем календаре: "
             f"тур {round_number}, "
             f"{home_team} — {away_team}"
         )
@@ -1033,96 +1276,109 @@ def _import_match(
 
     if existing is not None:
 
-        existing_home = existing["home_goals"]
-        existing_away = existing["away_goals"]
+        existing_home = existing[
+            "home_goals"
+        ]
 
-        # Полностью совпадает.
+        existing_away = existing[
+            "away_goals"
+        ]
+
+        # ----------------------------------------------------
+        # IDENTICAL RESULT
+        # ----------------------------------------------------
+
         if (
-            int(existing_home) == int(home_goals)
-            and int(existing_away) == int(away_goals)
+            int(existing_home)
+            == int(home_goals)
+            and
+            int(existing_away)
+            == int(away_goals)
         ):
 
-            result["already_present"] += 1
+            result[
+                "already_present"
+            ] += 1
 
-            # Даже если match_results уже существует,
-            # гарантируем актуальные поля matches.
-            cursor.execute(
-                """
-                UPDATE matches
-                SET
-                    actual_home = ?,
-                    actual_away = ?,
-                    status = 'finished',
-                    updated_at = ?
-                WHERE id = ?
-                """,
-                (
-                    int(home_goals),
-                    int(away_goals),
-                    datetime.now().isoformat(),
-                    match_id,
-                ),
+            # Синхронизируем actual-поля,
+            # если они существуют.
+
+            _update_match_actual(
+                cursor,
+                match_id,
+                home_goals,
+                away_goals,
+            )
+
+            result["matches"].append(
+                {
+                    "match_id": match_id,
+                    "round": int(
+                        round_number
+                    ),
+                    "date": date_value,
+                    "home_team": home_team,
+                    "away_team": away_team,
+                    "home_goals": int(
+                        home_goals
+                    ),
+                    "away_goals": int(
+                        away_goals
+                    ),
+                    "score": (
+                        f"{home_goals}:"
+                        f"{away_goals}"
+                    ),
+                    "status": "already_present",
+                }
             )
 
             return
 
-        # Конфликт — НЕ перезаписываем.
+        # ----------------------------------------------------
+        # CONFLICT
+        # ----------------------------------------------------
+
         raise ValueError(
-            f"Конфликт результата: "
+            "КОНФЛИКТ результата: "
             f"{home_team} — {away_team}. "
-            f"В БД: {existing_home}:{existing_away}; "
-            f"исторический: {home_goals}:{away_goals}"
+            f"В БД: "
+            f"{existing_home}:"
+            f"{existing_away}; "
+            f"исторический: "
+            f"{home_goals}:"
+            f"{away_goals}"
         )
 
     # --------------------------------------------------------
-    # INSERT INTO match_results
+    # NEW RESULT
     # --------------------------------------------------------
 
-    cursor.execute(
-        """
-        INSERT OR IGNORE INTO match_results (
-            match_id,
-            home_goals,
-            away_goals,
-            home_penalty_goals,
-            away_penalty_goals
-        )
-        VALUES (?, ?, ?, 0, 0)
-        """,
-        (
-            match_id,
-            int(home_goals),
-            int(away_goals),
-        ),
+    _insert_match_result(
+        cursor,
+        match_id,
+        home_goals,
+        away_goals,
     )
 
-    if cursor.rowcount > 0:
-        result["inserted_results"] += 1
+    result[
+        "inserted_results"
+    ] += 1
 
     # --------------------------------------------------------
-    # UPDATE MATCH
+    # MATCH ACTUAL FIELDS
     # --------------------------------------------------------
 
-    cursor.execute(
-        """
-        UPDATE matches
-        SET
-            actual_home = ?,
-            actual_away = ?,
-            status = 'finished',
-            updated_at = ?
-        WHERE id = ?
-        """,
-        (
-            int(home_goals),
-            int(away_goals),
-            datetime.now().isoformat(),
-            match_id,
-        ),
+    _update_match_actual(
+        cursor,
+        match_id,
+        home_goals,
+        away_goals,
     )
 
-    if cursor.rowcount > 0:
-        result["updated_matches"] += 1
+    result[
+        "updated_matches"
+    ] += 1
 
     # --------------------------------------------------------
     # REPORT
@@ -1131,20 +1387,120 @@ def _import_match(
     result["matches"].append(
         {
             "match_id": match_id,
-            "round": int(round_number),
+            "round": int(
+                round_number
+            ),
             "date": date_value,
             "home_team": home_team,
             "away_team": away_team,
-            "home_goals": int(home_goals),
-            "away_goals": int(away_goals),
-            "score": (
-                f"{int(home_goals)}:"
-                f"{int(away_goals)}"
+            "home_goals": int(
+                home_goals
             ),
+            "away_goals": int(
+                away_goals
+            ),
+            "score": (
+                f"{home_goals}:"
+                f"{away_goals}"
+            ),
+            "status": "imported",
             "source": IMPORT_SOURCE,
             "method": IMPORT_METHOD,
+            "version": IMPORT_VERSION,
         }
     )
+
+
+# ============================================================
+# PRE-FLIGHT
+# ============================================================
+
+def _preflight(
+    cursor: sqlite3.Cursor,
+) -> List[str]:
+    """
+    Проверяет инфраструктуру до начала импорта.
+
+    Никаких изменений БД.
+    """
+
+    errors: List[str] = []
+
+    required_tables = (
+        "teams",
+        "rounds",
+        "matches",
+        "match_results",
+    )
+
+    for table in required_tables:
+
+        if not _table_exists(
+            cursor,
+            table,
+        ):
+
+            errors.append(
+                f"Отсутствует таблица БД: "
+                f"{table}"
+            )
+
+    if errors:
+
+        return errors
+
+    match_columns = set(
+        _table_columns(
+            cursor,
+            "matches",
+        )
+    )
+
+    required_match_columns = {
+        "id",
+        "round_id",
+        "home_team_id",
+        "away_team_id",
+    }
+
+    missing_match_columns = (
+        required_match_columns
+        - match_columns
+    )
+
+    if missing_match_columns:
+
+        errors.append(
+            "matches не содержит поля: "
+            f"{missing_match_columns}"
+        )
+
+    result_columns = set(
+        _table_columns(
+            cursor,
+            "match_results",
+        )
+    )
+
+    required_result_columns = {
+        "match_id",
+        "home_goals",
+        "away_goals",
+    }
+
+    missing_result_columns = (
+        required_result_columns
+        - result_columns
+    )
+
+    if missing_result_columns:
+
+        errors.append(
+            "match_results не содержит поля: "
+            f"{missing_result_columns}"
+        )
+
+    return errors
 
 
 # ============================================================
@@ -1155,21 +1511,29 @@ def import_historical_results(
     db_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Основной импортёр.
+    Главный импортёр.
 
-    Все 24 матча импортируются в одной транзакции.
+    Все 24 матча обрабатываются в одной транзакции.
 
-    Если хотя бы один матч не найден или обнаружен конфликт,
-    вся транзакция откатывается.
+    Если хотя бы один матч:
+        - не найден;
+        - не имеет команды;
+        - не имеет тура;
+        - имеет конфликтующий результат;
+
+    выполняется rollback всей операции.
     """
 
     # --------------------------------------------------------
-    # VALIDATE STATIC DATA FIRST
+    # STATIC VALIDATION
     # --------------------------------------------------------
 
-    validation = validate_historical_data()
+    validation = (
+        validate_historical_data()
+    )
 
     if not validation["success"]:
+
         return validation
 
     result = _empty_result()
@@ -1181,13 +1545,14 @@ def import_historical_results(
     )
 
     # --------------------------------------------------------
-    # DATABASE EXISTS
+    # DATABASE
     # --------------------------------------------------------
 
     if not path.exists():
 
         result["errors"].append(
-            f"База данных не найдена: {path}"
+            f"База данных не найдена: "
+            f"{path}"
         )
 
         return result
@@ -1196,65 +1561,62 @@ def import_historical_results(
         str(path)
     )
 
-    conn.row_factory = sqlite3.Row
+    conn.row_factory = (
+        sqlite3.Row
+    )
 
     cursor = conn.cursor()
 
     try:
 
         # ----------------------------------------------------
-        # REQUIRED TABLES
+        # PRE-FLIGHT
         # ----------------------------------------------------
 
-        required_tables = [
-            "teams",
-            "rounds",
-            "matches",
-            "match_results",
-        ]
+        preflight_errors = _preflight(
+            cursor
+        )
 
-        for table in required_tables:
+        if preflight_errors:
 
-            if not _table_exists(
-                cursor,
-                table,
-            ):
+            result["errors"].extend(
+                preflight_errors
+            )
 
-                raise RuntimeError(
-                    f"Отсутствует таблица БД: {table}"
-                )
+            conn.rollback()
+
+            return result
 
         # ----------------------------------------------------
-        # IMPORT ALL 24
+        # IMPORT
         # ----------------------------------------------------
 
         for item in HISTORICAL_MATCHES:
 
-            try:
-
-                _import_match(
-                    cursor,
-                    item,
-                    result,
-                )
-
-            except Exception as exc:
-
-                result["errors"].append(
-                    str(exc)
-                )
+            _import_match(
+                cursor,
+                item,
+                result,
+            )
 
         # ----------------------------------------------------
-        # ATOMIC TRANSACTION
+        # FINAL TRANSACTION CHECK
         # ----------------------------------------------------
 
-        if result["errors"]:
+        total_processed = (
+            result["inserted_results"]
+            + result["already_present"]
+        )
 
-            conn.rollback()
+        if total_processed != EXPECTED_MATCHES:
 
-            result["success"] = False
-
-            return result
+            raise RuntimeError(
+                "Количество обработанных "
+                f"результатов: "
+                f"{total_processed}; "
+                f"ожидалось "
+                f"{EXPECTED_MATCHES}"
+            )
 
         # ----------------------------------------------------
         # COMMIT
@@ -1262,26 +1624,35 @@ def import_historical_results(
 
         conn.commit()
 
-        result["rounds_imported"] = sorted(
+        result[
+            "rounds_imported"
+        ] = sorted(
             {
                 int(match["round"])
-                for match in result["matches"]
+                for match
+                in result["matches"]
             }
         )
 
         result["success"] = True
 
         logger.info(
-            "FAJ historical import completed: "
-            "inserted=%s updated=%s already_present=%s",
+            "FAJ RPL historical import "
+            "completed: inserted=%s "
+            "already_present=%s "
+            "updated_matches=%s",
             result["inserted_results"],
-            result["updated_matches"],
             result["already_present"],
+            result["updated_matches"],
         )
 
         return result
 
     except Exception as exc:
+
+        # ----------------------------------------------------
+        # ATOMIC ROLLBACK
+        # ----------------------------------------------------
 
         conn.rollback()
 
@@ -1289,6 +1660,10 @@ def import_historical_results(
 
         result["errors"].append(
             str(exc)
+        )
+
+        logger.exception(
+            "FAJ historical import failed"
         )
 
         return result
@@ -1312,26 +1687,29 @@ def load_rpl_historical_results(
 
 
 # ============================================================
-# SIMPLE STATUS
+# STATUS
 # ============================================================
 
 def get_historical_import_status(
     db_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Проверяет, сколько из 24 исторических результатов
-    уже находятся в БД.
+    Только чтение.
 
-    Ничего не изменяет.
+    Ничего в БД не изменяет.
     """
 
     result = {
         "success": False,
+
         "expected": EXPECTED_MATCHES,
+
         "present": 0,
         "missing": 0,
         "conflicts": 0,
+
         "errors": [],
+
         "matches": [],
     }
 
@@ -1344,7 +1722,8 @@ def get_historical_import_status(
     if not path.exists():
 
         result["errors"].append(
-            f"База данных не найдена: {path}"
+            f"База данных не найдена: "
+            f"{path}"
         )
 
         return result
@@ -1353,11 +1732,25 @@ def get_historical_import_status(
         str(path)
     )
 
-    conn.row_factory = sqlite3.Row
+    conn.row_factory = (
+        sqlite3.Row
+    )
 
     cursor = conn.cursor()
 
     try:
+
+        preflight_errors = _preflight(
+            cursor
+        )
+
+        if preflight_errors:
+
+            result["errors"].extend(
+                preflight_errors
+            )
+
+            return result
 
         for item in HISTORICAL_MATCHES:
 
@@ -1378,6 +1771,10 @@ def get_historical_import_status(
                 away_team
             )
 
+            # ------------------------------------------------
+            # TEAM
+            # ------------------------------------------------
+
             home_team_id = _find_team_id(
                 cursor,
                 home_team,
@@ -1395,7 +1792,24 @@ def get_historical_import_status(
 
                 result["missing"] += 1
 
+                result["matches"].append(
+                    {
+                        "round": round_number,
+                        "home_team": home_team,
+                        "away_team": away_team,
+                        "score": (
+                            f"{home_goals}:"
+                            f"{away_goals}"
+                        ),
+                        "status": "missing_team",
+                    }
+                )
+
                 continue
+
+            # ------------------------------------------------
+            # ROUND
+            # ------------------------------------------------
 
             round_id = _find_round_id(
                 cursor,
@@ -1406,19 +1820,48 @@ def get_historical_import_status(
 
                 result["missing"] += 1
 
+                result["matches"].append(
+                    {
+                        "round": round_number,
+                        "home_team": home_team,
+                        "away_team": away_team,
+                        "score": (
+                            f"{home_goals}:"
+                            f"{away_goals}"
+                        ),
+                        "status": "missing_round",
+                    }
+                )
+
                 continue
+
+            # ------------------------------------------------
+            # MATCH
+            # ------------------------------------------------
 
             match = _find_match(
                 cursor,
                 round_id,
                 home_team_id,
                 away_team_id,
-                date_value,
             )
 
             if match is None:
 
                 result["missing"] += 1
+
+                result["matches"].append(
+                    {
+                        "round": round_number,
+                        "home_team": home_team,
+                        "away_team": away_team,
+                        "score": (
+                            f"{home_goals}:"
+                            f"{away_goals}"
+                        ),
+                        "status": "missing_match",
+                    }
+                )
 
                 continue
 
@@ -1426,22 +1869,54 @@ def get_historical_import_status(
                 match["id"]
             )
 
-            existing = _get_existing_result(
-                cursor,
-                match_id,
+            # ------------------------------------------------
+            # RESULT
+            # ------------------------------------------------
+
+            existing = (
+                _get_existing_result(
+                    cursor,
+                    match_id,
+                )
             )
 
             if existing is None:
 
                 result["missing"] += 1
 
+                result["matches"].append(
+                    {
+                        "match_id": match_id,
+                        "round": round_number,
+                        "home_team": home_team,
+                        "away_team": away_team,
+                        "score": (
+                            f"{home_goals}:"
+                            f"{away_goals}"
+                        ),
+                        "status": "missing_result",
+                    }
+                )
+
                 continue
 
+            existing_home = int(
+                existing["home_goals"]
+            )
+
+            existing_away = int(
+                existing["away_goals"]
+            )
+
+            # ------------------------------------------------
+            # IDENTICAL
+            # ------------------------------------------------
+
             if (
-                int(existing["home_goals"])
+                existing_home
                 == int(home_goals)
                 and
-                int(existing["away_goals"])
+                existing_away
                 == int(away_goals)
             ):
 
@@ -1449,6 +1924,7 @@ def get_historical_import_status(
 
                 result["matches"].append(
                     {
+                        "match_id": match_id,
                         "round": round_number,
                         "home_team": home_team,
                         "away_team": away_team,
@@ -1460,12 +1936,17 @@ def get_historical_import_status(
                     }
                 )
 
+            # ------------------------------------------------
+            # CONFLICT
+            # ------------------------------------------------
+
             else:
 
                 result["conflicts"] += 1
 
                 result["matches"].append(
                     {
+                        "match_id": match_id,
                         "round": round_number,
                         "home_team": home_team,
                         "away_team": away_team,
@@ -1474,8 +1955,8 @@ def get_historical_import_status(
                             f"{away_goals}"
                         ),
                         "db_score": (
-                            f"{existing['home_goals']}:"
-                            f"{existing['away_goals']}"
+                            f"{existing_home}:"
+                            f"{existing_away}"
                         ),
                         "status": "conflict",
                     }
@@ -1523,10 +2004,12 @@ if __name__ == "__main__":
     print("=" * 72)
 
     # --------------------------------------------------------
-    # STATIC VALIDATION
+    # STATIC DATA
     # --------------------------------------------------------
 
-    validation = validate_historical_data()
+    validation = (
+        validate_historical_data()
+    )
 
     print(
         f"Исторических матчей: "
@@ -1542,23 +2025,23 @@ if __name__ == "__main__":
 
         print()
         print(
-            "ОШИБКИ В НАБОРЕ ДАННЫХ:"
+            "❌ ОШИБКИ В ИСТОРИЧЕСКОМ НАБОРЕ:"
         )
 
         for error in validation["errors"]:
 
             print(
-                f"  ❌ {error}"
+                f"   {error}"
             )
 
         raise SystemExit(1)
 
     print(
-        "Проверка набора: OK"
+        "Проверка исторического набора: OK"
     )
 
     # --------------------------------------------------------
-    # DATABASE STATUS BEFORE IMPORT
+    # STATUS
     # --------------------------------------------------------
 
     print()
@@ -1566,7 +2049,21 @@ if __name__ == "__main__":
         "Проверка текущего состояния БД..."
     )
 
-    status = get_historical_import_status()
+    status = (
+        get_historical_import_status()
+    )
+
+    if status["errors"]:
+
+        print()
+
+        for error in status["errors"]:
+
+            print(
+                f"❌ {error}"
+            )
+
+        raise SystemExit(1)
 
     print(
         f"Уже присутствует: "
@@ -1592,7 +2089,9 @@ if __name__ == "__main__":
         "Запуск исторического импорта..."
     )
 
-    result = import_historical_results()
+    result = (
+        import_historical_results()
+    )
 
     print()
     print(
@@ -1627,21 +2126,17 @@ if __name__ == "__main__":
             f"{result['rounds_imported']}"
         )
 
-    # --------------------------------------------------------
-    # ERRORS
-    # --------------------------------------------------------
-
     if result["errors"]:
 
         print()
         print(
-            "ОШИБКИ:"
+            "❌ ОШИБКИ:"
         )
 
         for error in result["errors"]:
 
             print(
-                f"  ❌ {error}"
+                f"   {error}"
             )
 
     print()
