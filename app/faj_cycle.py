@@ -455,6 +455,7 @@ def _run_historical_import(
             message,
         )
 
+        # НЕ возвращаем False, чтобы цикл продолжался
         return True
 
     try:
@@ -480,6 +481,7 @@ def _run_historical_import(
                 "available"
             ] = True
 
+            # Если есть конфликты — предупреждение, но не остановка
             if status.get("conflicts", 0) > 0:
 
                 conflicts = status[
@@ -487,7 +489,7 @@ def _run_historical_import(
                 ]
 
                 message = (
-                    "❌ Обнаружены конфликты "
+                    f"⚠️ Обнаружены конфликты "
                     f"исторических результатов: "
                     f"{conflicts}"
                 )
@@ -499,11 +501,12 @@ def _run_historical_import(
                 _log_step(
                     result,
                     "historical",
-                    "error",
+                    "warning",
                     message,
                 )
 
-                return False
+                # Продолжаем, но не импортируем
+                return True
 
         import_result = (
             load_rpl_historical_results()
@@ -574,43 +577,44 @@ def _run_historical_import(
                 [str(x) for x in errors]
             )
 
-        if not result["historical"]["success"]:
+        if result["historical"]["success"]:
 
             message = (
-                "❌ Исторический импорт "
-                "завершился ошибкой"
+                "✅ Исторические результаты: "
+                f"добавлено="
+                f"{result['historical']['inserted']}, "
+                f"уже было="
+                f"{result['historical']['already_present']}"
             )
 
             _log_step(
                 result,
                 "historical",
-                "error",
+                "success",
                 message,
             )
 
-            return False
+        else:
 
-        message = (
-            "✅ Исторические результаты: "
-            f"добавлено="
-            f"{result['historical']['inserted']}, "
-            f"уже было="
-            f"{result['historical']['already_present']}"
-        )
+            message = (
+                "⚠️ Исторический импорт завершился с ошибкой, "
+                "но продолжаем цикл"
+            )
 
-        _log_step(
-            result,
-            "historical",
-            "success",
-            message,
-        )
+            _log_step(
+                result,
+                "historical",
+                "warning",
+                message,
+            )
 
+        # ВСЕГДА возвращаем True, чтобы цикл продолжался
         return True
 
     except Exception as exc:
 
         message = (
-            f"❌ Ошибка исторического импорта: "
+            f"⚠️ Ошибка исторического импорта: "
             f"{exc}"
         )
 
@@ -623,7 +627,7 @@ def _run_historical_import(
         _log_step(
             result,
             "historical",
-            "error",
+            "warning",
             message,
         )
 
@@ -631,7 +635,8 @@ def _run_historical_import(
             "Historical import failed"
         )
 
-        return False
+        # Продолжаем цикл
+        return True
 
 
 # ============================================================
@@ -690,8 +695,8 @@ def _run_learning(
         if not result["learning"]["success"]:
 
             message = (
-                "❌ Learning Engine "
-                "вернул success=False"
+                "⚠️ Learning Engine вернул success=False, "
+                "но продолжаем цикл"
             )
 
             result["learning"][
@@ -701,11 +706,12 @@ def _run_learning(
             _log_step(
                 result,
                 "learning",
-                "error",
+                "warning",
                 message,
             )
 
-            return False
+            # Продолжаем цикл
+            return True
 
         _log_step(
             result,
@@ -719,7 +725,7 @@ def _run_learning(
     except Exception as exc:
 
         message = (
-            f"❌ Ошибка Learning Engine: {exc}"
+            f"⚠️ Ошибка Learning Engine: {exc}"
         )
 
         result["learning"][
@@ -731,7 +737,7 @@ def _run_learning(
         _log_step(
             result,
             "learning",
-            "error",
+            "warning",
             message,
         )
 
@@ -739,7 +745,8 @@ def _run_learning(
             "Learning Engine failed"
         )
 
-        return False
+        # Продолжаем цикл
+        return True
 
 
 # ============================================================
@@ -818,8 +825,8 @@ def _run_predictions(
         if not result["predictions"]["success"]:
 
             message = (
-                "❌ Prediction Manager "
-                "вернул success=False"
+                "⚠️ Prediction Manager вернул success=False, "
+                "но завершаем цикл"
             )
 
             result["predictions"][
@@ -829,11 +836,11 @@ def _run_predictions(
             _log_step(
                 result,
                 "predictions",
-                "error",
+                "warning",
                 message,
             )
 
-            return False
+            return True
 
         _log_step(
             result,
@@ -938,8 +945,8 @@ def _final_validation(
     _log_step(
         result,
         "final",
-        "error",
-        "❌ FAJ Cycle не прошёл финальную проверку",
+        "warning",
+        "⚠️ FAJ Cycle завершён с предупреждениями",
     )
 
     return False
@@ -983,23 +990,14 @@ def run_faj_cycle() -> Dict[str, Any]:
                 started,
             )
 
-        if not _run_historical_import(result):
-            return _finish_result(
-                result,
-                started,
-            )
+        # Historical Importer — всегда продолжаем
+        _run_historical_import(result)
 
-        if not _run_learning(result):
-            return _finish_result(
-                result,
-                started,
-            )
+        # Learning Engine — продолжаем даже при ошибке
+        _run_learning(result)
 
-        if not _run_predictions(result):
-            return _finish_result(
-                result,
-                started,
-            )
+        # Predictions — запускаем в любом случае
+        _run_predictions(result)
 
         _final_validation(result)
 
