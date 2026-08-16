@@ -309,6 +309,7 @@ class LearningEngine:
                 fingerprint,
             )
 
+            # ИСПРАВЛЕНО: сохранение параметров в model_parameters
             self._save_model_parameters(
                 conn,
                 new_parameters,
@@ -1290,7 +1291,7 @@ class LearningEngine:
         )
 
     # ========================================================
-    # SAVE PARAMETERS
+    # SAVE PARAMETERS (ИСПРАВЛЕНО)
     # ========================================================
 
     def _save_model_parameters(
@@ -1298,44 +1299,73 @@ class LearningEngine:
         conn,
         parameters,
     ):
+        """
+        Сохраняет параметры обучения в model_parameters.
 
-        if "model_parameters" not in self._tables(
-            conn
-        ):
+        Соответствует схеме:
+            parameter_name TEXT NOT NULL,
+            parameter_value REAL,
+            model_version TEXT,
+            category TEXT,
+            group_name TEXT,
+            description TEXT,
+            updated_at TEXT
+        """
+        if "model_parameters" not in self._tables(conn):
+            logger.warning("Таблица model_parameters отсутствует")
             return
 
-        columns = self._columns(
-            conn,
-            "model_parameters",
-        )
+        columns = self._columns(conn, "model_parameters")
 
-        encoded = json.dumps(
-            parameters,
-            ensure_ascii=False,
-        )
+        # Проверяем наличие обязательных колонок
+        has_parameter_name = "parameter_name" in columns
+        has_parameter_value = "parameter_value" in columns
+        has_model_version = "model_version" in columns
+        has_category = "category" in columns
+        has_group_name = "group_name" in columns
+        has_description = "description" in columns
+        has_updated_at = "updated_at" in columns
 
-        payload = {
-            "created_at": _now(),
-            "updated_at": _now(),
-            "run_id": self.run_id,
-            "engine": ENGINE_NAME,
-            "engine_version": ENGINE_VERSION,
-            "parameter_type": "learning",
-            "name": "FAJ learned parameters",
-            "parameters": encoded,
-            "parameters_json": encoded,
-            "value": encoded,
-            "config": encoded,
-            "data": encoded,
-            "status": "active",
-        }
+        if not has_parameter_name:
+            logger.error("model_parameters не содержит parameter_name")
+            return
 
-        self._insert_compatible(
-            conn,
-            "model_parameters",
-            columns,
-            payload,
-        )
+        now = _now()
+
+        # Сохраняем каждый параметр отдельной строкой
+        saved_count = 0
+
+        for param_name, param_value in parameters.items():
+            payload = {}
+
+            # parameter_name — ОБЯЗАТЕЛЬНО
+            payload["parameter_name"] = param_name
+
+            if has_parameter_value:
+                try:
+                    payload["parameter_value"] = float(param_value)
+                except (TypeError, ValueError):
+                    payload["parameter_value"] = 0.0
+
+            if has_model_version:
+                payload["model_version"] = ENGINE_VERSION
+
+            if has_category:
+                payload["category"] = "learning"
+
+            if has_group_name:
+                payload["group_name"] = "weights"
+
+            if has_description:
+                payload["description"] = f"FAJ learned: {param_name}"
+
+            if has_updated_at:
+                payload["updated_at"] = now
+
+            self._insert_compatible(conn, "model_parameters", columns, payload)
+            saved_count += 1
+
+        logger.info(f"Сохранено {saved_count} параметров в model_parameters")
 
     # ========================================================
     # SQLITE
