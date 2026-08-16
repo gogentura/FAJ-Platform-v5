@@ -15,7 +15,7 @@ FAJ CYCLE — ЖЁСТКИЙ ОРКЕСТРАТОР
         │      │
         │      └── ошибка → STOP
         │
-        ├── 2. HISTORICAL RESULTS
+        ├── 2. HISTORICAL RESULTS (1-4 туры, 32 матча)
         │      │
         │      ├── новые результаты → RUN
         │      ├── уже существуют → SKIP
@@ -26,7 +26,7 @@ FAJ CYCLE — ЖЁСТКИЙ ОРКЕСТРАТОР
         │      ├── new_results > 0 → RUN
         │      └── new_results = 0 → SKIP
         │
-        ├── 4. PREDICTIONS
+        ├── 4. PREDICTIONS (на 5-й тур)
         │      │
         │      └── только если этапы 1-3 OK
         │
@@ -78,8 +78,8 @@ FAJ_CYCLE_VERSION = "12.1"
 LEAGUE = "РПЛ"
 SEASON = "2026-2027"
 
-EXPECTED_INITIAL_HISTORICAL = 24  # 1-3 туры
-NEXT_PREDICTION_ROUND = 5         # 5-й тур (4-й уже сыгран)
+EXPECTED_INITIAL_HISTORICAL = 32  # 1-4 туры (все сыгранные)
+NEXT_PREDICTION_ROUND = 5         # 5-й тур (будущий)
 
 EXPECTED_TABLES = (
     "teams",
@@ -257,7 +257,7 @@ def _run_historical(result: Dict[str, Any]) -> bool:
             result["errors"].append(msg)
             return False
 
-        # Уже есть все 24 результата
+        # Уже есть все 32 результата (1-4 туры)
         if status.get("present", 0) >= EXPECTED_INITIAL_HISTORICAL:
             result["historical"]["success"] = True
             result["historical"]["skipped"] = True
