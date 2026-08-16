@@ -15,6 +15,7 @@ Prediction Manager v1.9
     2. _validate_passport_for_prediction() — добавлен "form"
     3. FINISHED_STATUSES — расширен
     4. _find_match_by_teams() — только как fallback
+    5. Исправлен вызов MatchContext — убраны несуществующие параметры
 """
 
 import logging
@@ -156,10 +157,11 @@ class PredictionManager:
         if not match:
             return {"status": "error", "message": f"Матч с ID {match_id} не найден.", "match_id": match_id}
 
+        # ИСПРАВЛЕНО: убраны несуществующие параметры season, round, tournament
         context = MatchContext(
-            season=match.get("season_name"),
-            round=match.get("round_number"),
-            tournament=match.get("competition"),
+            match_id=match_id,
+            home_team=match.get("home_team"),
+            away_team=match.get("away_team"),
         )
 
         return self.predict(
