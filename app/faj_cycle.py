@@ -59,8 +59,9 @@ from app.database import get_connection
 from app.core.prediction_manager import get_prediction_manager
 from app.learning_engine import run_learning
 
+# ИСПРАВЛЕНО: правильный путь к Historical Importer
 try:
-    from app.rpl_historical_importer import (
+    from app.loaders.rpl_historical_importer import (
         load_rpl_historical_results,
         get_historical_import_status,
     )
