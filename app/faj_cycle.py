@@ -4,40 +4,41 @@
 """
 ============================================================
 FAJ Platform v12.1
-FAJ CYCLE
+FAJ CYCLE — ЖЁСТКИЙ ОРКЕСТРАТОР
 ============================================================
-
-Главный оркестратор FAJ.
 
 ЦИКЛ:
 
     FAJ Cycle
         │
-        ├── 1. Проверка БД
+        ├── 1. DATABASE CHECK
+        │      │
+        │      └── ошибка → STOP
         │
-        ├── 2. Загрузка новых результатов
+        ├── 2. HISTORICAL RESULTS
+        │      │
+        │      ├── новые результаты → RUN
+        │      ├── уже существуют → SKIP
+        │      └── конфликт → STOP
         │
-        ├── 3. Обучение Learning Engine
+        ├── 3. LEARNING
+        │      │
+        │      ├── new_results > 0 → RUN
+        │      └── new_results = 0 → SKIP
         │
-        ├── 4. Расчёт прогнозов
+        ├── 4. PREDICTIONS
+        │      │
+        │      └── только если этапы 1-3 OK
         │
-        └── 5. Финальная диагностика
+        └── 5. FINAL DIAGNOSTIC
 
-ВАЖНЫЕ ПРИНЦИПЫ:
-
-    - SQLite
-    - используется существующая БД
-    - database.py НЕ изменяется
-    - DELETE отсутствует
-    - DROP отсутствует
-    - календарь не создаётся
-    - паспорта не создаются
-    - динамические данные не уничтожаются
-    - цикл максимально идемпотентен
-    - каждый этап возвращает диагностику
-    - ошибка одного этапа не маскируется
-    - Streamlit получает единый результат
-
+ПРИНЦИПЫ:
+    - ошибка останавливает зависимые этапы
+    - Learning только при новых фактах
+    - Prediction только после успешного Learning (или если Learning SKIPPED)
+    - отсутствие таблиц → STOP
+    - конфликт исторических данных → STOP
+    - никаких DELETE/DROP
 ============================================================
 """
 
@@ -48,7 +49,7 @@ import sqlite3
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # ============================================================
@@ -59,15 +60,10 @@ from app.database import get_connection
 from app.core.prediction_manager import get_prediction_manager
 from app.learning_engine import run_learning
 
-# ИСПРАВЛЕНО: правильный путь к Historical Importer
-try:
-    from app.loaders.rpl_historical_importer import (
-        load_rpl_historical_results,
-        get_historical_import_status,
-    )
-except ImportError:
-    load_rpl_historical_results = None
-    get_historical_import_status = None
+from app.loaders.rpl_historical_importer import (
+    load_rpl_historical_results,
+    get_historical_import_status,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -79,16 +75,11 @@ logger = logging.getLogger(__name__)
 
 FAJ_CYCLE_VERSION = "12.1"
 
-DEFAULT_LEAGUE = "РПЛ"
-DEFAULT_SEASON = "2026-2027"
+LEAGUE = "РПЛ"
+SEASON = "2026-2027"
 
-EXPECTED_HISTORICAL_RESULTS = 24
-NEXT_PREDICTION_ROUND = 4
-
-
-# ============================================================
-# DATABASE TABLES
-# ============================================================
+EXPECTED_INITIAL_HISTORICAL = 24  # 1-3 туры
+NEXT_PREDICTION_ROUND = 5         # 5-й тур (4-й уже сыгран)
 
 EXPECTED_TABLES = (
     "teams",
@@ -105,56 +96,49 @@ EXPECTED_TABLES = (
 
 
 # ============================================================
-# RESULT FACTORY
+# RESULT
 # ============================================================
 
 def _new_result() -> Dict[str, Any]:
-    """
-    Единый формат результата FAJ Cycle.
-    """
-
     return {
         "success": False,
         "ready": False,
-
         "cycle": FAJ_CYCLE_VERSION,
-
         "started_at": None,
         "finished_at": None,
-
         "duration_seconds": 0.0,
-
         "database": {
             "connected": False,
             "tables": {},
             "missing_tables": [],
+            "ok": False,
         },
-
         "historical": {
             "available": False,
             "success": False,
-            "expected": EXPECTED_HISTORICAL_RESULTS,
+            "skipped": False,
+            "conflict": False,
+            "expected": EXPECTED_INITIAL_HISTORICAL,
             "inserted": 0,
             "already_present": 0,
             "updated": 0,
             "errors": [],
         },
-
         "learning": {
             "started": False,
             "success": False,
+            "skipped": False,
             "result": None,
             "errors": [],
         },
-
         "predictions": {
             "started": False,
             "success": False,
+            "round": NEXT_PREDICTION_ROUND,
             "count": 0,
             "result": None,
             "errors": [],
         },
-
         "final": {
             "teams": 0,
             "results": 0,
@@ -162,163 +146,82 @@ def _new_result() -> Dict[str, Any]:
             "learning_records": 0,
             "model_parameters": 0,
         },
-
         "steps": [],
-
         "errors": [],
-
         "messages": [],
     }
 
 
-# ============================================================
-# LOGGING
-# ============================================================
-
-def _log_step(
-    result: Dict[str, Any],
-    step: str,
-    status: str,
-    message: str,
-) -> None:
-
+def _add_step(result: Dict[str, Any], step: str, status: str, message: str) -> None:
     entry = {
         "step": step,
         "status": status,
         "message": message,
         "time": datetime.now().isoformat(),
     }
-
     result["steps"].append(entry)
     result["messages"].append(message)
 
     if status == "success":
         logger.info(message)
-
+    elif status == "skipped":
+        logger.info(f"⏭️ {message}")
     elif status == "warning":
         logger.warning(message)
-
     else:
         logger.error(message)
 
 
 # ============================================================
-# DATABASE CONNECTION
+# 1. DATABASE CHECK
 # ============================================================
 
-def _check_database(
-    result: Dict[str, Any],
-) -> bool:
-    """
-    Проверяет существующую БД.
-
-    Ничего не создаёт и не изменяет.
-    """
-
-    _log_step(
-        result,
-        "database",
-        "running",
-        "🔌 Проверка подключения к FAJ Database...",
-    )
+def _check_database(result: Dict[str, Any]) -> bool:
+    _add_step(result, "database", "running", "🔌 Проверка подключения к FAJ Database...")
 
     conn = None
-
     try:
-
         conn = get_connection()
-
         if conn is None:
-            raise RuntimeError(
-                "get_connection() вернул None"
-            )
+            raise RuntimeError("get_connection() вернул None")
 
         result["database"]["connected"] = True
-
-        _log_step(
-            result,
-            "database",
-            "success",
-            "✅ Подключение к БД успешно",
-        )
+        _add_step(result, "database", "success", "✅ Подключение к БД успешно")
 
         cursor = conn.cursor()
-
         existing_tables = {}
+        missing = []
 
         for table in EXPECTED_TABLES:
-
-            cursor.execute(
-                """
-                SELECT 1
-                FROM sqlite_master
-                WHERE type = 'table'
-                AND name = ?
-                LIMIT 1
-                """,
-                (table,),
-            )
-
+            cursor.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1", (table,))
             exists = cursor.fetchone() is not None
-
             existing_tables[table] = exists
-
             if not exists:
-                result["database"][
-                    "missing_tables"
-                ].append(table)
+                missing.append(table)
 
         result["database"]["tables"] = existing_tables
+        result["database"]["missing_tables"] = missing
 
-        if result["database"]["missing_tables"]:
+        if missing:
+            msg = f"❌ Отсутствуют таблицы: {', '.join(missing)}"
+            _add_step(result, "database", "error", msg)
+            result["errors"].append(msg)
+            result["database"]["ok"] = False
+            return False
 
-            missing = ", ".join(
-                result["database"]["missing_tables"]
-            )
-
-            _log_step(
-                result,
-                "database",
-                "warning",
-                f"⚠️ Отсутствуют таблицы: {missing}",
-            )
-
-        else:
-
-            _log_step(
-                result,
-                "database",
-                "success",
-                "✅ Все необходимые таблицы обнаружены",
-            )
-
+        result["database"]["ok"] = True
+        _add_step(result, "database", "success", "✅ Все необходимые таблицы обнаружены")
         return True
 
-    except Exception as exc:
-
-        message = (
-            f"❌ Ошибка подключения к БД: {exc}"
-        )
-
-        result["errors"].append(message)
-
-        _log_step(
-            result,
-            "database",
-            "error",
-            message,
-        )
-
-        logger.exception(
-            "FAJ Cycle database check failed"
-        )
-
+    except Exception as e:
+        msg = f"❌ Ошибка подключения к БД: {e}"
+        result["errors"].append(msg)
+        _add_step(result, "database", "error", msg)
+        result["database"]["ok"] = False
         return False
 
     finally:
-
-        if conn is not None:
-
+        if conn:
             try:
                 conn.close()
             except Exception:
@@ -326,630 +229,208 @@ def _check_database(
 
 
 # ============================================================
-# DATABASE COUNTS
+# 2. HISTORICAL RESULTS
 # ============================================================
 
-def _count_table(
-    cursor: sqlite3.Cursor,
-    table: str,
-) -> int:
+def _run_historical(result: Dict[str, Any]) -> bool:
+    _add_step(result, "historical", "running", "📥 Проверка исторических результатов...")
 
     try:
+        # Получаем статус
+        status = get_historical_import_status()
 
-        cursor.execute(
-            f'SELECT COUNT(*) FROM "{table}"'
-        )
+        if not status.get("success", False):
+            result["historical"]["errors"].extend(status.get("errors", []))
+            msg = "❌ Не удалось получить статус исторических данных"
+            _add_step(result, "historical", "error", msg)
+            result["errors"].append(msg)
+            return False
 
-        row = cursor.fetchone()
+        result["historical"]["available"] = True
+        result["historical"]["conflict"] = status.get("conflicts", 0) > 0
 
-        if row is None:
-            return 0
+        # Конфликт → STOP
+        if result["historical"]["conflict"]:
+            conflicts = status.get("conflicts", 0)
+            msg = f"❌ Обнаружены конфликты исторических результатов: {conflicts}"
+            _add_step(result, "historical", "error", msg)
+            result["errors"].append(msg)
+            return False
 
-        return int(row[0])
+        # Уже есть все 24 результата
+        if status.get("present", 0) >= EXPECTED_INITIAL_HISTORICAL:
+            result["historical"]["success"] = True
+            result["historical"]["skipped"] = True
+            result["historical"]["already_present"] = status.get("present", 0)
+            _add_step(result, "historical", "skipped", f"⏭️ Исторические результаты уже загружены: {status['present']}/{EXPECTED_INITIAL_HISTORICAL}")
+            return True
 
-    except Exception:
+        # Нужно импортировать
+        import_result = load_rpl_historical_results()
 
-        return 0
+        if not import_result.get("success", False):
+            result["historical"]["errors"].extend(import_result.get("errors", []))
+            msg = "❌ Исторический импорт завершился ошибкой"
+            _add_step(result, "historical", "error", msg)
+            result["errors"].append(msg)
+            return False
 
+        result["historical"]["success"] = True
+        result["historical"]["inserted"] = import_result.get("inserted_results", 0)
+        result["historical"]["already_present"] = import_result.get("already_present", 0)
+        result["historical"]["updated"] = import_result.get("updated_matches", 0)
 
-def _read_final_state(
-    result: Dict[str, Any],
-) -> None:
-    """
-    Читает фактическое состояние БД.
-
-    Только SELECT.
-    """
-
-    conn = None
-
-    try:
-
-        conn = get_connection()
-        cursor = conn.cursor()
-
-        result["final"]["teams"] = _count_table(
-            cursor,
-            "teams",
-        )
-
-        result["final"]["results"] = _count_table(
-            cursor,
-            "match_results",
-        )
-
-        result["final"]["predictions"] = _count_table(
-            cursor,
-            "predictions",
-        )
-
-        result["final"]["learning_records"] = (
-            _count_table(
-                cursor,
-                "learning_memory",
-            )
-        )
-
-        result["final"]["model_parameters"] = (
-            _count_table(
-                cursor,
-                "model_parameters",
-            )
-        )
-
-    except Exception as exc:
-
-        logger.warning(
-            "Unable to read final FAJ state: %s",
-            exc,
-        )
-
-    finally:
-
-        if conn is not None:
-
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-
-# ============================================================
-# HISTORICAL RESULTS
-# ============================================================
-
-def _run_historical_import(
-    result: Dict[str, Any],
-) -> bool:
-    """
-    Загружает проверенные исторические результаты.
-
-    Импортёр сам отвечает за:
-        - идемпотентность
-        - транзакцию
-        - конфликт результатов
-        - отсутствие DELETE
-    """
-
-    _log_step(
-        result,
-        "historical",
-        "running",
-        "📥 Проверка исторических результатов...",
-    )
-
-    if load_rpl_historical_results is None:
-
-        message = (
-            "⚠️ Historical Importer не подключён"
-        )
-
-        result["historical"]["errors"].append(
-            message
-        )
-
-        _log_step(
+        _add_step(
             result,
             "historical",
-            "warning",
-            message,
+            "success",
+            f"✅ Исторические результаты: добавлено={result['historical']['inserted']}, уже было={result['historical']['already_present']}"
         )
 
-        # НЕ возвращаем False, чтобы цикл продолжался
         return True
 
-    try:
-
-        status = None
-
-        if get_historical_import_status:
-
-            try:
-                status = (
-                    get_historical_import_status()
-                )
-            except Exception as exc:
-
-                logger.warning(
-                    "Historical status failed: %s",
-                    exc,
-                )
-
-        if status:
-
-            result["historical"][
-                "available"
-            ] = True
-
-            # Если есть конфликты — предупреждение, но не остановка
-            if status.get("conflicts", 0) > 0:
-
-                conflicts = status[
-                    "conflicts"
-                ]
-
-                message = (
-                    f"⚠️ Обнаружены конфликты "
-                    f"исторических результатов: "
-                    f"{conflicts}"
-                )
-
-                result["historical"][
-                    "errors"
-                ].append(message)
-
-                _log_step(
-                    result,
-                    "historical",
-                    "warning",
-                    message,
-                )
-
-                # Продолжаем, но не импортируем
-                return True
-
-        import_result = (
-            load_rpl_historical_results()
-        )
-
-        if not isinstance(
-            import_result,
-            dict,
-        ):
-
-            raise RuntimeError(
-                "Historical Importer "
-                "вернул некорректный результат"
-            )
-
-        result["historical"][
-            "available"
-        ] = True
-
-        result["historical"][
-            "success"
-        ] = bool(
-            import_result.get(
-                "success",
-                False,
-            )
-        )
-
-        result["historical"][
-            "inserted"
-        ] = int(
-            import_result.get(
-                "inserted_results",
-                0,
-            )
-            or 0
-        )
-
-        result["historical"][
-            "already_present"
-        ] = int(
-            import_result.get(
-                "already_present",
-                0,
-            )
-            or 0
-        )
-
-        result["historical"][
-            "updated"
-        ] = int(
-            import_result.get(
-                "updated_matches",
-                0,
-            )
-            or 0
-        )
-
-        errors = import_result.get(
-            "errors",
-            [],
-        )
-
-        if errors:
-            result["historical"][
-                "errors"
-            ].extend(
-                [str(x) for x in errors]
-            )
-
-        if result["historical"]["success"]:
-
-            message = (
-                "✅ Исторические результаты: "
-                f"добавлено="
-                f"{result['historical']['inserted']}, "
-                f"уже было="
-                f"{result['historical']['already_present']}"
-            )
-
-            _log_step(
-                result,
-                "historical",
-                "success",
-                message,
-            )
-
-        else:
-
-            message = (
-                "⚠️ Исторический импорт завершился с ошибкой, "
-                "но продолжаем цикл"
-            )
-
-            _log_step(
-                result,
-                "historical",
-                "warning",
-                message,
-            )
-
-        # ВСЕГДА возвращаем True, чтобы цикл продолжался
-        return True
-
-    except Exception as exc:
-
-        message = (
-            f"⚠️ Ошибка исторического импорта: "
-            f"{exc}"
-        )
-
-        result["historical"][
-            "errors"
-        ].append(message)
-
-        result["errors"].append(message)
-
-        _log_step(
-            result,
-            "historical",
-            "warning",
-            message,
-        )
-
-        logger.exception(
-            "Historical import failed"
-        )
-
-        # Продолжаем цикл
-        return True
+    except Exception as e:
+        msg = f"❌ Ошибка исторического импорта: {e}"
+        result["errors"].append(msg)
+        _add_step(result, "historical", "error", msg)
+        logger.exception("Historical import failed")
+        return False
 
 
 # ============================================================
-# LEARNING ENGINE
+# 3. LEARNING
 # ============================================================
 
-def _run_learning(
-    result: Dict[str, Any],
-) -> bool:
-    """
-    Запускает LearningEngine.
-    """
-
-    _log_step(
-        result,
-        "learning",
-        "running",
-        "🧠 Запуск Learning Engine...",
+def _run_learning(result: Dict[str, Any]) -> bool:
+    # Проверяем, есть ли новые результаты
+    has_new_results = (
+        result["historical"]["inserted"] > 0
+        or result["historical"]["updated"] > 0
     )
 
+    if not has_new_results and result["historical"]["success"]:
+        result["learning"]["skipped"] = True
+        _add_step(result, "learning", "skipped", "⏭️ Новых результатов нет — обучение пропущено")
+        return True
+
+    _add_step(result, "learning", "running", "🧠 Запуск Learning Engine...")
     result["learning"]["started"] = True
 
     try:
-
-        # Используем run_learning() из learning_engine.py
         learning_result = run_learning()
-
         result["learning"]["result"] = learning_result
 
-        if isinstance(
-            learning_result,
-            dict,
-        ):
+        if isinstance(learning_result, dict):
+            success = learning_result.get("success", False)
+            skipped = learning_result.get("skipped", False)
 
-            result["learning"]["success"] = bool(
-                learning_result.get(
-                    "success",
-                    True,
-                )
-            )
+            if skipped:
+                result["learning"]["skipped"] = True
+                _add_step(result, "learning", "skipped", "⏭️ Learning Engine: обучение пропущено (набор уже изучен)")
+                return True
 
-            errors = learning_result.get(
-                "errors",
-                [],
-            )
-
-            if errors:
-                result["learning"]["errors"].extend(
-                    [str(x) for x in errors]
-                )
-
-        else:
+            if not success:
+                errors = learning_result.get("errors", [])
+                result["learning"]["errors"].extend(errors)
+                msg = "❌ Learning Engine вернул success=False"
+                _add_step(result, "learning", "error", msg)
+                result["errors"].append(msg)
+                return False
 
             result["learning"]["success"] = True
-
-        if not result["learning"]["success"]:
-
-            message = (
-                "⚠️ Learning Engine вернул success=False, "
-                "но продолжаем цикл"
-            )
-
-            result["learning"][
-                "errors"
-            ].append(message)
-
-            _log_step(
-                result,
-                "learning",
-                "warning",
-                message,
-            )
-
-            # Продолжаем цикл
+            _add_step(result, "learning", "success", f"✅ Learning Engine завершил работу")
             return True
 
-        _log_step(
-            result,
-            "learning",
-            "success",
-            "✅ Learning Engine завершил работу",
-        )
-
+        result["learning"]["success"] = True
+        _add_step(result, "learning", "success", "✅ Learning Engine завершил работу")
         return True
 
-    except Exception as exc:
-
-        message = (
-            f"⚠️ Ошибка Learning Engine: {exc}"
-        )
-
-        result["learning"][
-            "errors"
-        ].append(message)
-
-        result["errors"].append(message)
-
-        _log_step(
-            result,
-            "learning",
-            "warning",
-            message,
-        )
-
-        logger.exception(
-            "Learning Engine failed"
-        )
-
-        # Продолжаем цикл
-        return True
-
-
-# ============================================================
-# PREDICTION MANAGER
-# ============================================================
-
-def _run_predictions(
-    result: Dict[str, Any],
-) -> bool:
-    """
-    Запускает PredictionManager.
-    """
-
-    _log_step(
-        result,
-        "predictions",
-        "running",
-        "🔮 Запуск Prediction Manager...",
-    )
-
-    result["predictions"][
-        "started"
-    ] = True
-
-    try:
-
-        manager = get_prediction_manager()
-
-        # Используем predict_round() для 4-го тура
-        prediction_result = manager.predict_round(4)
-
-        result["predictions"][
-            "result"
-        ] = prediction_result
-
-        if isinstance(
-            prediction_result,
-            (list, tuple),
-        ):
-
-            result["predictions"][
-                "count"
-            ] = len(prediction_result)
-
-            result["predictions"][
-                "success"
-            ] = True
-
-        elif isinstance(
-            prediction_result,
-            dict,
-        ):
-
-            result["predictions"][
-                "count"
-            ] = prediction_result.get(
-                "count",
-                0,
-            )
-
-            result["predictions"][
-                "success"
-            ] = bool(
-                prediction_result.get(
-                    "success",
-                    True,
-                )
-            )
-
-        else:
-
-            result["predictions"][
-                "success"
-            ] = True
-
-        if not result["predictions"]["success"]:
-
-            message = (
-                "⚠️ Prediction Manager вернул success=False, "
-                "но завершаем цикл"
-            )
-
-            result["predictions"][
-                "errors"
-            ].append(message)
-
-            _log_step(
-                result,
-                "predictions",
-                "warning",
-                message,
-            )
-
-            return True
-
-        _log_step(
-            result,
-            "predictions",
-            "success",
-            "✅ Prediction Manager завершил работу",
-        )
-
-        return True
-
-    except Exception as exc:
-
-        message = (
-            f"❌ Ошибка Prediction Manager: {exc}"
-        )
-
-        result["predictions"][
-            "errors"
-        ].append(message)
-
-        result["errors"].append(message)
-
-        _log_step(
-            result,
-            "predictions",
-            "error",
-            message,
-        )
-
-        logger.exception(
-            "Prediction Manager failed"
-        )
-
+    except Exception as e:
+        msg = f"❌ Ошибка Learning Engine: {e}"
+        result["learning"]["errors"].append(msg)
+        result["errors"].append(msg)
+        _add_step(result, "learning", "error", msg)
+        logger.exception("Learning Engine failed")
         return False
 
 
 # ============================================================
-# FINAL VALIDATION
+# 4. PREDICTIONS
 # ============================================================
 
-def _final_validation(
-    result: Dict[str, Any],
-) -> bool:
-    """
-    Финальная проверка состояния системы.
-    """
+def _run_predictions(result: Dict[str, Any]) -> bool:
+    _add_step(result, "predictions", "running", f"🔮 Запуск Prediction Manager для тура {NEXT_PREDICTION_ROUND}...")
+    result["predictions"]["started"] = True
 
-    _log_step(
-        result,
-        "final",
-        "running",
-        "🔍 Финальная проверка FAJ Cycle...",
-    )
+    try:
+        manager = get_prediction_manager()
+        prediction_result = manager.predict_round(NEXT_PREDICTION_ROUND)
 
-    _read_final_state(result)
+        result["predictions"]["result"] = prediction_result
 
-    database_ok = (
-        result["database"]["connected"]
-        and not result["database"][
-            "missing_tables"
-        ]
-    )
+        if isinstance(prediction_result, (list, tuple)):
+            result["predictions"]["count"] = len(prediction_result)
+            result["predictions"]["success"] = True
+            _add_step(result, "predictions", "success", f"✅ Прогнозы рассчитаны: {len(prediction_result)} матчей")
+            return True
 
-    historical_ok = (
-        result["historical"]["success"]
-    )
+        if isinstance(prediction_result, dict):
+            result["predictions"]["count"] = prediction_result.get("count", 0)
+            result["predictions"]["success"] = bool(prediction_result.get("success", False))
+            if result["predictions"]["success"]:
+                _add_step(result, "predictions", "success", f"✅ Прогнозы рассчитаны: {result['predictions']['count']} матчей")
+            else:
+                errors = prediction_result.get("errors", [])
+                result["predictions"]["errors"].extend(errors)
+                msg = "❌ Prediction Manager вернул success=False"
+                _add_step(result, "predictions", "error", msg)
+                result["errors"].append(msg)
+            return result["predictions"]["success"]
 
-    learning_ok = (
-        result["learning"]["success"]
-    )
-
-    predictions_ok = (
-        result["predictions"]["success"]
-    )
-
-    result["ready"] = (
-        database_ok
-        and historical_ok
-        and learning_ok
-        and predictions_ok
-    )
-
-    if result["ready"]:
-
-        _log_step(
-            result,
-            "final",
-            "success",
-            (
-                "✅ FAJ Cycle полностью завершён: "
-                f"результаты="
-                f"{result['final']['results']}, "
-                f"прогнозы="
-                f"{result['final']['predictions']}, "
-                f"learning="
-                f"{result['final']['learning_records']}"
-            ),
-        )
-
+        result["predictions"]["success"] = True
+        _add_step(result, "predictions", "success", "✅ Прогнозы рассчитаны")
         return True
 
-    _log_step(
-        result,
-        "final",
-        "warning",
-        "⚠️ FAJ Cycle завершён с предупреждениями",
-    )
+    except Exception as e:
+        msg = f"❌ Ошибка Prediction Manager: {e}"
+        result["predictions"]["errors"].append(msg)
+        result["errors"].append(msg)
+        _add_step(result, "predictions", "error", msg)
+        logger.exception("Prediction Manager failed")
+        return False
 
-    return False
+
+# ============================================================
+# 5. FINAL
+# ============================================================
+
+def _read_final_state(result: Dict[str, Any]) -> None:
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        tables = {
+            "teams": "teams",
+            "match_results": "match_results",
+            "predictions": "predictions",
+            "learning_memory": "learning_memory",
+            "model_parameters": "model_parameters",
+        }
+        for key, table in tables.items():
+            try:
+                cursor.execute(f'SELECT COUNT(*) FROM "{table}"')
+                row = cursor.fetchone()
+                result["final"][key] = row[0] if row else 0
+            except Exception:
+                result["final"][key] = 0
+    except Exception as e:
+        logger.warning("Unable to read final state: %s", e)
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ============================================================
@@ -957,311 +438,125 @@ def _final_validation(
 # ============================================================
 
 def run_faj_cycle() -> Dict[str, Any]:
-    """
-    Главная функция FAJ.
-    """
-
     result = _new_result()
-
     started = datetime.now()
+    result["started_at"] = started.isoformat()
 
-    result["started_at"] = (
-        started.isoformat()
-    )
-
-    logger.info(
-        "=" * 70
-    )
-
-    logger.info(
-        "🚀 FAJ CYCLE v%s START",
-        FAJ_CYCLE_VERSION,
-    )
-
-    logger.info(
-        "=" * 70
-    )
+    logger.info("=" * 70)
+    logger.info("🚀 FAJ CYCLE v%s START", FAJ_CYCLE_VERSION)
+    logger.info("=" * 70)
 
     try:
-
+        # ====================================================
+        # 1. DATABASE
+        # ====================================================
         if not _check_database(result):
-            return _finish_result(
+            return _finish(result, started)
+
+        # ====================================================
+        # 2. HISTORICAL
+        # ====================================================
+        if not _run_historical(result):
+            return _finish(result, started)
+
+        # ====================================================
+        # 3. LEARNING (только если есть новые факты)
+        # ====================================================
+        if not _run_learning(result):
+            return _finish(result, started)
+
+        # ====================================================
+        # 4. PREDICTIONS (если learning ok или пропущен)
+        # ====================================================
+        if not _run_predictions(result):
+            return _finish(result, started)
+
+        # ====================================================
+        # 5. FINAL
+        # ====================================================
+        _read_final_state(result)
+
+        result["ready"] = (
+            result["database"]["ok"]
+            and result["historical"]["success"]
+            and (result["learning"]["success"] or result["learning"]["skipped"])
+            and result["predictions"]["success"]
+        )
+
+        if result["ready"]:
+            _add_step(
                 result,
-                started,
+                "final",
+                "success",
+                f"✅ FAJ Cycle полностью завершён: результаты={result['final']['match_results']}, прогнозы={result['final']['predictions']}"
             )
+        else:
+            _add_step(result, "final", "warning", "⚠️ FAJ Cycle завершён с предупреждениями")
 
-        # Historical Importer — всегда продолжаем
-        _run_historical_import(result)
+        return _finish(result, started)
 
-        # Learning Engine — продолжаем даже при ошибке
-        _run_learning(result)
-
-        # Predictions — запускаем в любом случае
-        _run_predictions(result)
-
-        _final_validation(result)
-
-        return _finish_result(
-            result,
-            started,
-        )
-
-    except Exception as exc:
-
-        message = (
-            f"❌ Критическая ошибка FAJ Cycle: "
-            f"{exc}"
-        )
-
-        result["errors"].append(message)
-
-        _log_step(
-            result,
-            "cycle",
-            "error",
-            message,
-        )
-
-        logger.error(
-            traceback.format_exc()
-        )
-
-        return _finish_result(
-            result,
-            started,
-        )
+    except Exception as e:
+        msg = f"❌ Критическая ошибка FAJ Cycle: {e}"
+        result["errors"].append(msg)
+        _add_step(result, "cycle", "error", msg)
+        logger.error(traceback.format_exc())
+        return _finish(result, started)
 
 
-# ============================================================
-# FINISH
-# ============================================================
-
-def _finish_result(
-    result: Dict[str, Any],
-    started: datetime,
-) -> Dict[str, Any]:
-
+def _finish(result: Dict[str, Any], started: datetime) -> Dict[str, Any]:
     finished = datetime.now()
+    result["finished_at"] = finished.isoformat()
+    result["duration_seconds"] = round((finished - started).total_seconds(), 3)
+    result["success"] = result["ready"]
 
-    result["finished_at"] = (
-        finished.isoformat()
-    )
-
-    result["duration_seconds"] = round(
-        (
-            finished - started
-        ).total_seconds(),
-        3,
-    )
-
-    result["success"] = bool(
-        result["ready"]
-    )
-
-    logger.info(
-        "=" * 70
-    )
-
-    logger.info(
-        "FAJ CYCLE FINISHED | success=%s "
-        "| duration=%.3fs",
-        result["success"],
-        result["duration_seconds"],
-    )
-
-    logger.info(
-        "=" * 70
-    )
+    logger.info("=" * 70)
+    logger.info("FAJ CYCLE FINISHED | success=%s | duration=%.3fs", result["success"], result["duration_seconds"])
+    logger.info("=" * 70)
 
     return result
 
 
 # ============================================================
-# FAJ CYCLE CLASS (для Streamlit)
+# CLASS ДЛЯ STREAMLIT
 # ============================================================
 
 class FAJCycle:
-    """
-    Класс-обёртка для FAJ Cycle.
-    
-    Используется в streamlit_app.py для мягкого подключения.
-    """
-    
     VERSION = FAJ_CYCLE_VERSION
-    
+
     def __init__(self):
         self.version = self.VERSION
-    
+
     def run(self) -> Dict[str, Any]:
-        """
-        Запуск FAJ Cycle.
-        
-        Returns:
-            Dict с полной диагностикой цикла.
-        """
         return run_faj_cycle()
-    
+
     def run_cycle(self) -> Dict[str, Any]:
-        """
-        Альтернативный метод для совместимости.
-        """
         return run_faj_cycle()
-    
+
     def execute(self) -> Dict[str, Any]:
-        """
-        Альтернативный метод для совместимости.
-        """
         return run_faj_cycle()
-    
+
     def status(self) -> Dict[str, Any]:
-        """
-        Диагностический статус.
-        """
-        return {
-            "version": self.VERSION,
-            "available": True,
-            "status": "READY",
-        }
-
-
-# ============================================================
-# ALIASES
-# ============================================================
-
-def run_cycle() -> Dict[str, Any]:
-    """
-    Короткий alias для Streamlit.
-    """
-
-    return run_faj_cycle()
-
-
-def execute_faj_cycle() -> Dict[str, Any]:
-    """
-    Дополнительный совместимый alias.
-    """
-
-    return run_faj_cycle()
+        return {"version": self.VERSION, "available": True, "status": "READY"}
 
 
 # ============================================================
 # CLI
 # ============================================================
 
-def _print_result(
-    result: Dict[str, Any],
-) -> None:
-
-    print()
-    print("=" * 70)
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+    result = run_faj_cycle()
+    print("\n" + "=" * 70)
     print("FAJ CYCLE v12.1")
     print("=" * 70)
-
-    print(
-        f"Успех:       {result['success']}"
-    )
-
-    print(
-        f"Готов:       {result['ready']}"
-    )
-
-    print(
-        f"Время:       "
-        f"{result['duration_seconds']} сек."
-    )
-
-    print()
-    print("DATABASE")
-    print(
-        f"  connected: "
-        f"{result['database']['connected']}"
-    )
-
-    print()
-    print("HISTORICAL")
-    print(
-        f"  inserted: "
-        f"{result['historical']['inserted']}"
-    )
-
-    print(
-        f"  already: "
-        f"{result['historical']['already_present']}"
-    )
-
-    print()
-    print("LEARNING")
-    print(
-        f"  success: "
-        f"{result['learning']['success']}"
-    )
-
-    print()
-    print("PREDICTIONS")
-    print(
-        f"  success: "
-        f"{result['predictions']['success']}"
-    )
-
-    print(
-        f"  count: "
-        f"{result['predictions']['count']}"
-    )
-
-    print()
-    print("FINAL DATABASE STATE")
-
-    for key, value in result[
-        "final"
-    ].items():
-
-        print(
-            f"  {key}: {value}"
-        )
-
-    print()
-
+    print(f"Успех:       {result['success']}")
+    print(f"Готов:       {result['ready']}")
+    print(f"Время:       {result['duration_seconds']} сек.")
+    print(f"\nИсторические: добавлено={result['historical']['inserted']}, уже было={result['historical']['already_present']}")
+    print(f"Обучение:    {'✅' if result['learning']['success'] else '⏭️' if result['learning']['skipped'] else '❌'}")
+    print(f"Прогнозы:    {result['predictions']['count']} матчей")
     if result["errors"]:
-
-        print("ERRORS:")
-
-        for error in result["errors"]:
-
-            print(
-                f"  ❌ {error}"
-            )
-
-    print()
-    print("STEPS:")
-
-    for step in result["steps"]:
-
-        print(
-            f"  [{step['status']}] "
-            f"{step['step']}: "
-            f"{step['message']}"
-        )
-
+        print("\nОШИБКИ:")
+        for e in result["errors"]:
+            print(f"  ❌ {e}")
     print("=" * 70)
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-if __name__ == "__main__":
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format=(
-            "%(asctime)s | "
-            "%(levelname)s | "
-            "%(message)s"
-        ),
-    )
-
-    cycle_result = run_faj_cycle()
-
-    _print_result(
-        cycle_result
-    )
