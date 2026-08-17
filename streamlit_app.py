@@ -98,13 +98,17 @@ except Exception:
 # ============================================================
 
 try:
-    from app.faj_cycle import FAJCycle
-
+    from app.faj_cycle import (
+        FAJCycle,
+        run_faj_cycle,
+    )
     FAJ_CYCLE_AVAILABLE = True
-
-except Exception:
+    FAJ_CYCLE_IMPORT_ERROR = None
+except Exception as e:
     FAJCycle = None
+    run_faj_cycle = None
     FAJ_CYCLE_AVAILABLE = False
+    FAJ_CYCLE_IMPORT_ERROR = str(e)
 
 
 # ============================================================
@@ -1199,53 +1203,43 @@ def calculate_round(matches):
 # ============================================================
 
 def run_faj_cycle():
-
     if not FAJ_CYCLE_AVAILABLE:
-
         return {
             "success": False,
-            "message": "FAJ Cycle недоступен.",
+            "ready": False,
+            "message": (
+                "FAJ Cycle недоступен."
+                + (
+                    f" Ошибка импорта: "
+                    f"{FAJ_CYCLE_IMPORT_ERROR}"
+                    if FAJ_CYCLE_IMPORT_ERROR
+                    else ""
+                )
+            ),
         }
-
     try:
-
-        cycle = FAJCycle()
-
-        if hasattr(cycle, "run"):
-
-            result = cycle.run()
-
-        elif hasattr(cycle, "run_cycle"):
-
-            result = cycle.run_cycle()
-
-        elif hasattr(cycle, "execute"):
-
-            result = cycle.execute()
-
+        # ----------------------------------------------------
+        # ЕДИНАЯ ТОЧКА ЗАПУСКА
+        # ----------------------------------------------------
+        if run_faj_cycle is not None:
+            result = run_faj_cycle()
         else:
-
-            return {
-                "success": False,
-                "message": (
-                    "FAJCycle не имеет "
-                    "run/run_cycle/execute."
-                ),
-            }
-
+            cycle = FAJCycle()
+            result = cycle.run()
+        # ----------------------------------------------------
+        # Нормализация результата
+        # ----------------------------------------------------
         if isinstance(result, dict):
-
             return result
-
         return {
             "success": True,
+            "ready": True,
             "result": result,
         }
-
     except Exception as e:
-
         return {
             "success": False,
+            "ready": False,
             "message": str(e),
         }
 
@@ -1313,19 +1307,14 @@ with st.sidebar:
     st.divider()
 
     if st.button(
-        "🔄 Обновить FAJ",
+        "🔄 Запустить FAJ Cycle",
         type="primary",
         use_container_width=True,
     ):
-
         with st.spinner(
-            "🧠 FAJ выполняет цикл..."
+            "🧠 FAJ Cycle выполняет полный цикл..."
         ):
-
-            st.session_state.cycle_result = (
-                run_faj_cycle()
-            )
-
+            st.session_state.cycle_result = run_faj_cycle()
         st.rerun()
 
     st.divider()
@@ -1747,28 +1736,169 @@ if st.session_state.page == "home":
     # ========================================================
 
     if st.session_state.cycle_result:
-
-        with st.expander(
-            "🔄 Последний запуск FAJ Cycle"
-        ):
-
-            result = (
-                st.session_state.cycle_result
+        result = st.session_state.cycle_result
+        st.divider()
+        st.subheader("🔄 FAJ Cycle")
+        # --------------------------------------------------------
+        # STATUS
+        # --------------------------------------------------------
+        if result.get("success") and result.get("ready"):
+            st.success(
+                "🟢 FAJ Cycle завершён успешно"
             )
-
-            if result.get("success"):
-
-                st.success(
-                    "FAJ Cycle завершён успешно."
+        elif result.get("success"):
+            st.warning(
+                "🟡 FAJ Cycle завершён с предупреждениями"
+            )
+        else:
+            st.error(
+                "🔴 FAJ Cycle остановлен с ошибкой"
+            )
+        # --------------------------------------------------------
+        # METRICS
+        # --------------------------------------------------------
+        historical = result.get(
+            "historical",
+            {}
+        )
+        learning = result.get(
+            "learning",
+            {}
+        )
+        predictions = result.get(
+            "predictions",
+            {}
+        )
+        final = result.get(
+            "final",
+            {}
+        )
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.metric(
+                "📥 Новые результаты",
+                historical.get(
+                    "inserted",
+                    0,
+                ),
+            )
+        with c2:
+            st.metric(
+                "🧠 Learning",
+                (
+                    "RUN"
+                    if learning.get("success")
+                    else
+                    "SKIP"
+                    if learning.get("skipped")
+                    else
+                    "ERROR"
+                ),
+            )
+        with c3:
+            st.metric(
+                "🔮 Прогнозы",
+                predictions.get(
+                    "count",
+                    0,
+                ),
+            )
+        with c4:
+            st.metric(
+                "⏱️ Время",
+                f"{result.get('duration_seconds', 0):.2f} с",
+            )
+        # --------------------------------------------------------
+        # STEPS
+        # --------------------------------------------------------
+        steps = result.get(
+            "steps",
+            [],
+        )
+        if steps:
+            with st.expander(
+                "📋 Этапы FAJ Cycle",
+                expanded=False,
+            ):
+                for step in steps:
+                    status = step.get(
+                        "status",
+                        "",
+                    )
+                    message = step.get(
+                        "message",
+                        "",
+                    )
+                    if status == "success":
+                        st.success(message)
+                    elif status == "skipped":
+                        st.info(message)
+                    elif status == "warning":
+                        st.warning(message)
+                    elif status == "error":
+                        st.error(message)
+        # --------------------------------------------------------
+        # ERRORS
+        # --------------------------------------------------------
+        errors = result.get(
+            "errors",
+            [],
+        )
+        if errors:
+            with st.expander(
+                "❌ Ошибки FAJ Cycle",
+                expanded=True,
+            ):
+                for error in errors:
+                    st.error(str(error))
+        # --------------------------------------------------------
+        # FINAL DATABASE STATE
+        # --------------------------------------------------------
+        with st.expander(
+            "💾 Состояние базы после Cycle",
+            expanded=False,
+        ):
+            fc1, fc2, fc3, fc4, fc5 = st.columns(5)
+            with fc1:
+                st.metric(
+                    "Команды",
+                    final.get(
+                        "teams",
+                        0,
+                    ),
                 )
-
-            else:
-
-                st.warning(
-                    "FAJ Cycle завершён с проблемой."
+            with fc2:
+                st.metric(
+                    "Результаты",
+                    final.get(
+                        "match_results",
+                        0,
+                    ),
                 )
-
-            st.json(result)
+            with fc3:
+                st.metric(
+                    "Прогнозы",
+                    final.get(
+                        "predictions",
+                        0,
+                    ),
+                )
+            with fc4:
+                st.metric(
+                    "Learning",
+                    final.get(
+                        "learning_memory",
+                        0,
+                    ),
+                )
+            with fc5:
+                st.metric(
+                    "Parameters",
+                    final.get(
+                        "model_parameters",
+                        0,
+                    ),
+                )
 
 
 # ============================================================
