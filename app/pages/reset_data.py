@@ -28,7 +28,6 @@ FAJ_BASE_TABLES = {
     "team_identity",
     "tactical_matchup",
     "model_parameters",
-    "learning_memory",
     "xg_memory",
     "schema_migrations",
     "diagnostic_history",
@@ -38,6 +37,15 @@ FAJ_BASE_TABLES = {
     "team_history",
     "player_impact",
     "team_competition_profile",
+}
+
+# ============================================================
+# ТАБЛИЦЫ LEARNING (МОЖНО ОЧИСТИТЬ ИЛИ ОСТАВИТЬ)
+# ============================================================
+LEARNING_TABLES = {
+    "learning_memory",
+    "learning_records",
+    "learning_events",
 }
 
 # ============================================================
@@ -56,8 +64,6 @@ TURNAMENT_TABLES = {
     "team_form_history",
     "team_dynamics",
     "gold_dataset",
-    "learning_records",
-    "learning_events",
     "audit_log",
     "journal",
     "prediction_validation",
@@ -66,7 +72,6 @@ TURNAMENT_TABLES = {
 
 
 def get_all_tables():
-    """Возвращает список всех таблиц в БД."""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
@@ -76,7 +81,6 @@ def get_all_tables():
 
 
 def get_table_counts(tables):
-    """Возвращает словарь {table: count} для переданных таблиц."""
     counts = {}
     conn = get_connection()
     cursor = conn.cursor()
@@ -91,32 +95,31 @@ def get_table_counts(tables):
     return counts
 
 
-def reset_tournament_data():
-    """Очищает турнирные таблицы, создаёт резервную копию."""
-    # 1. Резервная копия
+def reset_tournament_data(clear_learning=False):
     backup_path = DB_FILE + ".backup_" + datetime.now().strftime("%Y%m%d_%H%M%S")
     shutil.copy2(DB_FILE, backup_path)
 
-    # 2. Подключаемся
     conn = get_connection()
     cursor = conn.cursor()
-
-    # 3. Отключаем внешние ключи
     cursor.execute("PRAGMA foreign_keys = OFF")
 
-    # 4. Очищаем только турнирные таблицы
     tables = get_all_tables()
     cleared = []
+
     for table in tables:
         if table in TURNAMENT_TABLES:
             try:
                 cursor.execute(f"DELETE FROM {table}")
                 cleared.append(table)
-            except sqlite3.OperationalError as e:
-                # Если таблица не существует, пропускаем
+            except sqlite3.OperationalError:
+                pass
+        elif table in LEARNING_TABLES and clear_learning:
+            try:
+                cursor.execute(f"DELETE FROM {table}")
+                cleared.append(table)
+            except sqlite3.OperationalError:
                 pass
 
-    # 5. Включаем внешние ключи
     cursor.execute("PRAGMA foreign_keys = ON")
     conn.commit()
     conn.close()
@@ -132,28 +135,30 @@ def main():
     st.title("🧹 Очистка турнирных данных")
     st.caption("Эта операция удалит все туры, матчи, результаты, прогнозы и статистику, но оставит команды, паспорта и параметры модели.")
 
-    # Получаем все таблицы
     all_tables = get_all_tables()
     if not all_tables:
         st.warning("База данных пуста или не найдена.")
         return
 
-    # Разделяем на категории
+    # Категоризация
     base_tables = [t for t in all_tables if t in FAJ_BASE_TABLES]
+    learning_tables = [t for t in all_tables if t in LEARNING_TABLES]
     turnament_tables = [t for t in all_tables if t in TURNAMENT_TABLES]
-    unknown_tables = [t for t in all_tables if t not in FAJ_BASE_TABLES and t not in TURNAMENT_TABLES]
+    unknown_tables = [t for t in all_tables if t not in FAJ_BASE_TABLES and t not in LEARNING_TABLES and t not in TURNAMENT_TABLES]
 
-    # Предупреждение о неизвестных таблицах
+    # Блокировка, если есть неизвестные таблицы
     if unknown_tables:
-        st.warning(f"⚠️ Обнаружены таблицы, не отнесённые ни к одной категории: {', '.join(unknown_tables)}. Они не будут затронуты.")
+        st.error(f"🚫 Очистка невозможна. Найдены неизвестные таблицы: {', '.join(unknown_tables)}. Проверьте database.py и обновите списки.")
+        st.stop()
 
-    # ---------- ПРЕДПРОСМОТР ----------
-    st.subheader("📊 Текущее состояние базы")
-
+    # Предпросмотр
     counts_base = get_table_counts(base_tables)
+    counts_learning = get_table_counts(learning_tables)
     counts_turn = get_table_counts(turnament_tables)
 
-    col1, col2 = st.columns(2)
+    st.subheader("📊 Текущее состояние базы")
+
+    col1, col2, col3 = st.columns(3)
 
     with col1:
         st.markdown("**🟢 FAJ BASE (сохраняется)**")
@@ -164,6 +169,14 @@ def main():
             st.write("  (нет таблиц)")
 
     with col2:
+        st.markdown("**🟡 Learning (по желанию)**")
+        if learning_tables:
+            for table in sorted(learning_tables):
+                st.write(f"  {table}: {counts_learning.get(table, 0)}")
+        else:
+            st.write("  (нет таблиц)")
+
+    with col3:
         st.markdown("**🔴 Турнирные данные (будут удалены)**")
         if turnament_tables:
             for table in sorted(turnament_tables):
@@ -171,12 +184,10 @@ def main():
         else:
             st.write("  (нет таблиц)")
 
-    # ---------- ПОДТВЕРЖДЕНИЕ ----------
     st.divider()
     st.subheader("⚠️ Подтверждение очистки")
 
-    st.warning("Все данные в таблицах, помеченных 🔴, будут безвозвратно удалены. Будет создана резервная копия.")
-
+    clear_learning = st.checkbox("☑ Также очистить learning_memory, learning_records, learning_events (обычно не требуется)", key="clear_learning")
     confirm = st.checkbox("☑ Я подтверждаю, что хочу очистить турнирные данные", key="confirm_reset")
 
     if st.button("🔴 ОЧИСТИТЬ ТУРНИРНЫЕ ДАННЫЕ", type="primary", disabled=not confirm):
@@ -184,7 +195,7 @@ def main():
             st.error("Подтвердите очистку, чтобы продолжить.")
         else:
             with st.spinner("Выполняется очистка..."):
-                result = reset_tournament_data()
+                result = reset_tournament_data(clear_learning=clear_learning)
             st.success(f"✅ Очистка завершена. Удалено таблиц: {result['count']}")
             st.info(f"📁 Резервная копия: {result['backup_path']}")
             if result['cleared']:
