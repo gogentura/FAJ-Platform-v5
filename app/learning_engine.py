@@ -309,7 +309,6 @@ class LearningEngine:
                 fingerprint,
             )
 
-            # ИСПРАВЛЕНО: сохранение параметров в model_parameters
             self._save_model_parameters(
                 conn,
                 new_parameters,
@@ -1301,29 +1300,17 @@ class LearningEngine:
     ):
         """
         Сохраняет параметры обучения в model_parameters.
-
-        Соответствует схеме:
-            parameter_name TEXT NOT NULL,
-            parameter_value REAL,
-            model_version TEXT,
-            category TEXT,
-            group_name TEXT,
-            description TEXT,
-            updated_at TEXT
+        Перед вставкой удаляет старую запись для данной пары (model_version, parameter_name),
+        чтобы избежать UNIQUE constraint.
         """
         if "model_parameters" not in self._tables(conn):
             logger.warning("Таблица model_parameters отсутствует")
             return
 
         columns = self._columns(conn, "model_parameters")
-
-        # Проверяем наличие обязательных колонок
         has_parameter_name = "parameter_name" in columns
         has_parameter_value = "parameter_value" in columns
         has_model_version = "model_version" in columns
-        has_category = "category" in columns
-        has_group_name = "group_name" in columns
-        has_description = "description" in columns
         has_updated_at = "updated_at" in columns
 
         if not has_parameter_name:
@@ -1331,40 +1318,44 @@ class LearningEngine:
             return
 
         now = _now()
-
-        # Сохраняем каждый параметр отдельной строкой
+        cursor = conn.cursor()
         saved_count = 0
 
         for param_name, param_value in parameters.items():
-            payload = {}
+            # Удаляем старую запись, если она существует
+            if has_model_version:
+                cursor.execute(
+                    "DELETE FROM model_parameters WHERE model_version = ? AND parameter_name = ?",
+                    (ENGINE_VERSION, param_name)
+                )
+            else:
+                cursor.execute(
+                    "DELETE FROM model_parameters WHERE parameter_name = ?",
+                    (param_name,)
+                )
 
-            # parameter_name — ОБЯЗАТЕЛЬНО
-            payload["parameter_name"] = param_name
-
-            if has_parameter_value:
-                try:
-                    payload["parameter_value"] = float(param_value)
-                except (TypeError, ValueError):
-                    payload["parameter_value"] = 0.0
-
+            # Формируем payload для вставки
+            payload = {
+                "parameter_name": param_name,
+                "parameter_value": float(param_value),
+            }
             if has_model_version:
                 payload["model_version"] = ENGINE_VERSION
-
-            if has_category:
-                payload["category"] = "learning"
-
-            if has_group_name:
-                payload["group_name"] = "weights"
-
-            if has_description:
-                payload["description"] = f"FAJ learned: {param_name}"
-
             if has_updated_at:
                 payload["updated_at"] = now
 
-            self._insert_compatible(conn, "model_parameters", columns, payload)
+            # Вставляем только те поля, которые есть в таблице
+            usable = {k: v for k, v in payload.items() if k in columns}
+            if not usable:
+                continue
+
+            names = list(usable.keys())
+            placeholders = ", ".join("?" for _ in names)
+            sql = f"INSERT INTO model_parameters ({', '.join(names)}) VALUES ({placeholders})"
+            cursor.execute(sql, [usable[name] for name in names])
             saved_count += 1
 
+        conn.commit()
         logger.info(f"Сохранено {saved_count} параметров в model_parameters")
 
     # ========================================================
