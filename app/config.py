@@ -65,7 +65,7 @@ class Config:
     # SAVE OPTIONS
     # ============================================================
 
-    SAVE_TO_GOLD_DATASET = False     # ← ИЗМЕНЕНО НА False
+    SAVE_TO_GOLD_DATASET = True     # ← ИЗМЕНЕНО НА True
 
     # ============================================================
     # MODEL WEIGHTS (FAJ RATING)
