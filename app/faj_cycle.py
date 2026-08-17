@@ -15,11 +15,11 @@ FAJ CYCLE — ЖЁСТКИЙ ОРКЕСТРАТОР
         │      │
         │      └── ошибка → STOP
         │
-        ├── 2. HISTORICAL RESULTS (1-4 туры, 32 матча) — ВРЕМЕННО ОТКЛЮЧЕНА
+        ├── 2. HISTORICAL RESULTS (1-4 туры, 32 матча)
         │      │
         │      ├── новые результаты → RUN
         │      ├── уже существуют → SKIP
-        │      └── конфликт → STOP
+        │      └── конфликт → пропускаем (skip_conflicts=True)
         │
         ├── 3. LEARNING
         │      │
@@ -37,13 +37,13 @@ FAJ CYCLE — ЖЁСТКИЙ ОРКЕСТРАТОР
     - Learning только при новых фактах
     - Prediction только после успешного Learning (или если Learning SKIPPED)
     - отсутствие таблиц → STOP
-    - конфликт исторических данных → STOP (ВРЕМЕННО ОТКЛЮЧЕНО)
+    - конфликт исторических данных → пропускается (skip_conflicts=True)
     - никаких DELETE/DROP
 
 ИЗМЕНЕНИЯ:
     1. Исправлен predict_round — round_number → round_id
     2. MatchContext убран, context=None
-    3. Историческая проверка временно отключена для теста
+    3. Добавлен skip_conflicts=True при загрузке исторических результатов
 ============================================================
 """
 
@@ -234,7 +234,7 @@ def _check_database(result: Dict[str, Any]) -> bool:
 
 
 # ============================================================
-# 2. HISTORICAL RESULTS (ВРЕМЕННО ОТКЛЮЧЕНА)
+# 2. HISTORICAL RESULTS
 # ============================================================
 
 def _run_historical(result: Dict[str, Any]) -> bool:
@@ -254,15 +254,6 @@ def _run_historical(result: Dict[str, Any]) -> bool:
         result["historical"]["available"] = True
         result["historical"]["conflict"] = status.get("conflicts", 0) > 0
 
-        # Конфликт → STOP (ВРЕМЕННО ОТКЛЮЧЕНО)
-        if result["historical"]["conflict"]:
-            conflicts = status.get("conflicts", 0)
-            msg = f"⚠️ Обнаружены конфликты исторических результатов: {conflicts} (пропускаем для теста)"
-            _add_step(result, "historical", "warning", msg)
-            result["historical"]["conflict"] = True
-            # НЕ возвращаем False, а продолжаем
-            # return False
-
         # Уже есть все 32 результата (1-4 туры)
         if status.get("present", 0) >= EXPECTED_INITIAL_HISTORICAL:
             result["historical"]["success"] = True
@@ -271,8 +262,8 @@ def _run_historical(result: Dict[str, Any]) -> bool:
             _add_step(result, "historical", "skipped", f"⏭️ Исторические результаты уже загружены: {status['present']}/{EXPECTED_INITIAL_HISTORICAL}")
             return True
 
-        # Нужно импортировать
-        import_result = load_rpl_historical_results()
+        # Нужно импортировать – используем skip_conflicts=True
+        import_result = load_rpl_historical_results(skip_conflicts=True)   # <-- ИСПРАВЛЕНО
 
         if not import_result.get("success", False):
             result["historical"]["errors"].extend(import_result.get("errors", []))
@@ -286,6 +277,15 @@ def _run_historical(result: Dict[str, Any]) -> bool:
         result["historical"]["already_present"] = import_result.get("already_present", 0)
         result["historical"]["updated"] = import_result.get("updated_matches", 0)
 
+        # Добавляем информацию о пропущенных конфликтах
+        if import_result.get("conflicts", 0) > 0:
+            _add_step(
+                result,
+                "historical",
+                "warning",
+                f"⚠️ Пропущено конфликтов: {import_result['conflicts']}"
+            )
+
         _add_step(
             result,
             "historical",
@@ -296,11 +296,11 @@ def _run_historical(result: Dict[str, Any]) -> bool:
         return True
 
     except Exception as e:
-        msg = f"⚠️ Ошибка исторического импорта: {e} (пропускаем для теста)"
+        msg = f"❌ Ошибка исторического импорта: {e}"
         result["errors"].append(msg)
-        _add_step(result, "historical", "warning", msg)
-        logger.warning("Historical import failed, continuing anyway")
-        return True  # ВРЕМЕННО ВОЗВРАЩАЕМ True
+        _add_step(result, "historical", "error", msg)
+        logger.exception("Historical import failed")
+        return False
 
 
 # ============================================================
@@ -361,7 +361,7 @@ def _run_learning(result: Dict[str, Any]) -> bool:
 
 
 # ============================================================
-# 4. PREDICTIONS (ИСПРАВЛЕНО)
+# 4. PREDICTIONS
 # ============================================================
 
 def _run_predictions(result: Dict[str, Any]) -> bool:
@@ -558,11 +558,10 @@ def run_faj_cycle() -> Dict[str, Any]:
             return _finish(result, started)
 
         # ====================================================
-        # 2. HISTORICAL (ВРЕМЕННО ПРОПУСКАЕМ ОШИБКИ)
+        # 2. HISTORICAL
         # ====================================================
-        _run_historical(result)
-        # if not _run_historical(result):
-        #     return _finish(result, started)
+        if not _run_historical(result):
+            return _finish(result, started)
 
         # ====================================================
         # 3. LEARNING (только если есть новые факты)
@@ -583,7 +582,7 @@ def run_faj_cycle() -> Dict[str, Any]:
 
         result["ready"] = (
             result["database"]["ok"]
-            and (result["historical"]["success"] or result["historical"]["conflict"])
+            and result["historical"]["success"]
             and (result["learning"]["success"] or result["learning"]["skipped"])
             and result["predictions"]["success"]
         )
