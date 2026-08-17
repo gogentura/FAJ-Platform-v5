@@ -774,7 +774,7 @@ def init_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_match_stats_team ON match_statistics(team_id)")
     
     # ============================================================
-    # TEAM DYNAMICS (ПО ТУРАМ)
+    # TEAM DYNAMICS (ПО ТУРАМ) — ИСПРАВЛЕНО
     # ============================================================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS team_dynamics (
@@ -800,15 +800,15 @@ def init_database():
             form_points REAL DEFAULT 0,
             home_form_points REAL DEFAULT 0,
             away_form_points REAL DEFAULT 0,
-            attack_rating REAL DEFAULT 1. )
-0,
-            defense_rating REAL DEFAULT    "" 1.0")
-,
-            control_rating REAL DEFAULT 1.   0,
+            attack_rating REAL DEFAULT 1.0,
+            defense_rating REAL DEFAULT 1.0,
+            control_rating REAL DEFAULT 1.0,
             FOREIGN KEY (team_id) REFERENCES teams(id),
             FOREIGN KEY (season_id) REFERENCES seasons(id),
             UNIQUE(team_id, round_number, season_id)
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_team_dynamics_lookup ON team_dynamics(team_id, season_id)")
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_team_dynamics_lookup ON team_dynamics(team_id, season_id)")
     
     # ============================================================
     # STANDINGS
