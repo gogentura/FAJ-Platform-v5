@@ -635,6 +635,14 @@ with st.sidebar:
         use_container_width=True,
     ):
         navigate("system_trace")
+    # ============================================================
+    # НОВАЯ КНОПКА — ДИАГНОСТИКА КАЛЕНДАРЯ
+    # ============================================================
+    if st.button(
+        "📋 Диагностика календаря",
+        use_container_width=True,
+    ):
+        navigate("diagnose_calendar")
     st.divider()
     if st.button(
         "🔄 Обновить FAJ",
@@ -1072,6 +1080,17 @@ elif st.session_state.page == "system":
         f"Проверка: "
         f"{datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
     )
+# ============================================================
+# DIAGNOSE CALENDAR
+# ============================================================
+elif st.session_state.page == "diagnose_calendar":
+    try:
+        from app.pages.diagnose_calendar import main
+        main()
+    except Exception as e:
+        st.error(f"❌ Ошибка загрузки диагностики: {e}")
+        with st.expander("Техническая ошибка"):
+            st.exception(e)
 # ============================================================
 # FOOTER
 # ============================================================
