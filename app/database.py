@@ -800,15 +800,15 @@ def init_database():
             form_points REAL DEFAULT 0,
             home_form_points REAL DEFAULT 0,
             away_form_points REAL DEFAULT 0,
-            attack_rating REAL DEFAULT 1.0,
-            defense_rating REAL DEFAULT 1.0,
-            control_rating REAL DEFAULT 1.0,
+            attack_rating REAL DEFAULT 1. )
+0,
+            defense_rating REAL DEFAULT    "" 1.0")
+,
+            control_rating REAL DEFAULT 1.   0,
             FOREIGN KEY (team_id) REFERENCES teams(id),
             FOREIGN KEY (season_id) REFERENCES seasons(id),
             UNIQUE(team_id, round_number, season_id)
-        )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_team_dynamics_lookup ON team_dynamics(team_id, season_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_team_dynamics_lookup ON team_dynamics(team_id, season_id)")
     
     # ============================================================
     # STANDINGS
@@ -862,17 +862,7 @@ def init_database():
     # ============================================================
     # LEARNING LAYER
     # ============================================================
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS migrations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            version TEXT NOT NULL,
-            applied_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            status TEXT DEFAULT 'completed',
-            details TEXT,
-            UNIQUE(name, version)
-        )
-    """)
+    # (таблица migrations УДАЛЕНА — используется только schema_migrations)
     
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS gold_dataset (
@@ -1766,20 +1756,61 @@ class FAJDatabase:
             conn.close()
     
     def update_result(self, match_id, home_score, away_score):
+        """
+        Записывает фактический результат матча.
+        Основной источник — match_results.
+        Дополнительно обновляет matches.actual_home/away для обратной совместимости.
+        """
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
+            # Проверяем, есть ли уже результат в match_results
+            cursor.execute("SELECT id FROM match_results WHERE match_id = ?", (match_id,))
+            existing = cursor.fetchone()
+
+            if existing:
+                cursor.execute("""
+                    UPDATE match_results
+                    SET home_goals = ?, away_goals = ?
+                    WHERE match_id = ?
+                """, (home_score, away_score, match_id))
+            else:
+                cursor.execute("""
+                    INSERT INTO match_results (match_id, home_goals, away_goals)
+                    VALUES (?, ?, ?)
+                """, (match_id, home_score, away_score))
+
+            # Для обратной совместимости обновляем matches
             cursor.execute("""
                 UPDATE matches
                 SET actual_home = ?, actual_away = ?, status = 'finished', updated_at = ?
                 WHERE id = ?
             """, (home_score, away_score, datetime.now().isoformat(), match_id))
+
             if cursor.rowcount == 0:
                 raise ValueError(f"Match not found: {match_id}")
+
             conn.commit()
         except Exception:
             conn.rollback()
             raise
+        finally:
+            conn.close()
+
+    def get_match_result(self, match_id):
+        """
+        Возвращает фактический результат матча из match_results.
+        """
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT home_goals, away_goals
+                FROM match_results
+                WHERE match_id = ?
+            """, (match_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
         finally:
             conn.close()
     
@@ -1855,29 +1886,54 @@ class FAJDatabase:
             conn.close()
     
     # ============================================================
-    # MATCH PREDICTIONS
+    # MATCH PREDICTIONS — ИДЕМПОТЕНТНАЯ ВЕРСИЯ
     # ============================================================
     
     def save_match_prediction(self, match_id, xg_home, xg_away,
                               lambda_home=None, lambda_away=None,
                               home_advantage=1.0, prediction_type="standard",
                               model_version="v12.1"):
+        """
+        Сохраняет прогноз xG для матча.
+        Идемпотентно: если уже есть запись с таким match_id и prediction_type,
+        обновляет её (или добавляет новую, если тип другой).
+        """
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
+            # Проверяем существование записи с этим match_id и prediction_type
             cursor.execute("""
-                INSERT INTO match_predictions (
-                    match_id, xg_home, xg_away,
-                    lambda_home, lambda_away,
-                    home_advantage, prediction_type, model_version, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                match_id, xg_home, xg_away,
-                lambda_home, lambda_away,
-                home_advantage, prediction_type, model_version,
-                datetime.now().isoformat()
-            ))
-            prediction_id = cursor.lastrowid
+                SELECT id FROM match_predictions
+                WHERE match_id = ? AND prediction_type = ?
+                ORDER BY created_at DESC LIMIT 1
+            """, (match_id, prediction_type))
+            existing = cursor.fetchone()
+
+            now = datetime.now().isoformat()
+            if existing:
+                cursor.execute("""
+                    UPDATE match_predictions SET
+                        xg_home = ?, xg_away = ?,
+                        lambda_home = ?, lambda_away = ?,
+                        home_advantage = ?,
+                        model_version = ?,
+                        created_at = ?
+                    WHERE id = ?
+                """, (xg_home, xg_away, lambda_home, lambda_away,
+                      home_advantage, model_version, now, existing["id"]))
+                prediction_id = existing["id"]
+            else:
+                cursor.execute("""
+                    INSERT INTO match_predictions (
+                        match_id, xg_home, xg_away,
+                        lambda_home, lambda_away,
+                        home_advantage, prediction_type, model_version, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (match_id, xg_home, xg_away,
+                      lambda_home, lambda_away,
+                      home_advantage, prediction_type, model_version, now))
+                prediction_id = cursor.lastrowid
+
             conn.commit()
             return prediction_id
         except Exception:
@@ -2315,33 +2371,60 @@ class FAJDatabase:
         finally:
             conn.close()
     
-    def save_prediction_result(self, prediction_id: int, match_id: int,
-                               home_win: float, draw: float, away_win: float,
-                               confidence: float, model_version: str) -> bool:
+    # ============================================================
+    # VALIDATION — НОВЫЙ МЕТОД ВМЕСТО save_prediction_result
+    # ============================================================
+    
+    def add_prediction_validation(self, data: Dict[str, Any]) -> int:
+        """
+        Сохраняет сравнение предматчевого прогноза и фактического результата.
+        Не изменяет сам прогноз (историчность сохраняется).
+        """
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
             cursor.execute("""
-                UPDATE predictions
-                SET
-                    match_id = ?, home_win = ?, draw = ?, away_win = ?,
-                    confidence = ?, model_version = ?,
-                    prediction_source = 'FAJ Engine', prediction_status = 'active'
-                WHERE id = ?
+                INSERT INTO prediction_validation (
+                    match_id, predicted_score, actual_score,
+                    predicted_home_xg, actual_home_xg,
+                    predicted_away_xg, actual_away_xg,
+                    predicted_winner, actual_winner,
+                    predicted_probability_home, predicted_probability_draw, predicted_probability_away,
+                    score_probability, confidence, risk,
+                    predicted_btts, actual_btts,
+                    predicted_over25, actual_over25,
+                    model_version, passport_version, parser_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                match_id, home_win, draw, away_win,
-                confidence, model_version, prediction_id
+                data.get('match_id'),
+                data.get('predicted_score'),
+                data.get('actual_score'),
+                data.get('predicted_home_xg'),
+                data.get('actual_home_xg'),
+                data.get('predicted_away_xg'),
+                data.get('actual_away_xg'),
+                data.get('predicted_winner'),
+                data.get('actual_winner'),
+                data.get('predicted_probability_home'),
+                data.get('predicted_probability_draw'),
+                data.get('predicted_probability_away'),
+                data.get('score_probability'),
+                data.get('confidence'),
+                data.get('risk'),
+                data.get('predicted_btts'),
+                data.get('actual_btts'),
+                data.get('predicted_over25'),
+                data.get('actual_over25'),
+                data.get('model_version'),
+                data.get('passport_version'),
+                data.get('parser_version')
             ))
-            if cursor.rowcount == 0:
-                conn.rollback()
-                logger.warning(f"Prediction not found: {prediction_id}")
-                return False
+            row_id = cursor.lastrowid
             conn.commit()
-            logger.info(f"Prediction result updated: {prediction_id}")
-            return True
-        except Exception as e:
-            logger.error(f"Save prediction result error: {e}")
-            return False
+            return row_id
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
     
@@ -2496,52 +2579,98 @@ class FAJDatabase:
             conn.close()
     
     # ============================================================
-    # LEARNING LAYER
+    # LEARNING LAYER — ИДЕМПОТЕНТНАЯ ВЕРСИЯ (upsert_gold)
     # ============================================================
     
-    def add_to_gold(self, data):
+    def upsert_gold(self, data: Dict[str, Any]) -> int:
+        """
+        Добавляет или обновляет запись в gold_dataset по match_id.
+        Если запись уже существует, обновляет поля, которые не являются историческими
+        (т.е. статус, экспертную оценку, фактические данные, если они появились).
+        """
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO gold_dataset (
-                    match_id, home_team, away_team, match_date,
-                    model_version,
-                    faj_score, faj_xg_home, faj_xg_away,
-                    faj_btts, faj_total_25, faj_total_35,
-                    faj_confidence, faj_rating_home, faj_rating_away,
-                    faj_pir_home, faj_pir_away,
-                    faj_style_home, faj_style_away,
-                    expert_score, expert_reasoning,
-                    status, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                data.get('match_id'),
-                data.get('home_team'),
-                data.get('away_team'),
-                data.get('match_date'),
-                data.get('model_version', '1.0'),
-                data.get('faj_score'),
-                data.get('faj_xg_home'),
-                data.get('faj_xg_away'),
-                data.get('faj_btts'),
-                data.get('faj_total_25'),
-                data.get('faj_total_35'),
-                data.get('faj_confidence'),
-                data.get('faj_rating_home'),
-                data.get('faj_rating_away'),
-                data.get('faj_pir_home'),
-                data.get('faj_pir_away'),
-                data.get('faj_style_home'),
-                data.get('faj_style_away'),
-                data.get('expert_score'),
-                data.get('expert_reasoning'),
-                data.get('status', 'pending'),
-                datetime.now().isoformat()
-            ))
-            gold_id = cursor.lastrowid
-            conn.commit()
-            return gold_id
+            # Проверяем, есть ли запись для этого match_id
+            cursor.execute("SELECT id FROM gold_dataset WHERE match_id = ?", (data.get('match_id'),))
+            existing = cursor.fetchone()
+
+            if existing:
+                gold_id = existing["id"]
+                # Обновляем только те поля, которые могут измениться после создания
+                # (статус, фактические данные, экспертная оценка)
+                cursor.execute("""
+                    UPDATE gold_dataset SET
+                        actual_score = COALESCE(?, actual_score),
+                        actual_xg_home = COALESCE(?, actual_xg_home),
+                        actual_xg_away = COALESCE(?, actual_xg_away),
+                        actual_btts = COALESCE(?, actual_btts),
+                        actual_total_25 = COALESCE(?, actual_total_25),
+                        actual_total_35 = COALESCE(?, actual_total_35),
+                        actual_home_goals = COALESCE(?, actual_home_goals),
+                        actual_away_goals = COALESCE(?, actual_away_goals),
+                        status = COALESCE(?, status),
+                        expert_score = COALESCE(?, expert_score),
+                        expert_reasoning = COALESCE(?, expert_reasoning),
+                        updated_at = ?
+                    WHERE id = ?
+                """, (
+                    data.get('actual_score'),
+                    data.get('actual_xg_home'),
+                    data.get('actual_xg_away'),
+                    data.get('actual_btts'),
+                    data.get('actual_total_25'),
+                    data.get('actual_total_35'),
+                    data.get('actual_home_goals'),
+                    data.get('actual_away_goals'),
+                    data.get('status'),
+                    data.get('expert_score'),
+                    data.get('expert_reasoning'),
+                    datetime.now().isoformat(),
+                    gold_id
+                ))
+                return gold_id
+            else:
+                # INSERT
+                cursor.execute("""
+                    INSERT INTO gold_dataset (
+                        match_id, home_team, away_team, match_date,
+                        model_version,
+                        faj_score, faj_xg_home, faj_xg_away,
+                        faj_btts, faj_total_25, faj_total_35,
+                        faj_confidence, faj_rating_home, faj_rating_away,
+                        faj_pir_home, faj_pir_away,
+                        faj_style_home, faj_style_away,
+                        expert_score, expert_reasoning,
+                        status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    data.get('match_id'),
+                    data.get('home_team'),
+                    data.get('away_team'),
+                    data.get('match_date'),
+                    data.get('model_version', '1.0'),
+                    data.get('faj_score'),
+                    data.get('faj_xg_home'),
+                    data.get('faj_xg_away'),
+                    data.get('faj_btts'),
+                    data.get('faj_total_25'),
+                    data.get('faj_total_35'),
+                    data.get('faj_confidence'),
+                    data.get('faj_rating_home'),
+                    data.get('faj_rating_away'),
+                    data.get('faj_pir_home'),
+                    data.get('faj_pir_away'),
+                    data.get('faj_style_home'),
+                    data.get('faj_style_away'),
+                    data.get('expert_score'),
+                    data.get('expert_reasoning'),
+                    data.get('status', 'pending'),
+                    datetime.now().isoformat()
+                ))
+                gold_id = cursor.lastrowid
+                conn.commit()
+                return gold_id
         except Exception:
             conn.rollback()
             raise
