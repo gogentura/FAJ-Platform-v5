@@ -15,7 +15,8 @@ Prediction Manager v1.9
     2. _validate_passport_for_prediction() — добавлен "form"
     3. FINISHED_STATUSES — расширен
     4. _find_match_by_teams() — только как fallback
-    5. Исправлен вызов MatchContext — убраны несуществующие параметры
+    5. Исправлен вызов MatchContext — context = None
+    6. Добавлен predict_round_by_number() — преобразование номера тура в round_id
 """
 
 import logging
@@ -157,12 +158,9 @@ class PredictionManager:
         if not match:
             return {"status": "error", "message": f"Матч с ID {match_id} не найден.", "match_id": match_id}
 
-        # ИСПРАВЛЕНО: убраны несуществующие параметры season, round, tournament
-        context = MatchContext(
-            match_id=match_id,
-            home_team=match.get("home_team"),
-            away_team=match.get("away_team"),
-        )
+        # MatchContext не используется для передачи метаданных матча.
+        # MatchContext предназначен ТОЛЬКО для Confidence/Risk Engine.
+        context = None
 
         return self.predict(
             home_team=match.get("home_team"),
@@ -202,6 +200,56 @@ class PredictionManager:
                 })
 
         return results
+
+    # ============================================================
+    # PREDICT ROUND BY NUMBER (НОВЫЙ МЕТОД)
+    # ============================================================
+
+    def predict_round_by_number(self, round_number: int, include_finished: bool = False) -> List[Dict[str, Any]]:
+        """
+        Прогноз матчей по номеру тура.
+
+        Args:
+            round_number: номер тура (1, 2, 3, ...)
+            include_finished: включать ли завершённые матчи
+
+        Returns:
+            List[Dict[str, Any]] — список прогнозов
+        """
+        season_id = self._get_current_season_id()
+
+        if not season_id:
+            return [{"status": "error", "message": "Сезон не найден"}]
+
+        conn = self.db.get_connection()
+
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id FROM rounds
+                WHERE season_id = ? AND round_number = ?
+                LIMIT 1
+                """,
+                (season_id, round_number),
+            )
+            row = cursor.fetchone()
+
+            if not row:
+                return [{"status": "error", "message": f"Тур {round_number} не найден в БД"}]
+
+            round_id = row[0]
+
+        finally:
+            conn.close()
+
+        logger.info(
+            "Predict round by number | round_number=%s | round_id=%s",
+            round_number,
+            round_id,
+        )
+
+        return self.predict_round(round_id, include_finished)
 
     # ============================================================
     # SEASON (ИСПРАВЛЕНО — убран опасный fallback)
