@@ -355,40 +355,131 @@ def _run_learning(result: Dict[str, Any]) -> bool:
 
 
 # ============================================================
-# 4. PREDICTIONS
+# 4. PREDICTIONS (ИСПРАВЛЕНО)
 # ============================================================
 
 def _run_predictions(result: Dict[str, Any]) -> bool:
-    _add_step(result, "predictions", "running", f"🔮 Запуск Prediction Manager для тура {NEXT_PREDICTION_ROUND}...")
+    _add_step(
+        result,
+        "predictions",
+        "running",
+        f"🔮 Запуск Prediction Manager для тура {NEXT_PREDICTION_ROUND}..."
+    )
     result["predictions"]["started"] = True
 
+    conn = None
+
     try:
+        # ====================================================
+        # 1. Находим season_id
+        # ====================================================
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT id
+            FROM seasons
+            WHERE name = ? OR name = ?
+            LIMIT 1
+            """,
+            ("РПЛ 2026-2027", "2026-2027"),
+        )
+
+        season_row = cursor.fetchone()
+
+        if not season_row:
+            msg = f"❌ Сезон не найден в таблице seasons"
+            result["predictions"]["errors"].append(msg)
+            result["errors"].append(msg)
+            _add_step(result, "predictions", "error", msg)
+            return False
+
+        season_id = season_row[0]
+
+        # ====================================================
+        # 2. Находим round_id по round_number
+        # ====================================================
+
+        cursor.execute(
+            """
+            SELECT id
+            FROM rounds
+            WHERE season_id = ?
+              AND round_number = ?
+            LIMIT 1
+            """,
+            (season_id, NEXT_PREDICTION_ROUND),
+        )
+
+        round_row = cursor.fetchone()
+
+        if not round_row:
+            msg = f"❌ Тур {NEXT_PREDICTION_ROUND} для сезона {SEASON} не найден"
+            result["predictions"]["errors"].append(msg)
+            result["errors"].append(msg)
+            _add_step(result, "predictions", "error", msg)
+            return False
+
+        round_id = int(round_row[0])
+
+        _add_step(
+            result,
+            "predictions",
+            "success",
+            f"✅ Тур {NEXT_PREDICTION_ROUND} найден: round_id={round_id}"
+        )
+
+        # ====================================================
+        # 3. Запускаем прогноз с round_id
+        # ====================================================
+
         manager = get_prediction_manager()
-        prediction_result = manager.predict_round(NEXT_PREDICTION_ROUND)
+        prediction_result = manager.predict_round(round_id)
 
         result["predictions"]["result"] = prediction_result
 
         if isinstance(prediction_result, (list, tuple)):
             result["predictions"]["count"] = len(prediction_result)
             result["predictions"]["success"] = True
-            _add_step(result, "predictions", "success", f"✅ Прогнозы рассчитаны: {len(prediction_result)} матчей")
+            _add_step(
+                result,
+                "predictions",
+                "success",
+                f"✅ Прогнозы рассчитаны: {len(prediction_result)} матчей"
+            )
             return True
 
         if isinstance(prediction_result, dict):
-            result["predictions"]["count"] = prediction_result.get("count", 0)
-            result["predictions"]["success"] = bool(prediction_result.get("success", False))
-            if result["predictions"]["success"]:
-                _add_step(result, "predictions", "success", f"✅ Прогнозы рассчитаны: {result['predictions']['count']} матчей")
-            else:
-                errors = prediction_result.get("errors", [])
-                result["predictions"]["errors"].extend(errors)
-                msg = "❌ Prediction Manager вернул success=False"
+            # Если в словаре есть status="error" или явный success=False
+            if prediction_result.get("status") == "error" or not prediction_result.get("success", True):
+                errors = prediction_result.get("errors", [prediction_result.get("message", "Неизвестная ошибка")])
+                if isinstance(errors, list):
+                    result["predictions"]["errors"].extend(errors)
+                else:
+                    result["predictions"]["errors"].append(str(errors))
+                msg = f"❌ Prediction Manager вернул ошибку"
                 _add_step(result, "predictions", "error", msg)
                 result["errors"].append(msg)
-            return result["predictions"]["success"]
+                return False
+
+            result["predictions"]["count"] = prediction_result.get("count", 0)
+            result["predictions"]["success"] = True
+            _add_step(
+                result,
+                "predictions",
+                "success",
+                f"✅ Прогнозы рассчитаны: {result['predictions']['count']} матчей"
+            )
+            return True
 
         result["predictions"]["success"] = True
-        _add_step(result, "predictions", "success", "✅ Прогнозы рассчитаны")
+        _add_step(
+            result,
+            "predictions",
+            "success",
+            "✅ Прогнозы рассчитаны"
+        )
         return True
 
     except Exception as e:
@@ -398,6 +489,13 @@ def _run_predictions(result: Dict[str, Any]) -> bool:
         _add_step(result, "predictions", "error", msg)
         logger.exception("Prediction Manager failed")
         return False
+
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ============================================================
