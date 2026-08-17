@@ -18,7 +18,7 @@ Prediction Pipeline v2.2
     5. Единый источник BTTS/O2.5/O3.5 — из score_matrix
     6. most_likely_score: "prob" → "probability"
     7. Убраны лишние параметры в ConfidenceEngine
-    8. Исправлен вызов RiskEngine: home_rating/away_rating → context
+    8. Исправлен вызов RiskEngine: home_rating/away_rating → context (context=None)
 
 ВАЖНО:
     Pipeline НЕ работает с БД.
@@ -96,7 +96,6 @@ class PredictionPipeline:
 
             # ====================================================
             # 1. XG
-            # ИСПРАВЛЕНО: home_rating_context → home_rating
             # ====================================================
 
             xg_result = self.xg_model.calculate(
@@ -227,29 +226,27 @@ class PredictionPipeline:
 
             # ====================================================
             # 8. CONFIDENCE
-            # ИСПРАВЛЕНО: убраны home_rating/away_rating
             # ====================================================
 
             confidence_result = self.confidence_engine.calculate(
                 raw_prediction=raw_prediction,
-                calibrated=calibrated_probs
+                calibrated=calibrated_probs,
+                context=None  # Явно передаём None
             )
 
             # ====================================================
             # 9. RISK
-            # ИСПРАВЛЕНО: home_rating/away_rating → context
+            # ИСПРАВЛЕНО: context=None вместо risk_context
             # ====================================================
 
-            risk_context = {
-                "home_rating": float(home_rating),
-                "away_rating": float(away_rating),
-            }
-
+            # MatchContext не используется для передачи метаданных матча.
+            # Контекст будет добавлен позже, когда появятся реальные
+            # данные о травмах, усталости, составе и мотивации.
             risk_result = self.risk_engine.calculate(
                 raw_prediction=raw_prediction,
                 calibrated=calibrated_probs,
                 confidence=confidence_result,
-                context=risk_context
+                context=None  # ← ИСПРАВЛЕНО
             )
 
             # ====================================================
