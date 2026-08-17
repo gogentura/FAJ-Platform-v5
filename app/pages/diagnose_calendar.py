@@ -2,8 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ Calendar Diagnostic v1.2 (READ-ONLY)
+FAJ Calendar Diagnostic v1.3 (READ-ONLY)
 Страница для Streamlit — показывает состояние календаря 1-4 туров.
+Теперь ищет сезон по имени, а не по league.
 """
 
 import streamlit as st
@@ -25,7 +26,45 @@ def main():
     cursor = conn.cursor()
 
     # ============================================================
-    # ЭТАЛОННЫЙ КАЛЕНДАРЬ (32 матча)
+    # 1. ПОКАЗЫВАЕМ ВСЕ СЕЗОНЫ (для диагностики)
+    # ============================================================
+    cursor.execute("SELECT id, name, league FROM seasons ORDER BY id")
+    all_seasons = cursor.fetchall()
+    st.write("**Найденные сезоны:**")
+    for s in all_seasons:
+        st.write(f"ID={s[0]}, name='{s[1]}', league='{s[2]}'")
+
+    # ============================================================
+    # 2. ИЩЕМ СЕЗОН РПЛ 2026/27 (по имени, без league)
+    # ============================================================
+    cursor.execute("""
+        SELECT id, name
+        FROM seasons
+        WHERE name LIKE '%РПЛ%' OR name LIKE '%2026%'
+        ORDER BY id DESC LIMIT 1
+    """)
+    season = cursor.fetchone()
+    if not season:
+        st.error("❌ Сезон РПЛ 2026/27 не найден ни по имени, ни по league.")
+        conn.close()
+        return
+    season_id, season_name = season
+    st.success(f"✅ Используем сезон: {season_name} (ID={season_id})")
+
+    # ============================================================
+    # 3. ТУРЫ 1-4
+    # ============================================================
+    cursor.execute("SELECT id, round_number FROM rounds WHERE season_id = ? AND round_number BETWEEN 1 AND 4", (season_id,))
+    rounds_rows = cursor.fetchall()
+    if not rounds_rows:
+        st.warning("⚠️ В БД нет туров 1-4 для этого сезона")
+        conn.close()
+        return
+    rounds = {row[1]: row[0] for row in rounds_rows}
+    st.write(f"Найдено туров 1-4: {len(rounds)}")
+
+    # ============================================================
+    # 4. ЭТАЛОННЫЙ КАЛЕНДАРЬ (32 матча)
     # ============================================================
     CALENDAR = [
         (1, "ЦСКА", "Балтика"), (1, "Рубин", "Краснодар"),
@@ -47,29 +86,8 @@ def main():
     ]
 
     # ============================================================
-    # ПОИСК СЕЗОНА
+    # 5. ЗАГРУЗКА МАТЧЕЙ ИЗ БД
     # ============================================================
-    cursor.execute("""
-        SELECT id, name
-        FROM seasons
-        WHERE league = 'РПЛ'
-          AND (name LIKE '%2026%' OR name LIKE '%2026/27%' OR name LIKE '%2026-2027%')
-        ORDER BY id DESC LIMIT 1
-    """)
-    season = cursor.fetchone()
-    if not season:
-        st.error("❌ Сезон РПЛ 2026/27 не найден")
-        conn.close()
-        return
-    season_id, season_name = season
-    st.info(f"Сезон: {season_name} (ID={season_id})")
-
-    # ============================================================
-    # ЗАГРУЗКА ТУРОВ И МАТЧЕЙ
-    # ============================================================
-    cursor.execute("SELECT id, round_number FROM rounds WHERE season_id = ? AND round_number BETWEEN 1 AND 4", (season_id,))
-    rounds = {row[1]: row[0] for row in cursor.fetchall()}
-
     db_matches = {}
     for rn, rid in rounds.items():
         cursor.execute("""
@@ -83,14 +101,14 @@ def main():
             db_matches[(rn, row[1], row[2])] = row[0]
 
     # ============================================================
-    # РЕЗУЛЬТАТЫ
+    # 6. РЕЗУЛЬТАТЫ ИЗ match_results
     # ============================================================
     cursor.execute("SELECT match_id FROM match_results")
     results = {row[0] for row in cursor.fetchall()}
     conn.close()
 
     # ============================================================
-    # АНАЛИЗ
+    # 7. АНАЛИЗ
     # ============================================================
     missing = []
     extra = []
@@ -122,7 +140,7 @@ def main():
             seen.add(key)
 
     # ============================================================
-    # ВЫВОД
+    # 8. ВЫВОД
     # ============================================================
     st.divider()
     col1, col2 = st.columns(2)
