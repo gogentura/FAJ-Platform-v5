@@ -44,7 +44,7 @@ RPL Historical Importer отвечает ТОЛЬКО за:
     - отсутствующий матч считается ошибкой
     - отсутствующая команда считается ошибкой
     - отсутствующий тур считается ошибкой
-    - конфликт результата считается ошибкой
+    - конфликт результата считается ошибкой (если не пропущен)
     - существующий идентичный результат не перезаписывается
     - импорт идемпотентен
     - вся операция атомарна
@@ -53,7 +53,7 @@ RPL Historical Importer отвечает ТОЛЬКО за:
     - исторические результаты не запускают обучение
 
 Источник: historical / manual_import
-Версия: 1.3
+Версия: 1.4 (исправлена обработка конфликтов)
 ===========================================================
 """
 
@@ -78,7 +78,7 @@ LEAGUE_NAME = "РПЛ"
 
 IMPORT_SOURCE = "historical"
 IMPORT_METHOD = "manual_import"
-IMPORT_VERSION = "1.3"
+IMPORT_VERSION = "1.4"
 
 EXPECTED_MATCHES = 32
 EXPECTED_ROUNDS = (1, 2, 3, 4)
@@ -226,6 +226,7 @@ def _empty_result() -> Dict[str, Any]:
         "inserted_results": 0,
         "updated_matches": 0,
         "already_present": 0,
+        "conflicts": 0,                   # <-- добавлено
         "errors": [],
         "rounds": [],
         "rounds_imported": [],
@@ -489,10 +490,11 @@ def _insert_match_result(cursor: sqlite3.Cursor, match_id: int, home_goals: int,
 
 
 # ============================================================
-# IMPORT ONE MATCH
+# IMPORT ONE MATCH (ИСПРАВЛЕНА)
 # ============================================================
 
-def _import_match(cursor: sqlite3.Cursor, item: Tuple[int, str, str, str, int, int], result: Dict[str, Any]) -> None:
+def _import_match(cursor: sqlite3.Cursor, item: Tuple[int, str, str, str, int, int],
+                  result: Dict[str, Any], skip_conflicts: bool = False) -> None:
     round_number, date_value, home_team, away_team, home_goals, away_goals = item
 
     home_team = normalize_team(home_team)
@@ -540,12 +542,38 @@ def _import_match(cursor: sqlite3.Cursor, item: Tuple[int, str, str, str, int, i
             })
             return
 
-        raise ValueError(
-            f"КОНФЛИКТ результата: {home_team} — {away_team}. "
-            f"В БД: {existing_home}:{existing_away}; "
-            f"исторический: {home_goals}:{away_goals}"
-        )
+        # КОНФЛИКТ
+        if skip_conflicts:
+            # Логируем предупреждение и пропускаем
+            logger.warning(
+                f"Конфликт результата: {home_team} — {away_team}. "
+                f"В БД: {existing_home}:{existing_away}, "
+                f"исторический: {home_goals}:{away_goals}. Пропускаем."
+            )
+            result["conflicts"] += 1
+            result["matches"].append({
+                "match_id": match_id,
+                "round": int(round_number),
+                "date": date_value,
+                "home_team": home_team,
+                "away_team": away_team,
+                "home_goals": int(home_goals),
+                "away_goals": int(away_goals),
+                "db_home_goals": int(existing_home),
+                "db_away_goals": int(existing_away),
+                "score": f"{home_goals}:{away_goals}",
+                "db_score": f"{existing_home}:{existing_away}",
+                "status": "conflict_skipped",
+            })
+            return
+        else:
+            raise ValueError(
+                f"КОНФЛИКТ результата: {home_team} — {away_team}. "
+                f"В БД: {existing_home}:{existing_away}; "
+                f"исторический: {home_goals}:{away_goals}"
+            )
 
+    # Новый результат
     _insert_match_result(cursor, match_id, home_goals, away_goals)
     result["inserted_results"] += 1
     _update_match_actual(cursor, match_id, home_goals, away_goals)
@@ -598,10 +626,10 @@ def _preflight(cursor: sqlite3.Cursor) -> List[str]:
 
 
 # ============================================================
-# PUBLIC IMPORT
+# PUBLIC IMPORT (ИСПРАВЛЕНА)
 # ============================================================
 
-def import_historical_results(db_path: Optional[str] = None) -> Dict[str, Any]:
+def import_historical_results(db_path: Optional[str] = None, skip_conflicts: bool = False) -> Dict[str, Any]:
     validation = validate_historical_data()
     if not validation["success"]:
         return validation
@@ -625,9 +653,10 @@ def import_historical_results(db_path: Optional[str] = None) -> Dict[str, Any]:
             return result
 
         for item in HISTORICAL_MATCHES:
-            _import_match(cursor, item, result)
+            _import_match(cursor, item, result, skip_conflicts=skip_conflicts)
 
-        total_processed = result["inserted_results"] + result["already_present"]
+        # Проверяем, что обработаны все матчи (вставлены + уже присутствовали + пропущены конфликты)
+        total_processed = result["inserted_results"] + result["already_present"] + result["conflicts"]
         if total_processed != EXPECTED_MATCHES:
             raise RuntimeError(f"Количество обработанных результатов: {total_processed}; ожидалось {EXPECTED_MATCHES}")
 
@@ -636,9 +665,10 @@ def import_historical_results(db_path: Optional[str] = None) -> Dict[str, Any]:
         result["success"] = True
 
         logger.info(
-            "FAJ RPL historical import completed: inserted=%s already_present=%s updated_matches=%s",
+            "FAJ RPL historical import completed: inserted=%s already_present=%s conflicts_skipped=%s updated_matches=%s",
             result["inserted_results"],
             result["already_present"],
+            result["conflicts"],
             result["updated_matches"],
         )
         return result
@@ -658,8 +688,8 @@ def import_historical_results(db_path: Optional[str] = None) -> Dict[str, Any]:
 # CONVENIENCE API
 # ============================================================
 
-def load_rpl_historical_results(db_path: Optional[str] = None) -> Dict[str, Any]:
-    return import_historical_results(db_path)
+def load_rpl_historical_results(db_path: Optional[str] = None, skip_conflicts: bool = False) -> Dict[str, Any]:
+    return import_historical_results(db_path, skip_conflicts)
 
 
 # ============================================================
@@ -823,12 +853,14 @@ if __name__ == "__main__":
     print(f"Конфликтов: {status['conflicts']}")
 
     print("\nЗапуск исторического импорта...")
-    result = import_historical_results()
+    # Для CLI по умолчанию конфликты не пропускаем (можно изменить при необходимости)
+    result = import_historical_results(skip_conflicts=False)
 
     print(f"\nУспех: {result['success']}")
     print(f"Добавлено результатов: {result['inserted_results']}")
     print(f"Обновлено матчей: {result['updated_matches']}")
     print(f"Уже существовало: {result['already_present']}")
+    print(f"Пропущено конфликтов: {result.get('conflicts', 0)}")
     print(f"Ошибок: {len(result['errors'])}")
 
     if result["rounds_imported"]:
