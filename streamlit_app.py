@@ -100,13 +100,13 @@ except Exception:
 try:
     from app.faj_cycle import (
         FAJCycle,
-        run_faj_cycle,
+        run_faj_cycle as faj_cycle_runner,
     )
     FAJ_CYCLE_AVAILABLE = True
     FAJ_CYCLE_IMPORT_ERROR = None
 except Exception as e:
     FAJCycle = None
-    run_faj_cycle = None
+    faj_cycle_runner = None
     FAJ_CYCLE_AVAILABLE = False
     FAJ_CYCLE_IMPORT_ERROR = str(e)
 
@@ -1221,8 +1221,8 @@ def run_faj_cycle():
         # ----------------------------------------------------
         # ЕДИНАЯ ТОЧКА ЗАПУСКА
         # ----------------------------------------------------
-        if run_faj_cycle is not None:
-            result = run_faj_cycle()
+        if faj_cycle_runner is not None:
+            result = faj_cycle_runner()
         else:
             cycle = FAJCycle()
             result = cycle.run()
