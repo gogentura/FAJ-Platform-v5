@@ -57,6 +57,8 @@ TURNAMENT_TABLES = {
     "match_results",
     "match_statistics",
     "predictions",
+    "prediction_scores",
+    "prediction_distributions",
     "expert_predictions",
     "standings",
     "match_predictions",
@@ -68,6 +70,7 @@ TURNAMENT_TABLES = {
     "journal",
     "prediction_validation",
     "match_events",
+    "migrations",  # старая таблица миграций (технический мусор)
 }
 
 
@@ -146,7 +149,7 @@ def main():
     turnament_tables = [t for t in all_tables if t in TURNAMENT_TABLES]
     unknown_tables = [t for t in all_tables if t not in FAJ_BASE_TABLES and t not in LEARNING_TABLES and t not in TURNAMENT_TABLES]
 
-    # Блокировка, если есть неизвестные таблицы
+    # Если есть неизвестные таблицы — очистка блокируется
     if unknown_tables:
         st.error(f"🚫 Очистка невозможна. Найдены неизвестные таблицы: {', '.join(unknown_tables)}. Проверьте database.py и обновите списки.")
         st.stop()
@@ -169,7 +172,7 @@ def main():
             st.write("  (нет таблиц)")
 
     with col2:
-        st.markdown("**🟡 Learning (по желанию)**")
+        st.markdown("**🟡 LEARNING (по желанию)**")
         if learning_tables:
             for table in sorted(learning_tables):
                 st.write(f"  {table}: {counts_learning.get(table, 0)}")
@@ -177,7 +180,7 @@ def main():
             st.write("  (нет таблиц)")
 
     with col3:
-        st.markdown("**🔴 Турнирные данные (будут удалены)**")
+        st.markdown("**🔴 ТУРНИРНЫЕ ДАННЫЕ (будут удалены)**")
         if turnament_tables:
             for table in sorted(turnament_tables):
                 st.write(f"  {table}: {counts_turn.get(table, 0)}")
@@ -187,22 +190,53 @@ def main():
     st.divider()
     st.subheader("⚠️ Подтверждение очистки")
 
-    clear_learning = st.checkbox("☑ Также очистить learning_memory, learning_records, learning_events (обычно не требуется)", key="clear_learning")
-    confirm = st.checkbox("☑ Я подтверждаю, что хочу очистить турнирные данные", key="confirm_reset")
+    clear_learning = st.checkbox("☑ Также очистить LEARNING (learning_memory, learning_records, learning_events)", key="clear_learning")
+    confirm = st.checkbox("☑ Я подтверждаю, что хочу очистить турнирные данные и начать новый цикл", key="confirm_reset")
 
-    if st.button("🔴 ОЧИСТИТЬ ТУРНИРНЫЕ ДАННЫЕ", type="primary", disabled=not confirm):
+    if st.button("🔴 ОЧИСТИТЬ И НАЧАТЬ НОВЫЙ ЦИКЛ", type="primary", disabled=not confirm):
         if not confirm:
             st.error("Подтвердите очистку, чтобы продолжить.")
         else:
             with st.spinner("Выполняется очистка..."):
                 result = reset_tournament_data(clear_learning=clear_learning)
-            st.success(f"✅ Очистка завершена. Удалено таблиц: {result['count']}")
-            st.info(f"📁 Резервная копия: {result['backup_path']}")
-            if result['cleared']:
-                with st.expander("🗑️ Очищенные таблицы"):
-                    st.write(result['cleared'])
 
-            st.info("Теперь вы можете начать создавать туры через «🗓️ Управление турами».")
+            # --- Итоговый статус ---
+            st.balloons()
+            st.success("✅ ОЧИСТКА УСПЕШНО ЗАВЕРШЕНА")
+
+            # Считаем новое состояние
+            new_counts_base = get_table_counts(base_tables)
+            new_counts_turn = get_table_counts(turnament_tables)
+
+            st.subheader("📋 СОСТОЯНИЕ ПОСЛЕ ОЧИСТКИ")
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.markdown("**🟢 FAJ BASE**")
+                st.write(f"  Команды: {new_counts_base.get('teams', 0)}")
+                st.write(f"  Паспорта: {new_counts_base.get('team_passports', 0)}")
+                st.write(f"  FAJ Rating: {new_counts_base.get('team_passports', 0)}")
+                st.write(f"  Model Parameters: {new_counts_base.get('model_parameters', 0)}")
+
+            with col2:
+                st.markdown("**🔴 ТУРНИР**")
+                st.write(f"  Туры: {new_counts_turn.get('rounds', 0)}")
+                st.write(f"  Матчи: {new_counts_turn.get('matches', 0)}")
+                st.write(f"  Результаты: {new_counts_turn.get('match_results', 0)}")
+                st.write(f"  Прогнозы: {new_counts_turn.get('predictions', 0)}")
+
+            with col3:
+                st.markdown("**🧠 LEARNING**")
+                if clear_learning:
+                    st.write(f"  История обучения: 0")
+                else:
+                    st.write(f"  История обучения: сохранена")
+
+            st.info(f"📁 Резервная копия: {result['backup_path']}")
+
+            if st.button("🗓️ СОЗДАТЬ ТУР 1", type="primary"):
+                st.session_state.page = "tour_manager"
+                st.rerun()
 
 
 if __name__ == "__main__":
