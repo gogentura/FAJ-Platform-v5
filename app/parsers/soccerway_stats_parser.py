@@ -4,43 +4,33 @@
 """
 ============================================================
 FAJ Platform v12.1
-SOCCERWAY STATS PARSER v1.0
+SOCCERWAY STATS PARSER v4.0
 ============================================================
 
 Назначение:
-    Получение результата и статистики завершённого матча
-    со страниц Soccerway.
-
-Принцип:
-
-    URL
-      ↓
-    Soccerway HTML
-      ↓
-    Match identity
-      ↓
-    Score
-      ↓
-    Statistics
-      ↓
-    Normalized FAJ dictionary
+    Получение фактического результата и статистики матча
+    с Soccerway.
 
 ВАЖНО:
+    Не используется глобальный поиск первого числа страницы.
 
-    Этот модуль НЕ работает с БД.
+ПРИОРИТЕТ СЧЁТА:
 
-    None означает:
-        источник не предоставил показатель.
+    1. JSON-LD
+    2. meta og:title
+    3. title страницы
+    4. элементы результата / score
+    5. текст заголовка матча
 
-    None НЕ означает 0.
+Fallback допускается только после проверки контекста.
 
-Источник:
-    ru.soccerway.com
+None != 0
 ============================================================
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any, Dict, Optional, Tuple
@@ -48,193 +38,24 @@ from typing import Any, Dict, Optional, Tuple
 import requests
 from bs4 import BeautifulSoup
 
+from app.parsers.rpl_normalizer import normalize_team_name
+
 
 logger = logging.getLogger(__name__)
 
 
 class SoccerwayStatsParser:
-    """
-    Универсальный парсер страниц матчей Soccerway.
 
-    Основная задача:
-        получить команды, счёт и доступную статистику.
-
-    Парсер старается использовать структуру страницы,
-    а не глобальный поиск случайных чисел.
-    """
-
-    VERSION = "soccerway-v1.0"
+    VERSION = "4.0"
 
     USER_AGENT = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 "
         "(KHTML, like Gecko) "
-        "Chrome/128.0 Safari/537.36"
+        "Chrome/128.0.0.0 Safari/537.36"
     )
 
-    STAT_MAP = {
-        # ------------------------------
-        # Основные показатели
-        # ------------------------------
-
-        "xg": (
-            "xG",
-            "Ожидаемые голы",
-            "Expected Goals",
-            "Expected goals",
-        ),
-
-        "possession": (
-            "Владение",
-            "Владение мячом",
-            "Possession",
-        ),
-
-        "shots": (
-            "Всего ударов",
-            "Удары",
-            "Total shots",
-            "Shots",
-        ),
-
-        "shots_on_target": (
-            "Удары в створ",
-            "Shots on target",
-        ),
-
-        "big_chances": (
-            "Голевые моменты",
-            "Большие моменты",
-            "Big chances",
-        ),
-
-        "corners": (
-            "Угловые",
-            "Corners",
-        ),
-
-        # ------------------------------
-        # Оборона
-        # ------------------------------
-
-        "fouls": (
-            "Фолы",
-            "Fouls",
-        ),
-
-        "tackles": (
-            "Отборы",
-            "Tackles",
-        ),
-
-        "duels_won": (
-            "Выиграно дуэлей",
-            "Дуэли",
-            "Duels won",
-        ),
-
-        "clearances": (
-            "Выносы",
-            "Clearances",
-        ),
-
-        "interceptions": (
-            "Перехваты",
-            "Interceptions",
-        ),
-
-        # ------------------------------
-        # Вратари
-        # ------------------------------
-
-        "saves": (
-            "Сэйвы вратаря",
-            "Сэйвы",
-            "Saves",
-        ),
-
-        "goal_kicks": (
-            "Удары от ворот",
-            "Goal kicks",
-        ),
-
-        # ------------------------------
-        # Атака
-        # ------------------------------
-
-        "offsides": (
-            "Офсайды",
-            "Offsides",
-        ),
-
-        "free_kicks": (
-            "Штрафные",
-            "Free kicks",
-        ),
-
-        "penalty_area_touches": (
-            "Касания мяча в штрафной соперника",
-            "Касания в штрафной",
-            "Touches in opposition box",
-        ),
-
-        # ------------------------------
-        # Передачи
-        # ------------------------------
-
-        "passes": (
-            "Передачи",
-            "Passes",
-            "Всего передач",
-        ),
-
-        "pass_accuracy": (
-            "Точность передач",
-            "Pass accuracy",
-        ),
-
-        "long_passes": (
-            "Длинные передачи",
-            "Long passes",
-        ),
-
-        "final_third_passes": (
-            "Передачи в последней трети",
-            "Passes in final third",
-        ),
-
-        "crosses": (
-            "Навесы",
-            "Crosses",
-        ),
-
-        "xa": (
-            "xA",
-            "Ожидаемые ассисты",
-            "Expected assists",
-        ),
-
-        # ------------------------------
-        # Ударная статистика
-        # ------------------------------
-
-        "xgot": (
-            "xGOT",
-            "xG после ударов в створ",
-            "Expected goals on target",
-        ),
-
-        "goals_prevented": (
-            "Предотвращённые голы",
-            "Goals prevented",
-        ),
-    }
-
-    def __init__(
-        self,
-        timeout: int = 20,
-    ) -> None:
-
+    def __init__(self, timeout: int = 20):
         self.timeout = timeout
 
     # ========================================================
@@ -260,11 +81,13 @@ class SoccerwayStatsParser:
                         "application/xml;q=0.9,*/*;q=0.8"
                     ),
                     "Accept-Language": (
-                        "ru-RU,ru;q=0.9,en;q=0.8"
+                        "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
                     ),
-                    "Referer": "https://ru.soccerway.com/",
+                    "Referer": "https://www.google.com/",
+                    "Connection": "keep-alive",
                 },
                 timeout=self.timeout,
+                allow_redirects=True,
             )
 
             response.raise_for_status()
@@ -276,7 +99,7 @@ class SoccerwayStatsParser:
 
         except Exception as exc:
 
-            logger.error(
+            logger.warning(
                 "Soccerway: ошибка загрузки %s: %s",
                 url,
                 exc,
@@ -289,97 +112,171 @@ class SoccerwayStatsParser:
     # ========================================================
 
     @staticmethod
-    def _normalize_text(
-        value: Any,
-    ) -> str:
+    def _text(element: Any) -> str:
 
-        if value is None:
+        if element is None:
             return ""
 
-        text = str(value)
-
-        text = (
-            text.replace("\xa0", " ")
-            .replace("\u2009", " ")
-            .replace("\u202f", " ")
-        )
-
-        text = re.sub(
-            r"\s+",
+        return element.get_text(
             " ",
-            text,
+            strip=True,
         )
-
-        return text.strip()
 
     @staticmethod
-    def _clean_number(
-        value: str,
-    ) -> Optional[float]:
+    def _normalize_text(value: str) -> str:
 
-        if not value:
-            return None
+        value = value or ""
 
         value = (
-            value.replace("%", "")
-            .replace(",", ".")
-            .strip()
+            value
+            .replace("\xa0", " ")
+            .replace("–", "-")
+            .replace("—", "-")
         )
 
-        match = re.search(
-            r"-?\d+(?:\.\d+)?",
+        value = re.sub(
+            r"\s+",
+            " ",
             value,
         )
 
-        if not match:
-            return None
-
-        try:
-            return float(match.group(0))
-        except ValueError:
-            return None
-
-    @staticmethod
-    def _int_or_float(
-        value: Optional[float],
-    ) -> Optional[Any]:
-
-        if value is None:
-            return None
-
-        if float(value).is_integer():
-            return int(value)
-
-        return value
+        return value.strip()
 
     # ========================================================
-    # SCORE
+    # TEAM EXTRACTION
     # ========================================================
 
-    def _extract_score_from_title(
+    def _extract_teams(
         self,
         soup: BeautifulSoup,
-    ) -> Optional[Tuple[int, int]]:
+    ) -> Tuple[
+        Optional[str],
+        Optional[str],
+    ]:
 
-        title = soup.find("title")
+        candidates = []
 
-        if not title:
-            return None
+        # ----------------------------------------------------
+        # JSON-LD
+        # ----------------------------------------------------
 
-        text = self._normalize_text(
-            title.get_text(
-                " ",
-                strip=True,
+        for script in soup.find_all(
+            "script",
+            type="application/ld+json",
+        ):
+
+            raw = script.string or script.get_text(
+                strip=True
             )
+
+            if not raw:
+                continue
+
+            try:
+
+                data = json.loads(raw)
+
+            except Exception:
+                continue
+
+            objects = (
+                data
+                if isinstance(data, list)
+                else [data]
+            )
+
+            for obj in objects:
+
+                if not isinstance(obj, dict):
+                    continue
+
+                home = obj.get("homeTeam")
+                away = obj.get("awayTeam")
+
+                if isinstance(home, dict):
+                    home = home.get("name")
+
+                if isinstance(away, dict):
+                    away = away.get("name")
+
+                if home and away:
+                    candidates.append(
+                        (str(home), str(away))
+                    )
+
+        # ----------------------------------------------------
+        # Meta / title
+        # ----------------------------------------------------
+
+        title = ""
+
+        if soup.title:
+            title = self._text(
+                soup.title
+            )
+
+        og_title = soup.find(
+            "meta",
+            attrs={
+                "property": "og:title"
+            },
         )
 
-        # Пример:
-        # Динамо Москва - Крылья Советов 0-0
+        if og_title:
+            content = og_title.get(
+                "content"
+            )
 
-        patterns = (
-            r"\b(\d{1,2})\s*-\s*(\d{1,2})\s*$",
-            r"\b(\d{1,2})\s*:\s*(\d{1,2})\s*$",
+            if content:
+                candidates.append(
+                    self._teams_from_text(
+                        content
+                    )
+                )
+
+        candidates.append(
+            self._teams_from_text(title)
         )
+
+        for home, away in candidates:
+
+            if not home or not away:
+                continue
+
+            home_n = normalize_team_name(
+                home,
+                strict=True,
+            )
+
+            away_n = normalize_team_name(
+                away,
+                strict=True,
+            )
+
+            if home_n and away_n:
+
+                return home_n, away_n
+
+        return None, None
+
+    def _teams_from_text(
+        self,
+        text: str,
+    ) -> Tuple[Optional[str], Optional[str]]:
+
+        if not text:
+            return None, None
+
+        text = self._normalize_text(text)
+
+        # Soccerway:
+        # Dynamo Moscow v Krylya Sovetov
+        # Dynamo Moscow - Krylya Sovetov 0-0
+
+        patterns = [
+            r"(.+?)\s+v\s+(.+?)(?:\s+\d{1,2}\s*[-:]\s*\d{1,2}|$)",
+            r"(.+?)\s+-\s+(.+?)\s+\d{1,2}\s*[-:]\s*\d{1,2}",
+        ]
 
         for pattern in patterns:
 
@@ -392,25 +289,169 @@ class SoccerwayStatsParser:
             if not match:
                 continue
 
-            home = int(match.group(1))
-            away = int(match.group(2))
+            home = match.group(1).strip()
+            away = match.group(2).strip()
 
-            if home <= 15 and away <= 15:
-                return home, away
+            return home, away
+
+        return None, None
+
+    # ========================================================
+    # SCORE
+    # ========================================================
+
+    @staticmethod
+    def _valid_score(
+        home: Any,
+        away: Any,
+    ) -> bool:
+
+        try:
+
+            home = int(home)
+            away = int(away)
+
+        except Exception:
+            return False
+
+        if home < 0 or away < 0:
+            return False
+
+        # Футбольный sanity check
+        if home > 15 or away > 15:
+            return False
+
+        return True
+
+    @classmethod
+    def _score_from_text(
+        cls,
+        text: str,
+    ) -> Optional[Tuple[int, int]]:
+
+        if not text:
+            return None
+
+        text = cls._normalize_text(text)
+
+        patterns = [
+            r"\b(\d{1,2})\s*-\s*(\d{1,2})\b",
+            r"\b(\d{1,2})\s*:\s*(\d{1,2})\b",
+        ]
+
+        for pattern in patterns:
+
+            matches = re.findall(
+                pattern,
+                text,
+            )
+
+            for home, away in matches:
+
+                if cls._valid_score(
+                    home,
+                    away,
+                ):
+                    return (
+                        int(home),
+                        int(away),
+                    )
 
         return None
 
-    def _extract_score_from_match_header(
+    def _extract_score(
         self,
         soup: BeautifulSoup,
+        home_team: Optional[str],
+        away_team: Optional[str],
     ) -> Optional[Tuple[int, int]]:
 
-        """
-        Ищет счёт только в элементах,
-        связанных с результатом матча.
+        # ----------------------------------------------------
+        # 1. JSON-LD
+        # ----------------------------------------------------
 
-        Глобальный поиск чисел НЕ используется.
-        """
+        for script in soup.find_all(
+            "script",
+            type="application/ld+json",
+        ):
+
+            raw = script.string or script.get_text(
+                strip=True
+            )
+
+            if not raw:
+                continue
+
+            try:
+                data = json.loads(raw)
+            except Exception:
+                continue
+
+            objects = (
+                data
+                if isinstance(data, list)
+                else [data]
+            )
+
+            for obj in objects:
+
+                if not isinstance(obj, dict):
+                    continue
+
+                # Возможные поля
+                for key in (
+                    "score",
+                    "result",
+                    "eventStatus",
+                ):
+
+                    value = obj.get(key)
+
+                    score = self._score_from_text(
+                        str(value)
+                        if value is not None
+                        else ""
+                    )
+
+                    if score:
+                        return score
+
+        # ----------------------------------------------------
+        # 2. OG TITLE
+        # ----------------------------------------------------
+
+        meta = soup.find(
+            "meta",
+            attrs={
+                "property": "og:title"
+            },
+        )
+
+        if meta:
+
+            score = self._score_from_text(
+                meta.get("content", "")
+            )
+
+            if score:
+                return score
+
+        # ----------------------------------------------------
+        # 3. TITLE
+        # ----------------------------------------------------
+
+        if soup.title:
+
+            score = self._score_from_text(
+                self._text(soup.title)
+            )
+
+            if score:
+                return score
+
+        # ----------------------------------------------------
+        # 4. SCORE / RESULT ELEMENTS
+        # ----------------------------------------------------
 
         selectors = [
             "[class*='score']",
@@ -418,386 +459,388 @@ class SoccerwayStatsParser:
             "[class*='result']",
             "[class*='Result']",
             "[data-testid*='score']",
+            "[data-testid*='result']",
         ]
 
         for selector in selectors:
 
-            elements = soup.select(
+            for element in soup.select(
                 selector
+            ):
+
+                text = self._text(
+                    element
+                )
+
+                # Не берём огромные контейнеры.
+                if len(text) > 200:
+                    continue
+
+                score = self._score_from_text(
+                    text
+                )
+
+                if score:
+                    return score
+
+        # ----------------------------------------------------
+        # 5. HEADER / MATCH CONTAINER
+        # ----------------------------------------------------
+
+        for element in soup.find_all(
+            [
+                "header",
+                "main",
+                "article",
+            ]
+        ):
+
+            text = self._text(
+                element
             )
 
-            for element in elements:
+            if len(text) > 1200:
+                continue
 
-                text = self._normalize_text(
-                    element.get_text(
-                        " ",
-                        strip=True,
-                    )
+            # Проверяем наличие хотя бы одной команды
+            # перед тем, как искать счёт.
+            has_home = (
+                home_team
+                and home_team.lower()
+                in text.lower()
+            )
+
+            has_away = (
+                away_team
+                and away_team.lower()
+                in text.lower()
+            )
+
+            if has_home or has_away:
+
+                score = self._score_from_text(
+                    text
                 )
 
-                if len(text) > 80:
-                    continue
+                if score:
+                    return score
 
-                match = re.search(
-                    r"(?<!\d)(\d{1,2})\s*[-:]\s*(\d{1,2})(?!\d)",
-                    text,
-                )
+        # ----------------------------------------------------
+        # 6. НЕ ДЕЛАЕМ GLOBAL TEXT FALLBACK
+        #
+        # Именно это раньше давало ложный счёт 4:0.
+        # ----------------------------------------------------
 
-                if not match:
-                    continue
-
-                home = int(match.group(1))
-                away = int(match.group(2))
-
-                if home <= 15 and away <= 15:
-                    return home, away
+        logger.warning(
+            "Soccerway: счёт не найден"
+        )
 
         return None
 
-    def _extract_score(
-        self,
-        soup: BeautifulSoup,
-    ) -> Optional[Tuple[int, int]]:
-
-        # Самый надёжный вариант для данной страницы:
-        # заголовок матча.
-
-        score = self._extract_score_from_title(
-            soup
-        )
-
-        if score:
-            return score
-
-        # Второй уровень:
-        # структурированный score/result блок.
-
-        return self._extract_score_from_match_header(
-            soup
-        )
-
     # ========================================================
-    # TEAM NAMES
+    # STAT VALUE
     # ========================================================
 
-    def _extract_teams_from_title(
-        self,
-        soup: BeautifulSoup,
-    ) -> Tuple[
-        Optional[str],
-        Optional[str],
-    ]:
+    @staticmethod
+    def _number(
+        value: str,
+    ) -> Optional[float]:
 
-        title = soup.find("title")
+        if not value:
+            return None
 
-        if not title:
-            return None, None
+        value = value.replace(
+            "\xa0",
+            " ",
+        )
 
-        text = self._normalize_text(
-            title.get_text(
-                " ",
-                strip=True,
+        match = re.search(
+            r"(-?\d+(?:[.,]\d+)?)",
+            value,
+        )
+
+        if not match:
+            return None
+
+        try:
+            return float(
+                match.group(1).replace(
+                    ",",
+                    ".",
+                )
             )
-        )
 
-        # Убираем счёт в конце.
-
-        text = re.sub(
-            r"\s+\d{1,2}\s*[-:]\s*\d{1,2}\s*$",
-            "",
-            text,
-        ).strip()
-
-        # Иногда title содержит дополнительную
-        # информацию после названий.
-
-        text = re.sub(
-            r"\s*\|\s*Soccerway.*$",
-            "",
-            text,
-            flags=re.IGNORECASE,
-        ).strip()
-
-        if " - " not in text:
-            return None, None
-
-        home, away = text.split(
-            " - ",
-            1,
-        )
-
-        home = self._normalize_text(home)
-        away = self._normalize_text(away)
-
-        if not home or not away:
-            return None, None
-
-        return home, away
-
-    def _extract_teams(
-        self,
-        soup: BeautifulSoup,
-    ) -> Tuple[
-        Optional[str],
-        Optional[str],
-    ]:
-
-        return self._extract_teams_from_title(
-            soup
-        )
+        except Exception:
+            return None
 
     # ========================================================
     # STATISTICS
     # ========================================================
 
-    def _candidate_stat_elements(
+    STAT_ALIASES = {
+
+        "xg": [
+            "xg",
+            "expected goals",
+            "ожидаемые голы",
+        ],
+
+        "possession": [
+            "possession",
+            "ball possession",
+            "владение",
+            "владение мячом",
+        ],
+
+        "shots": [
+            "total shots",
+            "shots",
+            "удары",
+            "всего ударов",
+        ],
+
+        "shots_on_target": [
+            "shots on target",
+            "on target",
+            "удары в створ",
+        ],
+
+        "corners": [
+            "corners",
+            "угловые",
+        ],
+
+        "fouls": [
+            "fouls",
+            "фолы",
+        ],
+
+        "offsides": [
+            "offsides",
+            "офсайды",
+            "офсайды",
+        ],
+
+        "saves": [
+            "saves",
+            "сэйвы",
+            "сейвы",
+        ],
+
+        "passes": [
+            "passes",
+            "передачи",
+        ],
+
+        "pass_accuracy": [
+            "accuracy",
+            "pass accuracy",
+            "точность передач",
+        ],
+
+        "yellow_cards": [
+            "yellow cards",
+            "yellow card",
+            "жёлтые карточки",
+            "желтые карточки",
+            "жк",
+        ],
+
+        "red_cards": [
+            "red cards",
+            "red card",
+            "красные карточки",
+            "кк",
+        ],
+
+        "xgot": [
+            "xgot",
+            "xg on target",
+        ],
+
+        "xa": [
+            "xa",
+            "expected assists",
+            "ожидаемые ассисты",
+        ],
+    }
+
+    def _find_stat_rows(
         self,
         soup: BeautifulSoup,
     ):
 
-        """
-        Возвращает потенциальные элементы статистики.
+        # ----------------------------------------------------
+        # Таблицы
+        # ----------------------------------------------------
 
-        Сначала ищем строки/ячейки с понятной структурой.
-        """
+        for table in soup.find_all("table"):
 
-        selectors = [
-            "[class*='stat']",
-            "[class*='Stat']",
-            "[class*='statistics']",
-            "[class*='Statistics']",
-        ]
+            for row in table.find_all("tr"):
 
-        seen = set()
+                cells = row.find_all(
+                    ["td", "th"]
+                )
 
-        for selector in selectors:
-
-            for element in soup.select(selector):
-
-                identity = id(element)
-
-                if identity in seen:
+                if len(cells) < 2:
                     continue
 
-                seen.add(identity)
+                texts = [
+                    self._text(cell)
+                    for cell in cells
+                ]
 
-                yield element
-
-    def _extract_pair(
-        self,
-        element,
-    ) -> Optional[Tuple[Any, Any]]:
-
-        """
-        Извлекает два числовых значения
-        из одного элемента статистики.
-
-        ВАЖНО:
-            значения должны находиться
-            внутри одного stat element.
-        """
-
-        text = self._normalize_text(
-            element.get_text(
-                " ",
-                strip=True,
-            )
-        )
-
-        if not text:
-            return None
-
-        # Убираем слишком большие блоки.
-        if len(text) > 250:
-            return None
-
-        # Сначала ищем явную пару:
-        # 66% 34%
-        # 21 12
-        # 453/539 191/280
-
-        numbers = re.findall(
-            r"-?\d+(?:[.,]\d+)?",
-            text,
-        )
-
-        if len(numbers) < 2:
-            return None
-
-        # Берём последние два числа только если
-        # элемент действительно компактный.
-
-        first = self._clean_number(
-            numbers[0]
-        )
-
-        second = self._clean_number(
-            numbers[1]
-        )
-
-        if first is None or second is None:
-            return None
-
-        return (
-            self._int_or_float(first),
-            self._int_or_float(second),
-        )
-
-    def _label_matches(
-        self,
-        text: str,
-        aliases: Tuple[str, ...],
-    ) -> bool:
-
-        normalized = self._normalize_text(
-            text
-        ).lower()
-
-        for alias in aliases:
-
-            alias_normalized = (
-                self._normalize_text(alias)
-                .lower()
-            )
-
-            if normalized == alias_normalized:
-                return True
-
-        return False
-
-    def _extract_stat_by_label(
-        self,
-        soup: BeautifulSoup,
-        aliases: Tuple[str, ...],
-    ) -> Optional[Tuple[Any, Any]]:
-
-        """
-        Ищет показатель по его названию,
-        затем пытается получить пару значений
-        из ближайшего компактного контейнера.
-
-        Не выполняет глобальный поиск двух чисел
-        по всей странице.
-        """
+                yield texts
 
         # ----------------------------------------------------
-        # 1. Табличная структура
+        # Div rows
         # ----------------------------------------------------
 
-        for row in soup.find_all(
-            ["tr", "li"],
+        for row in soup.select(
+            "[class*='stat-row'], "
+            "[class*='statistics-row'], "
+            "[class*='statistic-row']"
         ):
 
-            text = self._normalize_text(
-                row.get_text(
-                    " ",
-                    strip=True,
+            texts = [
+                self._text(child)
+                for child in row.find_all(
+                    recursive=False
                 )
-            )
+            ]
 
-            if not text:
-                continue
+            if len(texts) >= 2:
+                yield texts
 
-            if not self._label_matches(
-                text,
-                aliases,
-            ):
-                continue
+    def _match_stat_label(
+        self,
+        label: str,
+    ) -> Optional[str]:
 
-            cells = row.find_all(
-                ["td", "th", "span", "div"],
-            )
+        normalized = (
+            label.lower()
+            .replace(":", "")
+            .strip()
+        )
 
-            values = []
+        for key, aliases in self.STAT_ALIASES.items():
 
-            for cell in cells:
+            for alias in aliases:
 
-                cell_text = self._normalize_text(
-                    cell.get_text(
-                        " ",
-                        strip=True,
-                    )
-                )
-
-                if not cell_text:
-                    continue
-
-                number = self._clean_number(
-                    cell_text
-                )
-
-                if number is not None:
-                    values.append(
-                        self._int_or_float(number)
-                    )
-
-            if len(values) >= 2:
-                return values[-2], values[-1]
-
-        # ----------------------------------------------------
-        # 2. Stat containers
-        # ----------------------------------------------------
-
-        for element in self._candidate_stat_elements(
-            soup
-        ):
-
-            text = self._normalize_text(
-                element.get_text(
-                    " ",
-                    strip=True,
-                )
-            )
-
-            if not text:
-                continue
-
-            if not any(
-                self._normalize_text(alias).lower()
-                in text.lower()
-                for alias in aliases
-            ):
-                continue
-
-            pair = self._extract_pair(
-                element
-            )
-
-            if pair:
-                return pair
+                if alias in normalized:
+                    return key
 
         return None
-
-    # ========================================================
-    # NORMALIZED STATISTICS
-    # ========================================================
 
     def _extract_statistics(
         self,
         soup: BeautifulSoup,
     ) -> Dict[str, Any]:
 
-        stats: Dict[str, Any] = {}
+        result: Dict[str, Any] = {}
 
-        for key, aliases in self.STAT_MAP.items():
+        for row in self._find_stat_rows(
+            soup
+        ):
 
-            pair = self._extract_stat_by_label(
-                soup,
-                aliases,
-            )
-
-            if not pair:
+            if len(row) < 3:
                 continue
 
-            home, away = pair
+            label = row[0]
 
-            stats[f"home_{key}"] = home
-            stats[f"away_{key}"] = away
+            stat_key = self._match_stat_label(
+                label
+            )
 
-        return stats
+            if not stat_key:
+                continue
+
+            # Берём первое и последнее значение.
+            values = row[1:]
+
+            if len(values) < 2:
+                continue
+
+            home_raw = values[0]
+            away_raw = values[-1]
+
+            home = self._number(
+                home_raw
+            )
+
+            away = self._number(
+                away_raw
+            )
+
+            if home is None or away is None:
+                continue
+
+            result[
+                f"home_{stat_key}"
+            ] = home
+
+            result[
+                f"away_{stat_key}"
+            ] = away
+
+        return result
 
     # ========================================================
-    # MAIN
+    # NORMALIZE OUTPUT
+    # ========================================================
+
+    @staticmethod
+    def _int_if_integer(
+        value: Any,
+    ) -> Any:
+
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+
+        return value
+
+    def _normalize_stats(
+        self,
+        stats: Dict[str, Any],
+    ) -> Dict[str, Any]:
+
+        result = dict(stats)
+
+        integer_fields = {
+            "home_shots",
+            "away_shots",
+            "home_shots_on_target",
+            "away_shots_on_target",
+            "home_corners",
+            "away_corners",
+            "home_fouls",
+            "away_fouls",
+            "home_offsides",
+            "away_offsides",
+            "home_saves",
+            "away_saves",
+            "home_passes",
+            "away_passes",
+            "home_yellow_cards",
+            "away_yellow_cards",
+            "home_red_cards",
+            "away_red_cards",
+        }
+
+        for key in integer_fields:
+
+            if key in result:
+
+                result[key] = (
+                    self._int_if_integer(
+                        result[key]
+                    )
+                )
+
+        return result
+
+    # ========================================================
+    # PUBLIC API
     # ========================================================
 
     def parse_match_page(
@@ -805,30 +848,12 @@ class SoccerwayStatsParser:
         url: str,
     ) -> Dict[str, Any]:
 
-        result: Dict[str, Any] = {
-            "source": "soccerway",
-            "source_url": url,
-            "parser_version": self.VERSION,
-
-            "home_team": None,
-            "away_team": None,
-
-            "home_goals": None,
-            "away_goals": None,
-
-            "stats": {},
-        }
-
         soup = self._get_soup(
             url
         )
 
         if soup is None:
-            return result
-
-        # ----------------------------------------------------
-        # Teams
-        # ----------------------------------------------------
+            return {}
 
         home_team, away_team = (
             self._extract_teams(
@@ -836,91 +861,74 @@ class SoccerwayStatsParser:
             )
         )
 
-        result["home_team"] = home_team
-        result["away_team"] = away_team
-
-        # ----------------------------------------------------
-        # Score
-        # ----------------------------------------------------
-
         score = self._extract_score(
+            soup,
+            home_team,
+            away_team,
+        )
+
+        stats = self._extract_statistics(
             soup
         )
+
+        stats = self._normalize_stats(
+            stats
+        )
+
+        home_goals = None
+        away_goals = None
 
         if score:
 
-            result["home_goals"] = score[0]
-            result["away_goals"] = score[1]
+            home_goals, away_goals = score
 
-        else:
+        result = {
+            "parser": "soccerway",
+            "parser_version": self.VERSION,
 
-            logger.warning(
-                "Soccerway: счёт не найден: %s",
-                url,
-            )
+            "source_url": url,
 
-        # ----------------------------------------------------
-        # Statistics
-        # ----------------------------------------------------
+            "home_team": home_team,
+            "away_team": away_team,
 
-        result["stats"] = self._extract_statistics(
-            soup
-        )
+            "home_goals": home_goals,
+            "away_goals": away_goals,
+
+            **stats,
+        }
 
         logger.info(
-            "Soccerway parsed: %s - %s | %s:%s | stats=%s",
+            "Soccerway parsed: %s vs %s | "
+            "score=%s:%s | stats=%d",
             home_team,
             away_team,
-            result["home_goals"],
-            result["away_goals"],
-            len(result["stats"]),
+            home_goals,
+            away_goals,
+            len(stats),
         )
 
         return result
 
 
 # ============================================================
-# COMPATIBILITY FUNCTION
+# COMPATIBILITY
 # ============================================================
 
-def parse_soccerway_match(
-    url: str,
-) -> Dict[str, Any]:
-
-    parser = SoccerwayStatsParser()
-
-    return parser.parse_match_page(
-        url
-    )
+RPLStatsParser = SoccerwayStatsParser
 
 
 # ============================================================
-# SELF TEST
+# TEST
 # ============================================================
 
 if __name__ == "__main__":
 
-    import sys
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format=(
-            "%(asctime)s | "
-            "%(levelname)s | "
-            "%(message)s"
-        ),
-    )
-
     url = (
-        sys.argv[1]
-        if len(sys.argv) > 1
-        else (
-            "https://ru.soccerway.com/match/"
-            "dynamo-moscow-AFWA2jAQ/"
-            "krylya-sovetov-samara-SKAE94nJ/"
-            "summary/stats/overall/"
-            "?mid=C8Coobll"
-        )
+        "https://ru.soccerway.com/match/"
+        "dynamo-moscow-AFWA2jAQ/"
+        "krylya-sovetov-samara-SKAE94nJ/"
+        "summary/stats/overall/"
+        "?mid=C8Coobll"
     )
 
     parser = SoccerwayStatsParser()
@@ -929,35 +937,11 @@ if __name__ == "__main__":
         url
     )
 
-    print("=" * 70)
-    print("SOCCERWAY PARSER TEST")
-    print("=" * 70)
+    print("=" * 60)
+    print("SOCCERWAY TEST")
+    print("=" * 60)
 
-    print(
-        "HOME:",
-        data["home_team"],
-    )
+    for key, value in data.items():
+        print(f"{key}: {value}")
 
-    print(
-        "AWAY:",
-        data["away_team"],
-    )
-
-    print(
-        "SCORE:",
-        data["home_goals"],
-        ":",
-        data["away_goals"],
-    )
-
-    print(
-        "STATS:",
-        len(data["stats"]),
-    )
-
-    for key, value in data["stats"].items():
-        print(
-            f"{key:<35} {value}"
-        )
-
-    print("=" * 70)
+    print("=" * 60)
