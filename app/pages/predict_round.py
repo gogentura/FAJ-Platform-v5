@@ -2,21 +2,44 @@
 # -*- coding: utf-8 -*-
 
 """
+============================================================
 FAJ Platform v12.1 — MEMORY HARDENED
-Страница прогноза тура
+PREDICT ROUND v3.0
 ============================================================
 
 НАЗНАЧЕНИЕ:
-    - Показать доступные туры
-    - Получить матчи через FAJDatabase / MatchManager
-    - Вызвать PredictionManager
-    - Сохранить прогнозы через существующий pipeline
+    Страница прогнозов тура.
 
-ПРИНЦИПЫ:
-    - Только через FAJDatabase и менеджеры
-    - Никакого прямого SQL
-    - Не менять календарь и результаты
+ЦИКЛ:
+    Управление туром
+        ↓
+    выбранный тур
+        ↓
+    матчи из SQLite
+        ↓
+    FAJ PredictionManager
+        ↓
+    прогноз каждого матча
+        ↓
+    сохранение FAJ-прогноза
+        ↓
+    ввод прогноза Директора
+
+СТРАНИЦА НЕ ОТВЕЧАЕТ ЗА:
+    - создание матчей;
+    - удаление матчей;
+    - календарь;
+    - результаты;
+    - обучение;
+    - изменение паспортов;
+    - изменение математической модели.
+
+ВАЖНО:
+    sqlite3.Row всегда преобразуется в dict перед использованием .get().
+============================================================
 """
+
+from __future__ import annotations
 
 import streamlit as st
 
@@ -25,171 +48,811 @@ from app.match_manager import MatchManager
 from app.core.prediction_manager import get_prediction_manager
 
 
+# ============================================================
+# HELPERS
+# ============================================================
+
+def row_dict(row):
+    """Безопасно преобразует sqlite3.Row / dict в dict."""
+    if row is None:
+        return None
+
+    if isinstance(row, dict):
+        return row
+
+    try:
+        return dict(row)
+    except Exception:
+        return None
+
+
+def team_name(db: FAJDatabase, team_id) -> str:
+    """Получает название команды."""
+    try:
+        team = db.get_team(team_id)
+
+        if team is None:
+            return "?"
+
+        team = row_dict(team)
+
+        if not team:
+            return "?"
+
+        return str(team.get("name", "?"))
+
+    except Exception:
+        return "?"
+
+
+def percent(value) -> float:
+    """Безопасно переводит вероятность в проценты."""
+    try:
+        value = float(value or 0)
+
+        # PredictionManager хранит вероятности 0..1
+        if value <= 1:
+            return value * 100
+
+        return value
+
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def probability_value(value) -> float:
+    """Возвращает вероятность в диапазоне 0..1."""
+    try:
+        value = float(value or 0)
+
+        if value > 1:
+            value /= 100
+
+        return max(0.0, min(1.0, value))
+
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def format_probability(value) -> str:
+    return f"{percent(value):.1f}%"
+
+
+def get_latest_prediction(db: FAJDatabase, match_id: int):
+    """Возвращает последний сохранённый прогноз FAJ."""
+    try:
+        predictions = db.get_predictions_by_match(match_id)
+
+        if not predictions:
+            return None
+
+        rows = [row_dict(p) for p in predictions]
+        rows = [p for p in rows if p]
+
+        if not rows:
+            return None
+
+        return rows[0]
+
+    except Exception:
+        return None
+
+
+def get_top_scores(db: FAJDatabase, prediction_id: int):
+    """
+    Получает Top-5 счетов.
+
+    Основной источник — prediction_scores.
+    Если метода отсутствует, возвращается пустой список.
+    """
+    if not prediction_id:
+        return []
+
+    try:
+        if not hasattr(db, "get_prediction_scores"):
+            return []
+
+        scores = db.get_prediction_scores(prediction_id)
+
+        result = []
+
+        for score in scores or []:
+            score = row_dict(score)
+
+            if score:
+                result.append(score)
+
+        result.sort(
+            key=lambda x: float(x.get("probability", 0) or 0),
+            reverse=True,
+        )
+
+        return result[:5]
+
+    except Exception:
+        return []
+
+
+def score_from_prediction(prediction: dict):
+    """
+    Пытается определить основной вероятный счёт.
+
+    Приоритет:
+        1. prediction["most_likely_score"]
+        2. prediction["predicted_score"]
+        3. prediction["score"]
+    """
+    for key in (
+        "most_likely_score",
+        "predicted_score",
+        "score",
+    ):
+        value = prediction.get(key)
+
+        if value:
+            return str(value)
+
+    return "—"
+
+
+def render_probability_columns(prediction: dict):
+    """Показывает П1 / X / П2."""
+
+    probability = prediction.get("probability", {})
+
+    if not isinstance(probability, dict):
+        probability = {}
+
+    home = probability.get("home", prediction.get("home_win", 0))
+    draw = probability.get("draw", prediction.get("draw", 0))
+    away = probability.get("away", prediction.get("away_win", 0))
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        st.metric("П1", format_probability(home))
+
+    with c2:
+        st.metric("X", format_probability(draw))
+
+    with c3:
+        st.metric("П2", format_probability(away))
+
+
+def render_prediction_card(
+    db: FAJDatabase,
+    match: dict,
+    prediction: dict | None,
+):
+    """Полная карточка прогноза."""
+
+    match_id = match.get("id")
+
+    home = team_name(db, match.get("home_team_id"))
+    away = team_name(db, match.get("away_team_id"))
+
+    st.markdown("---")
+
+    st.subheader(f"⚽ {home} — {away}")
+
+    if not prediction:
+        st.warning("FAJ-прогноз для этого матча ещё не сохранён.")
+        return
+
+    if prediction.get("status") == "error":
+        st.error(
+            f"❌ Ошибка прогноза: "
+            f"{prediction.get('message', 'Неизвестная ошибка')}"
+        )
+        return
+
+    # --------------------------------------------------------
+    # P1 / X / P2
+    # --------------------------------------------------------
+
+    render_probability_columns(prediction)
+
+    # --------------------------------------------------------
+    # Основной прогноз
+    # --------------------------------------------------------
+
+    st.markdown("### 🎯 Основной прогноз")
+
+    score = score_from_prediction(prediction)
+
+    probability = prediction.get("probability", {})
+    if not isinstance(probability, dict):
+        probability = {}
+
+    home_probability = probability_value(
+        probability.get("home", prediction.get("home_win", 0))
+    )
+    draw_probability = probability_value(
+        probability.get("draw", prediction.get("draw", 0))
+    )
+    away_probability = probability_value(
+        probability.get("away", prediction.get("away_win", 0))
+    )
+
+    outcomes = {
+        "П1": home_probability,
+        "X": draw_probability,
+        "П2": away_probability,
+    }
+
+    main_outcome = max(outcomes, key=outcomes.get)
+
+    c1, c2 = st.columns(2)
+
+    with c1:
+        st.metric(
+            "Исход",
+            main_outcome,
+            f"{percent(outcomes[main_outcome]):.1f}%",
+        )
+
+    with c2:
+        st.metric(
+            "Вероятный счёт",
+            score,
+        )
+
+    # --------------------------------------------------------
+    # TOP-5
+    # --------------------------------------------------------
+
+    st.markdown("### 🏆 Топ-5 вероятных счетов")
+
+    prediction_id = prediction.get("prediction_id") or prediction.get("id")
+
+    top_scores = get_top_scores(db, prediction_id)
+
+    # Если database.py не предоставляет отдельный getter,
+    # пробуем использовать данные самого результата.
+    if not top_scores:
+        extended = prediction.get("extended", {})
+
+        if isinstance(extended, dict):
+            raw_scores = extended.get("top_scores", [])
+
+            if isinstance(raw_scores, list):
+                top_scores = [
+                    row_dict(score)
+                    for score in raw_scores
+                    if row_dict(score)
+                ]
+
+    if top_scores:
+
+        table_data = []
+
+        for index, score_data in enumerate(top_scores[:5], start=1):
+
+            score_text = score_data.get("score")
+
+            if not score_text:
+                score_text = (
+                    f"{score_data.get('home', 0)}:"
+                    f"{score_data.get('away', 0)}"
+                )
+
+            table_data.append(
+                {
+                    "№": index,
+                    "Счёт": score_text,
+                    "Вероятность": format_probability(
+                        score_data.get("probability", 0)
+                    ),
+                }
+            )
+
+        st.table(table_data)
+
+    else:
+        st.info("Top-5 счетов пока недоступен.")
+
+    # --------------------------------------------------------
+    # BTTS / TOTALS
+    # --------------------------------------------------------
+
+    st.markdown("### 📊 Дополнительные рынки")
+
+    extended = prediction.get("extended", {})
+
+    if not isinstance(extended, dict):
+        extended = {}
+
+    btts = extended.get("btts", {})
+    total = extended.get("total", {})
+
+    if not isinstance(btts, dict):
+        btts = {}
+
+    if not isinstance(total, dict):
+        total = {}
+
+    btts_yes = probability_value(
+        btts.get("yes", prediction.get("btts", 0))
+    )
+
+    over25 = probability_value(
+        total.get(
+            "over_2_5",
+            prediction.get("over25", 0),
+        )
+    )
+
+    over35 = probability_value(
+        total.get(
+            "over_3_5",
+            prediction.get("over35", 0),
+        )
+    )
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        st.metric(
+            "Обе забьют",
+            "ДА" if btts_yes >= 0.5 else "НЕТ",
+            format_probability(btts_yes),
+        )
+
+    with c2:
+        st.metric(
+            "ТБ 2.5",
+            "ДА" if over25 >= 0.5 else "НЕТ",
+            format_probability(over25),
+        )
+
+    with c3:
+        st.metric(
+            "ТБ 3.5",
+            "ДА" if over35 >= 0.5 else "НЕТ",
+            format_probability(over35),
+        )
+
+    # --------------------------------------------------------
+    # CONFIDENCE / RISK
+    # --------------------------------------------------------
+
+    st.markdown("### 🛡️ Качество прогноза")
+
+    confidence = prediction.get("confidence", 0)
+
+    if isinstance(confidence, dict):
+        confidence = confidence.get(
+            "overall",
+            confidence.get("value", 0),
+        )
+
+    try:
+        confidence = float(confidence)
+
+        if confidence <= 1:
+            confidence *= 100
+
+    except (TypeError, ValueError):
+        confidence = 0
+
+    risk = prediction.get("risk")
+
+    if isinstance(risk, dict):
+        risk = (
+            risk.get("level")
+            or risk.get("label")
+            or risk.get("overall")
+        )
+
+    c1, c2 = st.columns(2)
+
+    with c1:
+        st.metric(
+            "Уверенность",
+            f"{confidence:.0f}%",
+        )
+
+    with c2:
+        st.metric(
+            "Риск",
+            str(risk) if risk else "—",
+        )
+
+    # --------------------------------------------------------
+    # MODEL INFO
+    # --------------------------------------------------------
+
+    model_version = (
+        prediction.get("model_version")
+        or prediction.get("version")
+        or "FAJ"
+    )
+
+    st.caption(
+        f"Модель: {model_version}"
+        + (
+            f" • prediction_id: {prediction_id}"
+            if prediction_id
+            else ""
+        )
+    )
+
+    # --------------------------------------------------------
+    # EXPERT
+    # --------------------------------------------------------
+
+    st.markdown("### 🧑‍💼 Прогноз Директора")
+
+    expert_key = f"expert_score_{match_id}"
+
+    existing_expert = st.session_state.get(
+        expert_key,
+        "",
+    )
+
+    expert_score = st.text_input(
+        "Ваш счёт",
+        value=existing_expert,
+        placeholder="Например: 2:1",
+        key=f"expert_input_{match_id}",
+    )
+
+    if expert_score:
+        st.session_state[expert_key] = expert_score
+
+        if ":" in expert_score:
+            parts = expert_score.split(":", 1)
+
+            try:
+                home_score = int(parts[0].strip())
+                away_score = int(parts[1].strip())
+
+                if home_score >= 0 and away_score >= 0:
+                    st.success(
+                        f"Эксперт: **{home_score}:{away_score}**"
+                    )
+
+            except ValueError:
+                st.warning(
+                    "Введите счёт в формате 2:1"
+                )
+
+    st.caption(
+        "Прогноз Директора является отдельной экспертной линией "
+        "и не изменяет автоматически прогноз FAJ."
+    )
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
 def main():
-    st.title("🧠 Прогноз тура")
-    st.caption("Просмотр и сохранение прогнозов FAJ для выбранного тура")
+
+    st.title("🧠 Прогнозы")
+
+    st.caption(
+        "FAJ прогнозирует только матчи, которые уже созданы "
+        "в Управлении туром."
+    )
 
     db = FAJDatabase()
     match_mgr = MatchManager(db)
     pred_mgr = get_prediction_manager()
 
-    # ============================================================
-    # 1. Выбор сезона и тура
-    # ============================================================
+    # ========================================================
+    # 1. SEASONS
+    # ========================================================
 
-    seasons = db.get_seasons()
+    seasons_raw = db.get_seasons()
+
+    seasons = [
+        row_dict(s)
+        for s in seasons_raw or []
+    ]
+
+    seasons = [
+        s for s in seasons
+        if s
+    ]
 
     if not seasons:
-        st.warning("⚠️ Нет сезонов в базе данных")
+        st.warning("⚠️ В базе нет сезонов.")
         return
 
-    season_options = {}
-    for s in seasons:
-        name = s.get("name", "")
-        if "РПЛ" in name or "2026" in name:
-            season_options[name] = s["id"]
+    # ========================================================
+    # 2. LEAGUE / SEASON
+    # ========================================================
 
-    if not season_options:
-        st.warning("⚠️ Сезон РПЛ 2026/27 не найден")
+    league_names = []
+
+    for season in seasons:
+
+        league = season.get("league")
+
+        if league and league not in league_names:
+            league_names.append(league)
+
+    if not league_names:
+        league_names = ["РПЛ"]
+
+    # РПЛ первой
+    if "РПЛ" in league_names:
+        league_names.remove("РПЛ")
+        league_names.insert(0, "РПЛ")
+
+    selected_league = st.selectbox(
+        "Лига",
+        league_names,
+        key="predict_league",
+    )
+
+    league_seasons = [
+        s
+        for s in seasons
+        if s.get("league") == selected_league
+    ]
+
+    if not league_seasons:
+        st.warning(
+            f"⚠️ Для лиги {selected_league} "
+            "сезонов не найдено."
+        )
         return
+
+    season_options = {
+        str(s.get("name", s.get("id"))): s.get("id")
+        for s in league_seasons
+    }
 
     selected_season_name = st.selectbox(
         "Сезон",
-        options=list(season_options.keys()),
-        index=0,
+        list(season_options.keys()),
+        key="predict_season",
     )
 
     season_id = season_options[selected_season_name]
 
-    # ============================================================
-    # 2. Получение туров
-    # ============================================================
+    # ========================================================
+    # 3. ROUNDS
+    # ========================================================
 
-    rounds = db.get_rounds(season_id)
+    rounds_raw = db.get_rounds(season_id)
+
+    rounds = [
+        row_dict(r)
+        for r in rounds_raw or []
+    ]
+
+    rounds = [
+        r for r in rounds
+        if r
+    ]
 
     if not rounds:
-        st.info("ℹ️ В этом сезоне ещё нет туров")
+        st.info(
+            "ℹ️ В выбранном сезоне пока нет созданных туров."
+        )
         return
 
     round_options = {}
+
     for r in rounds:
-        round_num = r["round_number"]
-        matches = match_mgr.get_round_matches(r["id"])
-        match_count = len(matches)
-        round_options[f"Тур {round_num} ({match_count} матчей)"] = r["id"]
+
+        round_id = r.get("id")
+        round_number = r.get("round_number")
+
+        matches = match_mgr.get_round_matches(
+            round_id
+        )
+
+        round_options[
+            f"Тур {round_number} — {len(matches)} матч."
+        ] = round_id
 
     selected_round_label = st.selectbox(
         "Тур",
-        options=list(round_options.keys()),
-        index=0,
+        list(round_options.keys()),
+        key="predict_round",
     )
 
-    round_id = round_options[selected_round_label]
+    round_id = round_options[
+        selected_round_label
+    ]
 
-    # ============================================================
-    # 3. Получение матчей тура
-    # ============================================================
+    # ========================================================
+    # 4. MATCHES
+    # ========================================================
 
-    matches = match_mgr.get_round_matches(round_id)
+    matches_raw = match_mgr.get_round_matches(
+        round_id
+    )
+
+    matches = [
+        row_dict(m)
+        for m in matches_raw or []
+    ]
+
+    matches = [
+        m for m in matches
+        if m
+    ]
 
     if not matches:
-        st.info("ℹ️ В этом туре нет матчей")
+        st.info(
+            "ℹ️ В выбранном туре ещё нет матчей."
+        )
         return
 
-    st.subheader(f"📋 Матчи тура — {len(matches)}")
+    st.markdown(
+        f"### 📋 Тур — {len(matches)} матчей"
+    )
 
-    # ============================================================
-    # 4. Отображение матчей и прогнозов
-    # ============================================================
+    # ========================================================
+    # 5. ROUND STATUS
+    # ========================================================
 
-    # Кнопка для расчёта прогнозов
-    if st.button("🔮 Рассчитать прогнозы FAJ для всех матчей", type="primary"):
-        with st.spinner("Прогнозирование..."):
-            try:
-                predictions = pred_mgr.predict_round(round_id)
-
-                if predictions:
-                    st.success(f"✅ Прогнозы сохранены: {len(predictions)} матчей")
-                else:
-                    st.warning("⚠️ Прогнозы не были созданы")
-            except Exception as e:
-                st.error(f"❌ Ошибка при прогнозировании: {e}")
-
-    st.divider()
-
-    # ============================================================
-    # 5. Отображение существующих прогнозов
-    # ============================================================
-
-    st.subheader("📊 Существующие прогнозы")
+    existing_predictions = 0
 
     for match in matches:
-        match_id = match["id"]
 
-        home = db.get_team(match["home_team_id"])
-        away = db.get_team(match["away_team_id"])
+        prediction = get_latest_prediction(
+            db,
+            match.get("id"),
+        )
 
-        home_name = home["name"] if home else "?"
-        away_name = away["name"] if away else "?"
+        if prediction:
+            existing_predictions += 1
 
-        status = match.get("status", "scheduled")
+    c1, c2 = st.columns(2)
 
-        # Получаем прогнозы для матча (все версии, отсортированные по created_at)
-        preds = db.get_predictions_by_match(match_id)
+    with c1:
+        st.metric(
+            "Матчей",
+            len(matches),
+        )
 
-        with st.expander(f"⚽ {home_name} — {away_name} ({status})"):
+    with c2:
+        st.metric(
+            "Прогнозов FAJ",
+            f"{existing_predictions}/{len(matches)}",
+        )
 
-            col1, col2 = st.columns(2)
-
-            with col1:
-                st.markdown("**FAJ Прогноз**")
-
-                if preds:
-                    # Берём последний прогноз по created_at (порядок определяется database.py)
-                    # get_predictions_by_match уже сортирует по created_at DESC
-                    latest = preds[0]
-
-                    home_win = latest.get("home_win", 0.0) * 100
-                    draw = latest.get("draw", 0.0) * 100
-                    away_win = latest.get("away_win", 0.0) * 100
-
-                    st.metric("П1", f"{home_win:.1f}%")
-                    st.metric("X", f"{draw:.1f}%")
-                    st.metric("П2", f"{away_win:.1f}%")
-
-                    confidence = latest.get("confidence", 0)
-                    st.metric("Уверенность", f"{confidence}%")
-
-                    if latest.get("btts"):
-                        st.metric("BTTS", f"{latest['btts']*100:.1f}%")
-
-                    if latest.get("over25"):
-                        st.metric("ТБ 2.5", f"{latest['over25']*100:.1f}%")
-
-                    st.caption(f"Модель: {latest.get('model_version', 'N/A')}")
-                    st.caption(f"Создан: {latest.get('created_at', 'N/A')[:16]}")
-
-                    # Показываем количество версий прогнозов
-                    if len(preds) > 1:
-                        st.caption(f"📌 Всего версий прогнозов: {len(preds)}")
-
-                else:
-                    st.info("Нет прогнозов")
-
-            with col2:
-                st.markdown("**🧑‍💼 Прогноз Директора**")
-                st.info("Форма для прогноза Директора будет добавлена")
-
-    # ============================================================
-    # 6. Кнопка возврата
-    # ============================================================
+    # ========================================================
+    # 6. CALCULATE
+    # ========================================================
 
     st.divider()
 
-    if st.button("⬅️ Назад к управлению турами"):
+    if st.button(
+        "🔮 РАССЧИТАТЬ ПРОГНОЗЫ FAJ",
+        type="primary",
+        use_container_width=True,
+    ):
+
+        progress = st.progress(0)
+        status_box = st.empty()
+
+        results = []
+
+        for index, match in enumerate(matches):
+
+            home = team_name(
+                db,
+                match.get("home_team_id"),
+            )
+
+            away = team_name(
+                db,
+                match.get("away_team_id"),
+            )
+
+            status_box.info(
+                f"Расчёт {index + 1}/{len(matches)}: "
+                f"{home} — {away}"
+            )
+
+            try:
+                result = pred_mgr.predict_by_match_id(
+                    int(match["id"])
+                )
+
+                results.append(result)
+
+            except Exception as exc:
+
+                results.append(
+                    {
+                        "status": "error",
+                        "match_id": match.get("id"),
+                        "home_team": home,
+                        "away_team": away,
+                        "message": str(exc),
+                    }
+                )
+
+            progress.progress(
+                (index + 1) / len(matches)
+            )
+
+        status_box.empty()
+
+        success_count = sum(
+            1
+            for result in results
+            if result.get("status") != "error"
+        )
+
+        error_count = len(results) - success_count
+
+        if error_count == 0:
+
+            st.success(
+                f"✅ FAJ рассчитал и сохранил "
+                f"прогнозы всех {success_count} матчей."
+            )
+
+        else:
+
+            st.warning(
+                f"⚠️ Сохранено прогнозов: "
+                f"{success_count}. "
+                f"Ошибок: {error_count}."
+            )
+
+            for result in results:
+
+                if result.get("status") == "error":
+
+                    st.error(
+                        f"{result.get('home_team', '?')} — "
+                        f"{result.get('away_team', '?')}: "
+                        f"{result.get('message', 'Ошибка')}"
+                    )
+
+        st.rerun()
+
+    # ========================================================
+    # 7. CARDS
+    # ========================================================
+
+    st.divider()
+
+    st.subheader("📊 Карточки прогнозов")
+
+    for match in matches:
+
+        match_id = match.get("id")
+
+        prediction = get_latest_prediction(
+            db,
+            match_id,
+        )
+
+        render_prediction_card(
+            db=db,
+            match=match,
+            prediction=prediction,
+        )
+
+    # ========================================================
+    # 8. BACK
+    # ========================================================
+
+    st.divider()
+
+    if st.button(
+        "⬅️ Управление туром",
+        use_container_width=True,
+    ):
+
         st.session_state.page = "tour_manager"
         st.rerun()
 
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
 
 if __name__ == "__main__":
     main()
