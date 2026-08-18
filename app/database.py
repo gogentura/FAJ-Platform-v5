@@ -724,7 +724,7 @@ def init_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_predictions_match ON predictions(match_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_predictions_status ON predictions(prediction_status)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_predictions_hash ON predictions(prediction_hash)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_predictions_memory ON predictions(memory_state_id)")
+    # Индекс idx_predictions_memory создаётся ПОСЛЕ миграций
     
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS prediction_scores (
@@ -1395,6 +1395,13 @@ def init_database():
     if "passport_uuid" in columns:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_passports_uuid ON team_passports(passport_uuid)")
         logger.info("✅ Создан индекс idx_passports_uuid")
+    
+    # Индекс на memory_state_id в predictions
+    cursor.execute("PRAGMA table_info(predictions)")
+    columns = [row[1] for row in cursor.fetchall()]
+    if "memory_state_id" in columns:
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_predictions_memory ON predictions(memory_state_id)")
+        logger.info("✅ Создан индекс idx_predictions_memory")
     
     conn.commit()
     conn.close()
