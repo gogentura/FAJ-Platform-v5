@@ -2,8 +2,17 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ Platform v12.1
-Управление турами — создание календаря вручную.
+FAJ Platform v12.1 — MEMORY HARDENED
+Управление турами v2.0 — создание календаря вручную.
+
+ИСПРАВЛЕНИЯ v2.0:
+    1. Убраны все прямые SQL-запросы — только через FAJDatabase
+    2. Получение сезона — через db.get_seasons()
+    3. Получение команд — через db.get_teams()
+    4. Проверка тура — через db.get_rounds()
+    5. Создание тура — через db.create_round()
+    6. Проверка существования матча — через match_mgr.get_round_matches()
+
 Только: создать тур → добавить матч → сохранить.
 Без требований к 8 матчам.
 """
@@ -23,61 +32,64 @@ def main():
     match_mgr = MatchManager(db)
 
     # ============================================================
-    # 1. Сезон
+    # 1. Сезон (через FAJDatabase)
     # ============================================================
-    conn = db.get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT id, name FROM seasons
-        WHERE league = 'РПЛ' AND (name LIKE '%2026%' OR name LIKE '%2026-27%')
-        ORDER BY id DESC LIMIT 1
-    """)
-    season_row = cursor.fetchone()
-    conn.close()
+
+    seasons = db.get_seasons()
+    season_row = None
+
+    for season in seasons:
+        if season.get("league") == "РПЛ":
+            name = season.get("name", "")
+            if "2026" in name or "2026-27" in name:
+                season_row = season
+                break
 
     if not season_row:
         st.error("❌ Сезон РПЛ 2026/27 не найден.")
         return
 
-    season_id, season_name = season_row
+    season_id = season_row["id"]
+    season_name = season_row["name"]
     st.success(f"Сезон: {season_name}")
 
     # ============================================================
-    # 2. Команды
+    # 2. Команды (через FAJDatabase)
     # ============================================================
-    conn = db.get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, name FROM teams WHERE league = 'РПЛ' ORDER BY name")
-    teams = cursor.fetchall()
-    conn.close()
+
+    teams = db.get_teams(league="РПЛ")
 
     if not teams:
         st.warning("⚠️ Нет команд РПЛ.")
         return
 
-    team_options = {row['name']: row['id'] for row in teams}
+    team_options = {row["name"]: row["id"] for row in teams}
     team_names = list(team_options.keys())
 
     # ============================================================
-    # 3. Выбор тура
+    # 3. Выбор тура (через FAJDatabase)
     # ============================================================
+
     round_number = st.number_input("Тур", min_value=1, max_value=30, value=1, step=1)
 
-    conn = db.get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id FROM rounds WHERE season_id = ? AND round_number = ?", (season_id, round_number))
-    existing_round = cursor.fetchone()
-    conn.close()
+    # Проверяем существование тура через db.get_rounds()
+    rounds = db.get_rounds(season_id)
+    existing_round = None
+
+    for r in rounds:
+        if r["round_number"] == round_number:
+            existing_round = r
+            break
 
     if existing_round:
-        round_id = existing_round[0]
+        round_id = existing_round["id"]
         st.info(f"ℹ️ Тур {round_number} уже существует.")
         matches = match_mgr.get_round_matches(round_id)
         if matches:
             st.subheader(f"📋 Матчи тура {round_number}")
             for m in matches:
-                home = [name for name, tid in team_options.items() if tid == m['home_team_id']][0]
-                away = [name for name, tid in team_options.items() if tid == m['away_team_id']][0]
+                home = [name for name, tid in team_options.items() if tid == m["home_team_id"]][0]
+                away = [name for name, tid in team_options.items() if tid == m["away_team_id"]][0]
                 st.write(f"  {home} — {away}")
         else:
             st.write("  (матчей нет)")
@@ -90,6 +102,7 @@ def main():
     # ============================================================
     # 4. Добавление матча
     # ============================================================
+
     st.subheader("➕ Добавить матч")
 
     # Список уже использованных команд в этом туре
@@ -97,8 +110,8 @@ def main():
     if round_id:
         matches = match_mgr.get_round_matches(round_id)
         for m in matches:
-            home = [name for name, tid in team_options.items() if tid == m['home_team_id']][0]
-            away = [name for name, tid in team_options.items() if tid == m['away_team_id']][0]
+            home = [name for name, tid in team_options.items() if tid == m["home_team_id"]][0]
+            away = [name for name, tid in team_options.items() if tid == m["away_team_id"]][0]
             used_teams.extend([home, away])
 
     available_teams = [t for t in team_names if t not in used_teams]
@@ -114,27 +127,18 @@ def main():
 
         if home and away and home != away:
             if st.button("➕ Добавить матч"):
-                # Если тур ещё не создан — создаём
+                # Если тур ещё не создан — создаём через FAJDatabase
                 if round_id is None:
-                    conn = db.get_connection()
-                    cursor = conn.cursor()
-                    cursor.execute(
-                        "INSERT INTO rounds (season_id, round_number, created_at) VALUES (?, ?, ?)",
-                        (season_id, round_number, datetime.now().isoformat())
-                    )
-                    round_id = cursor.lastrowid
-                    conn.commit()
-                    conn.close()
+                    round_id = db.create_round(season_id, round_number)
 
                 # Проверяем, не существует ли уже такой матч в этом туре
-                conn = db.get_connection()
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT COUNT(*) FROM matches
-                    WHERE round_id = ? AND home_team_id = ? AND away_team_id = ?
-                """, (round_id, team_options[home], team_options[away]))
-                exists = cursor.fetchone()[0] > 0
-                conn.close()
+                existing_matches = match_mgr.get_round_matches(round_id)
+                exists = False
+
+                for m in existing_matches:
+                    if m["home_team_id"] == team_options[home] and m["away_team_id"] == team_options[away]:
+                        exists = True
+                        break
 
                 if exists:
                     st.error(f"❌ Матч {home} — {away} уже существует в этом туре.")
@@ -155,6 +159,7 @@ def main():
     # ============================================================
     # 5. Переход к прогнозу (если есть матчи)
     # ============================================================
+
     if round_id:
         matches = match_mgr.get_round_matches(round_id)
         if matches:
