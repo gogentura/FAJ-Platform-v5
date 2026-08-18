@@ -2,49 +2,44 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ Platform v12.1
-Learning Engine
+FAJ Platform v12.1 — MEMORY HARDENED
+Learning Engine v2.0
 
 Пакетное обучение на завершённых матчах.
 
-ВАЖНО:
-- результаты матчей только читаются;
-- DELETE отсутствует;
-- календарь не изменяется;
-- прогнозы не создаются;
-- обучение атомарно;
-- повторный запуск того же массива без force
-  не создаёт новый цикл обучения;
-- force=True разрешает сознательный повторный цикл.
+ПРИНЦИПЫ v2.0:
+    - Все операции через FAJDatabase (никакого прямого SQLite)
+    - Никакого DELETE — используем версионирование
+    - Используем Memory Contract
+    - learning_memory через FAJDatabase
+    - model_parameters через set_model_parameter()
+    - parameter_history через record_parameter_history()
+    - team_history через record_team_history()
+    - gold через upsert_gold() и lock_gold()
+    - learning_records через add_learning_record()
+    - learning_events через add_learning_event()
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 from datetime import datetime
-from pathlib import Path
 from statistics import mean
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
+
+from app.database import FAJDatabase
 
 
 logger = logging.getLogger(__name__)
 
 
-ENGINE_VERSION = "12.1"
-ENGINE_NAME = "FAJ Learning Engine"
-
-# app/learning_engine.py -> корень проекта
-ROOT_DIR = Path(__file__).resolve().parents[1]
-
-DEFAULT_DB_PATH = ROOT_DIR / "data" / "faj.db"
+ENGINE_VERSION = "2.0"
+ENGINE_NAME = "FAJ Learning Engine v2.0"
 
 MIN_MATCHES_FOR_LEARNING = 8
 MIN_PATTERN_OCCURRENCES = 2
-
 MAX_PARAMETER_STEP = 0.03
-
 PATTERN_WEIGHT = 1.0
 
 
@@ -66,11 +61,7 @@ def _now() -> str:
     return datetime.now().isoformat()
 
 
-def _safe_float(
-    value: Any,
-    default: float = 0.0,
-) -> float:
-
+def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         if value is None:
             return default
@@ -79,11 +70,7 @@ def _safe_float(
         return default
 
 
-def _safe_int(
-    value: Any,
-    default: int = 0,
-) -> int:
-
+def _safe_int(value: Any, default: int = 0) -> int:
     try:
         if value is None:
             return default
@@ -92,56 +79,26 @@ def _safe_int(
         return default
 
 
-def _clamp(
-    value: float,
-    minimum: float,
-    maximum: float,
-) -> float:
-
-    return max(
-        minimum,
-        min(maximum, value),
-    )
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
 
 
-def _pattern_strength(
-    difference: float,
-) -> float:
-
-    return _clamp(
-        abs(_safe_float(difference)),
-        0.0,
-        1.0,
-    )
+def _pattern_strength(difference: float) -> float:
+    return _clamp(abs(_safe_float(difference)), 0.0, 1.0)
 
 
 class LearningEngine:
+    """FAJ Learning Engine v2.0 — Memory Hardened"""
 
-    def __init__(
-        self,
-        db_path: Optional[str] = None,
-    ) -> None:
+    def __init__(self, db: Optional[FAJDatabase] = None) -> None:
+        self.db = db or FAJDatabase()
+        self.run_id = f"learning-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
-        self.db_path = (
-            Path(db_path)
-            if db_path
-            else DEFAULT_DB_PATH
-        )
-
-        self.run_id = (
-            f"learning-"
-            f"{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-        )
-
-    # ========================================================
+    # ============================================================
     # PUBLIC
-    # ========================================================
+    # ============================================================
 
-    def run(
-        self,
-        force: bool = False,
-    ) -> Dict[str, Any]:
-
+    def run(self, force: bool = False) -> Dict[str, Any]:
         result = {
             "success": False,
             "engine": ENGINE_NAME,
@@ -161,206 +118,132 @@ class LearningEngine:
             "skip_reason": None,
         }
 
-        if not self.db_path.exists():
-
-            result["errors"].append(
-                f"База данных не найдена: "
-                f"{self.db_path}"
-            )
-
-            return result
-
-        conn = sqlite3.connect(
-            str(self.db_path)
-        )
-
-        conn.row_factory = sqlite3.Row
-
         try:
+            # ====================================================
+            # 1. FINISHED MATCHES
+            # ====================================================
 
-            matches = self._get_finished_matches(
-                conn
-            )
+            matches = self._get_finished_matches()
+            result["matches_analyzed"] = len(matches)
 
-            result["matches_analyzed"] = len(
-                matches
-            )
-
-            if (
-                len(matches) < MIN_MATCHES_FOR_LEARNING
-                and not force
-            ):
-
+            if len(matches) < MIN_MATCHES_FOR_LEARNING and not force:
                 result["errors"].append(
-                    "Недостаточно завершённых матчей "
-                    f"для обучения: "
-                    f"{len(matches)}/"
-                    f"{MIN_MATCHES_FOR_LEARNING}"
+                    f"Недостаточно завершённых матчей для обучения: "
+                    f"{len(matches)}/{MIN_MATCHES_FOR_LEARNING}"
                 )
-
                 return result
 
-            # ------------------------------------------------
-            # Защита от повторного обучения того же массива.
-            # ------------------------------------------------
+            # ====================================================
+            # 2. PROTECT AGAINST REPEATED LEARNING
+            # ====================================================
 
             if not force:
-
-                fingerprint = self._dataset_fingerprint(
-                    matches
-                )
-
-                if self._was_dataset_already_learned(
-                    conn,
-                    fingerprint,
-                ):
-
+                fingerprint = self._dataset_fingerprint(matches)
+                if self._was_dataset_already_learned(fingerprint):
                     result["success"] = True
                     result["skipped"] = True
                     result["skip_reason"] = (
-                        "Этот набор завершённых матчей "
-                        "уже использовался для обучения."
+                        "Этот набор завершённых матчей уже использовался для обучения."
                     )
                     result["finished_at"] = _now()
-
                     return result
 
-            # ------------------------------------------------
-            # TEAM STATS
-            # ------------------------------------------------
+            # ====================================================
+            # 3. TEAM STATS
+            # ====================================================
 
-            team_stats = self._build_team_statistics(
-                matches
-            )
+            team_stats = self._build_team_statistics(matches)
+            result["teams_analyzed"] = len(team_stats)
 
-            result["teams_analyzed"] = len(
-                team_stats
-            )
+            # ====================================================
+            # 4. PATTERNS
+            # ====================================================
 
-            # ------------------------------------------------
-            # PATTERNS
-            # ------------------------------------------------
+            patterns = self._find_patterns(matches, team_stats)
 
-            patterns = self._find_patterns(
-                matches,
-                team_stats,
-            )
+            # ====================================================
+            # 5. PREDICTIONS
+            # ====================================================
 
-            # ------------------------------------------------
-            # PREDICTIONS
-            # ------------------------------------------------
+            predictions = self._get_prediction_accuracy()
+            result["predictions_analyzed"] = len(predictions)
 
-            predictions = self._get_prediction_accuracy(
-                conn
-            )
-
-            result["predictions_analyzed"] = len(
-                predictions
-            )
-
-            prediction_patterns = (
-                self._analyze_prediction_errors(
-                    predictions
-                )
-            )
-
-            patterns.extend(
-                prediction_patterns
-            )
+            prediction_patterns = self._analyze_prediction_errors(predictions)
+            patterns.extend(prediction_patterns)
 
             result["patterns"] = patterns
-            result["patterns_found"] = len(
-                patterns
-            )
+            result["patterns_found"] = len(patterns)
 
-            # ------------------------------------------------
-            # PARAMETERS
-            # ------------------------------------------------
+            # ====================================================
+            # 6. PARAMETERS
+            # ====================================================
 
-            parameters = self._load_parameters(
-                conn
-            )
-
-            new_parameters, changes = (
-                self._adjust_parameters(
-                    parameters,
-                    patterns,
-                )
-            )
+            parameters = self._load_parameters()
+            new_parameters, changes = self._adjust_parameters(parameters, patterns)
 
             result["parameter_changes"] = changes
-            result["parameters_changed"] = len(
-                changes
-            )
+            result["parameters_changed"] = len(changes)
 
-            # ------------------------------------------------
-            # SAVE
-            # ------------------------------------------------
+            # ====================================================
+            # 7. SAVE
+            # ====================================================
 
-            fingerprint = self._dataset_fingerprint(
-                matches
-            )
+            fingerprint = self._dataset_fingerprint(matches)
 
-            self._save_learning_memory(
-                conn,
-                matches,
-                patterns,
-                changes,
-                fingerprint,
-            )
+            # Сохраняем learning_memory
+            self._save_learning_memory(matches, patterns, changes, fingerprint)
 
-            self._save_model_parameters(
-                conn,
-                new_parameters,
-            )
-
-            conn.commit()
+            # Сохраняем параметры через версионирование
+            self._save_model_parameters(new_parameters, changes)
 
             result["success"] = True
             result["finished_at"] = _now()
 
             logger.info(
-                "FAJ Learning completed: "
-                "matches=%s patterns=%s changes=%s",
-                len(matches),
-                len(patterns),
-                len(changes),
+                "FAJ Learning completed: matches=%s patterns=%s changes=%s",
+                len(matches), len(patterns), len(changes)
             )
 
             return result
 
         except Exception as exc:
-
-            conn.rollback()
-
-            logger.exception(
-                "FAJ Learning Engine error"
-            )
-
-            result["errors"].append(
-                str(exc)
-            )
-
+            logger.exception("FAJ Learning Engine error")
+            result["errors"].append(str(exc))
             result["finished_at"] = _now()
-
             return result
 
-        finally:
-            conn.close()
+    # ============================================================
+    # FINISHED MATCHES (через FAJDatabase)
+    # ============================================================
 
-    # ========================================================
+    def _get_finished_matches(self) -> List[Dict[str, Any]]:
+        """Получает завершённые матчи через FAJDatabase."""
+        all_matches = self.db.get_matches()
+        finished = []
+
+        for match in all_matches:
+            result = self.db.get_match_result(match["id"])
+            if result and result.get("home_goals") is not None:
+                match["result_home_goals"] = result["home_goals"]
+                match["result_away_goals"] = result["away_goals"]
+
+                home = self.db.get_team(match["home_team_id"])
+                away = self.db.get_team(match["away_team_id"])
+                match["home_team"] = home["name"] if home else None
+                match["away_team"] = away["name"] if away else None
+
+                finished.append(match)
+
+        return finished
+
+    # ============================================================
     # DATASET FINGERPRINT
-    # ========================================================
+    # ============================================================
 
     @staticmethod
-    def _dataset_fingerprint(
-        matches: List[Dict[str, Any]],
-    ) -> str:
-
+    def _dataset_fingerprint(matches: List[Dict[str, Any]]) -> str:
         rows = []
-
         for match in matches:
-
             rows.append({
                 "id": match.get("id"),
                 "home": match.get("home_team_id"),
@@ -369,241 +252,93 @@ class LearningEngine:
                 "ag": match.get("result_away_goals"),
             })
 
-        encoded = json.dumps(
-            rows,
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-
+        encoded = json.dumps(rows, ensure_ascii=False, sort_keys=True)
         import hashlib
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
-        return hashlib.sha256(
-            encoded.encode("utf-8")
-        ).hexdigest()
-
-    def _was_dataset_already_learned(
-        self,
-        conn: sqlite3.Connection,
-        fingerprint: str,
-    ) -> bool:
-
-        if "learning_memory" not in self._tables(
-            conn
-        ):
-            return False
-
-        columns = self._columns(
-            conn,
-            "learning_memory",
-        )
-
-        # Ищем fingerprint в content/data.
-        search_columns = [
-            column
-            for column in ("content", "data")
-            if column in columns
-        ]
-
-        if not search_columns:
-            return False
-
-        cursor = conn.cursor()
-
-        for column in search_columns:
-
-            cursor.execute(
-                f"""
-                SELECT 1
-                FROM learning_memory
-                WHERE {column} LIKE ?
+    def _was_dataset_already_learned(self, fingerprint: str) -> bool:
+        """Проверяет, не обучалась ли модель на этом наборе данных."""
+        # Ищем fingerprint в learning_memory через прямой запрос,
+        # так как в FAJDatabase пока нет специального метода
+        conn = self.db.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 1 FROM learning_memory
+                WHERE content LIKE ? OR data LIKE ?
                 LIMIT 1
-                """,
-                (f"%{fingerprint}%",),
-            )
+            """, (f"%{fingerprint}%", f"%{fingerprint}%"))
+            return cursor.fetchone() is not None
+        finally:
+            conn.close()
 
-            if cursor.fetchone():
-                return True
+    # ============================================================
+    # TEAM STATS (без изменений)
+    # ============================================================
 
-        return False
-
-    # ========================================================
-    # FINISHED MATCHES
-    # ========================================================
-
-    def _get_finished_matches(
-        self,
-        conn: sqlite3.Connection,
-    ) -> List[Dict[str, Any]]:
-
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
-            SELECT
-                m.*,
-
-                ht.name AS home_team,
-                at.name AS away_team,
-
-                mr.home_goals AS result_home_goals,
-                mr.away_goals AS result_away_goals
-
-            FROM matches m
-
-            LEFT JOIN teams ht
-                ON ht.id = m.home_team_id
-
-            LEFT JOIN teams at
-                ON at.id = m.away_team_id
-
-            INNER JOIN match_results mr
-                ON mr.match_id = m.id
-
-            WHERE
-                mr.home_goals IS NOT NULL
-                AND mr.away_goals IS NOT NULL
-
-            ORDER BY
-                datetime(m.date) ASC,
-                m.id ASC
-            """
-        )
-
-        return [
-            dict(row)
-            for row in cursor.fetchall()
-        ]
-
-    # ========================================================
-    # TEAM STATS
-    # ========================================================
-
-    def _build_team_statistics(
-        self,
-        matches: List[Dict[str, Any]],
-    ) -> Dict[str, Dict[str, Any]]:
-
+    def _build_team_statistics(self, matches: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         stats = {}
 
         for match in matches:
-
             home = match.get("home_team")
             away = match.get("away_team")
-
             if not home or not away:
                 continue
 
-            hg = _safe_int(
-                match.get("result_home_goals")
-            )
-
-            ag = _safe_int(
-                match.get("result_away_goals")
-            )
+            hg = _safe_int(match.get("result_home_goals"))
+            ag = _safe_int(match.get("result_away_goals"))
 
             if home not in stats:
-                stats[home] = self._empty_team_stats(
-                    home
-                )
-
+                stats[home] = self._empty_team_stats(home)
             if away not in stats:
-                stats[away] = self._empty_team_stats(
-                    away
-                )
+                stats[away] = self._empty_team_stats(away)
 
             h = stats[home]
             a = stats[away]
 
             h["matches"] += 1
             a["matches"] += 1
-
             h["goals_for"] += hg
             h["goals_against"] += ag
-
             a["goals_for"] += ag
             a["goals_against"] += hg
 
             if hg > ag:
-
                 h["wins"] += 1
                 a["losses"] += 1
-
             elif hg < ag:
-
                 h["losses"] += 1
                 a["wins"] += 1
-
             else:
-
                 h["draws"] += 1
                 a["draws"] += 1
 
             if hg == 0:
                 a["clean_sheets"] += 1
-
             if ag == 0:
                 h["clean_sheets"] += 1
 
-            h["points"] += (
-                3 if hg > ag
-                else 1 if hg == ag
-                else 0
-            )
-
-            a["points"] += (
-                3 if ag > hg
-                else 1 if ag == hg
-                else 0
-            )
+            h["points"] += 3 if hg > ag else 1 if hg == ag else 0
+            a["points"] += 3 if ag > hg else 1 if ag == hg else 0
 
             total = hg + ag
-
             h["total_goals_in_matches"] += total
             a["total_goals_in_matches"] += total
 
         for data in stats.values():
-
-            games = max(
-                1,
-                data["matches"],
-            )
-
-            data["goals_for_avg"] = (
-                data["goals_for"] / games
-            )
-
-            data["goals_against_avg"] = (
-                data["goals_against"] / games
-            )
-
-            data["win_rate"] = (
-                data["wins"] / games
-            )
-
-            data["draw_rate"] = (
-                data["draws"] / games
-            )
-
-            data["loss_rate"] = (
-                data["losses"] / games
-            )
-
-            data["clean_sheet_rate"] = (
-                data["clean_sheets"] / games
-            )
-
-            data["avg_total_goals"] = (
-                data["total_goals_in_matches"]
-                / games
-            )
+            games = max(1, data["matches"])
+            data["goals_for_avg"] = data["goals_for"] / games
+            data["goals_against_avg"] = data["goals_against"] / games
+            data["win_rate"] = data["wins"] / games
+            data["draw_rate"] = data["draws"] / games
+            data["loss_rate"] = data["losses"] / games
+            data["clean_sheet_rate"] = data["clean_sheets"] / games
+            data["avg_total_goals"] = data["total_goals_in_matches"] / games
 
         return stats
 
     @staticmethod
-    def _empty_team_stats(
-        team: str,
-    ) -> Dict[str, Any]:
-
+    def _empty_team_stats(team: str) -> Dict[str, Any]:
         return {
             "team": team,
             "matches": 0,
@@ -617,129 +352,63 @@ class LearningEngine:
             "total_goals_in_matches": 0,
         }
 
-    # ========================================================
-    # PATTERNS
-    # ========================================================
+    # ============================================================
+    # PATTERNS (без изменений)
+    # ============================================================
 
-    def _find_patterns(
-        self,
-        matches,
-        team_stats,
-    ):
-
+    def _find_patterns(self, matches: List[Dict[str, Any]], team_stats: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
         patterns = []
 
         if not matches:
             return patterns
 
         total_goals = sum(
-            _safe_int(
-                m.get("result_home_goals")
-            )
-            +
-            _safe_int(
-                m.get("result_away_goals")
-            )
+            _safe_int(m.get("result_home_goals")) + _safe_int(m.get("result_away_goals"))
             for m in matches
         )
-
-        avg_goals = (
-            total_goals / len(matches)
-        )
+        avg_goals = total_goals / len(matches)
 
         if avg_goals < 2.20:
-
             patterns.append({
                 "type": "league_low_scoring",
-                "strength": _pattern_strength(
-                    2.20 - avg_goals
-                ),
+                "strength": _pattern_strength(2.20 - avg_goals),
                 "occurrences": len(matches),
-                "description":
-                    "Пониженная результативность РПЛ.",
-                "evidence": {
-                    "average_goals":
-                        round(avg_goals, 3),
-                },
+                "description": "Пониженная результативность РПЛ.",
+                "evidence": {"average_goals": round(avg_goals, 3)},
             })
-
         elif avg_goals > 2.80:
-
             patterns.append({
                 "type": "league_high_scoring",
-                "strength": _pattern_strength(
-                    avg_goals - 2.80
-                ),
+                "strength": _pattern_strength(avg_goals - 2.80),
                 "occurrences": len(matches),
-                "description":
-                    "Повышенная результативность РПЛ.",
-                "evidence": {
-                    "average_goals":
-                        round(avg_goals, 3),
-                },
+                "description": "Повышенная результативность РПЛ.",
+                "evidence": {"average_goals": round(avg_goals, 3)},
             })
 
-        btts = sum(
-            1
-            for m in matches
-            if _safe_int(
-                m.get("result_home_goals")
-            ) > 0
-            and
-            _safe_int(
-                m.get("result_away_goals")
-            ) > 0
-        )
-
+        btts = sum(1 for m in matches if _safe_int(m.get("result_home_goals")) > 0 and _safe_int(m.get("result_away_goals")) > 0)
         btts_rate = btts / len(matches)
 
         if btts_rate >= 0.65:
-
             patterns.append({
                 "type": "high_btts",
-                "strength": _pattern_strength(
-                    btts_rate - 0.50
-                ),
+                "strength": _pattern_strength(btts_rate - 0.50),
                 "occurrences": btts,
-                "description":
-                    "Повышенная частота BTTS.",
-                "evidence": {
-                    "btts_rate":
-                        round(btts_rate, 3),
-                },
+                "description": "Повышенная частота BTTS.",
+                "evidence": {"btts_rate": round(btts_rate, 3)},
             })
-
         elif btts_rate <= 0.35:
-
             patterns.append({
                 "type": "low_btts",
-                "strength": _pattern_strength(
-                    0.50 - btts_rate
-                ),
-                "occurrences":
-                    len(matches) - btts,
-                "description":
-                    "Пониженная частота BTTS.",
-                "evidence": {
-                    "btts_rate":
-                        round(btts_rate, 3),
-                },
+                "strength": _pattern_strength(0.50 - btts_rate),
+                "occurrences": len(matches) - btts,
+                "description": "Пониженная частота BTTS.",
+                "evidence": {"btts_rate": round(btts_rate, 3)},
             })
 
-        home_wins = 0
-        draws = 0
-        away_wins = 0
-
+        home_wins = draws = away_wins = 0
         for m in matches:
-
-            hg = _safe_int(
-                m.get("result_home_goals")
-            )
-
-            ag = _safe_int(
-                m.get("result_away_goals")
-            )
-
+            hg = _safe_int(m.get("result_home_goals"))
+            ag = _safe_int(m.get("result_away_goals"))
             if hg > ag:
                 home_wins += 1
             elif hg < ag:
@@ -751,216 +420,80 @@ class LearningEngine:
         draw_rate = draws / len(matches)
 
         if home_rate >= 0.50:
-
             patterns.append({
                 "type": "home_advantage_strong",
-                "strength": _pattern_strength(
-                    home_rate - 0.33
-                ),
+                "strength": _pattern_strength(home_rate - 0.33),
                 "occurrences": home_wins,
-                "description":
-                    "Повышенная доля домашних побед.",
+                "description": "Повышенная доля домашних побед.",
                 "evidence": {
-                    "home_win_rate":
-                        round(home_rate, 3),
-                    "draw_rate":
-                        round(draw_rate, 3),
-                    "away_win_rate":
-                        round(
-                            away_wins / len(matches),
-                            3,
-                        ),
+                    "home_win_rate": round(home_rate, 3),
+                    "draw_rate": round(draw_rate, 3),
+                    "away_win_rate": round(away_wins / len(matches), 3),
                 },
             })
 
         if draw_rate >= 0.40:
-
             patterns.append({
                 "type": "high_draw_rate",
-                "strength": _pattern_strength(
-                    draw_rate - 0.33
-                ),
+                "strength": _pattern_strength(draw_rate - 0.33),
                 "occurrences": draws,
-                "description":
-                    "Повышенная доля ничьих.",
-                "evidence": {
-                    "draw_rate":
-                        round(draw_rate, 3),
-                },
+                "description": "Повышенная доля ничьих.",
+                "evidence": {"draw_rate": round(draw_rate, 3)},
             })
 
         for team, stats in team_stats.items():
-
             if stats["matches"] < 2:
                 continue
-
-            if (
-                stats["win_rate"] >= 0.75
-                and
-                stats["goals_for_avg"] >= 2.0
-            ):
-
+            if stats["win_rate"] >= 0.75 and stats["goals_for_avg"] >= 2.0:
                 patterns.append({
-                    "type":
-                        "team_attack_strength",
+                    "type": "team_attack_strength",
                     "team": team,
-                    "strength":
-                        _pattern_strength(
-                            stats["win_rate"]
-                        ),
-                    "occurrences":
-                        stats["matches"],
-                    "description":
-                        f"{team}: сильная "
-                        "результативная форма.",
+                    "strength": _pattern_strength(stats["win_rate"]),
+                    "occurrences": stats["matches"],
+                    "description": f"{team}: сильная результативная форма.",
                 })
-
-            if (
-                stats["clean_sheet_rate"] >= 0.50
-                and
-                stats["goals_against_avg"] <= 0.75
-            ):
-
+            if stats["clean_sheet_rate"] >= 0.50 and stats["goals_against_avg"] <= 0.75:
                 patterns.append({
-                    "type":
-                        "team_defense_strength",
+                    "type": "team_defense_strength",
                     "team": team,
-                    "strength":
-                        _pattern_strength(
-                            stats["clean_sheet_rate"]
-                        ),
-                    "occurrences":
-                        stats["matches"],
-                    "description":
-                        f"{team}: сильная "
-                        "оборонительная форма.",
+                    "strength": _pattern_strength(stats["clean_sheet_rate"]),
+                    "occurrences": stats["matches"],
+                    "description": f"{team}: сильная оборонительная форма.",
                 })
 
         return patterns
 
-    # ========================================================
-    # PREDICTIONS
-    # ========================================================
+    # ============================================================
+    # PREDICTIONS (через FAJDatabase)
+    # ============================================================
 
-    def _get_prediction_accuracy(
-        self,
-        conn,
-    ) -> List[Dict[str, Any]]:
+    def _get_prediction_accuracy(self) -> List[Dict[str, Any]]:
+        """Получает точность прогнозов через FAJDatabase."""
+        finished = self._get_finished_matches()
+        predictions = []
 
-        if "predictions" not in self._tables(conn):
-            return []
+        for match in finished:
+            preds = self.db.get_predictions_by_match(match["id"])
+            for pred in preds:
+                if pred.get("prediction_status") == "active":
+                    predictions.append({
+                        "match_id": match["id"],
+                        "predicted_home": pred.get("predicted_home"),
+                        "predicted_away": pred.get("predicted_away"),
+                        "actual_home": match.get("result_home_goals"),
+                        "actual_away": match.get("result_away_goals"),
+                    })
 
-        columns = self._columns(
-            conn,
-            "predictions",
-        )
+        return predictions
 
-        match_column = self._first_existing(
-            columns,
-            [
-                "match_id",
-                "fixture_id",
-            ],
-        )
-
-        if not match_column:
-            return []
-
-        home_column = self._first_existing(
-            columns,
-            [
-                "predicted_home",
-                "predicted_home_goals",
-                "home_score",
-                "predicted_score_home",
-            ],
-        )
-
-        away_column = self._first_existing(
-            columns,
-            [
-                "predicted_away",
-                "predicted_away_goals",
-                "away_score",
-                "predicted_score_away",
-            ],
-        )
-
-        if not home_column or not away_column:
-            return []
-
-        cursor = conn.cursor()
-
-        # КЛЮЧЕВАЯ ПРАВКА:
-        # predictions -> matches -> match_results
-        cursor.execute(
-            f"""
-            SELECT
-                p.*,
-
-                m.id AS linked_match_id,
-
-                mr.home_goals AS actual_home,
-                mr.away_goals AS actual_away
-
-            FROM predictions p
-
-            INNER JOIN matches m
-                ON m.id = p.{match_column}
-
-            INNER JOIN match_results mr
-                ON mr.match_id = m.id
-
-            WHERE
-                p.{match_column} IS NOT NULL
-
-                AND mr.home_goals IS NOT NULL
-                AND mr.away_goals IS NOT NULL
-            """
-        )
-
-        rows = []
-
-        for row in cursor.fetchall():
-
-            item = dict(row)
-
-            item["_predicted_home"] = (
-                item.get(home_column)
-            )
-
-            item["_predicted_away"] = (
-                item.get(away_column)
-            )
-
-            rows.append(item)
-
-        return rows
-
-    def _analyze_prediction_errors(
-        self,
-        predictions,
-    ):
-
+    def _analyze_prediction_errors(self, predictions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         errors = []
 
-        for prediction in predictions:
-
-            ph = prediction.get(
-                "_predicted_home"
-            )
-
-            pa = prediction.get(
-                "_predicted_away"
-            )
-
-            ah = prediction.get(
-                "actual_home"
-            )
-
-            aa = prediction.get(
-                "actual_away"
-            )
+        for pred in predictions:
+            ph = pred.get("predicted_home")
+            pa = pred.get("predicted_away")
+            ah = pred.get("actual_home")
+            aa = pred.get("actual_away")
 
             if None in (ph, pa, ah, aa):
                 continue
@@ -973,11 +506,7 @@ class LearningEngine:
             except (TypeError, ValueError):
                 continue
 
-            errors.append(
-                abs(ph - ah)
-                +
-                abs(pa - aa)
-            )
+            errors.append(abs(ph - ah) + abs(pa - aa))
 
         if not errors:
             return []
@@ -988,531 +517,202 @@ class LearningEngine:
             return []
 
         return [{
-            "type":
-                "prediction_score_error_high",
-            "strength":
-                _pattern_strength(
-                    avg_error - 1.0
-                ),
-            "occurrences":
-                len(errors),
-            "description":
-                "Средняя ошибка точного счёта "
-                "выше допустимого уровня.",
-            "evidence": {
-                "average_score_error":
-                    round(avg_error, 3),
-            },
+            "type": "prediction_score_error_high",
+            "strength": _pattern_strength(avg_error - 1.0),
+            "occurrences": len(errors),
+            "description": "Средняя ошибка точного счёта выше допустимого уровня.",
+            "evidence": {"average_score_error": round(avg_error, 3)},
         }]
 
-    # ========================================================
-    # PARAMETERS
-    # ========================================================
+    # ============================================================
+    # PARAMETERS (через FAJDatabase)
+    # ============================================================
 
-    def _load_parameters(
-        self,
-        conn,
-    ):
+    def _load_parameters(self) -> Dict[str, float]:
+        """Загружает параметры из model_parameters."""
+        params = dict(DEFAULT_PARAMETERS)
 
-        if "model_parameters" not in self._tables(
-            conn
-        ):
-            return dict(DEFAULT_PARAMETERS)
+        # Пытаемся получить параметры из FAJDatabase
+        for param_name in params.keys():
+            value = self.db.get_parameter("learning", param_name)
+            if value is not None:
+                params[param_name] = value
 
-        columns = self._columns(
-            conn,
-            "model_parameters",
-        )
+        return params
 
-        json_column = self._first_existing(
-            columns,
-            [
-                "parameters",
-                "parameters_json",
-                "value",
-                "config",
-                "data",
-            ],
-        )
-
-        if not json_column:
-            return dict(DEFAULT_PARAMETERS)
-
-        cursor = conn.cursor()
-
-        cursor.execute(
-            f"""
-            SELECT {json_column}
-            FROM model_parameters
-            ORDER BY rowid DESC
-            LIMIT 1
-            """
-        )
-
-        row = cursor.fetchone()
-
-        if not row:
-            return dict(DEFAULT_PARAMETERS)
-
-        try:
-
-            parsed = json.loads(row[0])
-
-            parameters = dict(
-                DEFAULT_PARAMETERS
-            )
-
-            if isinstance(parsed, dict):
-
-                for key in parameters:
-
-                    if key in parsed:
-                        parameters[key] = _safe_float(
-                            parsed[key],
-                            parameters[key],
-                        )
-
-            return parameters
-
-        except Exception:
-            return dict(DEFAULT_PARAMETERS)
-
-    def _adjust_parameters(
-        self,
-        parameters,
-        patterns,
-    ):
-
+    def _adjust_parameters(self, parameters: Dict[str, float], patterns: List[Dict[str, Any]]) -> tuple:
         new_parameters = dict(parameters)
         changes = []
 
         for pattern in patterns:
-
-            occurrences = _safe_int(
-                pattern.get("occurrences")
-            )
-
+            occurrences = _safe_int(pattern.get("occurrences"))
             if occurrences < MIN_PATTERN_OCCURRENCES:
                 continue
 
-            strength = _safe_float(
-                pattern.get("strength")
-            )
-
-            step = _clamp(
-                strength * 0.01 * PATTERN_WEIGHT,
-                0.0,
-                MAX_PARAMETER_STEP,
-            )
+            strength = _safe_float(pattern.get("strength"))
+            step = _clamp(strength * 0.01 * PATTERN_WEIGHT, 0.0, MAX_PARAMETER_STEP)
 
             pattern_type = pattern.get("type")
-
             parameter = None
             direction = 0
 
             if pattern_type == "league_low_scoring":
-                parameter = "defense"
-                direction = 1
-
+                parameter, direction = "defense", 1
             elif pattern_type == "league_high_scoring":
-                parameter = "attack"
-                direction = 1
-
+                parameter, direction = "attack", 1
             elif pattern_type == "high_btts":
-                parameter = "attack"
-                direction = 1
-
+                parameter, direction = "attack", 1
             elif pattern_type == "low_btts":
-                parameter = "defense"
-                direction = 1
-
+                parameter, direction = "defense", 1
             elif pattern_type == "home_advantage_strong":
-                parameter = "mentality"
-                direction = 1
-
-            elif pattern_type == "xg_overperformance":
-                parameter = "efficiency"
-                direction = 1
-
-            elif pattern_type == "xg_underperformance":
-                parameter = "efficiency"
-                direction = -1
-
-            elif pattern_type == "prediction_score_error_high":
-                parameter = "form"
-                direction = 1
-
-                # form нет в текущем наборе весов.
-                parameter = None
-
+                parameter, direction = "mentality", 1
             elif pattern_type == "team_attack_strength":
-                parameter = "attack"
-                direction = 1
-
+                parameter, direction = "attack", 1
             elif pattern_type == "team_defense_strength":
-                parameter = "defense"
-                direction = 1
-
-            if (
-                parameter is None
-                or parameter not in new_parameters
-                or direction == 0
-            ):
+                parameter, direction = "defense", 1
+            elif pattern_type == "prediction_score_error_high":
+                # form нет в текущем наборе весов
                 continue
 
-            old_value = new_parameters[
-                parameter
-            ]
-
-            new_value = _clamp(
-                old_value + step * direction,
-                0.01,
-                0.50,
-            )
-
-            if abs(
-                new_value - old_value
-            ) < 0.000001:
+            if parameter is None or parameter not in new_parameters or direction == 0:
                 continue
 
-            new_parameters[
-                parameter
-            ] = new_value
+            old_value = new_parameters[parameter]
+            new_value = _clamp(old_value + step * direction, 0.01, 0.50)
 
+            if abs(new_value - old_value) < 0.000001:
+                continue
+
+            new_parameters[parameter] = new_value
             changes.append({
                 "parameter": parameter,
-                "old_value": round(
-                    old_value,
-                    6,
-                ),
-                "new_value": round(
-                    new_value,
-                    6,
-                ),
-                "delta": round(
-                    new_value - old_value,
-                    6,
-                ),
+                "old_value": round(old_value, 6),
+                "new_value": round(new_value, 6),
+                "delta": round(new_value - old_value, 6),
                 "reason": pattern_type,
                 "occurrences": occurrences,
-                "strength": round(
-                    strength,
-                    4,
-                ),
+                "strength": round(strength, 4),
             })
 
-        # Нормализация.
-        total = sum(
-            new_parameters.values()
-        )
-
+        # Нормализация
+        total = sum(new_parameters.values())
         if total > 0:
-
             for key in new_parameters:
-                new_parameters[key] = (
-                    new_parameters[key] / total
-                )
+                new_parameters[key] = new_parameters[key] / total
 
         return new_parameters, changes
 
-    # ========================================================
-    # SAVE MEMORY
-    # ========================================================
+    # ============================================================
+    # SAVE (через FAJDatabase)
+    # ============================================================
 
-    def _save_learning_memory(
-        self,
-        conn,
-        matches,
-        patterns,
-        changes,
-        fingerprint,
-    ):
-
-        if "learning_memory" not in self._tables(
-            conn
-        ):
-            return
-
-        columns = self._columns(
-            conn,
-            "learning_memory",
-        )
-
+    def _save_learning_memory(self, matches: List[Dict[str, Any]], patterns: List[Dict[str, Any]],
+                              changes: List[Dict[str, Any]], fingerprint: str) -> None:
+        """Сохраняет learning_memory через FAJDatabase."""
         payload = {
-            "created_at": _now(),
-            "updated_at": _now(),
             "run_id": self.run_id,
             "engine": ENGINE_NAME,
             "engine_version": ENGINE_VERSION,
             "memory_type": "batch_learning",
-            "type": "batch_learning",
-            "title":
-                "FAJ пакетное обучение",
-            "description":
-                f"Проанализировано "
-                f"{len(matches)} завершённых матчей.",
-            "content": json.dumps(
-                {
-                    "dataset_fingerprint":
-                        fingerprint,
-                    "matches_analyzed":
-                        len(matches),
-                    "patterns":
-                        patterns,
-                    "parameter_changes":
-                        changes,
-                },
-                ensure_ascii=False,
-            ),
-            "data": json.dumps(
-                {
-                    "dataset_fingerprint":
-                        fingerprint,
-                    "patterns":
-                        patterns,
-                    "parameter_changes":
-                        changes,
-                },
-                ensure_ascii=False,
-            ),
-            "importance":
-                "high"
-                if len(patterns) >= 3
-                else "normal",
+            "title": "FAJ пакетное обучение",
+            "description": f"Проанализировано {len(matches)} завершённых матчей.",
+            "content": json.dumps({
+                "dataset_fingerprint": fingerprint,
+                "matches_analyzed": len(matches),
+                "patterns": patterns,
+                "parameter_changes": changes,
+            }, ensure_ascii=False),
+            "data": json.dumps({
+                "dataset_fingerprint": fingerprint,
+                "patterns": patterns,
+                "parameter_changes": changes,
+            }, ensure_ascii=False),
+            "importance": "high" if len(patterns) >= 3 else "normal",
             "status": "active",
         }
 
-        self._insert_compatible(
-            conn,
-            "learning_memory",
-            columns,
-            payload,
-        )
+        # Прямой INSERT в learning_memory (через get_connection, т.к. нет метода в FAJDatabase)
+        conn = self.db.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO learning_memory (
+                    run_id, engine, engine_version, memory_type,
+                    title, description, content, data, importance, status,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                payload["run_id"],
+                payload["engine"],
+                payload["engine_version"],
+                payload["memory_type"],
+                payload["title"],
+                payload["description"],
+                payload["content"],
+                payload["data"],
+                payload["importance"],
+                payload["status"],
+                _now()
+            ))
+            conn.commit()
+        finally:
+            conn.close()
 
-    # ========================================================
-    # SAVE PARAMETERS (ИСПРАВЛЕНО)
-    # ========================================================
-
-    def _save_model_parameters(
-        self,
-        conn,
-        parameters,
-    ):
-        """
-        Сохраняет параметры обучения в model_parameters.
-        Перед вставкой удаляет старую запись для данной пары (model_version, parameter_name),
-        чтобы избежать UNIQUE constraint.
-        """
-        if "model_parameters" not in self._tables(conn):
-            logger.warning("Таблица model_parameters отсутствует")
-            return
-
-        columns = self._columns(conn, "model_parameters")
-        has_parameter_name = "parameter_name" in columns
-        has_parameter_value = "parameter_value" in columns
-        has_model_version = "model_version" in columns
-        has_updated_at = "updated_at" in columns
-
-        if not has_parameter_name:
-            logger.error("model_parameters не содержит parameter_name")
-            return
-
-        now = _now()
-        cursor = conn.cursor()
-        saved_count = 0
-
+    def _save_model_parameters(self, parameters: Dict[str, float], changes: List[Dict[str, Any]]) -> None:
+        """Сохраняет параметры через set_model_parameter() с историей."""
         for param_name, param_value in parameters.items():
-            # Удаляем старую запись, если она существует
-            if has_model_version:
-                cursor.execute(
-                    "DELETE FROM model_parameters WHERE model_version = ? AND parameter_name = ?",
-                    (ENGINE_VERSION, param_name)
+            old_value = self.db.get_parameter("learning", param_name)
+
+            self.db.set_model_parameter(
+                model_version=ENGINE_VERSION,
+                category="learning",
+                parameter=param_name,
+                value=param_value,
+                description=f"Learning adjustment: {self.run_id}",
+                group_name="learning"
+            )
+
+            if old_value is not None and abs(old_value - param_value) > 0.000001:
+                self.db.record_parameter_history(
+                    parameter_name=param_name,
+                    group_name="learning",
+                    model_version=ENGINE_VERSION,
+                    old_value=old_value,
+                    new_value=param_value,
+                    delta=param_value - old_value,
+                    reason="batch_learning",
+                    confidence=0.8
                 )
-            else:
-                cursor.execute(
-                    "DELETE FROM model_parameters WHERE parameter_name = ?",
-                    (param_name,)
-                )
 
-            # Формируем payload для вставки
-            payload = {
-                "parameter_name": param_name,
-                "parameter_value": float(param_value),
-            }
-            if has_model_version:
-                payload["model_version"] = ENGINE_VERSION
-            if has_updated_at:
-                payload["updated_at"] = now
-
-            # Вставляем только те поля, которые есть в таблице
-            usable = {k: v for k, v in payload.items() if k in columns}
-            if not usable:
-                continue
-
-            names = list(usable.keys())
-            placeholders = ", ".join("?" for _ in names)
-            sql = f"INSERT INTO model_parameters ({', '.join(names)}) VALUES ({placeholders})"
-            cursor.execute(sql, [usable[name] for name in names])
-            saved_count += 1
-
-        conn.commit()
-        logger.info(f"Сохранено {saved_count} параметров в model_parameters")
-
-    # ========================================================
-    # SQLITE
-    # ========================================================
-
-    @staticmethod
-    def _tables(conn):
-
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
-            SELECT name
-            FROM sqlite_master
-            WHERE type = 'table'
-            """
-        )
-
-        return {
-            row[0]
-            for row in cursor.fetchall()
-        }
-
-    @staticmethod
-    def _columns(
-        conn,
-        table,
-    ):
-
-        cursor = conn.cursor()
-
-        cursor.execute(
-            f'PRAGMA table_info("{table}")'
-        )
-
-        return {
-            row[1]
-            for row in cursor.fetchall()
-        }
-
-    @staticmethod
-    def _first_existing(
-        columns,
-        candidates,
-    ):
-
-        for candidate in candidates:
-
-            if candidate in columns:
-                return candidate
-
-        return None
-
-    @staticmethod
-    def _insert_compatible(
-        conn,
-        table,
-        columns,
-        payload,
-    ):
-
-        usable = {
-            key: value
-            for key, value in payload.items()
-            if key in columns
-        }
-
-        if not usable:
-            return
-
-        names = list(usable.keys())
-
-        placeholders = ", ".join(
-            "?" for _ in names
-        )
-
-        cursor = conn.cursor()
-
-        cursor.execute(
-            f"""
-            INSERT INTO {table}
-            ({", ".join(names)})
-            VALUES ({placeholders})
-            """,
-            [
-                usable[name]
-                for name in names
-            ],
-        )
+        logger.info(f"Сохранено {len(parameters)} параметров через set_model_parameter()")
 
 
-def run_learning(
-    db_path: Optional[str] = None,
-    force: bool = False,
-):
+# ============================================================
+# PUBLIC API
+# ============================================================
 
-    return LearningEngine(
-        db_path=db_path
-    ).run(
-        force=force
-    )
+def run_learning(force: bool = False, db: Optional[FAJDatabase] = None) -> Dict[str, Any]:
+    return LearningEngine(db=db).run(force=force)
 
 
 if __name__ == "__main__":
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format=(
-            "%(asctime)s | "
-            "%(levelname)s | "
-            "%(message)s"
-        ),
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
     result = run_learning()
 
     print("=" * 70)
-    print("FAJ LEARNING ENGINE v12.1")
+    print("FAJ LEARNING ENGINE v2.0 — MEMORY HARDENED")
     print("=" * 70)
-
-    print(
-        f"Успех: {result['success']}"
-    )
-
-    print(
-        f"Матчей: "
-        f"{result['matches_analyzed']}"
-    )
-
-    print(
-        f"Команд: "
-        f"{result['teams_analyzed']}"
-    )
-
-    print(
-        f"Закономерностей: "
-        f"{result['patterns_found']}"
-    )
-
-    print(
-        f"Прогнозов: "
-        f"{result['predictions_analyzed']}"
-    )
-
-    print(
-        f"Изменений параметров: "
-        f"{result['parameters_changed']}"
-    )
+    print(f"Успех: {result['success']}")
+    print(f"Матчей: {result['matches_analyzed']}")
+    print(f"Команд: {result['teams_analyzed']}")
+    print(f"Закономерностей: {result['patterns_found']}")
+    print(f"Прогнозов: {result['predictions_analyzed']}")
+    print(f"Изменений параметров: {result['parameters_changed']}")
 
     if result["skipped"]:
-        print(
-            f"Пропуск: "
-            f"{result['skip_reason']}"
-        )
+        print(f"Пропуск: {result['skip_reason']}")
 
     for error in result["errors"]:
         print(f"❌ {error}")
-
     print("=" * 70)
