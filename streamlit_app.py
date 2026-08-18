@@ -197,7 +197,7 @@ if st.session_state.bootstrap_result is None:
 
 
 # ============================================================
-# SEASON
+# SEASON — ИСПРАВЛЕНО
 # ============================================================
 
 def get_active_season():
@@ -213,6 +213,7 @@ def get_active_season():
                     status = 'active'
                     OR name LIKE '%2026/27%'
                     OR name LIKE '%2026-27%'
+                    OR name LIKE '%2026-2027%'
                   )
             ORDER BY
                 CASE WHEN status = 'active' THEN 0 ELSE 1 END,
@@ -392,7 +393,7 @@ with st.sidebar:
     st.divider()
     if st.button("🔄 Запустить FAJ Cycle", type="primary", use_container_width=True):
         with st.spinner("🧠 FAJ Cycle выполняет полный цикл..."):
-            st.session_state.cycle_result = run_faj_cycle()
+            st.session_state.cycle_result = faj_cycle_runner()  # ИСПРАВЛЕНО
         st.rerun()
 
     st.divider()
@@ -552,7 +553,7 @@ elif st.session_state.page == "system":
         st.error("🔴 faj.db не найден")
 
     # ============================================================
-    # ДИАГНОСТИКА БД (добавлено)
+    # ДИАГНОСТИКА БД
     # ============================================================
     st.divider()
     st.subheader("📁 Диагностика БД")
