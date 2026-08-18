@@ -550,6 +550,21 @@ elif st.session_state.page == "system":
             pass
     else:
         st.error("🔴 faj.db не найден")
+
+    # ============================================================
+    # ДИАГНОСТИКА БД (добавлено)
+    # ============================================================
+    st.divider()
+    st.subheader("📁 Диагностика БД")
+    st.write(f"**Путь к БД:** `{DB_PATH}`")
+    st.write(f"**Файл существует:** {os.path.exists(DB_PATH)}")
+    if os.path.exists(DB_PATH):
+        size_mb = os.path.getsize(DB_PATH) / 1024 / 1024
+        st.write(f"**Размер:** {size_mb:.2f} MB")
+        import time
+        mtime = os.path.getmtime(DB_PATH)
+        st.write(f"**Изменён:** {datetime.fromtimestamp(mtime).strftime('%d.%m.%Y %H:%M:%S')}")
+
     st.divider()
     st.subheader("🔍 Состояние")
     summary_df = pd.DataFrame(
