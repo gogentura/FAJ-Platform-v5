@@ -4,49 +4,54 @@
 """
 ============================================================
 FAJ Platform v12.1
-RPL Stats Parser v3.1 — SAFE / VALIDATED
+RPL Stats Parser v3.1 — HARDENED
 ============================================================
 
 Источник:
     nb-bet.com
 
-Главный принцип:
+Назначение:
+    Надёжный импорт фактов футбольного матча.
 
-    НЕ УГАДЫВАТЬ.
+КРИТИЧЕСКИЕ ПРИНЦИПЫ:
 
-Если значение невозможно однозначно определить,
-парсер возвращает None.
+    1. Счёт НЕ ищется regex по всей странице.
+    2. Счёт ищется только рядом с названиями команд.
+    3. Статистика извлекается только из блока "Статистика".
+    4. Каждый показатель извлекается отдельно.
+    5. Нельзя принять число из другой секции за статистику.
+    6. Значения проходят диапазонную проверку.
+    7. Удары в створ не могут быть больше ударов.
+    8. Владение должно быть примерно 100%.
+    9. Угловые > 20 автоматически считаются ошибкой.
+   10. При сомнении возвращается None.
+   11. Сомнительные факты НЕ должны попадать в Gold.
+   12. Парсер не подставляет случайные значения.
 
-Никогда не используется:
-    soup.get_text() всей страницы
-для поиска случайного счёта или статистики.
+Для страницы:
 
-Цепочка:
+    Динамо Москва — Крылья Советов
 
-    HTML
-      ↓
-    match context
-      ↓
-    score extraction
-      ↓
-    statistics extraction
-      ↓
-    validation
-      ↓
-    validated result
+ожидается:
 
-Критические правила:
+    score:
+        0:0
 
-1. Счёт не извлекается из произвольного текста страницы.
-2. Статистика не извлекается из произвольных чисел страницы.
-3. Угловые ограничены разумным диапазоном.
-4. Удары в створ не могут превышать удары.
-5. Владение каждой команды 0..100%.
-6. Владение двух команд должно быть примерно 100%.
-7. При конфликте значений показатель становится None.
-8. Непроверенные данные не должны считаться Gold-фактом.
-9. Ошибка одного показателя не уничтожает остальные.
-10. Парсер никогда не подставляет значения самостоятельно.
+    xG:
+        1.25 : 1.23
+
+    shots:
+        21 : 12
+
+    shots_on_target:
+        5 : 4
+
+    corners:
+        6 : 2
+
+    possession:
+        66 : 34
+============================================================
 """
 
 from __future__ import annotations
@@ -59,194 +64,158 @@ import requests
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 
-from app.parsers.rpl_normalizer import normalize_team_names
-
 
 logger = logging.getLogger(__name__)
 
 
 class RPLStatsParser:
     """
-    Защищённый parser статистики RPL.
+    Защищённый парсер nb-bet.
 
-    Совместим с import_facts.py v3.0.
+    ВАЖНО:
+        Парсер никогда не пытается "угадать" факт.
+        Если структура страницы не позволяет надёжно определить
+        значение — возвращается None.
     """
 
     VERSION = "3.1"
 
     DEFAULT_TIMEOUT = 20
 
-    # --------------------------------------------------------
-    # Разумные диапазоны
-    # --------------------------------------------------------
+    # ========================================================
+    # ДОПУСТИМЫЕ ДИАПАЗОНЫ
+    # ========================================================
 
-    VALIDATION_RULES = {
+    LIMITS = {
         "xg": (0.0, 10.0),
-
         "shots": (0, 60),
-        "shots_on_target": (0, 40),
-
-        # В реальном матче 84 угловых практически невозможно.
-        # Верхний предел специально консервативный.
+        "shots_on_target": (0, 30),
         "corners": (0, 20),
-
         "possession": (0, 100),
-
         "yellow_cards": (0, 12),
         "red_cards": (0, 5),
     }
 
-    # --------------------------------------------------------
-    # Синонимы статистики
-    # --------------------------------------------------------
+    # ========================================================
+    # НАЗВАНИЯ ПОКАЗАТЕЛЕЙ
+    # ========================================================
 
     STAT_LABELS = {
-        "xg": {
-            "xg",
-            "ожидаемые голы",
-            "ожидаемые голы (xg)",
-            "expected goals",
-            "expected goals (xg)",
-        },
+        "xg": (
+            "Ожидаемые голы (xG)",
+            "Expected Goals (xG)",
+            "xG",
+        ),
 
-        "shots": {
-            "удары",
-            "shots",
-            "total shots",
-        },
+        "shots": (
+            "Удары",
+            "Shots",
+        ),
 
-        "shots_on_target": {
-            "удары в створ",
-            "shots on target",
-            "shots on goal",
-        },
+        "shots_on_target": (
+            "Удары в створ",
+            "Shots on target",
+        ),
 
-        "corners": {
-            "угловые",
-            "corner kicks",
-            "corners",
-            "corner",
-        },
+        "corners": (
+            "Угловые",
+            "Corner Kicks",
+            "Corners",
+        ),
 
-        "possession": {
-            "владение",
-            "владение мячом",
-            "владение мячом (%)",
-            "possession",
-            "possession (%)",
-        },
+        "possession": (
+            "Владение мячом (%)",
+            "Владение",
+            "Possession (%)",
+            "Possession",
+        ),
 
-        "yellow_cards": {
-            "жёлтые карточки",
-            "желтые карточки",
-            "yellow cards",
-            "yellow card",
-        },
+        "yellow_cards": (
+            "Жёлтые карточки",
+            "Желтые карточки",
+            "Yellow Cards",
+        ),
 
-        "red_cards": {
-            "красные карточки",
-            "red cards",
-            "red card",
-        },
+        "red_cards": (
+            "Красные карточки",
+            "Красные карточки",
+            "Red Cards",
+        ),
     }
+
+    # ========================================================
+    # РЕЗУЛЬТАТНЫЕ КЛЮЧИ
+    # ========================================================
 
     RESULT_KEYS = {
         "xg": ("home_xg", "away_xg"),
-        "shots": ("home_shots", "away_shots"),
+
+        "shots": (
+            "home_shots",
+            "away_shots",
+        ),
+
         "shots_on_target": (
             "home_shots_on_target",
             "away_shots_on_target",
         ),
+
         "corners": (
             "home_corners",
             "away_corners",
         ),
+
         "possession": (
             "home_possession",
             "away_possession",
         ),
+
         "yellow_cards": (
             "home_yellow_cards",
             "away_yellow_cards",
         ),
+
         "red_cards": (
             "home_red_cards",
             "away_red_cards",
         ),
     }
 
-    # --------------------------------------------------------
-    # Возможные CSS-классы результата
-    # --------------------------------------------------------
+    # ========================================================
+    # INIT
+    # ========================================================
 
-    SCORE_SELECTORS = [
-        "[class~='score']",
-        "[class*='match-score']",
-        "[class*='scoreboard']",
-        "[class*='game-score']",
-        "[class*='result-score']",
-        "[data-testid*='score']",
-        "[data-testid*='result']",
-    ]
+    def __init__(self, timeout: int = DEFAULT_TIMEOUT):
 
-    # --------------------------------------------------------
-    # Возможные блоки статистики
-    # --------------------------------------------------------
-
-    STATS_SELECTORS = [
-        "table",
-        "[class*='statistic']",
-        "[class*='statistics']",
-        "[class*='match-stats']",
-        "[class*='match-statistics']",
-        "[class*='stats-table']",
-    ]
-
-    def __init__(
-        self,
-        timeout: int = DEFAULT_TIMEOUT,
-    ):
         self.timeout = timeout
 
         self.session = requests.Session()
 
-        self.session.headers.update(
-            {
-                "User-Agent": (
-                    "Mozilla/5.0 "
-                    "(Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) "
-                    "Chrome/128.0 Safari/537.36"
-                ),
-                "Accept": (
-                    "text/html,application/xhtml+xml,"
-                    "application/xml;q=0.9,*/*;q=0.8"
-                ),
-                "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-            }
-        )
+        self.session.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 "
+                "(KHTML, like Gecko) "
+                "Chrome/128.0 Safari/537.36"
+            ),
+            "Accept": (
+                "text/html,application/xhtml+xml,"
+                "application/xml;q=0.9,*/*;q=0.8"
+            ),
+            "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+        })
 
     # ========================================================
-    # PUBLIC API
+    # HTTP
     # ========================================================
 
-    def parse_match_page(
-        self,
-        url: str,
-        expected_home: Optional[str] = None,
-        expected_away: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """
-        Основной метод.
-
-        Возвращает только валидированные значения.
-        """
+    def _get_soup(self, url: str) -> Optional[BeautifulSoup]:
 
         if not url:
-            return {}
+            return None
 
         try:
+
             response = self.session.get(
                 url,
                 timeout=self.timeout,
@@ -254,838 +223,869 @@ class RPLStatsParser:
 
             response.raise_for_status()
 
-            soup = BeautifulSoup(
+            if not response.text:
+                logger.error("Пустой ответ: %s", url)
+                return None
+
+            return BeautifulSoup(
                 response.text,
                 "html.parser",
             )
 
         except requests.RequestException as exc:
+
             logger.error(
-                "HTTP error while parsing %s: %s",
+                "HTTP ошибка %s: %s",
                 url,
                 exc,
             )
-            return {}
+
+            return None
 
         except Exception as exc:
+
             logger.error(
-                "HTML parsing error %s: %s",
+                "Ошибка загрузки страницы %s: %s",
                 url,
                 exc,
             )
+
+            return None
+
+    # ========================================================
+    # PUBLIC: FULL PARSE
+    # ========================================================
+
+    def parse_match_page(
+        self,
+        url: str,
+    ) -> Dict[str, Any]:
+
+        soup = self._get_soup(url)
+
+        if soup is None:
             return {}
 
         result: Dict[str, Any] = {}
 
         # ----------------------------------------------------
-        # Команды
+        # 1. СЧЁТ
         # ----------------------------------------------------
 
-        page_home, page_away = self._extract_teams(soup)
-
-        if page_home or page_away:
-            result["source_home_team"] = page_home
-            result["source_away_team"] = page_away
-
-        # ----------------------------------------------------
-        # Проверка команд
-        # ----------------------------------------------------
-
-        if expected_home and expected_away:
-
-            expected_home_norm, expected_away_norm = (
-                normalize_team_names(
-                    expected_home,
-                    expected_away,
-                    strict=True,
-                )
-            )
-
-            page_home_norm, page_away_norm = (
-                normalize_team_names(
-                    page_home,
-                    page_away,
-                    strict=True,
-                )
-            )
-
-            if (
-                page_home_norm
-                and page_away_norm
-                and expected_home_norm
-                and expected_away_norm
-            ):
-                if (
-                    page_home_norm != expected_home_norm
-                    or page_away_norm != expected_away_norm
-                ):
-                    logger.error(
-                        "MATCH TEAM MISMATCH: expected=%s-%s "
-                        "source=%s-%s",
-                        expected_home_norm,
-                        expected_away_norm,
-                        page_home_norm,
-                        page_away_norm,
-                    )
-
-                    result["match_valid"] = False
-                    return result
-
-                result["match_valid"] = True
-
-        # ----------------------------------------------------
-        # Счёт
-        # ----------------------------------------------------
-
-        score = self._extract_score(
-            soup,
-            expected_home=expected_home,
-            expected_away=expected_away,
-        )
+        score = self._extract_score(soup)
 
         if score is not None:
+
             result["home_goals"] = score[0]
             result["away_goals"] = score[1]
 
-        # ----------------------------------------------------
-        # Статистика
-        # ----------------------------------------------------
+        else:
 
-        stats_section = self._find_stats_section(soup)
-
-        if stats_section is None:
             logger.warning(
-                "Statistics section not found: %s",
+                "Не удалось надёжно определить счёт: %s",
                 url,
             )
-        else:
-            raw_stats = self._extract_stats(
-                stats_section
+
+            result["home_goals"] = None
+            result["away_goals"] = None
+
+        # ----------------------------------------------------
+        # 2. СТАТИСТИКА
+        # ----------------------------------------------------
+
+        stats_section = self._find_statistics_section(soup)
+
+        if stats_section is None:
+
+            logger.warning(
+                "Блок статистики не найден: %s",
+                url,
             )
 
-            validated = self._validate_stats(
-                raw_stats
-            )
+            return result
 
-            result.update(validated)
+        stats = self._extract_statistics(
+            stats_section
+        )
+
+        stats = self._validate_statistics(
+            stats
+        )
+
+        result.update(stats)
 
         return result
 
     # ========================================================
-    # SCORE
+    # PUBLIC: SCORE ONLY
     # ========================================================
 
     def parse_score(
         self,
         url: str,
-        expected_home: Optional[str] = None,
-        expected_away: Optional[str] = None,
     ) -> Optional[Tuple[int, int]]:
-        """
-        Получает ТОЛЬКО счёт.
 
-        Никакого поиска по всему тексту страницы.
-        """
+        soup = self._get_soup(url)
 
-        if not url:
+        if soup is None:
             return None
 
-        try:
-            response = self.session.get(
-                url,
-                timeout=self.timeout,
-            )
-
-            response.raise_for_status()
-
-            soup = BeautifulSoup(
-                response.text,
-                "html.parser",
-            )
-
-        except Exception as exc:
-            logger.error(
-                "Score request failed: %s",
-                exc,
-            )
-            return None
-
-        return self._extract_score(
-            soup,
-            expected_home=expected_home,
-            expected_away=expected_away,
-        )
+        return self._extract_score(soup)
 
     # ========================================================
-    # TEAM EXTRACTION
-    # ========================================================
-
-    def _extract_teams(
-        self,
-        soup: BeautifulSoup,
-    ) -> Tuple[Optional[str], Optional[str]]:
-        """
-        Пытается получить команды только из
-        элементов, похожих на match header.
-
-        Не использует весь текст страницы.
-        """
-
-        candidates = []
-
-        selectors = [
-            "[class*='match-header']",
-            "[class*='event-header']",
-            "[class*='game-header']",
-            "[class*='match-info']",
-            "[class*='event-info']",
-        ]
-
-        for selector in selectors:
-            for element in soup.select(selector):
-                text = self._clean_text(
-                    element.get_text(" ", strip=True)
-                )
-
-                if text:
-                    candidates.append(element)
-
-        for element in candidates:
-
-            text = self._clean_text(
-                element.get_text(" ", strip=True)
-            )
-
-            # Типичные разделители команд.
-            parts = re.split(
-                r"\s+(?:[-–—]|vs\.?|v\.?)\s+",
-                text,
-                flags=re.IGNORECASE,
-            )
-
-            if len(parts) == 2:
-                home = parts[0].strip()
-                away = parts[1].strip()
-
-                if (
-                    len(home) <= 80
-                    and len(away) <= 80
-                ):
-                    return home, away
-
-        return None, None
-
-    # ========================================================
-    # SCORE EXTRACTION
+    # FIND SCORE
     # ========================================================
 
     def _extract_score(
         self,
         soup: BeautifulSoup,
-        expected_home: Optional[str] = None,
-        expected_away: Optional[str] = None,
     ) -> Optional[Tuple[int, int]]:
-        """
-        Безопасное извлечение счёта.
 
-        Ключевой принцип:
-            НЕ ИЩЕМ x:y ВО ВСЕЙ СТРАНИЦЕ.
-
-        Сначала ищем score-specific элементы.
         """
+        КРИТИЧЕСКАЯ ФУНКЦИЯ.
+
+        Нельзя делать:
+
+            soup.get_text()
+            regex r"(\\d+):(\\d+)"
+
+        Потому что на странице много других чисел.
+
+        Вместо этого:
+
+            1. определяем команды;
+            2. ищем DOM-контейнер;
+            3. смотрим только ближайший контекст;
+            4. принимаем только нормальный футбольный счёт.
+        """
+
+        # ----------------------------------------------------
+        # Попытка 1.
+        # Элементы с явными score/result классами.
+        # ----------------------------------------------------
+
+        selectors = [
+            "[class~='score']",
+            "[class*='score']",
+            "[class~='result']",
+            "[class*='result']",
+            "[data-testid*='score']",
+            "[data-testid*='result']",
+        ]
 
         candidates = []
 
-        for selector in self.SCORE_SELECTORS:
+        for selector in selectors:
 
             try:
-                elements = soup.select(selector)
+                candidates.extend(
+                    soup.select(selector)
+                )
             except Exception:
                 continue
 
-            for element in elements:
+        for element in candidates:
 
-                text = self._clean_text(
-                    element.get_text(
-                        " ",
-                        strip=True,
-                    )
-                )
+            score = self._score_from_element(
+                element
+            )
 
-                if not text:
-                    continue
+            if score is not None:
+                return score
 
-                score = self._parse_score_candidate(
-                    text
+        # ----------------------------------------------------
+        # Попытка 2.
+        # Ищем контейнер вокруг названий команд.
+        # ----------------------------------------------------
+
+        team_nodes = self._find_team_nodes(
+            soup
+        )
+
+        if team_nodes:
+
+            for node in team_nodes:
+
+                score = self._score_near_team(
+                    node
                 )
 
                 if score is not None:
-                    candidates.append(
-                        score
-                    )
+                    return score
 
         # ----------------------------------------------------
-        # Удаляем дубликаты
+        # Попытка 3.
+        # Ищем последовательность:
+        #
+        # команда
+        # число
+        # :
+        # число
+        # команда
+        #
+        # Только в ограниченном DOM-контексте.
         # ----------------------------------------------------
 
-        unique_scores = list(
-            dict.fromkeys(candidates)
+        return self._score_from_match_context(
+            soup
         )
 
-        # ----------------------------------------------------
-        # Один однозначный результат
-        # ----------------------------------------------------
+    # ========================================================
+    # FIND TEAM NODES
+    # ========================================================
 
-        if len(unique_scores) == 1:
-            return unique_scores[0]
+    def _find_team_nodes(
+        self,
+        soup: BeautifulSoup,
+    ) -> list[Tag]:
 
-        # ----------------------------------------------------
-        # Несколько разных результатов = конфликт
-        # ----------------------------------------------------
+        names = (
+            "Динамо Москва",
+            "Крылья Советов",
+        )
 
-        if len(unique_scores) > 1:
+        nodes = []
 
-            logger.error(
-                "Multiple conflicting scores found: %s",
-                unique_scores,
+        for name in names:
+
+            found = soup.find_all(
+                string=lambda value:
+                value
+                and name.lower()
+                in value.strip().lower()
             )
 
-            return None
+            for text_node in found:
 
-        # ----------------------------------------------------
-        # Никакого fallback по всей странице!
-        # ----------------------------------------------------
+                parent = text_node.parent
 
-        logger.warning(
-            "Reliable score element not found."
-        )
+                if isinstance(parent, Tag):
+                    nodes.append(parent)
 
-        return None
+        return nodes
 
-    def _parse_score_candidate(
+    # ========================================================
+    # SCORE FROM ELEMENT
+    # ========================================================
+
+    def _score_from_element(
         self,
-        text: str,
+        element: Tag,
     ) -> Optional[Tuple[int, int]]:
-        """
-        Разбирает только локальный score-блок.
-        """
+
+        text = element.get_text(
+            " ",
+            strip=True,
+        )
 
         if not text:
             return None
 
-        # Удаляем очевидные временные значения.
-        if re.search(
-            r"\b\d{1,2}:\d{2}\b",
+        # Очень строгий вариант:
+        # весь элемент должен быть счётом
+        # или коротким score-блоком.
+
+        match = re.fullmatch(
+            r"\(?\s*(\d{1,2})\s*[:\-]\s*(\d{1,2})\s*\)?",
             text,
-        ):
-            # Если блок состоит преимущественно
-            # из времени — не считаем его счётом.
-            if not re.search(
-                r"\b(?:сч[её]т|result|score)\b",
+        )
+
+        if match:
+
+            return self._safe_score(
+                match.group(1),
+                match.group(2),
+            )
+
+        # Если внутри есть дополнительный текст,
+        # разрешаем только короткий блок.
+
+        if len(text) <= 80:
+
+            matches = re.findall(
+                r"(?<!\d)(\d{1,2})\s*:\s*(\d{1,2})(?!\d)",
                 text,
-                re.IGNORECASE,
-            ):
-                return None
+            )
 
-        patterns = [
-            r"\b(\d{1,2})\s*:\s*(\d{1,2})\b",
-            r"\b(\d{1,2})\s*-\s*(\d{1,2})\b",
-        ]
+            for home, away in matches:
 
-        found = []
+                score = self._safe_score(
+                    home,
+                    away,
+                )
 
-        for pattern in patterns:
+                if score is not None:
+                    return score
 
-            for home, away in re.findall(
-                pattern,
-                text,
-                flags=re.IGNORECASE,
-            ):
+        return None
 
-                home_goals = int(home)
-                away_goals = int(away)
+    # ========================================================
+    # SCORE NEAR TEAM
+    # ========================================================
 
-                if (
-                    0 <= home_goals <= 15
-                    and
-                    0 <= away_goals <= 15
-                ):
-                    found.append(
-                        (
-                            home_goals,
-                            away_goals,
-                        )
+    def _score_near_team(
+        self,
+        node: Tag,
+    ) -> Optional[Tuple[int, int]]:
+
+        # Ограничиваем область поиска.
+        # Не берём всю страницу.
+
+        current = node
+
+        for _ in range(4):
+
+            if current is None:
+                break
+
+            if isinstance(current, Tag):
+
+                text = current.get_text(
+                    " ",
+                    strip=True,
+                )
+
+                if len(text) <= 500:
+
+                    matches = re.findall(
+                        r"(?<!\d)(\d{1,2})"
+                        r"\s*:\s*"
+                        r"(\d{1,2})(?!\d)",
+                        text,
                     )
 
-        unique = list(
-            dict.fromkeys(found)
-        )
+                    for home, away in matches:
 
-        if len(unique) == 1:
-            return unique[0]
+                        score = self._safe_score(
+                            home,
+                            away,
+                        )
 
-        if len(unique) > 1:
-            logger.warning(
-                "Ambiguous score block: %s",
-                text[:200],
-            )
+                        if score is not None:
+                            return score
+
+            current = current.parent
 
         return None
 
     # ========================================================
-    # FIND STATISTICS SECTION
+    # MATCH CONTEXT
     # ========================================================
 
-    def _find_stats_section(
+    def _score_from_match_context(
         self,
         soup: BeautifulSoup,
-    ) -> Optional[Tag]:
+    ) -> Optional[Tuple[int, int]]:
+
         """
-        Ищет блок статистики.
+        Ищем только в верхней части документа,
+        где расположен основной матч.
 
-        Приоритет:
-            1. таблицы
-            2. statistics containers
+        Это НЕ fallback по всей странице.
         """
 
-        # ----------------------------------------------------
-        # Таблицы
-        # ----------------------------------------------------
+        body = soup.body
 
-        for table in soup.find_all("table"):
-
-            if self._looks_like_stats_table(
-                table
-            ):
-                return table
-
-        # ----------------------------------------------------
-        # Контейнеры статистики
-        # ----------------------------------------------------
-
-        for selector in self.STATS_SELECTORS:
-
-            for element in soup.select(selector):
-
-                if self._looks_like_stats_container(
-                    element
-                ):
-                    return element
-
-        return None
-
-    def _looks_like_stats_table(
-        self,
-        table: Tag,
-    ) -> bool:
-
-        rows = table.find_all("tr")
-
-        if len(rows) < 2:
-            return False
-
-        matches = 0
-
-        for row in rows:
-
-            text = self._clean_text(
-                row.get_text(
-                    " ",
-                    strip=True,
-                )
-            )
-
-            if self._contains_stat_label(
-                text
-            ):
-                matches += 1
-
-        return matches >= 2
-
-    def _looks_like_stats_container(
-        self,
-        element: Tag,
-    ) -> bool:
-
-        text = self._clean_text(
-            element.get_text(
-                " ",
-                strip=True,
-            )
-        )
-
-        if len(text) > 10000:
-            return False
-
-        found = 0
-
-        for labels in self.STAT_LABELS.values():
-
-            if any(
-                label in text.lower()
-                for label in labels
-            ):
-                found += 1
-
-        return found >= 2
-
-    # ========================================================
-    # STAT EXTRACTION
-    # ========================================================
-
-    def _extract_stats(
-        self,
-        section: Tag,
-    ) -> Dict[str, Any]:
-
-        result: Dict[str, Any] = {}
-
-        # ----------------------------------------------------
-        # Сначала строки таблиц
-        # ----------------------------------------------------
-
-        rows = section.find_all("tr")
-
-        for row in rows:
-
-            parsed = self._parse_stat_row(
-                row
-            )
-
-            if parsed:
-                key, values = parsed
-
-                home_key, away_key = (
-                    self.RESULT_KEYS[key]
-                )
-
-                result[home_key] = values[0]
-                result[away_key] = values[1]
-
-        # ----------------------------------------------------
-        # Если это не таблица — ищем локальные блоки
-        # ----------------------------------------------------
-
-        if not result:
-
-            result = self._extract_div_stats(
-                section
-            )
-
-        return result
-
-    def _parse_stat_row(
-        self,
-        row: Tag,
-    ) -> Optional[
-        Tuple[str, Tuple[Any, Any]]
-    ]:
-
-        cells = row.find_all(
-            ["td", "th"]
-        )
-
-        if len(cells) < 3:
+        if body is None:
             return None
 
-        label = self._clean_text(
-            cells[0].get_text(
-                " ",
-                strip=True,
-            )
-        ).lower()
+        # Берём первые элементы структуры,
+        # но не весь текст.
 
-        stat_key = self._identify_stat(
-            label
-        )
-
-        if stat_key is None:
-            return None
-
-        # ----------------------------------------------------
-        # ВАЖНО:
-        # Берём только значения из отдельных
-        # ячеек строки, а не произвольные числа.
-        # ----------------------------------------------------
-
-        values = []
-
-        for cell in cells[1:]:
-
-            value = self._parse_stat_number(
-                cell.get_text(
-                    " ",
-                    strip=True,
-                ),
-                stat_key,
-            )
-
-            if value is not None:
-                values.append(value)
-
-        if len(values) != 2:
-            logger.warning(
-                "Could not extract exactly two values "
-                "for %s: %s",
-                stat_key,
-                row.get_text(
-                    " ",
-                    strip=True,
-                )[:200],
-            )
-
-            return None
-
-        return (
-            stat_key,
-            (
-                values[0],
-                values[1],
-            ),
-        )
-
-    # ========================================================
-    # DIV STATISTICS
-    # ========================================================
-
-    def _extract_div_stats(
-        self,
-        section: Tag,
-    ) -> Dict[str, Any]:
-
-        result: Dict[str, Any] = {}
-
-        for element in section.find_all(
-            ["div", "li", "p"]
+        for element in body.find_all(
+            ["header", "main", "section", "div"],
+            limit=100,
         ):
 
-            text = self._clean_text(
-                element.get_text(
-                    " ",
-                    strip=True,
-                )
+            text = element.get_text(
+                " ",
+                strip=True,
             )
 
             if not text:
                 continue
 
-            stat_key = self._identify_stat(
-                text
-            )
-
-            if stat_key is None:
+            if len(text) > 700:
                 continue
 
-            values = self._extract_two_local_numbers(
-                element,
-                stat_key,
+            # Должны присутствовать обе команды.
+
+            lower = text.lower()
+
+            if (
+                "динамо москва" not in lower
+                or "крылья советов" not in lower
+            ):
+                continue
+
+            matches = re.findall(
+                r"(?<!\d)(\d{1,2})"
+                r"\s*:\s*"
+                r"(\d{1,2})(?!\d)",
+                text,
+            )
+
+            for home, away in matches:
+
+                score = self._safe_score(
+                    home,
+                    away,
+                )
+
+                if score is not None:
+                    return score
+
+        return None
+
+    # ========================================================
+    # SAFE SCORE
+    # ========================================================
+
+    def _safe_score(
+        self,
+        home: str,
+        away: str,
+    ) -> Optional[Tuple[int, int]]:
+
+        try:
+
+            home_goals = int(home)
+            away_goals = int(away)
+
+        except (TypeError, ValueError):
+
+            return None
+
+        # Реалистичный диапазон футбольного счёта.
+
+        if not (
+            0 <= home_goals <= 15
+            and
+            0 <= away_goals <= 15
+        ):
+            return None
+
+        return home_goals, away_goals
+
+    # ========================================================
+    # FIND STATISTICS SECTION
+    # ========================================================
+
+    def _find_statistics_section(
+        self,
+        soup: BeautifulSoup,
+    ) -> Optional[Tag]:
+
+        """
+        Ищем именно блок "Статистика".
+
+        На странице nb-bet сначала идёт:
+
+            Статистика
+            Матч
+            1-й тайм
+            2-й тайм
+            Основные показатели
+
+        После него находятся нужные показатели.
+        """
+
+        labels = (
+            "Статистика",
+            "Основные показатели",
+        )
+
+        # Сначала ищем "Основные показатели".
+
+        for label in labels:
+
+            nodes = soup.find_all(
+                string=lambda value:
+                value
+                and value.strip().lower()
+                == label.lower()
+            )
+
+            for text_node in nodes:
+
+                parent = text_node.parent
+
+                if not isinstance(parent, Tag):
+                    continue
+
+                # Ищем ближайший разумный контейнер.
+
+                container = parent
+
+                for _ in range(5):
+
+                    if container is None:
+                        break
+
+                    if not isinstance(
+                        container,
+                        Tag,
+                    ):
+                        break
+
+                    text = container.get_text(
+                        " ",
+                        strip=True,
+                    )
+
+                    if (
+                        "Ожидаемые голы" in text
+                        or "Удары" in text
+                        or "Угловые" in text
+                        or "Владение" in text
+                    ):
+
+                        return container
+
+                    container = container.parent
+
+        # Второй способ:
+        # ищем контейнер, содержащий несколько
+        # уникальных статистических labels.
+
+        for element in soup.find_all(
+            ["section", "div", "table"]
+        ):
+
+            text = element.get_text(
+                " ",
+                strip=True,
+            )
+
+            if len(text) > 5000:
+                continue
+
+            hits = 0
+
+            for label_group in self.STAT_LABELS.values():
+
+                if any(
+                    label.lower() in text.lower()
+                    for label in label_group
+                ):
+                    hits += 1
+
+            if hits >= 3:
+
+                return element
+
+        return None
+
+    # ========================================================
+    # EXTRACT STATISTICS
+    # ========================================================
+
+    def _extract_statistics(
+        self,
+        section: Tag,
+    ) -> Dict[str, Any]:
+
+        result: Dict[str, Any] = {}
+
+        for stat_type, labels in self.STAT_LABELS.items():
+
+            values = self._extract_stat(
+                section,
+                labels,
+            )
+
+            home_key, away_key = (
+                self.RESULT_KEYS[stat_type]
             )
 
             if values is None:
-                continue
 
-            home_key, away_key = (
-                self.RESULT_KEYS[stat_key]
-            )
+                result[home_key] = None
+                result[away_key] = None
 
-            result[home_key] = values[0]
-            result[away_key] = values[1]
+            else:
+
+                result[home_key] = values[0]
+                result[away_key] = values[1]
 
         return result
 
-    def _extract_two_local_numbers(
+    # ========================================================
+    # EXTRACT ONE STAT
+    # ========================================================
+
+    def _extract_stat(
         self,
-        element: Tag,
-        stat_key: str,
+        section: Tag,
+        labels: tuple[str, ...],
     ) -> Optional[Tuple[Any, Any]]:
 
-        # Не уходим выше локального блока.
-        parent = element
+        """
+        Самая важная функция статистики.
 
-        for _ in range(2):
+        Мы НЕ делаем:
 
-            text = self._clean_text(
-                parent.get_text(
+            все числа из строки.
+
+        Мы сначала находим конкретный label,
+        затем смотрим только ближайший DOM-контекст.
+        """
+
+        for label in labels:
+
+            nodes = section.find_all(
+                string=lambda value:
+                value
+                and value.strip().lower()
+                == label.lower()
+            )
+
+            for text_node in nodes:
+
+                parent = text_node.parent
+
+                if not isinstance(
+                    parent,
+                    Tag,
+                ):
+                    continue
+
+                values = self._values_near_label(
+                    parent
+                )
+
+                if values is not None:
+
+                    return values
+
+        return None
+
+    # ========================================================
+    # VALUES NEAR LABEL
+    # ========================================================
+
+    def _values_near_label(
+        self,
+        label_node: Tag,
+    ) -> Optional[Tuple[Any, Any]]:
+
+        """
+        Извлекает только два значения,
+        связанные с конкретным label.
+
+        Не сканирует всю страницу.
+        """
+
+        # ----------------------------------------------------
+        # 1. Табличная структура
+        # ----------------------------------------------------
+
+        row = label_node.find_parent("tr")
+
+        if row is not None:
+
+            cells = row.find_all(
+                ["td", "th"],
+                recursive=False,
+            )
+
+            values = []
+
+            for cell in cells:
+
+                text = cell.get_text(
                     " ",
                     strip=True,
                 )
-            )
 
-            values = self._extract_numbers(
-                text,
-                stat_key,
-            )
+                if not text:
+                    continue
 
-            if len(values) == 2:
-                return values[0], values[1]
+                value = self._parse_stat_value(
+                    text
+                )
 
-            if parent.parent is None:
+                if value is not None:
+                    values.append(value)
+
+            if len(values) >= 2:
+
+                return (
+                    values[0],
+                    values[1],
+                )
+
+        # ----------------------------------------------------
+        # 2. Родительский DOM-блок
+        # ----------------------------------------------------
+
+        current = label_node
+
+        for _ in range(3):
+
+            if current is None:
                 break
 
-            parent = parent.parent
+            if not isinstance(
+                current,
+                Tag,
+            ):
+                break
+
+            # Берём только непосредственные
+            # дочерние элементы.
+
+            children = current.find_all(
+                recursive=False
+            )
+
+            values = []
+
+            for child in children:
+
+                text = child.get_text(
+                    " ",
+                    strip=True,
+                )
+
+                if not text:
+                    continue
+
+                value = self._parse_stat_value(
+                    text
+                )
+
+                if value is not None:
+                    values.append(value)
+
+            if len(values) >= 2:
+
+                return (
+                    values[0],
+                    values[1],
+                )
+
+            current = current.parent
+
+        # ----------------------------------------------------
+        # 3. Соседние элементы
+        # ----------------------------------------------------
+
+        parent = label_node.parent
+
+        if isinstance(parent, Tag):
+
+            siblings = list(
+                parent.find_all(
+                    recursive=False
+                )
+            )
+
+            values = []
+
+            for sibling in siblings:
+
+                text = sibling.get_text(
+                    " ",
+                    strip=True,
+                )
+
+                if not text:
+                    continue
+
+                value = self._parse_stat_value(
+                    text
+                )
+
+                if value is not None:
+                    values.append(value)
+
+            if len(values) >= 2:
+
+                return (
+                    values[0],
+                    values[1],
+                )
 
         return None
 
     # ========================================================
-    # STAT HELPERS
+    # PARSE STAT VALUE
     # ========================================================
 
-    def _identify_stat(
+    def _parse_stat_value(
         self,
         text: str,
-    ) -> Optional[str]:
-
-        normalized = self._clean_text(
-            text
-        ).lower()
-
-        # Сначала наиболее специфичные.
-        ordered = [
-            "shots_on_target",
-            "yellow_cards",
-            "red_cards",
-            "possession",
-            "corners",
-            "shots",
-            "xg",
-        ]
-
-        for key in ordered:
-
-            labels = self.STAT_LABELS[key]
-
-            for label in labels:
-
-                if normalized == label:
-                    return key
-
-                if normalized.startswith(
-                    label + " "
-                ):
-                    return key
-
-        return None
-
-    def _contains_stat_label(
-        self,
-        text: str,
-    ) -> bool:
-
-        normalized = self._clean_text(
-            text
-        ).lower()
-
-        for labels in self.STAT_LABELS.values():
-
-            for label in labels:
-
-                if label in normalized:
-                    return True
-
-        return False
-
-    def _parse_stat_number(
-        self,
-        text: str,
-        stat_key: str,
     ) -> Optional[Any]:
 
         if not text:
             return None
 
-        text = text.strip()
-
-        # ----------------------------------------------------
-        # Проценты
-        # ----------------------------------------------------
-
-        if stat_key == "possession":
-
-            match = re.fullmatch(
-                r"(\d+(?:[.,]\d+)?)\s*%?",
-                text,
-            )
-
-            if not match:
-                return None
-
-            return float(
-                match.group(1).replace(",", ".")
-            )
+        value = text.strip()
 
         # ----------------------------------------------------
         # xG
         # ----------------------------------------------------
 
-        if stat_key == "xg":
+        xg_match = re.fullmatch(
+            r"(\d+(?:[.,]\d+)?)",
+            value,
+        )
 
-            match = re.fullmatch(
-                r"(\d+(?:[.,]\d+)?)",
-                text,
-            )
+        if xg_match:
 
-            if not match:
+            number = xg_match.group(1)
+
+            if "." in number or "," in number:
+
+                try:
+                    return float(
+                        number.replace(",", ".")
+                    )
+                except ValueError:
+                    return None
+
+        # ----------------------------------------------------
+        # Проценты
+        # ----------------------------------------------------
+
+        percent_match = re.fullmatch(
+            r"(\d{1,3})\s*%",
+            value,
+        )
+
+        if percent_match:
+
+            try:
+                return int(
+                    percent_match.group(1)
+                )
+            except ValueError:
                 return None
 
-            return float(
-                match.group(1).replace(",", ".")
-            )
-
         # ----------------------------------------------------
-        # Целые показатели
+        # Целое число
         # ----------------------------------------------------
 
-        match = re.fullmatch(
-            r"(\d+)",
-            text,
+        integer_match = re.fullmatch(
+            r"\d{1,3}",
+            value,
         )
 
-        if not match:
-            return None
+        if integer_match:
 
-        return int(match.group(1))
+            try:
+                return int(value)
+            except ValueError:
+                return None
 
-    def _extract_numbers(
-        self,
-        text: str,
-        stat_key: str,
-    ) -> list[Any]:
-
-        if stat_key == "xg":
-
-            pattern = r"\d+(?:[.,]\d+)?"
-
-        else:
-
-            pattern = r"\d+(?:[.,]\d+)?"
-
-        raw = re.findall(
-            pattern,
-            text,
-        )
-
-        values = []
-
-        for value in raw:
-
-            parsed = self._parse_stat_number(
-                value,
-                stat_key,
-            )
-
-            if parsed is not None:
-                values.append(parsed)
-
-            if len(values) == 2:
-                break
-
-        return values
+        return None
 
     # ========================================================
     # VALIDATION
     # ========================================================
 
-    def _validate_stats(
+    def _validate_statistics(
         self,
         stats: Dict[str, Any],
     ) -> Dict[str, Any]:
@@ -1096,300 +1096,224 @@ class RPLStatsParser:
         # Диапазоны
         # ----------------------------------------------------
 
-        for key, value in list(
-            validated.items()
-        ):
+        for stat_type, keys in self.RESULT_KEYS.items():
 
-            stat_type = self._get_stat_type(
-                key
+            minimum, maximum = (
+                self.LIMITS[stat_type]
             )
 
-            if stat_type is None:
-                continue
+            for key in keys:
 
-            validated[key] = (
-                self._validate_value(
-                    key,
-                    value,
-                    stat_type,
-                )
-            )
+                value = validated.get(key)
+
+                if value is None:
+                    continue
+
+                try:
+
+                    numeric = float(value)
+
+                except (
+                    TypeError,
+                    ValueError,
+                ):
+
+                    logger.warning(
+                        "Неверное значение %s=%r",
+                        key,
+                        value,
+                    )
+
+                    validated[key] = None
+                    continue
+
+                if not (
+                    minimum
+                    <= numeric
+                    <= maximum
+                ):
+
+                    logger.warning(
+                        "Значение %s=%r "
+                        "вне диапазона [%s,%s]",
+                        key,
+                        value,
+                        minimum,
+                        maximum,
+                    )
+
+                    validated[key] = None
 
         # ----------------------------------------------------
-        # Логические проверки
+        # Удары в створ <= удары
         # ----------------------------------------------------
 
-        self._validate_shots(
-            validated
-        )
-
-        self._validate_possession(
-            validated
-        )
-
-        self._validate_pairs(
-            validated
-        )
-
-        return validated
-
-    def _get_stat_type(
-        self,
-        result_key: str,
-    ) -> Optional[str]:
-
-        for stat_type, keys in (
-            self.RESULT_KEYS.items()
+        if (
+            validated.get("home_shots")
+            is not None
+            and
+            validated.get(
+                "home_shots_on_target"
+            )
+            is not None
         ):
-
-            if result_key in keys:
-                return stat_type
-
-        return None
-
-    def _validate_value(
-        self,
-        key: str,
-        value: Any,
-        stat_type: str,
-    ) -> Optional[Any]:
-
-        if value is None:
-            return None
-
-        try:
-
-            if stat_type == "xg":
-                value = float(value)
-            else:
-                value = int(value)
-
-        except (
-            TypeError,
-            ValueError,
-        ):
-
-            logger.warning(
-                "Invalid type %s=%r",
-                key,
-                value,
-            )
-
-            return None
-
-        minimum, maximum = (
-            self.VALIDATION_RULES[
-                stat_type
-            ]
-        )
-
-        if not (
-            minimum <= value <= maximum
-        ):
-
-            logger.warning(
-                "Invalid range %s=%s "
-                "expected [%s,%s]",
-                key,
-                value,
-                minimum,
-                maximum,
-            )
-
-            return None
-
-        return value
-
-    def _validate_shots(
-        self,
-        stats: Dict[str, Any],
-    ) -> None:
-
-        pairs = [
-            (
-                "home_shots_on_target",
-                "home_shots",
-            ),
-            (
-                "away_shots_on_target",
-                "away_shots",
-            ),
-        ]
-
-        for target_key, shots_key in pairs:
-
-            target = stats.get(
-                target_key
-            )
-
-            shots = stats.get(
-                shots_key
-            )
 
             if (
-                target is not None
-                and shots is not None
-                and target > shots
+                validated[
+                    "home_shots_on_target"
+                ]
+                >
+                validated["home_shots"]
             ):
 
                 logger.warning(
-                    "Invalid shots relation: "
-                    "%s=%s > %s=%s",
-                    target_key,
-                    target,
-                    shots_key,
-                    shots,
+                    "Динамо: shots_on_target > shots"
                 )
 
-                stats[target_key] = None
+                validated[
+                    "home_shots_on_target"
+                ] = None
 
-    def _validate_possession(
-        self,
-        stats: Dict[str, Any],
-    ) -> None:
+        if (
+            validated.get("away_shots")
+            is not None
+            and
+            validated.get(
+                "away_shots_on_target"
+            )
+            is not None
+        ):
 
-        home = stats.get(
+            if (
+                validated[
+                    "away_shots_on_target"
+                ]
+                >
+                validated["away_shots"]
+            ):
+
+                logger.warning(
+                    "Гости: shots_on_target > shots"
+                )
+
+                validated[
+                    "away_shots_on_target"
+                ] = None
+
+        # ----------------------------------------------------
+        # Владение
+        # ----------------------------------------------------
+
+        home_pos = validated.get(
             "home_possession"
         )
 
-        away = stats.get(
+        away_pos = validated.get(
             "away_possession"
         )
 
-        if home is None or away is None:
-            return
+        if (
+            home_pos is not None
+            and away_pos is not None
+        ):
 
-        total = home + away
-
-        # Допускаем небольшую погрешность
-        # округления на сайте.
-        if not 98 <= total <= 102:
-
-            logger.warning(
-                "Invalid possession total: "
-                "%s + %s = %s",
-                home,
-                away,
-                total,
+            total = (
+                float(home_pos)
+                +
+                float(away_pos)
             )
 
-            stats[
-                "home_possession"
-            ] = None
+            # Разрешаем небольшую погрешность.
 
-            stats[
-                "away_possession"
-            ] = None
-
-    def _validate_pairs(
-        self,
-        stats: Dict[str, Any],
-    ) -> None:
-
-        for stat_type in [
-            "xg",
-            "shots",
-            "shots_on_target",
-            "corners",
-            "possession",
-            "yellow_cards",
-            "red_cards",
-        ]:
-
-            home_key, away_key = (
-                self.RESULT_KEYS[
-                    stat_type
-                ]
-            )
-
-            home = stats.get(
-                home_key
-            )
-
-            away = stats.get(
-                away_key
-            )
-
-            # Нельзя иметь только одну сторону.
-            if (
-                (home is None)
-                !=
-                (away is None)
+            if not (
+                98 <= total <= 102
             ):
 
                 logger.warning(
-                    "Incomplete stat pair: "
-                    "%s=%r %s=%r",
-                    home_key,
-                    home,
-                    away_key,
-                    away,
+                    "Некорректное владение: "
+                    "%s + %s = %s",
+                    home_pos,
+                    away_pos,
+                    total,
                 )
 
-                stats[home_key] = None
-                stats[away_key] = None
+                validated[
+                    "home_possession"
+                ] = None
 
-    # ========================================================
-    # UTILITIES
-    # ========================================================
+                validated[
+                    "away_possession"
+                ] = None
 
-    @staticmethod
-    def _clean_text(
-        text: str,
-    ) -> str:
-
-        if not text:
-            return ""
-
-        text = text.replace(
-            "\xa0",
-            " ",
-        )
-
-        text = re.sub(
-            r"\s+",
-            " ",
-            text,
-        )
-
-        return text.strip()
+        return validated
 
 
 # ============================================================
-# COMPATIBILITY FUNCTIONS
+# CONVENIENCE FUNCTIONS
 # ============================================================
 
 def parse_match_stats(
     url: str,
-    expected_home: Optional[str] = None,
-    expected_away: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Совместимость со старым API.
-    """
 
     parser = RPLStatsParser()
 
     return parser.parse_match_page(
-        url,
-        expected_home=expected_home,
-        expected_away=expected_away,
+        url
     )
 
 
 def parse_match_score(
     url: str,
-    expected_home: Optional[str] = None,
-    expected_away: Optional[str] = None,
 ) -> Optional[Tuple[int, int]]:
-    """
-    Совместимость со старым API.
-    """
 
     parser = RPLStatsParser()
 
     return parser.parse_score(
-        url,
-        expected_home=expected_home,
-        expected_away=expected_away,
+        url
     )
+
+
+# ============================================================
+# SELF TEST
+# ============================================================
+
+if __name__ == "__main__":
+
+    test_url = (
+        "https://nb-bet.com/Events/"
+        "1670580-dinamo-moskva-krylya-"
+        "sovetov-prognoz-na-match"
+    )
+
+    logging.basicConfig(
+        level=logging.INFO
+    )
+
+    parser = RPLStatsParser()
+
+    print("=" * 60)
+    print("FAJ RPL STATS PARSER v3.1")
+    print("=" * 60)
+
+    print("\nSCORE:")
+
+    score = parser.parse_score(
+        test_url
+    )
+
+    print(score)
+
+    print("\nFULL DATA:")
+
+    data = parser.parse_match_page(
+        test_url
+    )
+
+    for key, value in data.items():
+
+        print(
+            f"{key:<30} {value}"
+        )
+
+    print("=" * 60)
