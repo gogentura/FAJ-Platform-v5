@@ -499,7 +499,7 @@ def init_database():
     
     # ============================================================
     # MATCH PREDICTIONS (xG / lambda слой) — append-only
-    # С prediction_revision и memory_state_id в определении таблицы
+    # prediction_revision и memory_state_id добавляются через миграции
     # ============================================================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS match_predictions (
@@ -512,8 +512,6 @@ def init_database():
             home_advantage REAL,
             prediction_type TEXT DEFAULT 'standard',
             model_version TEXT,
-            prediction_revision INTEGER DEFAULT 1,
-            memory_state_id TEXT,
             created_at TEXT,
             FOREIGN KEY(match_id) REFERENCES matches(id)
         )
