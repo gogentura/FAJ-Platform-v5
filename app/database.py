@@ -2911,6 +2911,21 @@ class FAJDatabase:
         finally:
             conn.close()
     
+    def get_expert_predictions(self, match_id: int) -> List[Dict[str, Any]]:
+        """Возвращает все прогнозы экспертов для матча."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM expert_predictions
+                WHERE match_id = ?
+                ORDER BY created_at DESC
+            """, (match_id,))
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+    
     # ============================================================
     # JOURNAL
     # ============================================================
