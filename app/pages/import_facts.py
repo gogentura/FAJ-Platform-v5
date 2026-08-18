@@ -67,7 +67,7 @@ import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 
-from app.database import Database
+from app.database import FAJDatabase
 from app.parsers.rpl_stats_parser import RPLStatsParser
 from app.parsers.rpl_normalizer import normalize_team_names
 
@@ -96,12 +96,11 @@ LEAGUES = {
 # ============================================================
 
 @st.cache_resource
-def get_database() -> Database:
+def get_database() -> FAJDatabase:
     """
     Создаёт единый объект database.py.
     """
-
-    return Database(DEFAULT_DB_PATH)
+    return FAJDatabase(DEFAULT_DB_PATH)
 
 
 # ============================================================
@@ -434,7 +433,7 @@ def _call_first(
 
 
 def get_round_matches(
-    db: Database,
+    db: FAJDatabase,
     round_number: int,
 ) -> List[Dict[str, Any]]:
     """
@@ -765,7 +764,7 @@ def prediction_confidence(
 # ============================================================
 
 def get_latest_expert(
-    db: Database,
+    db: FAJDatabase,
     match_id: Any,
 ) -> Optional[Dict[str, Any]]:
 
@@ -1171,7 +1170,7 @@ def build_gold_data(
 # ============================================================
 
 def save_match_fact(
-    db: Database,
+    db: FAJDatabase,
     match: Dict[str, Any],
     fact: Dict[str, Any],
     expert_score: str,
@@ -1392,7 +1391,7 @@ def save_match_fact(
 # ============================================================
 
 def render_match_card(
-    db: Database,
+    db: FAJDatabase,
     match: Dict[str, Any],
     index: int,
 ) -> None:
