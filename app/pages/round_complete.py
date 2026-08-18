@@ -23,48 +23,106 @@ import streamlit as st
 from datetime import datetime
 
 from app.database import FAJDatabase
-from app.match_manager import MatchManager
-from app.result_manager import ResultManager
-from app.learning_engine import run_learning
-from app.core.prediction_manager import get_prediction_manager
 
+
+# ============================================================
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ============================================================
+
+def get_round_matches(db: FAJDatabase, round_id: int):
+    """Получает матчи тура с именами команд."""
+    matches = db.get_matches(round_id)
+    result = []
+    for match in matches:
+        match_data = dict(match)
+        home = db.get_team(match_data.get("home_team_id"))
+        away = db.get_team(match_data.get("away_team_id"))
+        match_data["home_name"] = home["name"] if home else "?"
+        match_data["away_name"] = away["name"] if away else "?"
+        result.append(match_data)
+    return result
+
+
+def get_expert_predictions(db: FAJDatabase, match_id: int):
+    """Получает экспертные прогнозы для матча."""
+    try:
+        return db.get_expert_predictions(match_id)
+    except AttributeError:
+        # Если метода нет — пробуем SQL напрямую
+        conn = db.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM expert_predictions
+                WHERE match_id = ?
+                ORDER BY created_at DESC
+            """, (match_id,))
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
+
+def get_latest_prediction(db: FAJDatabase, match_id: int):
+    """Получает последний прогноз FAJ для матча."""
+    pred = db.get_latest_prediction(match_id)
+    return dict(pred) if pred else None
+
+
+def get_match_result(db: FAJDatabase, match_id: int):
+    """Получает результат матча."""
+    result = db.get_match_result(match_id)
+    return dict(result) if result else None
+
+
+def is_result_locked(db: FAJDatabase, match_id: int) -> bool:
+    """Проверяет, заблокирован ли результат."""
+    try:
+        return db.is_result_locked(match_id)
+    except AttributeError:
+        result = get_match_result(db, match_id)
+        return result and result.get("fact_status") == "locked"
+
+
+def get_active_season(db: FAJDatabase):
+    """Возвращает активный сезон РПЛ."""
+    seasons = db.get_seasons()
+    for season in seasons:
+        data = dict(season)
+        league = data.get("league", "")
+        name = data.get("name", "")
+        status = data.get("status", "")
+        if league == "РПЛ" and (status == "active" or "2026" in name):
+            return data
+    # Fallback — последний сезон РПЛ
+    for season in reversed(seasons):
+        data = dict(season)
+        if data.get("league") == "РПЛ":
+            return data
+    return None
+
+
+# ============================================================
+# ОСНОВНАЯ ФУНКЦИЯ СТРАНИЦЫ
+# ============================================================
 
 def main():
     st.title("🏁 Тур сыгран")
     st.caption("Завершение тура, сравнение прогнозов и обучение")
 
     db = FAJDatabase()
-    match_mgr = MatchManager(db)
-    result_mgr = ResultManager(db)
-    pred_mgr = get_prediction_manager()
 
     # ============================================================
     # 1. Выбор сезона и тура
     # ============================================================
 
-    seasons = db.get_seasons()
+    season = get_active_season(db)
 
-    if not seasons:
-        st.warning("⚠️ Нет сезонов в базе данных")
+    if not season:
+        st.warning("⚠️ Активный сезон РПЛ не найден")
         return
 
-    season_options = {}
-    for s in seasons:
-        name = s.get("name", "")
-        if "РПЛ" in name or "2026" in name:
-            season_options[name] = s["id"]
-
-    if not season_options:
-        st.warning("⚠️ Сезон РПЛ 2026/27 не найден")
-        return
-
-    selected_season_name = st.selectbox(
-        "Сезон",
-        options=list(season_options.keys()),
-        index=0,
-    )
-
-    season_id = season_options[selected_season_name]
+    season_id = season["id"]
 
     # ============================================================
     # 2. Получение туров с матчами
@@ -79,11 +137,14 @@ def main():
     # Формируем список туров, у которых есть матчи
     round_options = {}
     for r in rounds:
-        round_num = r["round_number"]
-        matches = match_mgr.get_round_matches(r["id"])
+        r_data = dict(r)
+        round_num = r_data.get("round_number")
+        if round_num is None:
+            continue
+        matches = get_round_matches(db, r_data["id"])
         if matches:
             match_count = len(matches)
-            round_options[f"Тур {round_num} ({match_count} матчей)"] = r["id"]
+            round_options[f"Тур {round_num} ({match_count} матчей)"] = r_data["id"]
 
     if not round_options:
         st.info("ℹ️ Нет туров с матчами")
@@ -101,7 +162,7 @@ def main():
     # 3. Получение матчей тура и проверка полноты фактов
     # ============================================================
 
-    matches = match_mgr.get_round_matches(round_id)
+    matches = get_round_matches(db, round_id)
 
     if not matches:
         st.info("ℹ️ В этом туре нет матчей")
@@ -115,16 +176,13 @@ def main():
 
     for match in matches:
         match_id = match["id"]
-        result = result_mgr.get_result(match_id)
+        result = get_match_result(db, match_id)
 
-        home = db.get_team(match["home_team_id"])
-        away = db.get_team(match["away_team_id"])
-
-        home_name = home["name"] if home else "?"
-        away_name = away["name"] if away else "?"
+        home_name = match.get("home_name", "?")
+        away_name = match.get("away_name", "?")
 
         has_result = result is not None
-        is_locked = has_result and result.get("fact_status") == "locked"
+        is_locked = is_result_locked(db, match_id)
 
         if has_result:
             filled_count += 1
@@ -156,7 +214,8 @@ def main():
         st.metric("Всего матчей", total)
 
     with col2:
-        st.metric("С результатами", filled_count, delta=f"{filled_count/total*100:.0f}%" if total > 0 else "0%")
+        pct = f"{filled_count/total*100:.0f}%" if total > 0 else "0%"
+        st.metric("С результатами", filled_count, delta=pct)
 
     with col3:
         st.metric("Заблокировано", locked_count)
@@ -191,23 +250,19 @@ def main():
 
         for match in matches:
             match_id = match["id"]
-            result = result_mgr.get_result(match_id)
+            result = get_match_result(db, match_id)
 
             if not result:
                 continue
 
-            home = db.get_team(match["home_team_id"])
-            away = db.get_team(match["away_team_id"])
-
-            home_name = home["name"] if home else "?"
-            away_name = away["name"] if away else "?"
+            home_name = match.get("home_name", "?")
+            away_name = match.get("away_name", "?")
 
             # Получаем прогнозы FAJ
-            faj_preds = db.get_predictions_by_match(match_id)
-            faj_latest = faj_preds[0] if faj_preds else None
+            faj_pred = get_latest_prediction(db, match_id)
 
             # Получаем прогнозы Директора (expert_predictions)
-            expert_preds = db.get_expert_predictions_by_match(match_id)
+            expert_preds = get_expert_predictions(db, match_id)
             expert_latest = expert_preds[0] if expert_preds else None
 
             actual_home = result["home_goals"]
@@ -222,10 +277,10 @@ def main():
                 actual_winner = "draw"
 
             # Сравнение FAJ
-            if faj_latest:
-                faj_home = faj_latest.get("home_win", 0.0)
-                faj_draw = faj_latest.get("draw", 0.0)
-                faj_away = faj_latest.get("away_win", 0.0)
+            if faj_pred:
+                faj_home = faj_pred.get("home_win", 0.0)
+                faj_draw = faj_pred.get("draw", 0.0)
+                faj_away = faj_pred.get("away_win", 0.0)
 
                 if faj_home >= faj_draw and faj_home >= faj_away:
                     faj_predicted = "home"
@@ -240,18 +295,22 @@ def main():
 
             # Сравнение Директора
             if expert_latest:
-                # Для простоты считаем, что эксперт вводит счёт
                 expert_score = expert_latest.get("score", "")
                 try:
-                    expert_home, expert_away = map(int, expert_score.split(":"))
-                    if expert_home > expert_away:
-                        expert_predicted = "home"
-                    elif expert_home < expert_away:
-                        expert_predicted = "away"
+                    if ":" in expert_score:
+                        parts = expert_score.split(":")
+                        expert_home = int(parts[0].strip())
+                        expert_away = int(parts[1].strip())
+                        if expert_home > expert_away:
+                            expert_predicted = "home"
+                        elif expert_home < expert_away:
+                            expert_predicted = "away"
+                        else:
+                            expert_predicted = "draw"
+                        expert_correct = expert_predicted == actual_winner
                     else:
-                        expert_predicted = "draw"
-                    expert_correct = expert_predicted == actual_winner
-                except:
+                        expert_correct = None
+                except (ValueError, IndexError):
                     expert_correct = None
             else:
                 expert_correct = None
@@ -262,14 +321,23 @@ def main():
                 "actual": f"{actual_home}:{actual_away}",
                 "faj_correct": faj_correct,
                 "expert_correct": expert_correct,
+                "faj_score": faj_pred.get("predicted_score") if faj_pred else None,
+                "expert_score": expert_latest.get("score") if expert_latest else None,
             })
 
         # Показываем таблицу сравнения
         for pd in predictions_data:
             faj_icon = "✅" if pd["faj_correct"] is True else "❌" if pd["faj_correct"] is False else "❓"
             expert_icon = "✅" if pd["expert_correct"] is True else "❌" if pd["expert_correct"] is False else "❓"
+            faj_score_display = pd["faj_score"] or "—"
+            expert_score_display = pd["expert_score"] or "—"
 
-            st.write(f"⚽ {pd['home']} — {pd['away']}  |  Факт: {pd['actual']}  |  FAJ: {faj_icon}  |  Директор: {expert_icon}")
+            st.write(
+                f"⚽ {pd['home']} — {pd['away']}  |  "
+                f"Факт: {pd['actual']}  |  "
+                f"FAJ: {faj_score_display} {faj_icon}  |  "
+                f"Директор: {expert_score_display} {expert_icon}"
+            )
 
         # Подсчёт статистики
         faj_correct_count = sum(1 for pd in predictions_data if pd["faj_correct"] is True)
@@ -297,7 +365,8 @@ def main():
         if st.button("🧠 Запустить обучение", type="primary"):
             with st.spinner("Обучение..."):
                 try:
-                    # Запускаем обучение через Learning Engine
+                    from app.learning_engine import run_learning
+
                     learning_result = run_learning(force=False)
 
                     if learning_result.get("success"):
@@ -312,7 +381,8 @@ def main():
                                 f"📊 Изменено параметров: {learning_result.get('parameters_changed', 0)}"
                             )
                     else:
-                        st.error(f"❌ Ошибка обучения: {learning_result.get('errors', ['Неизвестная ошибка'])[0]}")
+                        errors = learning_result.get('errors', ['Неизвестная ошибка'])
+                        st.error(f"❌ Ошибка обучения: {errors[0] if errors else 'Неизвестная ошибка'}")
 
                 except Exception as e:
                     st.error(f"❌ Ошибка при запуске обучения: {e}")
