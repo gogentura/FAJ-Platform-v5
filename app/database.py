@@ -258,8 +258,6 @@ def run_migrations():
     ensure_column("prediction_validation", "prediction_id", "INTEGER")
     ensure_column("prediction_validation", "match_prediction_id", "INTEGER")
     ensure_column("prediction_validation", "validation_hash", "TEXT")
-    ensure_index_if_table_exists("prediction_validation", "idx_validation_prediction", "prediction_id")
-    ensure_index_if_table_exists("prediction_validation", "idx_validation_hash", "validation_hash")
     
     # P1.2: Add passport identity to snapshots
     ensure_column("match_snapshots", "passport_id", "INTEGER")
@@ -787,8 +785,7 @@ def init_database():
         )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_validation_match ON prediction_validation(match_id)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_validation_prediction ON prediction_validation(prediction_id)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_validation_hash ON prediction_validation(validation_hash)")
+    # Индексы idx_validation_prediction и idx_validation_hash создаются ПОСЛЕ миграций
     
     # ============================================================
     # EXPERT & JOURNAL
@@ -1402,6 +1399,20 @@ def init_database():
     if "memory_state_id" in columns:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_predictions_memory ON predictions(memory_state_id)")
         logger.info("✅ Создан индекс idx_predictions_memory")
+    
+    # Индекс на prediction_id в prediction_validation
+    cursor.execute("PRAGMA table_info(prediction_validation)")
+    columns = [row[1] for row in cursor.fetchall()]
+    if "prediction_id" in columns:
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_validation_prediction ON prediction_validation(prediction_id)")
+        logger.info("✅ Создан индекс idx_validation_prediction")
+    
+    # Индекс на validation_hash в prediction_validation
+    cursor.execute("PRAGMA table_info(prediction_validation)")
+    columns = [row[1] for row in cursor.fetchall()]
+    if "validation_hash" in columns:
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_validation_hash ON prediction_validation(validation_hash)")
+        logger.info("✅ Создан индекс idx_validation_hash")
     
     conn.commit()
     conn.close()
