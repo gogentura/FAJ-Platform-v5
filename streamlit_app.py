@@ -23,6 +23,7 @@ MAIN APPLICATION — ФИНАЛЬНЫЙ ГИБРИД
  History
  Passports
  Diagnostic
+ GitHub Storage
 
 ПРИНЦИПЫ:
     - Никакого прямого SQL в streamlit_app.py
@@ -374,6 +375,36 @@ with st.sidebar:
             st.rerun()
         else:
             st.error(f"❌ FAJ Cycle недоступен: {FAJ_CYCLE_IMPORT_ERROR if not FAJ_CYCLE_AVAILABLE else 'Ошибка'}")
+
+    st.divider()
+
+    # ============================================================
+    # GITHUB STORAGE
+    # ============================================================
+
+    st.caption("☁️ ХРАНИЛИЩЕ")
+
+    if st.button("💾 Сохранить базу в GitHub", use_container_width=True):
+        try:
+            from app.github_db_sync import save_database_to_github
+            with st.spinner("Сохранение..."):
+                result = save_database_to_github()
+                st.success(f"✅ База сохранена: {result['size']} bytes")
+        except Exception as e:
+            st.error(f"❌ Ошибка: {e}")
+
+    if st.button("🔄 Восстановить базу из GitHub", use_container_width=True):
+        try:
+            from app.github_db_sync import load_database_from_github
+            with st.spinner("Восстановление..."):
+                result = load_database_from_github()
+                if result["loaded"]:
+                    st.success(f"✅ База восстановлена: {result['size']} bytes")
+                else:
+                    st.info(f"ℹ️ {result['reason']}")
+                st.rerun()
+        except Exception as e:
+            st.error(f"❌ Ошибка: {e}")
 
     st.divider()
 
