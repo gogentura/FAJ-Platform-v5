@@ -3873,6 +3873,79 @@ class FAJDatabase:
             conn.close()
     
     # ============================================================
+    # DELETE METHODS
+    # ============================================================
+    
+    def delete_match(self, match_id: int) -> bool:
+        """
+        Удаляет матч по ID.
+        Возвращает True если матч был удалён, False если не найден.
+        """
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Проверяем, есть ли результаты у матча
+            cursor.execute("""
+                SELECT id FROM match_results WHERE match_id = ?
+            """, (match_id,))
+            if cursor.fetchone():
+                # Если есть результаты — сначала удаляем их
+                cursor.execute("""
+                    DELETE FROM match_results WHERE match_id = ?
+                """, (match_id,))
+            
+            # Удаляем прогнозы, связанные с матчем
+            cursor.execute("""
+                DELETE FROM predictions WHERE match_id = ?
+            """, (match_id,))
+            
+            # Удаляем сам матч
+            cursor.execute("""
+                DELETE FROM matches WHERE id = ?
+            """, (match_id,))
+            
+            conn.commit()
+            return cursor.rowcount > 0
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    
+    def delete_round(self, round_id: int) -> bool:
+        """
+        Удаляет тур и все его матчи.
+        Возвращает True если тур был удалён, False если не найден.
+        """
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Получаем все матчи тура
+            cursor.execute("""
+                SELECT id FROM matches WHERE round_id = ?
+            """, (round_id,))
+            matches = cursor.fetchall()
+            
+            # Удаляем каждый матч (через delete_match, чтобы очистить связанные данные)
+            for match in matches:
+                self.delete_match(match["id"])
+            
+            # Удаляем сам тур
+            cursor.execute("""
+                DELETE FROM rounds WHERE id = ?
+            """, (round_id,))
+            
+            conn.commit()
+            return cursor.rowcount > 0
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    
+    # ============================================================
     # LEARNING STATUS
     # ============================================================
     
