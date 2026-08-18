@@ -22,6 +22,7 @@ MAIN APPLICATION — ФИНАЛЬНЫЙ ГИБРИД
  Analytics
  History
  Passports
+ Diagnostic
 
 ПРИНЦИПЫ:
     - Никакого прямого SQL в streamlit_app.py
@@ -354,6 +355,9 @@ with st.sidebar:
     if st.button("🧹 Очистка данных", use_container_width=True):
         navigate("reset_data")
 
+    if st.button("🔧 Диагностика", use_container_width=True):
+        navigate("diagnostic")
+
     st.divider()
 
     # ============================================================
@@ -546,6 +550,38 @@ elif st.session_state.page == "reset_data":
         st.error(f"❌ Ошибка загрузки страницы: {e}")
         with st.expander("Техническая ошибка"):
             st.exception(e)
+
+elif st.session_state.page == "diagnostic":
+    st.title("🔧 Диагностика FAJ Database")
+
+    st.subheader("📁 Путь к БД")
+    st.code(DB_PATH)
+
+    st.subheader("📊 Статус файла")
+    if os.path.exists(DB_PATH):
+        size = os.path.getsize(DB_PATH)
+        st.success(f"✅ Файл существует! Размер: {size / 1024:.2f} KB")
+    else:
+        st.error("❌ Файл НЕ СУЩЕСТВУЕТ")
+
+    st.subheader("📊 Попытка инициализации")
+    try:
+        db = get_db()
+        status = db.get_status()
+        st.success(f"✅ Database initialized: {status['status']}")
+        st.json(status)
+    except Exception as e:
+        st.error(f"❌ Ошибка инициализации: {e}")
+        st.exception(e)
+
+    st.subheader("📁 Содержимое data/")
+    try:
+        data_dir = os.path.dirname(DB_PATH)
+        files = os.listdir(data_dir) if os.path.exists(data_dir) else []
+        st.write(f"Директория: {data_dir}")
+        st.write(f"Файлы: {files}")
+    except Exception as e:
+        st.error(f"❌ Ошибка: {e}")
 
 # ---------- FALLBACK ----------
 
