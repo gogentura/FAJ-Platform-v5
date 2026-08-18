@@ -39,8 +39,8 @@ def main():
     season_row = None
 
     for season in seasons:
-        if season.get("league") == "РПЛ":
-            name = season.get("name", "")
+        if season["league"] == "РПЛ":
+            name = season["name"]
             if "2026" in name or "2026-27" in name:
                 season_row = season
                 break
