@@ -182,9 +182,10 @@ def get_active_season():
         seasons = db.get_seasons()
 
         for season in seasons:
-            league = season.get("league", "")
-            name = season.get("name", "")
-            status = season.get("status", "")
+            season_dict = dict(season)
+            league = season_dict.get("league", "")
+            name = season_dict.get("name", "")
+            status = season_dict.get("status", "")
 
             if league == "РПЛ":
                 if (
@@ -194,17 +195,18 @@ def get_active_season():
                     or "2026-2027" in name
                 ):
                     return {
-                        "id": season["id"],
+                        "id": season_dict["id"],
                         "league": league,
                         "name": name,
                     }
 
         for season in reversed(seasons):
-            if season.get("league") == "РПЛ":
+            season_dict = dict(season)
+            if season_dict.get("league") == "РПЛ":
                 return {
-                    "id": season["id"],
-                    "league": season["league"],
-                    "name": season.get("name", ""),
+                    "id": season_dict["id"],
+                    "league": season_dict["league"],
+                    "name": season_dict.get("name", ""),
                 }
 
         return None
@@ -236,7 +238,8 @@ def get_db_counts():
             for match in matches:
                 rounds = db.get_rounds()
                 for r in rounds:
-                    if r["id"] == match["round_id"] and r["season_id"] == season["id"]:
+                    r_dict = dict(r)
+                    if r_dict["id"] == match["round_id"] and r_dict["season_id"] == season["id"]:
                         count += 1
                         break
             result["matches"] = count
@@ -269,15 +272,17 @@ def get_passport_data():
         data = []
 
         for team in teams:
-            passport = db.get_team_passport(team["id"], season["id"])
+            team_dict = dict(team)
+            passport = db.get_team_passport(team_dict["id"], season["id"])
             if passport:
+                passport_dict = dict(passport)
                 data.append({
-                    "team_name": team["name"],
-                    "attack": passport.get("attack", 0),
-                    "defense": passport.get("defense", 0),
-                    "control": passport.get("control", 0),
-                    "goalkeeper": passport.get("goalkeeper", 0),
-                    "faj_rating": passport.get("faj_rating", 0),
+                    "team_name": team_dict["name"],
+                    "attack": passport_dict.get("attack", 0),
+                    "defense": passport_dict.get("defense", 0),
+                    "control": passport_dict.get("control", 0),
+                    "goalkeeper": passport_dict.get("goalkeeper", 0),
+                    "faj_rating": passport_dict.get("faj_rating", 0),
                 })
 
         return data
@@ -474,23 +479,27 @@ elif st.session_state.page == "round_complete":
 elif st.session_state.page == "passports":
     st.title("📋 Паспорта команд")
 
-    data = get_passport_data()
+    try:
+        data = get_passport_data()
 
-    if not data:
-        st.info("Паспорта не найдены.")
-    else:
-        df = pd.DataFrame(data)
-        display_df = df.rename(
-            columns={
-                "team_name": "Команда",
-                "attack": "Атака",
-                "defense": "Защита",
-                "control": "Контроль",
-                "goalkeeper": "Вратарь",
-                "faj_rating": "FAJ Rating",
-            }
-        )
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        if not data:
+            st.info("Паспорта не найдены.")
+        else:
+            df = pd.DataFrame(data)
+            display_df = df.rename(
+                columns={
+                    "team_name": "Команда",
+                    "attack": "Атака",
+                    "defense": "Защита",
+                    "control": "Контроль",
+                    "goalkeeper": "Вратарь",
+                    "faj_rating": "FAJ Rating",
+                }
+            )
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
+    except Exception as e:
+        st.error(f"❌ Ошибка загрузки паспортов: {e}")
+        st.exception(e)
 
 elif st.session_state.page == "analytics":
     st.title("📊 Аналитика")
