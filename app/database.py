@@ -627,7 +627,7 @@ def init_database():
     
     # ============================================================
     # TEAM PASSPORTS — ОСНОВНОЙ ПАСПОРТ FAJ v12.x
-    # С НОВЫМИ КОЛОНКАМИ ДЛЯ MEMORY HARDENING
+    # passport_uuid добавляется через миграции (не в CREATE TABLE)
     # ============================================================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS team_passports (
@@ -657,7 +657,6 @@ def init_database():
             faj_rating REAL DEFAULT 0.0,
             version TEXT NOT NULL,
             source TEXT DEFAULT 'manual',
-            passport_uuid TEXT UNIQUE,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT,
             results_strength REAL,
@@ -669,7 +668,7 @@ def init_database():
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_passports_team_season ON team_passports(team_id, season_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_passports_version ON team_passports(version)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_passports_uuid ON team_passports(passport_uuid)")
+    # Индекс idx_passports_uuid создаётся ПОСЛЕ миграций
     
     # ============================================================
     # TEAM PASSPORT META
@@ -1377,17 +1376,25 @@ def init_database():
     run_migrations()
     
     # ============================================================
-    # ИНДЕКС ПОСЛЕ МИГРАЦИЙ (гарантированно с существующей колонкой)
+    # ИНДЕКСЫ ПОСЛЕ МИГРАЦИЙ (гарантированно с существующей колонкой)
     # ============================================================
     
     conn = get_connection()
     cursor = conn.cursor()
     
+    # Индекс на prediction_revision в match_predictions
     cursor.execute("PRAGMA table_info(match_predictions)")
     columns = [row[1] for row in cursor.fetchall()]
     if "prediction_revision" in columns:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_match_predictions_revision ON match_predictions(match_id, prediction_revision)")
         logger.info("✅ Создан индекс idx_match_predictions_revision")
+    
+    # Индекс на passport_uuid в team_passports
+    cursor.execute("PRAGMA table_info(team_passports)")
+    columns = [row[1] for row in cursor.fetchall()]
+    if "passport_uuid" in columns:
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_passports_uuid ON team_passports(passport_uuid)")
+        logger.info("✅ Создан индекс idx_passports_uuid")
     
     conn.commit()
     conn.close()
