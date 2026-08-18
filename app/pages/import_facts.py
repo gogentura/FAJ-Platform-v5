@@ -99,8 +99,9 @@ LEAGUES = {
 def get_database() -> FAJDatabase:
     """
     Создаёт единый объект database.py.
+    Путь к SQLite определяется самим FAJDatabase.
     """
-    return FAJDatabase(DEFAULT_DB_PATH)
+    return FAJDatabase()
 
 
 # ============================================================
