@@ -1707,7 +1707,7 @@ class SyncEngine:
         }
 
     # ========================================================
-    # GOLD DATASET
+    # GOLD DATASET — ИСПРАВЛЕНО
     # ========================================================
 
     def build_gold_dataset(self):
@@ -1814,14 +1814,9 @@ class SyncEngine:
                     "model_version":
                         config.MODEL_VERSION,
 
-                    # LEGACY:
-                    #
-                    # Фактический счёт НЕ является
-                    # прогнозом FAJ.
-
-                    "faj_score":
-                        f"{match['actual_home']}:"
-                        f"{match['actual_away']}",
+                    # ИСПРАВЛЕНО:
+                    # Фактический счёт НЕ является прогнозом FAJ
+                    "faj_score": None,
 
                     "actual_score":
                         f"{match['actual_home']}:"
