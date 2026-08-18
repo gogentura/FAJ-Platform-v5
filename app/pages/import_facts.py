@@ -1,1843 +1,1955 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 """
-===========================================================
+============================================================
 FAJ Platform v12.1
-IMPORT FACTS
-===========================================================
+IMPORT FACTS v3.0
+============================================================
+
 Назначение:
-    Импорт фактических результатов и статистики матчей.
+    Импорт фактических данных сыгранного тура.
+
 ЦЕПОЧКА:
-    Тур
+
+    TOUR
       ↓
-    Матчи
+    MATCHES
       ↓
-    Ссылка на матч
+    SOURCE URL
       ↓
-    RPL Statistics Parser
+    RESULT + STATISTICS
       ↓
-    Факт
+    FAJ PREDICTION
       ↓
-    FAJ Prediction
+    EXPERT PREDICTION
       ↓
-    Expert Prediction
+    VALIDATION
       ↓
-    Validation
+    GOLD
       ↓
-    Gold Dataset
+    LOCK
       ↓
-    Lock
-      ↓
-    Learning Engine
-ПРИНЦИПЫ:
-    - SQLite only
-    - database.py — единственный слой работы с БД
-    - никаких прямых SQL
-    - ничего не удаляется
-    - существующие результаты не перезаписываются,
-      если они уже locked
-    - None != 0
-    - экспертный прогноз можно вводить вручную
-    - обучение запускается только отдельной кнопкой
-===========================================================
+    LEARNING
+
+Принципы:
+
+    SQLite only
+    database.py — единственный источник записи в БД
+    Никаких DELETE
+    Никаких DROP
+    Не изменяем старые прогнозы
+    Факт отделён от прогноза
+    Expert отделён от FAJ
+    None != 0
+
+ВАЖНО:
+
+    Парсер статистики может вернуть None,
+    если источник не содержит конкретный показатель.
+
+    None означает:
+        "данные отсутствуют"
+
+    а не:
+        "значение равно нулю"
+============================================================
 """
+
 from __future__ import annotations
+
 import logging
 import re
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
+
 import requests
 import streamlit as st
 from bs4 import BeautifulSoup
-from app.database import FAJDatabase
+
+from app.database import Database
 from app.parsers.rpl_stats_parser import RPLStatsParser
 from app.parsers.rpl_normalizer import normalize_team_names
-from app.config import config
+
+
 logger = logging.getLogger(__name__)
+
+
 # ============================================================
 # CONFIG
 # ============================================================
-PAGE_TITLE = "FAJ — Импорт фактов"
-PARSER_VERSION = "v1.0"
-DEFAULT_EXPERT_NAME = "Директор"
-FINISHED_STATUSES = {
-    "finished",
-    "completed",
-    "played",
-    "ft",
-    "ended",
-    "full time",
+
+APP_VERSION = "12.1"
+IMPORT_FACTS_VERSION = "3.0"
+MODEL_VERSION = "v12.1"
+PARSER_VERSION = "v3.0"
+
+DEFAULT_DB_PATH = "data/faj.db"
+
+LEAGUES = {
+    "РПЛ": "РПЛ",
 }
+
+
 # ============================================================
 # DATABASE
 # ============================================================
+
 @st.cache_resource
-def get_database() -> FAJDatabase:
-    return FAJDatabase()
+def get_database() -> Database:
+    """
+    Создаёт единый объект database.py.
+    """
+
+    return Database(DEFAULT_DB_PATH)
+
+
 # ============================================================
 # HELPERS
 # ============================================================
-def _safe_int(value: Any) -> Optional[int]:
+
+def safe_int(value: Any) -> Optional[int]:
+
+    if value is None:
+        return None
+
     try:
-        if value is None or value == "":
-            return None
         return int(value)
     except (TypeError, ValueError):
         return None
-def _safe_float(value: Any) -> Optional[float]:
+
+
+def safe_float(value: Any) -> Optional[float]:
+
+    if value is None:
+        return None
+
     try:
-        if value is None or value == "":
-            return None
         return float(
             str(value).replace(",", ".")
         )
     except (TypeError, ValueError):
         return None
-def _format_score(
-    home: Optional[int],
-    away: Optional[int],
-) -> str:
-    if home is None or away is None:
-        return "—"
-    return f"{home}:{away}"
-def _winner_from_score(
-    home: Optional[int],
-    away: Optional[int],
+
+
+def clean_score(score: Any) -> Optional[str]:
+    """
+    Приводит счёт к формату X:Y.
+    """
+
+    if score is None:
+        return None
+
+    value = str(score).strip()
+
+    match = re.search(
+        r"(\d{1,2})\s*[:\-]\s*(\d{1,2})",
+        value,
+    )
+
+    if not match:
+        return None
+
+    return (
+        f"{int(match.group(1))}:"
+        f"{int(match.group(2))}"
+    )
+
+
+def score_to_tuple(
+    score: Any,
+) -> Tuple[Optional[int], Optional[int]]:
+
+    normalized = clean_score(score)
+
+    if not normalized:
+        return None, None
+
+    home, away = normalized.split(":")
+
+    return int(home), int(away)
+
+
+def winner_from_score(
+    home_goals: Optional[int],
+    away_goals: Optional[int],
 ) -> Optional[str]:
-    if home is None or away is None:
+
+    if home_goals is None or away_goals is None:
         return None
-    if home > away:
+
+    if home_goals > away_goals:
         return "home"
-    if home < away:
+
+    if home_goals < away_goals:
         return "away"
+
     return "draw"
-def _btts_from_score(
-    home: Optional[int],
-    away: Optional[int],
+
+
+def btts_from_score(
+    home_goals: Optional[int],
+    away_goals: Optional[int],
 ) -> Optional[int]:
-    if home is None or away is None:
+
+    if home_goals is None or away_goals is None:
         return None
+
     return int(
-        home > 0 and away > 0
+        home_goals > 0
+        and away_goals > 0
     )
-def _over25_from_score(
-    home: Optional[int],
-    away: Optional[int],
+
+
+def over25_from_score(
+    home_goals: Optional[int],
+    away_goals: Optional[int],
 ) -> Optional[int]:
-    if home is None or away is None:
+
+    if home_goals is None or away_goals is None:
         return None
+
     return int(
-        (home + away) > 2.5
+        home_goals + away_goals > 2
     )
-def _over35_from_score(
-    home: Optional[int],
-    away: Optional[int],
+
+
+def over35_from_score(
+    home_goals: Optional[int],
+    away_goals: Optional[int],
 ) -> Optional[int]:
-    if home is None or away is None:
+
+    if home_goals is None or away_goals is None:
         return None
+
     return int(
-        (home + away) > 3.5
+        home_goals + away_goals > 3
     )
-def _clean_text(text: str) -> str:
-    if not text:
-        return ""
-    text = text.replace("\xa0", " ")
-    text = re.sub(
-        r"\s+",
-        " ",
-        text,
-    )
-    return text.strip()
-# ============================================================
-# MATCH SCORE FROM URL
-# ============================================================
-def parse_score_from_url(
-    url: str,
-) -> Optional[Tuple[int, int]]:
-    """
-    Получает счёт непосредственно со страницы матча.
-    Используется как дополнительный механизм,
-    потому что RPLStatsParser отвечает за статистику,
-    а не за результат.
-    """
-    if not url:
-        return None
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 "
-            "(Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 "
-            "Chrome/128.0 Safari/537.36"
-        ),
-        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-    }
+
+
+def object_to_dict(
+    value: Any,
+) -> Dict[str, Any]:
+
+    if value is None:
+        return {}
+
+    if isinstance(value, dict):
+        return dict(value)
+
     try:
-        response = requests.get(
-            url,
-            headers=headers,
-            timeout=20,
-        )
-        response.raise_for_status()
-        soup = BeautifulSoup(
-            response.text,
-            "html.parser",
-        )
-        text = _clean_text(
-            soup.get_text(
+        return dict(value)
+    except Exception:
+        pass
+
+    if hasattr(value, "__dict__"):
+        return dict(value.__dict__)
+
+    return {}
+
+
+# ============================================================
+# SCORE PARSER
+# ============================================================
+
+class MatchFactParser:
+    """
+    Получает фактический счёт непосредственно со страницы
+    матча.
+
+    Статистика передаётся RPLStatsParser.
+    """
+
+    USER_AGENT = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 "
+        "(KHTML, like Gecko) "
+        "Chrome/128.0 Safari/537.36"
+    )
+
+    SCORE_PATTERNS = [
+        r"\b(\d{1,2})\s*:\s*(\d{1,2})\b",
+        r"\b(\d{1,2})\s*-\s*(\d{1,2})\b",
+    ]
+
+    def __init__(
+        self,
+        timeout: int = 20,
+    ) -> None:
+
+        self.timeout = timeout
+
+    def parse_score(
+        self,
+        url: str,
+    ) -> Optional[Tuple[int, int]]:
+
+        if not url:
+            return None
+
+        try:
+
+            response = requests.get(
+                url,
+                headers={
+                    "User-Agent": self.USER_AGENT,
+                    "Accept-Language": (
+                        "ru-RU,ru;q=0.9,en;q=0.8"
+                    ),
+                },
+                timeout=self.timeout,
+            )
+
+            response.raise_for_status()
+
+            soup = BeautifulSoup(
+                response.text,
+                "html.parser",
+            )
+
+            # ------------------------------------------------
+            # Сначала ищем очевидные score elements
+            # ------------------------------------------------
+
+            selectors = [
+                "[class*='score']",
+                "[class*='Score']",
+                "[class*='result']",
+                "[class*='Result']",
+                "[data-testid*='score']",
+            ]
+
+            for selector in selectors:
+
+                for element in soup.select(selector):
+
+                    text = element.get_text(
+                        " ",
+                        strip=True,
+                    )
+
+                    score = self._extract_score(
+                        text
+                    )
+
+                    if score:
+                        return score
+
+            # ------------------------------------------------
+            # Общий текст страницы
+            # ------------------------------------------------
+
+            text = soup.get_text(
                 " ",
                 strip=True,
             )
-        )
-        patterns = [
-            r"\b(\d{1,2})\s*:\s*(\d{1,2})\b",
-            r"\b(\d{1,2})\s*-\s*(\d{1,2})\b",
-        ]
-        for pattern in patterns:
-            matches = re.findall(
+
+            return self._extract_score(text)
+
+        except Exception as exc:
+
+            logger.error(
+                "Ошибка получения результата %s: %s",
+                url,
+                exc,
+            )
+
+            return None
+
+    def _extract_score(
+        self,
+        text: str,
+    ) -> Optional[Tuple[int, int]]:
+
+        if not text:
+            return None
+
+        for pattern in self.SCORE_PATTERNS:
+
+            match = re.search(
                 pattern,
                 text,
             )
-            for home, away in matches:
-                home_goals = _safe_int(home)
-                away_goals = _safe_int(away)
-                if (
-                    home_goals is None
-                    or away_goals is None
-                ):
-                    continue
-                # Защита от случайного совпадения
-                # с годами, временем и т.п.
-                if (
-                    0 <= home_goals <= 15
-                    and 0 <= away_goals <= 15
-                ):
-                    return (
-                        home_goals,
-                        away_goals,
-                    )
+
+            if not match:
+                continue
+
+            home = safe_int(
+                match.group(1)
+            )
+
+            away = safe_int(
+                match.group(2)
+            )
+
+            if home is None or away is None:
+                continue
+
+            if home > 15 or away > 15:
+                continue
+
+            return home, away
+
+        return None
+
+
+# ============================================================
+# MATCH ACCESS
+# ============================================================
+
+def _call_first(
+    obj: Any,
+    method_names: List[str],
+    *args,
+    **kwargs,
+) -> Any:
+
+    for name in method_names:
+
+        method = getattr(
+            obj,
+            name,
+            None,
+        )
+
+        if not callable(method):
+            continue
+
+        try:
+            return method(
+                *args,
+                **kwargs,
+            )
+        except TypeError:
+            continue
+        except Exception as exc:
+            logger.warning(
+                "Метод %s завершился ошибкой: %s",
+                name,
+                exc,
+            )
+            continue
+
+    return None
+
+
+def get_round_matches(
+    db: Database,
+    round_number: int,
+) -> List[Dict[str, Any]]:
+    """
+    Получает матчи выбранного тура.
+
+    Использует существующие методы database.py,
+    если они доступны.
+
+    SQL fallback используется только для чтения.
+    """
+
+    result = _call_first(
+        db,
+        [
+            "get_matches_by_round",
+            "get_round_matches",
+            "get_matches_for_round",
+            "get_matches_by_round_number",
+        ],
+        round_number,
+    )
+
+    if result is not None:
+
+        matches = []
+
+        for item in result:
+
+            data = object_to_dict(item)
+
+            if data:
+                matches.append(data)
+
+        return matches
+
+    # --------------------------------------------------------
+    # SQL READ-ONLY fallback
+    # --------------------------------------------------------
+
+    conn = db.get_connection()
+
+    try:
+
+        cursor = conn.cursor()
+
+        # Сначала определяем round id
+        cursor.execute(
+            """
+            SELECT *
+            FROM rounds
+            WHERE round_number = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (round_number,),
+        )
+
+        round_row = cursor.fetchone()
+
+        if not round_row:
+            return []
+
+        round_data = object_to_dict(
+            round_row
+        )
+
+        round_id = (
+            round_data.get("id")
+            or round_data.get("round_id")
+        )
+
+        if round_id is None:
+            return []
+
+        cursor.execute(
+            """
+            SELECT
+                m.*,
+                th.name AS home_team_name,
+                ta.name AS away_team_name
+            FROM matches m
+            LEFT JOIN teams th
+                ON th.id = m.home_team_id
+            LEFT JOIN teams ta
+                ON ta.id = m.away_team_id
+            WHERE m.round_id = ?
+            ORDER BY m.id
+            """,
+            (round_id,),
+        )
+
+        rows = cursor.fetchall()
+
+        return [
+            object_to_dict(row)
+            for row in rows
+        ]
+
     except Exception as exc:
-        logger.warning(
-            "Cannot parse score from URL: %s",
+
+        logger.error(
+            "Ошибка получения матчей тура %s: %s",
+            round_number,
             exc,
         )
-    return None
-# ============================================================
-# FAJ PREDICTION HELPERS
-# ============================================================
-def _get_prediction_score(
-    prediction: Optional[Dict[str, Any]],
-) -> Optional[str]:
-    """
-    Получает именно прогнозируемый счёт.
-    НИКОГДА не превращает вероятности
-    home_win/draw/away_win в счёт.
-    """
-    if not prediction:
-        return None
-    candidates = [
-        prediction.get("predicted_score"),
-        prediction.get("score"),
-        prediction.get("exact_score"),
-        prediction.get("most_likely_score"),
-        prediction.get("predicted_result"),
-    ]
-    for value in candidates:
-        if value is None:
-            continue
-        value = str(value).strip()
-        if re.match(
-            r"^\d{1,2}\s*[:\-]\s*\d{1,2}$",
-            value,
-        ):
-            value = value.replace(
-                "-",
-                ":",
-            )
-            return value
-    return None
-def _get_prediction_xg(
-    prediction: Dict[str, Any],
-) -> Tuple[Optional[float], Optional[float]]:
-    home_xg = prediction.get(
-        "predicted_home_xg"
-    )
-    if home_xg is None:
-        home_xg = prediction.get(
-            "home_xg"
-        )
-    if home_xg is None:
-        home_xg = prediction.get(
-            "xg_home"
-        )
-    away_xg = prediction.get(
-        "predicted_away_xg"
-    )
-    if away_xg is None:
-        away_xg = prediction.get(
-            "away_xg"
-        )
-    if away_xg is None:
-        away_xg = prediction.get(
-            "xg_away"
-        )
-    return (
-        _safe_float(home_xg),
-        _safe_float(away_xg),
-    )
-def _get_prediction_probability(
-    prediction: Dict[str, Any],
-) -> Tuple[float, float, float]:
-    home = _safe_float(
-        prediction.get("home_win")
-    )
-    draw = _safe_float(
-        prediction.get("draw")
-    )
-    away = _safe_float(
-        prediction.get("away_win")
-    )
-    return (
-        home if home is not None else 0.0,
-        draw if draw is not None else 0.0,
-        away if away is not None else 0.0,
-    )
-def _prediction_winner(
-    prediction: Dict[str, Any],
-) -> Optional[str]:
-    home, draw, away = (
-        _get_prediction_probability(
-            prediction
-        )
-    )
-    values = {
-        "home": home,
-        "draw": draw,
-        "away": away,
-    }
-    return max(
-        values,
-        key=values.get,
-    )
-def _prediction_btts(
-    prediction: Dict[str, Any],
-) -> Optional[int]:
-    value = prediction.get("btts")
-    if value is None:
-        extended = prediction.get(
-            "extended",
-            {},
-        )
-        if isinstance(
-            extended,
-            dict,
-        ):
-            btts = extended.get(
-                "btts",
-                {},
-            )
-            if isinstance(
-                btts,
-                dict,
-            ):
-                value = btts.get(
-                    "yes"
-                )
-    value = _safe_float(value)
-    if value is None:
-        return None
-    return int(
-        value >= 0.5
-    )
-def _prediction_over25(
-    prediction: Dict[str, Any],
-) -> Optional[int]:
-    value = prediction.get(
-        "over25"
-    )
-    if value is None:
-        value = prediction.get(
-            "over_2_5"
-        )
-    if value is None:
-        extended = prediction.get(
-            "extended",
-            {},
-        )
-        if isinstance(
-            extended,
-            dict,
-        ):
-            total = extended.get(
-                "total",
-                {},
-            )
-            if isinstance(
-                total,
-                dict,
-            ):
-                value = total.get(
-                    "over_2_5"
-                )
-    value = _safe_float(value)
-    if value is None:
-        return None
-    return int(
-        value >= 0.5
-    )
-def _prediction_confidence(
-    prediction: Dict[str, Any],
-) -> int:
-    confidence = prediction.get(
-        "confidence",
-        50,
-    )
-    if isinstance(
-        confidence,
-        dict,
-    ):
-        confidence = confidence.get(
-            "overall",
-            0.5,
-        )
-    confidence = _safe_float(
-        confidence
-    )
-    if confidence is None:
-        return 50
-    if confidence <= 1.0:
-        confidence *= 100
-    return int(
-        max(
-            0,
-            min(
-                confidence,
-                100,
-            ),
-        )
-    )
-# ============================================================
-# EXPERT HELPERS
-# ============================================================
-def _expert_score(
-    expert: Optional[Dict[str, Any]],
-) -> Optional[str]:
-    if not expert:
-        return None
-    candidates = [
-        expert.get("score"),
-        expert.get("expert_score"),
-        expert.get("predicted_score"),
-    ]
-    for value in candidates:
-        if value is None:
-            continue
-        value = str(value).strip()
-        if re.match(
-            r"^\d{1,2}\s*[:\-]\s*\d{1,2}$",
-            value,
-        ):
-            return value.replace(
-                "-",
-                ":",
-            )
-    return None
-def _parse_score_string(
-    score: Optional[str],
-) -> Tuple[
-    Optional[int],
-    Optional[int],
-]:
-    if not score:
-        return None, None
-    match = re.match(
-        r"^\s*(\d{1,2})\s*[:\-]\s*(\d{1,2})\s*$",
-        str(score),
-    )
-    if not match:
-        return None, None
-    return (
-        _safe_int(match.group(1)),
-        _safe_int(match.group(2)),
-    )
+
+        return []
+
+    finally:
+        conn.close()
+
+
 # ============================================================
 # MATCH DATA
 # ============================================================
-def get_rounds(
-    db: FAJDatabase,
-    season_id: Optional[int],
-) -> List[Dict[str, Any]]:
-    try:
-        if season_id is not None:
-            return db.get_rounds(
-                season_id
-            )
-        return db.get_rounds()
-    except Exception as exc:
-        logger.exception(
-            "Cannot get rounds: %s",
-            exc,
-        )
-        return []
-def get_current_season_id(
-    db: FAJDatabase,
-) -> Optional[int]:
-    try:
-        seasons = db.get_seasons()
-        for season in seasons:
-            name = str(
-                season.get(
-                    "name",
-                    "",
-                )
-            )
-            if (
-                "2026-2027" in name
-                or "2026/2027" in name
-            ):
-                return season.get(
-                    "id"
-                )
-    except Exception as exc:
-        logger.exception(
-            "Cannot detect season: %s",
-            exc,
-        )
-    return None
-def get_round_matches(
-    db: FAJDatabase,
-    round_id: int,
-) -> List[Dict[str, Any]]:
-    matches = []
-    try:
-        raw_matches = db.get_matches(
-            round_id
-        )
-        for match in raw_matches:
-            item = dict(
-                match
-            )
-            home = db.get_team(
-                item.get(
-                    "home_team_id"
-                )
-            )
-            away = db.get_team(
-                item.get(
-                    "away_team_id"
-                )
-            )
-            item["home_team"] = (
-                home.get("name")
-                if home
-                else None
-            )
-            item["away_team"] = (
-                away.get("name")
-                if away
-                else None
-            )
-            matches.append(
-                item
-            )
-    except Exception as exc:
-        logger.exception(
-            "Cannot get round matches: %s",
-            exc,
-        )
-    return matches
-# ============================================================
-# FETCH FACTS
-# ============================================================
-def fetch_match_facts(
-    url: str,
-) -> Optional[Dict[str, Any]]:
-    if not url:
-        return None
-    url = url.strip()
-    if not (
-        url.startswith(
-            "http://"
-        )
-        or url.startswith(
-            "https://"
-        )
+
+def get_match_id(
+    match: Dict[str, Any],
+) -> Optional[Any]:
+
+    for key in (
+        "id",
+        "match_id",
+        "uuid",
     ):
-        raise ValueError(
-            "Ссылка должна начинаться с http:// или https://"
-        )
-    stats_parser = RPLStatsParser()
-    stats = (
-        stats_parser.parse_match_page(
-            url
-        )
+
+        if match.get(key) is not None:
+            return match[key]
+
+    return None
+
+
+def get_home_team(
+    match: Dict[str, Any],
+) -> str:
+
+    for key in (
+        "home_team_name",
+        "home_team",
+        "home_name",
+    ):
+
+        value = match.get(key)
+
+        if value:
+            return str(value)
+
+    return "Неизвестно"
+
+
+def get_away_team(
+    match: Dict[str, Any],
+) -> str:
+
+    for key in (
+        "away_team_name",
+        "away_team",
+        "away_name",
+    ):
+
+        value = match.get(key)
+
+        if value:
+            return str(value)
+
+    return "Неизвестно"
+
+
+def get_match_date(
+    match: Dict[str, Any],
+) -> Optional[str]:
+
+    for key in (
+        "match_date",
+        "date",
+        "scheduled_at",
+        "kickoff",
+    ):
+
+        value = match.get(key)
+
+        if value:
+            return str(value)[:10]
+
+    return None
+
+
+# ============================================================
+# PREDICTION
+# ============================================================
+
+def extract_prediction_score(
+    prediction: Dict[str, Any],
+) -> Optional[str]:
+
+    keys = (
+        "predicted_score",
+        "score",
+        "faj_score",
+        "most_likely_score",
+        "prediction_score",
+        "exact_score",
     )
-    score = parse_score_from_url(
+
+    for key in keys:
+
+        score = clean_score(
+            prediction.get(key)
+        )
+
+        if score:
+            return score
+
+    home = None
+    away = None
+
+    for key in (
+        "predicted_home_goals",
+        "home_goals",
+        "expected_home_goals",
+        "faj_home_goals",
+        "home_xg",
+    ):
+
+        if prediction.get(key) is not None:
+
+            home = safe_float(
+                prediction.get(key)
+            )
+
+            break
+
+    for key in (
+        "predicted_away_goals",
+        "away_goals",
+        "expected_away_goals",
+        "faj_away_goals",
+        "away_xg",
+    ):
+
+        if prediction.get(key) is not None:
+
+            away = safe_float(
+                prediction.get(key)
+            )
+
+            break
+
+    if home is not None and away is not None:
+
+        return (
+            f"{round(home):d}:"
+            f"{round(away):d}"
+        )
+
+    return None
+
+
+def prediction_probability(
+    prediction: Dict[str, Any],
+    side: str,
+) -> Optional[float]:
+
+    aliases = {
+        "home": [
+            "home_win",
+            "probability_home",
+            "home_probability",
+            "predicted_probability_home",
+        ],
+        "draw": [
+            "draw",
+            "draw_probability",
+            "probability_draw",
+            "predicted_probability_draw",
+        ],
+        "away": [
+            "away_win",
+            "probability_away",
+            "away_probability",
+            "predicted_probability_away",
+        ],
+    }
+
+    for key in aliases.get(side, []):
+
+        value = prediction.get(key)
+
+        if value is None:
+            continue
+
+        value = safe_float(value)
+
+        if value is None:
+            continue
+
+        # Нормализуем проценты в диапазон 0..1
+        if value > 1:
+            value /= 100.0
+
+        return value
+
+    return None
+
+
+def prediction_confidence(
+    prediction: Dict[str, Any],
+) -> Optional[float]:
+
+    for key in (
+        "confidence",
+        "faj_confidence",
+        "prediction_confidence",
+    ):
+
+        value = safe_float(
+            prediction.get(key)
+        )
+
+        if value is not None:
+            return value
+
+    return None
+
+
+# ============================================================
+# EXPERT
+# ============================================================
+
+def get_latest_expert(
+    db: Database,
+    match_id: Any,
+) -> Optional[Dict[str, Any]]:
+
+    result = _call_first(
+        db,
+        [
+            "get_expert_predictions",
+        ],
+        match_id,
+    )
+
+    if not result:
+        return None
+
+    first = result[0]
+
+    return object_to_dict(first)
+
+
+# ============================================================
+# FACT PARSING
+# ============================================================
+
+def parse_fact_url(
+    url: str,
+) -> Dict[str, Any]:
+
+    result_parser = MatchFactParser()
+
+    stats_parser = RPLStatsParser()
+
+    score = result_parser.parse_score(
         url
     )
-    result = {
-        "url": url,
-        "home_goals": None,
-        "away_goals": None,
-        "stats": stats or {},
-        "parser_source": url,
-        "parser_version": PARSER_VERSION,
-        "data_quality": 0.0,
-    }
+
+    stats = stats_parser.parse_match_page(
+        url
+    )
+
+    home_goals = None
+    away_goals = None
+
     if score:
-        result[
-            "home_goals"
-        ] = score[0]
-        result[
-            "away_goals"
-        ] = score[1]
-    quality_fields = [
-        result.get(
-            "home_goals"
-        ),
-        result.get(
-            "away_goals"
-        ),
-    ]
-    stats_dict = result.get(
+        home_goals, away_goals = score
+
+    return {
+        "home_goals": home_goals,
+        "away_goals": away_goals,
+        "stats": stats or {},
+        "source_url": url,
+        "parsed_at": datetime.now().isoformat(),
+    }
+
+
+# ============================================================
+# VALIDATION DATA
+# ============================================================
+
+def build_validation_data(
+    match_id: Any,
+    prediction: Dict[str, Any],
+    fact: Dict[str, Any],
+) -> Dict[str, Any]:
+
+    actual_home = fact.get(
+        "home_goals"
+    )
+
+    actual_away = fact.get(
+        "away_goals"
+    )
+
+    predicted_score = extract_prediction_score(
+        prediction
+    )
+
+    predicted_home, predicted_away = (
+        score_to_tuple(predicted_score)
+    )
+
+    stats = fact.get(
         "stats",
         {},
     )
-    for key in (
-        "home_xg",
-        "away_xg",
-        "home_shots",
-        "away_shots",
-        "home_shots_on_target",
-        "away_shots_on_target",
-        "home_possession",
-        "away_possession",
-        "home_corners",
-        "away_corners",
-        "home_yellow_cards",
-        "away_yellow_cards",
+
+    actual_winner = winner_from_score(
+        actual_home,
+        actual_away,
+    )
+
+    predicted_winner = None
+
+    if (
+        predicted_home is not None
+        and predicted_away is not None
     ):
-        quality_fields.append(
-            stats_dict.get(
-                key
-            )
+        predicted_winner = winner_from_score(
+            predicted_home,
+            predicted_away,
         )
-    available = sum(
-        value is not None
-        for value in quality_fields
+
+    return {
+        "match_id": match_id,
+
+        "prediction_id": prediction.get(
+            "id"
+        ),
+
+        "match_prediction_id": prediction.get(
+            "match_prediction_id"
+        ),
+
+        "predicted_score": predicted_score,
+
+        "actual_score": (
+            f"{actual_home}:{actual_away}"
+            if actual_home is not None
+            and actual_away is not None
+            else None
+        ),
+
+        "predicted_home_xg": (
+            prediction.get("home_xg")
+            or prediction.get("faj_xg_home")
+            or prediction.get("predicted_home_xg")
+        ),
+
+        "actual_home_xg": stats.get(
+            "home_xg"
+        ),
+
+        "predicted_away_xg": (
+            prediction.get("away_xg")
+            or prediction.get("faj_xg_away")
+            or prediction.get("predicted_away_xg")
+        ),
+
+        "actual_away_xg": stats.get(
+            "away_xg"
+        ),
+
+        "predicted_winner": predicted_winner,
+
+        "actual_winner": actual_winner,
+
+        "predicted_probability_home":
+            prediction_probability(
+                prediction,
+                "home",
+            ),
+
+        "predicted_probability_draw":
+            prediction_probability(
+                prediction,
+                "draw",
+            ),
+
+        "predicted_probability_away":
+            prediction_probability(
+                prediction,
+                "away",
+            ),
+
+        "score_probability": (
+            prediction.get("score_probability")
+            or prediction.get("exact_score_probability")
+        ),
+
+        "confidence": prediction_confidence(
+            prediction
+        ),
+
+        "risk": prediction.get(
+            "risk"
+        ),
+
+        "predicted_btts": (
+            prediction.get("btts")
+            or prediction.get("predicted_btts")
+            or prediction.get("faj_btts")
+        ),
+
+        "actual_btts": btts_from_score(
+            actual_home,
+            actual_away,
+        ),
+
+        "predicted_over25": (
+            prediction.get("over25")
+            or prediction.get("predicted_over25")
+            or prediction.get("faj_total_25")
+        ),
+
+        "actual_over25": over25_from_score(
+            actual_home,
+            actual_away,
+        ),
+
+        "predicted_over35": (
+            prediction.get("over35")
+            or prediction.get("predicted_over35")
+            or prediction.get("faj_total_35")
+        ),
+
+        "actual_over35": over35_from_score(
+            actual_home,
+            actual_away,
+        ),
+
+        "model_version": prediction.get(
+            "model_version",
+            MODEL_VERSION,
+        ),
+
+        "passport_version": prediction.get(
+            "passport_version",
+            "v2.2",
+        ),
+
+        "parser_version": PARSER_VERSION,
+    }
+
+
+# ============================================================
+# GOLD
+# ============================================================
+
+def build_gold_data(
+    match: Dict[str, Any],
+    prediction: Dict[str, Any],
+    expert: Optional[Dict[str, Any]],
+    fact: Dict[str, Any],
+) -> Dict[str, Any]:
+
+    match_id = get_match_id(
+        match
     )
-    total = len(
-        quality_fields
+
+    home_team = get_home_team(
+        match
     )
-    result[
-        "data_quality"
-    ] = (
-        available / total
-        if total
-        else 0.0
+
+    away_team = get_away_team(
+        match
     )
-    return result
+
+    actual_home = fact.get(
+        "home_goals"
+    )
+
+    actual_away = fact.get(
+        "away_goals"
+    )
+
+    stats = fact.get(
+        "stats",
+        {},
+    )
+
+    faj_score = extract_prediction_score(
+        prediction
+    )
+
+    expert_score = None
+    expert_reasoning = ""
+
+    if expert:
+
+        expert_score = clean_score(
+            expert.get("score")
+            or expert.get("expert_score")
+            or expert.get("predicted_score")
+        )
+
+        expert_reasoning = (
+            expert.get("comment")
+            or expert.get("reasoning")
+            or expert.get("expert_reasoning")
+            or ""
+        )
+
+    gold = {
+        "match_id": match_id,
+
+        "home_team": home_team,
+        "away_team": away_team,
+
+        "match_date": get_match_date(
+            match
+        ),
+
+        "model_version": prediction.get(
+            "model_version",
+            MODEL_VERSION,
+        ),
+
+        "faj_score": faj_score,
+
+        "faj_xg_home": (
+            prediction.get("home_xg")
+            or prediction.get("faj_xg_home")
+            or prediction.get("predicted_home_xg")
+        ),
+
+        "faj_xg_away": (
+            prediction.get("away_xg")
+            or prediction.get("faj_xg_away")
+            or prediction.get("predicted_away_xg")
+        ),
+
+        "faj_btts": (
+            prediction.get("btts")
+            or prediction.get("predicted_btts")
+            or prediction.get("faj_btts")
+        ),
+
+        "faj_total_25": (
+            prediction.get("over25")
+            or prediction.get("predicted_over25")
+            or prediction.get("faj_total_25")
+        ),
+
+        "faj_total_35": (
+            prediction.get("over35")
+            or prediction.get("predicted_over35")
+            or prediction.get("faj_total_35")
+        ),
+
+        "faj_confidence": prediction.get(
+            "confidence"
+        ),
+
+        "faj_rating_home": prediction.get(
+            "faj_rating_home"
+        ),
+
+        "faj_rating_away": prediction.get(
+            "faj_rating_away"
+        ),
+
+        "faj_pir_home": prediction.get(
+            "faj_pir_home"
+        ),
+
+        "faj_pir_away": prediction.get(
+            "faj_pir_away"
+        ),
+
+        "faj_style_home": prediction.get(
+            "faj_style_home"
+        ),
+
+        "faj_style_away": prediction.get(
+            "faj_style_away"
+        ),
+
+        "expert_score": expert_score,
+
+        "expert_reasoning": expert_reasoning,
+
+        "actual_score": (
+            f"{actual_home}:{actual_away}"
+            if actual_home is not None
+            and actual_away is not None
+            else None
+        ),
+
+        "actual_xg_home": stats.get(
+            "home_xg"
+        ),
+
+        "actual_xg_away": stats.get(
+            "away_xg"
+        ),
+
+        "actual_btts": btts_from_score(
+            actual_home,
+            actual_away,
+        ),
+
+        "actual_total_25": over25_from_score(
+            actual_home,
+            actual_away,
+        ),
+
+        "actual_total_35": over35_from_score(
+            actual_home,
+            actual_away,
+        ),
+
+        "actual_home_goals": actual_home,
+
+        "actual_away_goals": actual_away,
+
+        "status": "completed",
+    }
+
+    return gold
+
+
 # ============================================================
 # SAVE FACTS
 # ============================================================
-def save_match_facts(
-    db: FAJDatabase,
+
+def save_match_fact(
+    db: Database,
     match: Dict[str, Any],
     fact: Dict[str, Any],
-    expert_name: str,
-    expert_score: Optional[str],
+    expert_score: str,
     expert_comment: str,
     expert_confidence: int,
 ) -> Dict[str, Any]:
-    match_id = match.get(
-        "id"
+
+    match_id = get_match_id(
+        match
     )
-    if not match_id:
+
+    if match_id is None:
         raise ValueError(
             "У матча отсутствует ID"
         )
+
+    if db.is_result_locked(
+        match_id
+    ):
+        raise ValueError(
+            "Результат этого матча уже заблокирован."
+        )
+
     home_goals = fact.get(
         "home_goals"
     )
+
     away_goals = fact.get(
         "away_goals"
     )
-    if (
-        home_goals is None
-        or away_goals is None
-    ):
+
+    if home_goals is None or away_goals is None:
         raise ValueError(
-            "Не удалось определить фактический счёт."
+            "Не удалось определить счёт матча."
         )
+
     # --------------------------------------------------------
-    # LOCK CHECK
+    # 1. RESULT
     # --------------------------------------------------------
-    try:
-        if db.is_result_locked(
-            match_id
-        ):
-            raise ValueError(
-                "Результат этого матча уже защищён (LOCK)."
-            )
-    except AttributeError:
-        pass
-    # --------------------------------------------------------
-    # RESULT
-    # --------------------------------------------------------
+
     db.update_result(
-        match_id=match_id,
-        home_score=home_goals,
-        away_score=away_goals,
+        match_id,
+        home_goals,
+        away_goals,
         lock=False,
     )
+
     # --------------------------------------------------------
-    # STATISTICS
+    # 2. STATISTICS
     # --------------------------------------------------------
-    stats = dict(
-        fact.get(
-            "stats",
-            {},
-        )
+
+    source_stats = fact.get(
+        "stats",
+        {},
     )
-    stats[
-        "parser_source"
-    ] = fact.get(
-        "parser_source"
-    )
-    stats[
-        "parser_version"
-    ] = fact.get(
-        "parser_version",
-        PARSER_VERSION,
-    )
-    stats[
-        "data_quality"
-    ] = fact.get(
-        "data_quality",
-        0.0,
-    )
+
+    stats = {
+        "home_xg": source_stats.get(
+            "home_xg"
+        ),
+        "away_xg": source_stats.get(
+            "away_xg"
+        ),
+
+        "home_possession": source_stats.get(
+            "home_possession"
+        ),
+        "away_possession": source_stats.get(
+            "away_possession"
+        ),
+
+        "home_shots": source_stats.get(
+            "home_shots"
+        ),
+        "away_shots": source_stats.get(
+            "away_shots"
+        ),
+
+        "home_shots_on_target": source_stats.get(
+            "home_shots_on_target"
+        ),
+        "away_shots_on_target": source_stats.get(
+            "away_shots_on_target"
+        ),
+
+        "home_corners": source_stats.get(
+            "home_corners"
+        ),
+        "away_corners": source_stats.get(
+            "away_corners"
+        ),
+
+        "home_yellow_cards": source_stats.get(
+            "home_yellow_cards"
+        ),
+        "away_yellow_cards": source_stats.get(
+            "away_yellow_cards"
+        ),
+
+        "home_pass_accuracy": source_stats.get(
+            "home_pass_accuracy"
+        ),
+        "away_pass_accuracy": source_stats.get(
+            "away_pass_accuracy"
+        ),
+
+        "parser_source": fact.get(
+            "source_url"
+        ),
+
+        "parser_version": PARSER_VERSION,
+
+        "data_quality": 1.0,
+    }
+
     db.update_match_stats(
         match_id,
         stats,
     )
+
     # --------------------------------------------------------
-    # EXPERT
+    # 3. EXPERT
     # --------------------------------------------------------
-    expert_id = None
+
     if expert_score:
-        expert_id = (
-            db.save_expert_prediction(
-                match_id=match_id,
-                expert_name=(
-                    expert_name
-                    or DEFAULT_EXPERT_NAME
-                ),
-                score=expert_score,
-                comment=(
-                    expert_comment
-                    or ""
-                ),
-                confidence=int(
-                    max(
-                        0,
-                        min(
-                            expert_confidence,
-                            100,
-                        ),
-                    )
-                ),
-            )
+
+        db.save_expert_prediction(
+            match_id=match_id,
+            expert_name="Директор",
+            score=expert_score,
+            comment=expert_comment,
+            confidence=expert_confidence,
         )
+
     # --------------------------------------------------------
-    # FAJ PREDICTION
+    # 4. FAJ PREDICTION
     # --------------------------------------------------------
-    faj_prediction = (
-        db.get_latest_prediction(
-            match_id
-        )
+
+    prediction = db.get_latest_prediction(
+        match_id
     )
-    # --------------------------------------------------------
-    # VALIDATION
-    # --------------------------------------------------------
-    validation_id = None
-    if faj_prediction:
-        prediction_id = (
-            faj_prediction.get(
-                "id"
-            )
-        )
-        faj_score = (
-            _get_prediction_score(
-                faj_prediction
-            )
-        )
-        predicted_home_xg, predicted_away_xg = (
-            _get_prediction_xg(
-                faj_prediction
-            )
-        )
-        probability_home, probability_draw, probability_away = (
-            _get_prediction_probability(
-                faj_prediction
-            )
-        )
-        predicted_winner = (
-            _prediction_winner(
-                faj_prediction
-            )
-        )
-        predicted_btts = (
-            _prediction_btts(
-                faj_prediction
-            )
-        )
-        predicted_over25 = (
-            _prediction_over25(
-                faj_prediction
-            )
-        )
-        actual_winner = (
-            _winner_from_score(
-                home_goals,
-                away_goals,
-            )
-        )
-        actual_btts = (
-            _btts_from_score(
-                home_goals,
-                away_goals,
-            )
-        )
-        actual_over25 = (
-            _over25_from_score(
-                home_goals,
-                away_goals,
-            )
-        )
-        score_probability = (
-            faj_prediction.get(
-                "score_probability",
-                0.0,
-            )
-        )
-        confidence = (
-            _prediction_confidence(
-                faj_prediction
-            )
-        )
-        risk = _safe_float(
-            faj_prediction.get(
-                "risk",
-                0.0,
-            )
-        )
-        if risk is None:
-            risk = 0.0
-        validation_data = {
-            "match_id": match_id,
-            "prediction_id": prediction_id,
-            "match_prediction_id": (
-                faj_prediction.get(
-                    "match_prediction_id"
-                )
-            ),
-            "predicted_score": (
-                faj_score
-            ),
-            "actual_score": (
-                _format_score(
-                    home_goals,
-                    away_goals,
-                )
-            ),
-            "predicted_home_xg": (
-                predicted_home_xg
-            ),
-            "actual_home_xg": (
-                stats.get(
-                    "home_xg"
-                )
-            ),
-            "predicted_away_xg": (
-                predicted_away_xg
-            ),
-            "actual_away_xg": (
-                stats.get(
-                    "away_xg"
-                )
-            ),
-            "predicted_winner": (
-                predicted_winner
-            ),
-            "actual_winner": (
-                actual_winner
-            ),
-            "predicted_probability_home": (
-                probability_home
-            ),
-            "predicted_probability_draw": (
-                probability_draw
-            ),
-            "predicted_probability_away": (
-                probability_away
-            ),
-            "score_probability": (
-                score_probability
-            ),
-            "confidence": confidence,
-            "risk": risk,
-            "predicted_btts": (
-                predicted_btts
-            ),
-            "actual_btts": (
-                actual_btts
-            ),
-            "predicted_over25": (
-                predicted_over25
-            ),
-            "actual_over25": (
-                actual_over25
-            ),
-            "model_version": (
-                faj_prediction.get(
-                    "model_version",
-                    getattr(
-                        config,
-                        "MODEL_VERSION",
-                        "v12.1",
-                    ),
-                )
-            ),
-            "passport_version": (
-                faj_prediction.get(
-                    "passport_version",
-                    "",
-                )
-            ),
-            "parser_version": (
-                fact.get(
-                    "parser_version",
-                    PARSER_VERSION,
-                )
-            ),
-        }
-        try:
-            validation_id = (
-                db.add_prediction_validation(
-                    validation_data
-                )
-            )
-        except Exception as exc:
-            logger.exception(
-                "Validation save failed: %s",
-                exc,
-            )
-    # --------------------------------------------------------
-    # GOLD DATASET
-    # --------------------------------------------------------
-    gold_id = None
-    home_team = (
-        match.get(
-            "home_team"
-        )
-        or ""
+
+    if not prediction:
+        prediction = {}
+
+    prediction = object_to_dict(
+        prediction
     )
-    away_team = (
-        match.get(
-            "away_team"
-        )
-        or ""
-    )
-    actual_score = _format_score(
-        home_goals,
-        away_goals,
-    )
-    faj_score = None
-    if faj_prediction:
-        faj_score = (
-            _get_prediction_score(
-                faj_prediction
-            )
-        )
-    expert_score_value = (
-        expert_score
-    )
-    gold_data = {
-        "match_id": match_id,
-        "home_team": home_team,
-        "away_team": away_team,
-        "match_date": (
-            match.get(
-                "date"
-            )
-            or match.get(
-                "match_date"
-            )
-        ),
-        "model_version": (
-            faj_prediction.get(
-                "model_version",
-                getattr(
-                    config,
-                    "MODEL_VERSION",
-                    "v12.1",
-                ),
-            )
-            if faj_prediction
-            else getattr(
-                config,
-                "MODEL_VERSION",
-                "v12.1",
-            )
-        ),
-        "faj_score": faj_score,
-        "faj_xg_home": (
-            _get_prediction_xg(
-                faj_prediction
-            )[0]
-            if faj_prediction
-            else None
-        ),
-        "faj_xg_away": (
-            _get_prediction_xg(
-                faj_prediction
-            )[1]
-            if faj_prediction
-            else None
-        ),
-        "faj_btts": (
-            _prediction_btts(
-                faj_prediction
-            )
-            if faj_prediction
-            else None
-        ),
-        "faj_total_25": (
-            _prediction_over25(
-                faj_prediction
-            )
-            if faj_prediction
-            else None
-        ),
-        "faj_total_35": (
-            faj_prediction.get(
-                "over35"
-            )
-            if faj_prediction
-            else None
-        ),
-        "faj_confidence": (
-            _prediction_confidence(
-                faj_prediction
-            )
-            if faj_prediction
-            else None
-        ),
-        "faj_rating_home": (
-            faj_prediction.get(
-                "home_rating"
-            )
-            if faj_prediction
-            else None
-        ),
-        "faj_rating_away": (
-            faj_prediction.get(
-                "away_rating"
-            )
-            if faj_prediction
-            else None
-        ),
-        "faj_pir_home": (
-            faj_prediction.get(
-                "home_pir"
-            )
-            if faj_prediction
-            else None
-        ),
-        "faj_pir_away": (
-            faj_prediction.get(
-                "away_pir"
-            )
-            if faj_prediction
-            else None
-        ),
-        "faj_style_home": (
-            faj_prediction.get(
-                "home_style"
-            )
-            if faj_prediction
-            else None
-        ),
-        "faj_style_away": (
-            faj_prediction.get(
-                "away_style"
-            )
-            if faj_prediction
-            else None
-        ),
-        "expert_score": (
-            expert_score_value
-        ),
-        "expert_reasoning": (
-            expert_comment
-            or ""
-        ),
-        "actual_score": actual_score,
-        "actual_xg_home": (
-            stats.get(
-                "home_xg"
-            )
-        ),
-        "actual_xg_away": (
-            stats.get(
-                "away_xg"
-            )
-        ),
-        "actual_btts": (
-            _btts_from_score(
-                home_goals,
-                away_goals,
-            )
-        ),
-        "actual_total_25": (
-            _over25_from_score(
-                home_goals,
-                away_goals,
-            )
-        ),
-        "actual_total_35": (
-            _over35_from_score(
-                home_goals,
-                away_goals,
-            )
-        ),
-        "actual_home_goals": (
-            home_goals
-        ),
-        "actual_away_goals": (
-            away_goals
-        ),
-        "status": "completed",
-    }
-    try:
-        gold_id = db.upsert_gold(
-            gold_data
-        )
-    except Exception as exc:
-        logger.exception(
-            "Gold save failed: %s",
-            exc,
-        )
+
     # --------------------------------------------------------
-    # LOCK
+    # 5. EXPERT FROM DB
     # --------------------------------------------------------
-    try:
-        db.lock_match_result(
-            match_id
+
+    expert = get_latest_expert(
+        db,
+        match_id,
+    )
+
+    # --------------------------------------------------------
+    # 6. VALIDATION
+    # --------------------------------------------------------
+
+    validation = build_validation_data(
+        match_id=match_id,
+        prediction=prediction,
+        fact=fact,
+    )
+
+    validation_id = db.add_prediction_validation(
+        validation
+    )
+
+    # --------------------------------------------------------
+    # 7. GOLD
+    # --------------------------------------------------------
+
+    gold = build_gold_data(
+        match=match,
+        prediction=prediction,
+        expert=expert,
+        fact=fact,
+    )
+
+    gold_id = db.upsert_gold(
+        gold
+    )
+
+    # --------------------------------------------------------
+    # 8. LOCK GOLD
+    # --------------------------------------------------------
+
+    if gold_id is not None:
+
+        db.lock_gold(
+            gold_id
         )
-    except Exception as exc:
-        logger.warning(
-            "Could not lock result %s: %s",
-            match_id,
-            exc,
-        )
-    if gold_id:
-        try:
-            db.lock_gold(
-                gold_id
-            )
-        except Exception as exc:
-            logger.warning(
-                "Could not lock gold %s: %s",
-                gold_id,
-                exc,
-            )
+
+    # --------------------------------------------------------
+    # 9. LOCK RESULT
+    # --------------------------------------------------------
+
+    db.lock_match_result(
+        match_id
+    )
+
     return {
         "match_id": match_id,
-        "expert_id": expert_id,
         "validation_id": validation_id,
         "gold_id": gold_id,
-        "actual_score": actual_score,
-        "faj_score": faj_score,
-        "expert_score": expert_score_value,
+        "score": (
+            f"{home_goals}:{away_goals}"
+        ),
     }
+
+
 # ============================================================
-# UI — FACT CARD
+# UI
 # ============================================================
-def render_stats(
-    stats: Dict[str, Any],
-) -> None:
-    st.markdown(
-        "#### 📊 Статистика"
-    )
-    fields = [
-        (
-            "xG",
-            "home_xg",
-            "away_xg",
-        ),
-        (
-            "Удары",
-            "home_shots",
-            "away_shots",
-        ),
-        (
-            "Удары в створ",
-            "home_shots_on_target",
-            "away_shots_on_target",
-        ),
-        (
-            "Владение %",
-            "home_possession",
-            "away_possession",
-        ),
-        (
-            "Угловые",
-            "home_corners",
-            "away_corners",
-        ),
-        (
-            "ЖК",
-            "home_yellow_cards",
-            "away_yellow_cards",
-        ),
-    ]
-    for title, home_key, away_key in fields:
-        home_value = stats.get(
-            home_key
-        )
-        away_value = stats.get(
-            away_key
-        )
-        col1, col2, col3 = st.columns(
-            [2, 1, 1]
-        )
-        with col1:
-            st.write(title)
-        with col2:
-            st.write(
-                "—"
-                if home_value is None
-                else str(home_value)
-            )
-        with col3:
-            st.write(
-                "—"
-                if away_value is None
-                else str(away_value)
-            )
-def render_comparison(
+
+def render_match_card(
+    db: Database,
     match: Dict[str, Any],
-    fact: Optional[Dict[str, Any]],
-    prediction: Optional[Dict[str, Any]],
-    expert: Optional[Dict[str, Any]],
+    index: int,
 ) -> None:
+
+    match_id = get_match_id(
+        match
+    )
+
+    home_team, away_team = (
+        normalize_team_names(
+            get_home_team(match),
+            get_away_team(match),
+        )
+    )
+
+    home_team = home_team or get_home_team(
+        match
+    )
+
+    away_team = away_team or get_away_team(
+        match
+    )
+
+    key_prefix = (
+        f"fact_{match_id}_{index}"
+    )
+
     st.markdown(
-        "#### 🔎 Факт vs FAJ vs Эксперт"
+        f"### ⚽ {home_team} — {away_team}"
     )
-    home = match.get(
-        "home_team",
-        "Хозяева",
+
+    prediction = db.get_latest_prediction(
+        match_id
     )
-    away = match.get(
-        "away_team",
-        "Гости",
+
+    prediction = object_to_dict(
+        prediction
     )
-    faj_score = (
-        _get_prediction_score(
+
+    expert = get_latest_expert(
+        db,
+        match_id,
+    )
+
+    # --------------------------------------------------------
+    # PREDICTION
+    # --------------------------------------------------------
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+
+        faj_score = extract_prediction_score(
             prediction
         )
-        if prediction
-        else None
-    )
-    expert_score = (
-        _expert_score(
-            expert
+
+        st.metric(
+            "FAJ",
+            faj_score or "—",
         )
-        if expert
-        else None
-    )
-    fact_score = None
-    if fact:
-        fact_score = _format_score(
-            fact.get(
-                "home_goals"
-            ),
-            fact.get(
-                "away_goals"
-            ),
-        )
-    st.table(
-        [
-            {
-                "Источник": "Факт",
-                home: fact_score or "—",
-                away: "",
-            },
-            {
-                "Источник": "FAJ",
-                home: faj_score or "—",
-                away: "",
-            },
-            {
-                "Источник": "Эксперт",
-                home: expert_score or "—",
-                away: "",
-            },
-        ]
-    )
-# ============================================================
-# UI — MAIN
-# ============================================================
-def main():
-    st.set_page_config(
-        page_title=PAGE_TITLE,
-        page_icon="📥",
-        layout="wide",
-    )
-    st.title(
-        "📥 FAJ — Импорт фактов"
-    )
-    st.caption(
-        "Результаты → статистика → эксперт → validation → Gold → обучение"
-    )
-    db = get_database()
-    # ========================================================
-    # SEASON
-    # ========================================================
-    season_id = get_current_season_id(
-        db
-    )
-    if season_id is None:
-        st.error(
-            "❌ Сезон 2026-2027 не найден в БД."
-        )
-        st.stop()
-    rounds = get_rounds(
-        db,
-        season_id,
-    )
-    if not rounds:
-        st.warning(
-            "⚠️ В БД нет туров."
-        )
-        st.info(
-            "Сначала необходимо загрузить календарь туров."
-        )
-        st.stop()
-    # ========================================================
-    # ROUND SELECTOR
-    # ========================================================
-    round_options = {
-        int(
-            r.get(
-                "round_number"
+
+    with col2:
+
+        if expert:
+
+            expert_score = clean_score(
+                expert.get("score")
+                or expert.get("expert_score")
             )
-        ): r.get(
-            "id"
+
+        else:
+            expert_score = None
+
+        st.metric(
+            "Эксперт",
+            expert_score or "—",
         )
-        for r in rounds
-        if r.get(
-            "round_number"
-        ) is not None
-    }
-    round_numbers = sorted(
-        round_options.keys()
-    )
-    default_round = (
-        st.session_state.get(
-            "selected_round",
-            round_numbers[0],
+
+    with col3:
+
+        locked = db.is_result_locked(
+            match_id
         )
-    )
-    if default_round not in round_options:
-        default_round = round_numbers[0]
-    selected_round = st.selectbox(
-        "🏟️ Тур",
-        round_numbers,
-        index=round_numbers.index(
-            default_round
+
+        st.metric(
+            "Статус",
+            "🔒 LOCKED"
+            if locked
+            else "⏳ Ожидает",
+        )
+
+    # --------------------------------------------------------
+    # URL
+    # --------------------------------------------------------
+
+    url = st.text_input(
+        "🔗 Ссылка на матч",
+        key=f"{key_prefix}_url",
+        placeholder=(
+            "Вставьте ссылку на страницу матча"
         ),
-        format_func=lambda x: f"Тур {x}",
     )
-    st.session_state[
-        "selected_round"
-    ] = selected_round
-    round_id = round_options[
-        selected_round
-    ]
-    matches = get_round_matches(
-        db,
-        round_id,
-    )
-    if not matches:
-        st.warning(
-            "В выбранном туре нет матчей."
-        )
-        st.stop()
-    st.markdown(
-        f"### Тур {selected_round} — {len(matches)} матчей"
-    )
-    # ========================================================
-    # SESSION STATE
-    # ========================================================
-    if (
-        "import_facts"
-        not in st.session_state
+
+    if st.button(
+        "📥 Забрать данные",
+        key=f"{key_prefix}_parse",
+        use_container_width=True,
     ):
-        st.session_state[
-            "import_facts"
-        ] = {}
-    facts_state = st.session_state[
-        "import_facts"
-    ]
-    # ========================================================
-    # MATCH CARDS
-    # ========================================================
-    for index, match in enumerate(
-        matches
-    ):
-        match_id = match.get(
-            "id"
-        )
-        home_team = match.get(
-            "home_team",
-            "—",
-        )
-        away_team = match.get(
-            "away_team",
-            "—",
-        )
-        key_prefix = (
-            f"fact_{match_id}"
-        )
-        if key_prefix not in facts_state:
-            facts_state[
-                key_prefix
-            ] = {}
-        state = facts_state[
-            key_prefix
-        ]
-        st.divider()
-        st.subheader(
-            f"{index + 1}. {home_team} — {away_team}"
-        )
-        # ----------------------------------------------------
-        # CURRENT RESULT STATUS
-        # ----------------------------------------------------
-        try:
-            existing_result = (
-                db.get_match_result(
-                    match_id
-                )
+
+        if not url.strip():
+
+            st.error(
+                "Сначала вставьте ссылку."
             )
-        except Exception:
-            existing_result = None
-        if existing_result:
-            existing_home = (
-                existing_result.get(
-                    "home_goals"
-                )
-            )
-            existing_away = (
-                existing_result.get(
-                    "away_goals"
-                )
-            )
-            if (
-                existing_home is not None
-                and existing_away is not None
-            ):
-                st.success(
-                    f"Факт в БД: "
-                    f"{existing_home}:{existing_away}"
-                )
-        try:
-            locked = db.is_result_locked(
-                match_id
-            )
-        except Exception:
-            locked = False
-        if locked:
-            st.warning(
-                "🔒 Результат уже LOCK. Изменение запрещено."
-            )
-        # ----------------------------------------------------
-        # URL
-        # ----------------------------------------------------
-        url = st.text_input(
-            "🔗 Ссылка на страницу матча",
-            value=state.get(
-                "url",
-                "",
-            ),
-            key=f"{key_prefix}_url",
-            disabled=locked,
-            placeholder="https://...",
-        )
-        state[
-            "url"
-        ] = url
-        # ----------------------------------------------------
-        # FETCH
-        # ----------------------------------------------------
-        fetch_col, status_col = st.columns(
-            [1, 3]
-        )
-        with fetch_col:
-            fetch_clicked = st.button(
-                "📥 Забрать данные",
-                key=f"{key_prefix}_fetch",
-                disabled=(
-                    locked
-                    or not url
-                ),
-                use_container_width=True,
-            )
-        with status_col:
-            if state.get(
-                "fetched"
-            ):
-                st.success(
-                    "Данные загружены. Проверьте перед сохранением."
-                )
-        if fetch_clicked:
+
+        else:
+
             with st.spinner(
-                "Получаю данные со страницы..."
+                "Получаем результат и статистику..."
             ):
-                try:
-                    fact = fetch_match_facts(
-                        url
-                    )
-                    if not fact:
-                        st.error(
-                            "Не удалось получить данные."
-                        )
-                    else:
-                        state[
-                            "fact"
-                        ] = fact
-                        state[
-                            "fetched"
-                        ] = True
-                        st.success(
-                            "Данные получены."
-                        )
-                except Exception as exc:
-                    logger.exception(
-                        "Fact import error"
-                    )
-                    st.error(
-                        f"Ошибка: {exc}"
-                    )
+
+                fact = parse_fact_url(
+                    url.strip()
+                )
+
+            st.session_state[
+                f"{key_prefix}_fact"
+            ] = fact
+
+            if (
+                fact.get("home_goals")
+                is None
+                or fact.get("away_goals")
+                is None
+            ):
+
+                st.warning(
+                    "Статистика получена, "
+                    "но счёт автоматически определить "
+                    "не удалось."
+                )
+
+            else:
+
+                st.success(
+                    "Факт матча получен."
+                )
+
+    fact = st.session_state.get(
+        f"{key_prefix}_fact"
+    )
+
+    if fact:
+
         # ----------------------------------------------------
-        # DISPLAY FETCHED DATA
+        # FACT SCORE
         # ----------------------------------------------------
-        fact = state.get(
-            "fact"
+
+        home_goals = fact.get(
+            "home_goals"
         )
-        if fact:
-            score_col1, score_col2, score_col3 = st.columns(
-                3
-            )
-            with score_col1:
-                st.metric(
-                    "Фактический счёт",
-                    _format_score(
-                        fact.get(
-                            "home_goals"
-                        ),
-                        fact.get(
-                            "away_goals"
-                        ),
+
+        away_goals = fact.get(
+            "away_goals"
+        )
+
+        st.markdown(
+            f"**Факт: "
+            f"{home_goals if home_goals is not None else '—'}:"
+            f"{away_goals if away_goals is not None else '—'}**"
+        )
+
+        stats = fact.get(
+            "stats",
+            {},
+        )
+
+        # ----------------------------------------------------
+        # STATISTICS
+        # ----------------------------------------------------
+
+        stat_rows = [
+            (
+                "xG",
+                stats.get("home_xg"),
+                stats.get("away_xg"),
+            ),
+            (
+                "Удары",
+                stats.get("home_shots"),
+                stats.get("away_shots"),
+            ),
+            (
+                "Удары в створ",
+                stats.get("home_shots_on_target"),
+                stats.get("away_shots_on_target"),
+            ),
+            (
+                "Владение",
+                stats.get("home_possession"),
+                stats.get("away_possession"),
+            ),
+            (
+                "Угловые",
+                stats.get("home_corners"),
+                stats.get("away_corners"),
+            ),
+            (
+                "ЖК",
+                stats.get("home_yellow_cards"),
+                stats.get("away_yellow_cards"),
+            ),
+        ]
+
+        table_data = []
+
+        for name, home, away in stat_rows:
+
+            table_data.append(
+                {
+                    "Показатель": name,
+                    home_team: (
+                        home if home is not None else "—"
                     ),
-                )
-            with score_col2:
-                st.metric(
-                    "Качество данных",
-                    f"{fact.get('data_quality', 0) * 100:.0f}%",
-                )
-            with score_col3:
-                st.metric(
-                    "Источник",
-                    "URL",
-                )
-            render_stats(
-                fact.get(
-                    "stats",
-                    {},
-                )
+                    away_team: (
+                        away if away is not None else "—"
+                    ),
+                }
             )
-        # ----------------------------------------------------
-        # FAJ PREDICTION
-        # ----------------------------------------------------
-        try:
-            faj_prediction = (
-                db.get_latest_prediction(
-                    match_id
-                )
-            )
-        except Exception:
-            faj_prediction = None
-        # ----------------------------------------------------
-        # EXPERT PREDICTION
-        # ----------------------------------------------------
-        try:
-            expert_predictions = (
-                db.get_expert_predictions(
-                    match_id
-                )
-            )
-        except AttributeError:
-            expert_predictions = []
-        except Exception:
-            expert_predictions = []
-        latest_expert = None
-        if expert_predictions:
-            latest_expert = dict(
-                expert_predictions[0]
-            )
-        # ----------------------------------------------------
-        # COMPARISON
-        # ----------------------------------------------------
-        if (
-            fact
-            or faj_prediction
-            or latest_expert
-        ):
-            render_comparison(
-                match=match,
-                fact=fact,
-                prediction=faj_prediction,
-                expert=latest_expert,
-            )
+
+        st.dataframe(
+            table_data,
+            use_container_width=True,
+            hide_index=True,
+        )
+
         # ----------------------------------------------------
         # EXPERT INPUT
         # ----------------------------------------------------
+
         st.markdown(
-            "#### 🧠 Прогноз эксперта"
+            "**🧠 Экспертный прогноз директора**"
         )
-        expert_col1, expert_col2 = st.columns(
-            [2, 1]
+
+        expert_score_input = st.text_input(
+            "Счёт эксперта",
+            value=(
+                clean_score(
+                    expert.get("score")
+                    if expert
+                    else ""
+                )
+                or ""
+            ),
+            key=f"{key_prefix}_expert_score",
+            placeholder="Например: 2:1",
         )
-        with expert_col1:
-            expert_score = st.text_input(
-                "Счёт эксперта",
-                value=state.get(
-                    "expert_score",
-                    (
-                        _expert_score(
-                            latest_expert
-                        )
-                        if latest_expert
-                        else ""
-                    ),
-                ),
-                key=f"{key_prefix}_expert_score",
-                disabled=locked,
-                placeholder="Например: 2:1",
-            )
-        with expert_col2:
-            expert_confidence = st.slider(
-                "Уверенность, %",
-                min_value=0,
-                max_value=100,
-                value=int(
-                    state.get(
-                        "expert_confidence",
-                        (
-                            latest_expert.get(
-                                "confidence",
-                                50,
-                            )
-                            if latest_expert
-                            else 50
-                        ),
-                    )
-                ),
-                key=f"{key_prefix}_expert_confidence",
-                disabled=locked,
-            )
+
         expert_comment = st.text_area(
             "Комментарий эксперта",
-            value=state.get(
-                "expert_comment",
+            value=(
                 (
-                    latest_expert.get(
-                        "comment",
-                        "",
-                    )
-                    if latest_expert
-                    else ""
-                ),
+                    expert.get("comment")
+                    or expert.get("reasoning")
+                    or ""
+                )
+                if expert
+                else ""
             ),
             key=f"{key_prefix}_expert_comment",
-            disabled=locked,
-            placeholder=(
-                "Краткое объяснение прогноза..."
-            ),
         )
-        state[
-            "expert_score"
-        ] = expert_score
-        state[
-            "expert_confidence"
-        ] = expert_confidence
-        state[
-            "expert_comment"
-        ] = expert_comment
+
+        expert_confidence = st.slider(
+            "Уверенность эксперта",
+            min_value=0,
+            max_value=100,
+            value=(
+                safe_int(
+                    expert.get("confidence")
+                )
+                or 50
+                if expert
+                else 50
+            ),
+            key=f"{key_prefix}_expert_confidence",
+        )
+
         # ----------------------------------------------------
-        # SAVE
+        # COMPARISON
         # ----------------------------------------------------
-        save_clicked = st.button(
+
+        st.markdown(
+            "**📊 Сравнение**"
+        )
+
+        actual_score = clean_score(
+            f"{home_goals}:{away_goals}"
+            if home_goals is not None
+            and away_goals is not None
+            else None
+        )
+
+        faj_score = extract_prediction_score(
+            prediction
+        )
+
+        comparison = [
+            {
+                "Источник": "FAJ",
+                "Счёт": faj_score or "—",
+            },
+            {
+                "Источник": "Эксперт",
+                "Счёт": (
+                    clean_score(
+                        expert_score_input
+                    )
+                    or "—"
+                ),
+            },
+            {
+                "Источник": "Факт",
+                "Счёт": actual_score or "—",
+            },
+        ]
+
+        st.dataframe(
+            comparison,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        # ----------------------------------------------------
+        # SAVE BUTTON
+        # ----------------------------------------------------
+
+        if st.button(
             "✅ Сохранить факты",
             key=f"{key_prefix}_save",
-            disabled=(
-                locked
-                or not fact
-                or fact.get(
-                    "home_goals"
-                ) is None
-                or fact.get(
-                    "away_goals"
-                ) is None
-            ),
+            type="primary",
             use_container_width=True,
-        )
-        if save_clicked:
+        ):
+
             try:
-                expert_score_clean = (
-                    expert_score.strip()
-                    if expert_score
-                    else None
-                )
-                if expert_score_clean:
-                    eh, ea = (
-                        _parse_score_string(
-                            expert_score_clean
-                        )
-                    )
-                    if (
-                        eh is None
-                        or ea is None
-                    ):
-                        raise ValueError(
-                            "Прогноз эксперта должен быть в формате 2:1"
-                        )
-                    expert_score_clean = (
-                        f"{eh}:{ea}"
-                    )
-                saved = save_match_facts(
+
+                result = save_match_fact(
                     db=db,
                     match=match,
                     fact=fact,
-                    expert_name=DEFAULT_EXPERT_NAME,
                     expert_score=(
-                        expert_score_clean
+                        clean_score(
+                            expert_score_input
+                        )
+                        or ""
                     ),
-                    expert_comment=(
-                        expert_comment
-                    ),
-                    expert_confidence=(
-                        expert_confidence
-                    ),
+                    expert_comment=expert_comment,
+                    expert_confidence=expert_confidence,
                 )
-                state[
-                    "saved"
-                ] = True
+
                 st.success(
-                    "✅ Факты сохранены."
+                    "Факт сохранён и защищён."
                 )
-                st.write(
-                    {
-                        "match_id": saved[
-                            "match_id"
-                        ],
-                        "validation_id": saved[
-                            "validation_id"
-                        ],
-                        "gold_id": saved[
-                            "gold_id"
-                        ],
-                        "FAJ": saved[
-                            "faj_score"
-                        ],
-                        "Эксперт": saved[
-                            "expert_score"
-                        ],
-                        "Факт": saved[
-                            "actual_score"
-                        ],
-                    }
+
+                st.caption(
+                    f"Match ID: {result['match_id']} | "
+                    f"Validation ID: {result['validation_id']} | "
+                    f"Gold ID: {result['gold_id']}"
                 )
-                st.rerun()
+
+                st.session_state[
+                    f"{key_prefix}_saved"
+                ] = True
+
             except Exception as exc:
+
                 logger.exception(
-                    "Save facts error"
+                    "Ошибка сохранения факта"
                 )
+
                 st.error(
-                    f"❌ Не удалось сохранить: {exc}"
+                    f"Ошибка сохранения: {exc}"
                 )
+
+    st.divider()
+
+
+# ============================================================
+# LEARNING
+# ============================================================
+
+def run_learning() -> Any:
+
+    from app.learning_engine import run_learning
+
+    return run_learning(
+        db_path=DEFAULT_DB_PATH,
+        force=False,
+    )
+
+
+# ============================================================
+# MAIN PAGE
+# ============================================================
+
+def main() -> None:
+
+    st.set_page_config(
+        page_title=(
+            "FAJ — Импорт фактов"
+        ),
+        page_icon="⚽",
+        layout="wide",
+    )
+
+    st.title(
+        "⚽ FAJ — Импорт фактов"
+    )
+
+    st.caption(
+        f"FAJ Platform {APP_VERSION} | "
+        f"Import Facts {IMPORT_FACTS_VERSION}"
+    )
+
+    db = get_database()
+
+    # ========================================================
+    # HEADER
+    # ========================================================
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+
+        league = st.selectbox(
+            "🏆 Лига",
+            list(LEAGUES.keys()),
+            index=0,
+        )
+
+    with col2:
+
+        round_number = st.number_input(
+            "🔢 Тур",
+            min_value=1,
+            max_value=30,
+            value=1,
+            step=1,
+        )
+
+    st.session_state[
+        "selected_league"
+    ] = league
+
+    st.session_state[
+        "selected_round"
+    ] = int(round_number)
+
+    # ========================================================
+    # LOAD MATCHES
+    # ========================================================
+
+    matches = get_round_matches(
+        db,
+        int(round_number),
+    )
+
+    st.markdown(
+        f"## {league} — {round_number}-й тур"
+    )
+
+    if not matches:
+
+        st.warning(
+            "Матчи выбранного тура не найдены."
+        )
+
+        st.stop()
+
+    st.info(
+        f"Найдено матчей: {len(matches)}"
+    )
+
+    # ========================================================
+    # MATCH CARDS
+    # ========================================================
+
+    for index, match in enumerate(
+        matches
+    ):
+
+        render_match_card(
+            db=db,
+            match=match,
+            index=index,
+        )
+
     # ========================================================
     # LEARNING
     # ========================================================
-    st.divider()
-    st.header(
-        "🧠 Обучение FAJ"
+
+    st.markdown(
+        "## 🧠 Обучение"
     )
-    st.write(
-        f"После сохранения фактов тура {selected_round} "
-        "можно запустить пакетное обучение."
+
+    st.caption(
+        "Обучение запускается после сохранения "
+        "фактов тура."
     )
-    learning_col1, learning_col2 = st.columns(
-        2
-    )
-    with learning_col1:
-        if st.button(
-            "🧠 Обучение",
-            key="run_learning",
-            use_container_width=True,
-        ):
-            try:
-                from app.learning_engine import (
-                    run_learning
+
+    if st.button(
+        "🧠 Обучение",
+        type="primary",
+        use_container_width=True,
+    ):
+
+        try:
+
+            with st.spinner(
+                "FAJ Learning Engine обучается..."
+            ):
+
+                result = run_learning()
+
+            st.success(
+                "Обучение завершено."
+            )
+
+            if result is not None:
+
+                st.write(
+                    result
                 )
-                # ------------------------------------------------
-                # ВАЖНО:
-                # обучение запускается отдельно от импорта.
-                # Оно получает уже сохранённые факты.
-                # ------------------------------------------------
-                result = run_learning(
-                    db_path=str(
-                        getattr(
-                            config,
-                            "DB_PATH",
-                            "data/faj.db",
-                        )
-                    ),
-                    force=False,
-                )
-                st.success(
-                    "🧠 Обучение завершено."
-                )
-                if result is not None:
-                    st.json(
-                        result
-                    )
-            except Exception as exc:
-                logger.exception(
-                    "Learning error"
-                )
-                st.error(
-                    f"❌ Ошибка обучения: {exc}"
-                )
-    with learning_col2:
-        st.info(
-            "Обучение не выполняется автоматически "
-            "при сохранении каждого матча. "
-            "Сначала сохраняется весь тур, затем "
-            "запускается пакетное обучение."
-        )
+
+        except Exception as exc:
+
+            logger.exception(
+                "Ошибка обучения"
+            )
+
+            st.error(
+                f"Ошибка Learning Engine: {exc}"
+            )
+
+
 # ============================================================
 # ENTRY POINT
 # ============================================================
+
 if __name__ == "__main__":
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format=(
+            "%(asctime)s | "
+            "%(levelname)s | "
+            "%(message)s"
+        ),
+    )
+
     main()
