@@ -7,21 +7,22 @@ FAJ Platform v12.1
 Soccerway Stats Parser v1.0
 ============================================================
 
-Источник:
+НАЗНАЧЕНИЕ:
+    Универсальный парсер статистики матчей Soccerway.
+
+ИСТОЧНИК:
     Soccerway
 
-Назначение:
-    Получение факта матча и статистики.
+ПРИНЦИП:
+    URL матча -> HTML -> структурированные данные -> FAJ
 
-ПРИНЦИПЫ:
-    - счёт и статистика извлекаются раздельно;
-    - не ищем случайные числа по всей странице;
-    - сначала определяем конкретный блок;
-    - затем извлекаем пару HOME/AWAY;
-    - каждый показатель проходит валидацию;
-    - сомнительное значение -> None;
-    - никакой подстановки случайных чисел;
-    - неизвестная структура страницы не должна создавать ложный факт.
+ВАЖНО:
+    - Не ищем случайные числа по всей странице.
+    - Счёт ищется отдельно.
+    - Статистика ищется по названию показателя.
+    - Невозможно определить значение -> None.
+    - Подозрительное значение не принимается.
+    - Парсер не изменяет БД.
 """
 
 from __future__ import annotations
@@ -40,161 +41,273 @@ logger = logging.getLogger(__name__)
 
 
 class SoccerwayStatsParser:
+
     VERSION = "1.0"
 
     DEFAULT_TIMEOUT = 20
 
-    # --------------------------------------------------------
-    # Названия показателей Soccerway
-    # --------------------------------------------------------
+    HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 "
+            "(KHTML, like Gecko) "
+            "Chrome/128.0 Safari/537.36"
+        ),
+        "Accept": (
+            "text/html,application/xhtml+xml,"
+            "application/xml;q=0.9,image/avif,image/webp,"
+            "*/*;q=0.8"
+        ),
+        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+        "Connection": "keep-alive",
+    }
+
+    # ========================================================
+    # НАЗВАНИЯ СТАТИСТИКИ
+    # ========================================================
 
     STAT_ALIASES = {
+
         "xg": [
-            "xg",
-            "ожидаемые голы",
-            "expected goals",
+            "xG",
+            "Ожидаемые голы",
+            "Expected Goals",
         ],
+
         "xgot": [
-            "xgot",
-            "xg после ударов в створ",
-            "expected goals on target",
+            "xGOT",
+            "Ожидаемые голы после ударов в створ",
         ],
+
         "possession": [
-            "владение",
-            "владение мячом",
-            "possession",
+            "Владение",
+            "Владение мячом",
+            "Possession",
         ],
+
         "shots": [
-            "всего ударов",
-            "удары",
-            "shots",
+            "Удары",
+            "Всего ударов",
+            "Total shots",
+            "Shots",
         ],
+
         "shots_on_target": [
-            "удары в створ",
-            "shots on target",
+            "Удары в створ",
+            "Shots on target",
         ],
+
         "big_chances": [
-            "голевые моменты",
-            "голевые возможности",
-            "big chances",
+            "Голевые моменты",
+            "Большие моменты",
+            "Big chances",
         ],
+
         "corners": [
-            "угловые",
-            "corner kicks",
-            "corners",
+            "Угловые",
+            "Угловые удары",
+            "Corners",
+            "Corner kicks",
         ],
+
         "fouls": [
-            "фолы",
-            "fouls",
+            "Фолы",
+            "Нарушения",
+            "Fouls",
         ],
+
+        "yellow_cards": [
+            "Жёлтые карточки",
+            "Желтые карточки",
+            "Yellow cards",
+        ],
+
+        "red_cards": [
+            "Красные карточки",
+            "Red cards",
+        ],
+
         "offsides": [
-            "офсайды",
-            "offsides",
+            "Офсайды",
+            "Положения вне игры",
+            "Offsides",
         ],
+
         "goalkeeper_saves": [
-            "сэйвы вратаря",
-            "сейвы вратаря",
-            "вратарские сейвы",
-            "goalkeeper saves",
-            "saves",
+            "Сэйвы",
+            "Сейвы",
+            "Спасения",
+            "Saves",
         ],
+
         "goal_kicks": [
-            "удары от ворот",
-            "goal kicks",
+            "Удары от ворот",
+            "Goal kicks",
         ],
-        "touches_box": [
-            "касания мяча в штрафной соперника",
-            "касания в штрафной",
-            "touches in opposition box",
-        ],
-        "xa": [
-            "ожидаемые ассисты",
-            "expected assists",
-            "xa",
-        ],
-        "duels_won": [
-            "выиграно дуэлей",
-            "duels won",
-        ],
+
         "clearances": [
-            "выносы",
-            "clearances",
+            "Выносы",
+            "Clearances",
         ],
+
         "interceptions": [
-            "перехваты",
-            "interceptions",
+            "Перехваты",
+            "Interceptions",
         ],
-        "free_kicks": [
-            "штрафные",
-            "free kicks",
+
+        "duels_won": [
+            "Выиграно дуэлей",
+            "Дуэли выиграны",
+            "Duels won",
+        ],
+
+        "touches_penalty_area": [
+            "Касания мяча в штрафной",
+            "Touches in opposition box",
+        ],
+
+        "passes": [
+            "Передачи",
+            "Passes",
+        ],
+
+        "xA": [
+            "xA",
+            "Ожидаемые ассисты",
+            "Expected assists",
         ],
     }
 
-    # --------------------------------------------------------
-    # Диапазоны
-    # --------------------------------------------------------
+    # ========================================================
+    # РЕЗУЛЬТАТЫ FAJ
+    # ========================================================
 
-    LIMITS = {
+    RESULT_KEYS = {
+        "xg": ("home_xg", "away_xg"),
+        "xgot": ("home_xgot", "away_xgot"),
+        "possession": ("home_possession", "away_possession"),
+        "shots": ("home_shots", "away_shots"),
+        "shots_on_target": (
+            "home_shots_on_target",
+            "away_shots_on_target",
+        ),
+        "big_chances": (
+            "home_big_chances",
+            "away_big_chances",
+        ),
+        "corners": (
+            "home_corners",
+            "away_corners",
+        ),
+        "fouls": (
+            "home_fouls",
+            "away_fouls",
+        ),
+        "yellow_cards": (
+            "home_yellow_cards",
+            "away_yellow_cards",
+        ),
+        "red_cards": (
+            "home_red_cards",
+            "away_red_cards",
+        ),
+        "offsides": (
+            "home_offsides",
+            "away_offsides",
+        ),
+        "goalkeeper_saves": (
+            "home_goalkeeper_saves",
+            "away_goalkeeper_saves",
+        ),
+        "goal_kicks": (
+            "home_goal_kicks",
+            "away_goal_kicks",
+        ),
+        "clearances": (
+            "home_clearances",
+            "away_clearances",
+        ),
+        "interceptions": (
+            "home_interceptions",
+            "away_interceptions",
+        ),
+        "duels_won": (
+            "home_duels_won",
+            "away_duels_won",
+        ),
+        "touches_penalty_area": (
+            "home_touches_penalty_area",
+            "away_touches_penalty_area",
+        ),
+        "passes": (
+            "home_passes",
+            "away_passes",
+        ),
+        "xA": (
+            "home_xa",
+            "away_xa",
+        ),
+    }
+
+    # ========================================================
+    # ДОПУСТИМЫЕ ДИАПАЗОНЫ
+    # ========================================================
+
+    VALID_RANGES = {
         "xg": (0.0, 10.0),
         "xgot": (0.0, 10.0),
         "possession": (0.0, 100.0),
         "shots": (0, 60),
-        "shots_on_target": (0, 40),
+        "shots_on_target": (0, 30),
         "big_chances": (0, 20),
         "corners": (0, 20),
         "fouls": (0, 50),
-        "offsides": (0, 20),
-        "goalkeeper_saves": (0, 30),
+        "yellow_cards": (0, 15),
+        "red_cards": (0, 5),
+        "offsides": (0, 15),
+        "goalkeeper_saves": (0, 20),
         "goal_kicks": (0, 30),
-        "touches_box": (0, 100),
-        "xa": (0.0, 10.0),
+        "clearances": (0, 60),
+        "interceptions": (0, 50),
         "duels_won": (0, 150),
-        "clearances": (0, 100),
-        "interceptions": (0, 100),
-        "free_kicks": (0, 50),
+        "touches_penalty_area": (0, 100),
+        "passes": (0, 1500),
+        "xA": (0.0, 10.0),
     }
 
+    # ========================================================
+    # INIT
+    # ========================================================
+
     def __init__(self, timeout: int = DEFAULT_TIMEOUT):
+
         self.timeout = timeout
 
         self.session = requests.Session()
 
-        self.session.headers.update(
-            {
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) "
-                    "Chrome/128.0 Safari/537.36"
-                ),
-                "Accept": (
-                    "text/html,application/xhtml+xml,"
-                    "application/xml;q=0.9,image/avif,image/webp,"
-                    "*/*;q=0.8"
-                ),
-                "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-            }
-        )
+        self.session.headers.update(self.HEADERS)
 
     # ========================================================
-    # PUBLIC API
+    # ПУБЛИЧНЫЙ МЕТОД
     # ========================================================
 
-    def parse(self, url: str) -> Dict[str, Any]:
-        """
-        Полный разбор страницы Soccerway.
-        """
+    def parse_match(
+        self,
+        url: str,
+    ) -> Dict[str, Any]:
 
         result = self._empty_result()
 
         if not url:
-            result["error"] = "URL не указан"
+            result["error"] = "URL is empty"
             return result
 
         try:
+
             response = self.session.get(
                 url,
                 timeout=self.timeout,
+                allow_redirects=True,
             )
 
             response.raise_for_status()
@@ -204,65 +317,68 @@ class SoccerwayStatsParser:
                 "html.parser",
             )
 
+            result["source_url"] = url
+
             # ------------------------------------------------
-            # Команды
+            # КОМАНДЫ
             # ------------------------------------------------
 
-            home_team, away_team = self._extract_teams(soup)
+            home, away = self._extract_teams(soup)
 
-            home_team, away_team = normalize_team_names(
-                home_team,
-                away_team,
-                strict=False,
+            if home or away:
+
+                home, away = normalize_team_names(
+                    home,
+                    away,
+                    strict=False,
+                )
+
+            result["home_team"] = home
+            result["away_team"] = away
+
+            # ------------------------------------------------
+            # СЧЁТ
+            # ------------------------------------------------
+
+            score = self._extract_score(
+                soup,
+                home,
+                away,
             )
 
-            result["home_team"] = home_team
-            result["away_team"] = away_team
+            if score:
 
-            # ------------------------------------------------
-            # Счёт
-            # ------------------------------------------------
-
-            score = self._extract_score(soup)
-
-            if score is not None:
                 result["home_score"] = score[0]
                 result["away_score"] = score[1]
 
             # ------------------------------------------------
-            # Статистика
+            # СТАТИСТИКА
             # ------------------------------------------------
 
-            stats_container = self._find_statistics_container(
-                soup
+            stats = self._extract_statistics(
+                soup,
             )
 
-            if stats_container is not None:
-                stats = self._extract_statistics(
-                    stats_container
-                )
-
-                result.update(stats)
-
-            # ------------------------------------------------
-            # Валидация
-            # ------------------------------------------------
-
-            result = self._validate_result(result)
-
-            result["success"] = (
-                result["home_score"] is not None
-                and result["away_score"] is not None
+            stats = self._validate_statistics(
+                stats,
             )
 
-            if not result["success"]:
-                result["warning"] = (
-                    "Не удалось надёжно определить итоговый счёт."
-                )
+            result.update(stats)
+
+            # ------------------------------------------------
+            # СТАТУС
+            # ------------------------------------------------
+
+            result["status"] = self._extract_status(
+                soup,
+            )
+
+            result["success"] = True
 
             return result
 
         except requests.RequestException as exc:
+
             logger.error(
                 "Soccerway request error: %s",
                 exc,
@@ -273,8 +389,9 @@ class SoccerwayStatsParser:
             return result
 
         except Exception as exc:
+
             logger.exception(
-                "Soccerway parser error"
+                "Soccerway parser error",
             )
 
             result["error"] = str(exc)
@@ -282,16 +399,14 @@ class SoccerwayStatsParser:
             return result
 
     # ========================================================
-    # EMPTY RESULT
+    # ПУСТОЙ РЕЗУЛЬТАТ
     # ========================================================
 
     def _empty_result(self) -> Dict[str, Any]:
 
-        return {
-            "source": "soccerway",
-            "parser_version": self.VERSION,
-
+        result = {
             "success": False,
+            "source_url": None,
 
             "home_team": None,
             "away_team": None,
@@ -299,63 +414,20 @@ class SoccerwayStatsParser:
             "home_score": None,
             "away_score": None,
 
-            "home_xg": None,
-            "away_xg": None,
-
-            "home_xgot": None,
-            "away_xgot": None,
-
-            "home_possession": None,
-            "away_possession": None,
-
-            "home_shots": None,
-            "away_shots": None,
-
-            "home_shots_on_target": None,
-            "away_shots_on_target": None,
-
-            "home_big_chances": None,
-            "away_big_chances": None,
-
-            "home_corners": None,
-            "away_corners": None,
-
-            "home_fouls": None,
-            "away_fouls": None,
-
-            "home_offsides": None,
-            "away_offsides": None,
-
-            "home_goalkeeper_saves": None,
-            "away_goalkeeper_saves": None,
-
-            "home_goal_kicks": None,
-            "away_goal_kicks": None,
-
-            "home_touches_box": None,
-            "away_touches_box": None,
-
-            "home_xa": None,
-            "away_xa": None,
-
-            "home_duels_won": None,
-            "away_duels_won": None,
-
-            "home_clearances": None,
-            "away_clearances": None,
-
-            "home_interceptions": None,
-            "away_interceptions": None,
-
-            "home_free_kicks": None,
-            "away_free_kicks": None,
+            "status": None,
 
             "error": None,
-            "warning": None,
         }
 
+        for key in self.RESULT_KEYS.values():
+
+            result[key[0]] = None
+            result[key[1]] = None
+
+        return result
+
     # ========================================================
-    # TEAM EXTRACTION
+    # КОМАНДЫ
     # ========================================================
 
     def _extract_teams(
@@ -363,530 +435,595 @@ class SoccerwayStatsParser:
         soup: BeautifulSoup,
     ) -> Tuple[Optional[str], Optional[str]]:
 
-        # Сначала ищем наиболее вероятные match-контейнеры.
-        containers = []
-
-        for selector in [
-            "[class*='match']",
-            "[class*='Match']",
-            "[class*='summary']",
-            "[class*='Summary']",
-        ]:
-            containers.extend(
-                soup.select(selector)
-            )
-
-        # Ищем текстовые элементы с названиями.
         candidates = []
 
-        for container in containers[:100]:
-            text = container.get_text(
-                " ",
-                strip=True,
+        # Сначала специальные классы
+        selectors = [
+            "[class*='team']",
+            "[class*='Team']",
+            "[class*='home']",
+            "[class*='away']",
+        ]
+
+        for selector in selectors:
+
+            for element in soup.select(selector):
+
+                text = self._clean_text(
+                    element.get_text(" ", strip=True)
+                )
+
+                if self._looks_like_team_name(text):
+
+                    candidates.append(text)
+
+        # Затем заголовки
+        for element in soup.find_all(
+            ["h1", "h2", "h3"]
+        ):
+
+            text = self._clean_text(
+                element.get_text(" ", strip=True)
             )
 
-            if (
-                "Динамо" in text
-                or "Крылья" in text
-            ):
-                candidates.append(container)
+            if " - " in text:
 
-        # Универсальный fallback:
-        # заголовок страницы.
-        title = soup.find("title")
+                parts = text.split(" - ")
 
-        if title:
-            candidates.append(title)
+                if len(parts) == 2:
 
-        for element in candidates:
-            text = element.get_text(
-                " ",
-                strip=True,
+                    return (
+                        parts[0].strip(),
+                        parts[1].strip(),
+                    )
+
+        # Удаляем дубликаты
+        unique = []
+
+        for item in candidates:
+
+            if item not in unique:
+                unique.append(item)
+
+        if len(unique) >= 2:
+
+            return (
+                unique[0],
+                unique[1],
             )
-
-            match = re.search(
-                r"(.+?)\s*[-–—]\s*(.+?)\s+(?:\d{1,2}[-:]\d{1,2})",
-                text,
-                re.IGNORECASE,
-            )
-
-            if match:
-                home = match.group(1).strip()
-                away = match.group(2).strip()
-
-                return home, away
 
         return None, None
 
     # ========================================================
-    # SCORE
+    # СЧЁТ
     # ========================================================
 
     def _extract_score(
         self,
         soup: BeautifulSoup,
+        home: Optional[str],
+        away: Optional[str],
     ) -> Optional[Tuple[int, int]]:
 
-        # ----------------------------------------------------
-        # 1. Тег title
-        # ----------------------------------------------------
-
-        title = soup.find("title")
-
-        if title:
-            score = self._score_from_text(
-                title.get_text(" ", strip=True)
-            )
-
-            if score is not None:
-                return score
-
-        # ----------------------------------------------------
-        # 2. Матчевые блоки
-        # ----------------------------------------------------
+        # ВАЖНО:
+        # не ищем "0-0" по всей странице сразу.
 
         selectors = [
+            ".score",
+            ".match-score",
+            ".scoreboard",
+            ".result",
+            ".match-result",
             "[class*='score']",
             "[class*='Score']",
             "[class*='result']",
             "[class*='Result']",
         ]
 
+        checked = set()
+
         for selector in selectors:
 
-            elements = soup.select(selector)
+            for element in soup.select(selector):
 
-            for element in elements:
-
-                text = element.get_text(
-                    " ",
-                    strip=True,
-                )
-
-                # Защита:
-                # элемент должен быть коротким.
-                if len(text) > 100:
+                if id(element) in checked:
                     continue
 
-                score = self._score_from_text(text)
+                checked.add(id(element))
 
-                if score is not None:
-                    return score
-
-        # ----------------------------------------------------
-        # 3. Заголовок матча
-        # ----------------------------------------------------
-
-        for element in soup.find_all(
-            ["h1", "h2", "h3"]
-        ):
-
-            text = element.get_text(
-                " ",
-                strip=True,
-            )
-
-            if (
-                "Динамо" in text
-                or "Крылья" in text
-            ):
-
-                score = self._score_from_text(
-                    text
+                text = self._clean_text(
+                    element.get_text(" ", strip=True)
                 )
 
-                if score is not None:
-                    return score
+                score = self._parse_score(
+                    text,
+                )
 
-        # ----------------------------------------------------
-        # ВАЖНО:
-        # НЕ ищем счёт по всей странице.
-        # ----------------------------------------------------
+                if score:
 
-        return None
-
-    def _score_from_text(
-        self,
-        text: str,
-    ) -> Optional[Tuple[int, int]]:
-
-        if not text:
-            return None
-
-        patterns = [
-            r"\b(\d{1,2})\s*[-:]\s*(\d{1,2})\b",
-        ]
-
-        for pattern in patterns:
-
-            match = re.search(
-                pattern,
-                text,
-            )
-
-            if not match:
-                continue
-
-            home = int(match.group(1))
-            away = int(match.group(2))
-
-            if (
-                0 <= home <= 15
-                and 0 <= away <= 15
-            ):
-                return home, away
-
-        return None
-
-    # ========================================================
-    # STATISTICS CONTAINER
-    # ========================================================
-
-    def _find_statistics_container(
-        self,
-        soup: BeautifulSoup,
-    ) -> Optional[Tag]:
-
-        # ----------------------------------------------------
-        # Точные/вероятные классы
-        # ----------------------------------------------------
-
-        selectors = [
-            ".statistics",
-            ".stats",
-            ".stats-table",
-            "[class*='statistics']",
-            "[class*='Statistics']",
-            "[class*='stats']",
-            "[class*='Stats']",
-        ]
-
-        for selector in selectors:
-
-            elements = soup.select(selector)
-
-            for element in elements:
-
-                text = element.get_text(
-                    " ",
-                    strip=True,
-                ).lower()
-
-                # Контейнер должен действительно
-                # содержать статистические показатели.
-                hits = 0
-
-                for aliases in self.STAT_ALIASES.values():
-
-                    if any(
-                        alias.lower() in text
-                        for alias in aliases
+                    # Дополнительная защита
+                    if self._reasonable_score(
+                        score
                     ):
-                        hits += 1
+                        return score
 
-                if hits >= 2:
-                    return element
+        # Заголовок страницы — только если
+        # одновременно присутствуют названия команд.
+        title = soup.find("title")
 
-        # ----------------------------------------------------
-        # По заголовку "Статистика"
-        # ----------------------------------------------------
+        if title:
 
-        for element in soup.find_all(
-            ["h1", "h2", "h3", "h4", "div", "span"]
-        ):
+            text = self._clean_text(
+                title.get_text(" ", strip=True)
+            )
 
-            text = element.get_text(
-                " ",
-                strip=True,
-            ).lower()
-
-            if text not in (
-                "статистика",
-                "statistics",
-            ):
-                continue
-
-            parent = element.parent
-
-            if parent:
-
-                text_parent = parent.get_text(
-                    " ",
-                    strip=True,
-                ).lower()
-
-                hits = sum(
-                    1
-                    for aliases in self.STAT_ALIASES.values()
-                    if any(
-                        alias.lower() in text_parent
-                        for alias in aliases
-                    )
+            if (
+                home
+                and away
+                and self._contains_team_pair(
+                    text,
+                    home,
+                    away,
                 )
+            ):
 
-                if hits >= 2:
-                    return parent
+                score = self._parse_score(text)
+
+                if score:
+                    return score
 
         return None
 
     # ========================================================
-    # STATISTICS EXTRACTION
+    # СТАТИСТИКА
     # ========================================================
 
     def _extract_statistics(
         self,
-        container: Tag,
+        soup: BeautifulSoup,
     ) -> Dict[str, Any]:
 
         result = {}
 
         # ----------------------------------------------------
-        # 1. Строки таблиц
+        # 1. Таблицы
         # ----------------------------------------------------
 
-        for row in container.find_all("tr"):
+        for table in soup.find_all("table"):
 
-            cells = row.find_all(
-                ["td", "th"]
-            )
+            for row in table.find_all("tr"):
 
-            if len(cells) < 2:
-                continue
+                extracted = self._extract_stat_row(
+                    row,
+                )
 
-            label = cells[
-                len(cells) // 2
-            ].get_text(
-                " ",
-                strip=True,
-            )
+                if extracted:
 
-            row_text = row.get_text(
-                " ",
-                strip=True,
-            )
+                    key, home_value, away_value = extracted
 
-            self._process_stat_row(
-                row_text,
-                result,
-            )
+                    result[key] = (
+                        home_value,
+                        away_value,
+                    )
 
         # ----------------------------------------------------
-        # 2. Div/stat-row структура
+        # 2. DIV / блоки статистики
         # ----------------------------------------------------
 
-        for row in container.find_all(
-            class_=re.compile(
-                r"stat|statistics",
-                re.IGNORECASE,
-            )
+        for element in soup.find_all(
+            ["div", "li", "section"]
         ):
 
-            text = row.get_text(
-                " ",
-                strip=True,
+            extracted = self._extract_stat_block(
+                element,
             )
 
-            self._process_stat_row(
-                text,
-                result,
-            )
+            if extracted:
 
-        # ----------------------------------------------------
-        # 3. Универсальная обработка элементов
-        # ----------------------------------------------------
+                key, home_value, away_value = extracted
 
-        for element in container.find_all(
-            ["div", "li", "p"]
-        ):
+                if key not in result:
 
-            text = element.get_text(
-                " ",
-                strip=True,
-            )
+                    result[key] = (
+                        home_value,
+                        away_value,
+                    )
 
-            if len(text) > 250:
-                continue
-
-            self._process_stat_row(
-                text,
-                result,
-            )
-
-        return result
-
-    # ========================================================
-    # PROCESS ONE STAT ROW
-    # ========================================================
-
-    def _process_stat_row(
-        self,
-        text: str,
-        result: Dict[str, Any],
-    ) -> None:
-
-        if not text:
-            return
-
-        normalized = self._normalize_text(
-            text
+        return self._flatten_statistics(
+            result,
         )
 
-        for stat_key, aliases in (
-            self.STAT_ALIASES.items()
-        ):
-
-            matched = False
-
-            for alias in aliases:
-
-                if self._normalize_text(
-                    alias
-                ) in normalized:
-
-                    matched = True
-                    break
-
-            if not matched:
-                continue
-
-            values = self._extract_pair(
-                text,
-                stat_key,
-            )
-
-            if values is None:
-                continue
-
-            home, away = values
-
-            home_key = (
-                f"home_{stat_key}"
-            )
-
-            away_key = (
-                f"away_{stat_key}"
-            )
-
-            # Не перезаписываем уже найденное
-            # более надёжное значение.
-            if result.get(home_key) is None:
-                result[home_key] = home
-
-            if result.get(away_key) is None:
-                result[away_key] = away
-
-            return
-
     # ========================================================
-    # PAIR EXTRACTION
+    # СТРОКА СТАТИСТИКИ
     # ========================================================
 
-    def _extract_pair(
+    def _extract_stat_row(
         self,
-        text: str,
-        stat_key: str,
-    ) -> Optional[Tuple[Any, Any]]:
+        row: Tag,
+    ) -> Optional[Tuple[str, Any, Any]]:
 
-        # ----------------------------------------------------
-        # Передачи вида 453/539 (84%)
-        # Для основного показателя нужны первые
-        # значения только если показатель соответствующий.
-        # ----------------------------------------------------
+        text = self._clean_text(
+            row.get_text(" ", strip=True)
+        )
 
-        if stat_key in (
-            "xg",
-            "xgot",
-            "xa",
-        ):
-
-            numbers = re.findall(
-                r"\d+(?:[.,]\d+)?",
-                text,
-            )
-
-            if len(numbers) < 2:
-                return None
-
-            return (
-                float(numbers[0].replace(",", ".")),
-                float(numbers[1].replace(",", ".")),
-            )
-
-        # ----------------------------------------------------
-        # Обычные целые показатели
-        # ----------------------------------------------------
-
-        numbers = re.findall(
-            r"\b\d+(?:[.,]\d+)?%?\b",
+        key = self._identify_stat(
             text,
         )
 
+        if not key:
+            return None
+
+        cells = row.find_all(
+            ["td", "th"]
+        )
+
+        if len(cells) < 3:
+            return None
+
         values = []
 
-        for number in numbers:
+        for cell in cells:
 
-            clean = number.replace(
-                "%",
-                "",
-            ).replace(
-                ",",
-                ".",
+            value = self._parse_stat_value(
+                cell.get_text(
+                    " ",
+                    strip=True,
+                )
             )
 
-            try:
-
-                if "." in clean:
-                    value = float(clean)
-                else:
-                    value = int(clean)
+            if value is not None:
 
                 values.append(value)
-
-            except ValueError:
-                continue
 
         if len(values) < 2:
             return None
 
-        # Владение
-        if stat_key == "possession":
-
-            percentages = re.findall(
-                r"(\d+(?:[.,]\d+)?)\s*%",
-                text,
-            )
-
-            if len(percentages) >= 2:
-
-                return (
-                    float(
-                        percentages[0].replace(
-                            ",",
-                            ".",
-                        )
-                    ),
-                    float(
-                        percentages[1].replace(
-                            ",",
-                            ".",
-                        )
-                    ),
-                )
-
-        return values[0], values[1]
+        return (
+            key,
+            values[0],
+            values[-1],
+        )
 
     # ========================================================
-    # NORMALIZATION
+    # БЛОК СТАТИСТИКИ
+    # ========================================================
+
+    def _extract_stat_block(
+        self,
+        element: Tag,
+    ) -> Optional[Tuple[str, Any, Any]]:
+
+        text = self._clean_text(
+            element.get_text(" ", strip=True)
+        )
+
+        if len(text) > 300:
+            return None
+
+        key = self._identify_stat(
+            text,
+        )
+
+        if not key:
+            return None
+
+        # Ищем дочерние элементы
+        values = []
+
+        for child in element.find_all(
+            ["span", "div", "strong", "b"]
+        ):
+
+            value = self._parse_stat_value(
+                child.get_text(
+                    " ",
+                    strip=True,
+                )
+            )
+
+            if value is not None:
+
+                values.append(value)
+
+        if len(values) < 2:
+            return None
+
+        return (
+            key,
+            values[0],
+            values[-1],
+        )
+
+    # ========================================================
+    # ОПРЕДЕЛЕНИЕ ПОКАЗАТЕЛЯ
+    # ========================================================
+
+    def _identify_stat(
+        self,
+        text: str,
+    ) -> Optional[str]:
+
+        normalized = self._normalize_label(
+            text,
+        )
+
+        for key, aliases in self.STAT_ALIASES.items():
+
+            for alias in aliases:
+
+                alias_normalized = self._normalize_label(
+                    alias,
+                )
+
+                if normalized == alias_normalized:
+
+                    return key
+
+        # Если строка содержит label + значения,
+        # проверяем только начало/основную часть.
+        for key, aliases in self.STAT_ALIASES.items():
+
+            for alias in aliases:
+
+                alias_normalized = self._normalize_label(
+                    alias,
+                )
+
+                if alias_normalized in normalized:
+
+                    return key
+
+        return None
+
+    # ========================================================
+    # ПАРСИНГ ЗНАЧЕНИЯ
+    # ========================================================
+
+    def _parse_stat_value(
+        self,
+        text: str,
+    ) -> Optional[Any]:
+
+        if not text:
+            return None
+
+        value = text.strip()
+
+        # Передачи вида 453/539 (84%)
+        match = re.fullmatch(
+            r"(\d+)\s*/\s*(\d+)\s*(?:\(\s*\d+%\s*\))?",
+            value,
+        )
+
+        if match:
+
+            return int(match.group(1))
+
+        # Процент
+        match = re.fullmatch(
+            r"(\d+(?:[.,]\d+)?)\s*%",
+            value,
+        )
+
+        if match:
+
+            return float(
+                match.group(1).replace(",", ".")
+            )
+
+        # Обычное число
+        match = re.fullmatch(
+            r"\d+(?:[.,]\d+)?",
+            value,
+        )
+
+        if match:
+
+            number = float(
+                value.replace(",", ".")
+            )
+
+            if number.is_integer():
+
+                return int(number)
+
+            return number
+
+        return None
+
+    # ========================================================
+    # ВАЛИДАЦИЯ
+    # ========================================================
+
+    def _validate_statistics(
+        self,
+        stats: Dict[str, Any],
+    ) -> Dict[str, Any]:
+
+        validated = {}
+
+        for key, pair in stats.items():
+
+            if not isinstance(pair, tuple):
+                continue
+
+            home_value, away_value = pair
+
+            if not self._valid_value(
+                key,
+                home_value,
+            ):
+                home_value = None
+
+            if not self._valid_value(
+                key,
+                away_value,
+            ):
+                away_value = None
+
+            # Логические проверки
+            if key == "shots_on_target":
+
+                shots = stats.get("shots")
+
+                if shots:
+
+                    if (
+                        home_value is not None
+                        and home_value > shots[0]
+                    ):
+                        home_value = None
+
+                    if (
+                        away_value is not None
+                        and away_value > shots[1]
+                    ):
+                        away_value = None
+
+            validated[key] = (
+                home_value,
+                away_value,
+            )
+
+        # Владение
+        possession = validated.get(
+            "possession"
+        )
+
+        if possession:
+
+            home = possession[0]
+            away = possession[1]
+
+            if (
+                home is not None
+                and away is not None
+                and abs((home + away) - 100) > 3
+            ):
+
+                logger.warning(
+                    "Soccerway: invalid possession "
+                    "%s : %s",
+                    home,
+                    away,
+                )
+
+                validated["possession"] = (
+                    None,
+                    None,
+                )
+
+        return self._flatten_statistics(
+            validated,
+        )
+
+    def _valid_value(
+        self,
+        key: str,
+        value: Any,
+    ) -> bool:
+
+        if value is None:
+            return False
+
+        rules = self.VALID_RANGES.get(key)
+
+        if not rules:
+            return True
+
+        minimum, maximum = rules
+
+        return (
+            minimum <= value <= maximum
+        )
+
+    # ========================================================
+    # FLATTEN
+    # ========================================================
+
+    def _flatten_statistics(
+        self,
+        stats: Dict[str, Any],
+    ) -> Dict[str, Any]:
+
+        result = {}
+
+        for key, pair in stats.items():
+
+            if key not in self.RESULT_KEYS:
+                continue
+
+            home_key, away_key = (
+                self.RESULT_KEYS[key]
+            )
+
+            result[home_key] = pair[0]
+            result[away_key] = pair[1]
+
+        return result
+
+    # ========================================================
+    # STATUS
+    # ========================================================
+
+    def _extract_status(
+        self,
+        soup: BeautifulSoup,
+    ) -> Optional[str]:
+
+        text = self._clean_text(
+            soup.get_text(
+                " ",
+                strip=True,
+            )
+        )
+
+        if re.search(
+            r"\b(завершен|завершён|finished|ft)\b",
+            text,
+            re.IGNORECASE,
+        ):
+            return "finished"
+
+        if re.search(
+            r"\b(live|в прямом эфире)\b",
+            text,
+            re.IGNORECASE,
+        ):
+            return "live"
+
+        return None
+
+    # ========================================================
+    # HELPERS
     # ========================================================
 
     @staticmethod
-    def _normalize_text(
+    def _clean_text(
         text: str,
     ) -> str:
 
-        text = (
-            text.lower()
-            .replace("ё", "е")
+        text = text.replace(
+            "\xa0",
+            " ",
+        )
+
+        return re.sub(
+            r"\s+",
+            " ",
+            text,
+        ).strip()
+
+    @staticmethod
+    def _normalize_label(
+        text: str,
+    ) -> str:
+
+        text = text.lower()
+
+        text = text.replace(
+            "ё",
+            "е",
         )
 
         text = re.sub(
@@ -897,188 +1034,88 @@ class SoccerwayStatsParser:
 
         return text.strip()
 
-    # ========================================================
-    # VALIDATION
-    # ========================================================
+    @staticmethod
+    def _parse_score(
+        text: str,
+    ) -> Optional[Tuple[int, int]]:
 
-    def _validate_result(
-        self,
-        result: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        if not text:
+            return None
 
-        # ----------------------------------------------------
-        # Диапазоны
-        # ----------------------------------------------------
+        # Только короткий текст.
+        # Это защита от случайных "4:0"
+        # внутри огромного блока страницы.
+        if len(text) > 150:
+            return None
 
-        for stat_key, (
-            minimum,
-            maximum,
-        ) in self.LIMITS.items():
-
-            home_key = (
-                f"home_{stat_key}"
-            )
-
-            away_key = (
-                f"away_{stat_key}"
-            )
-
-            result[home_key] = (
-                self._validate_value(
-                    result.get(home_key),
-                    minimum,
-                    maximum,
-                    home_key,
-                )
-            )
-
-            result[away_key] = (
-                self._validate_value(
-                    result.get(away_key),
-                    minimum,
-                    maximum,
-                    away_key,
-                )
-            )
-
-        # ----------------------------------------------------
-        # Удары в створ <= ударов
-        # ----------------------------------------------------
-
-        hs = result.get(
-            "home_shots"
-        )
-        has = result.get(
-            "home_shots_on_target"
+        matches = re.findall(
+            r"\b(\d{1,2})\s*[-:]\s*(\d{1,2})\b",
+            text,
         )
 
-        if (
-            hs is not None
-            and has is not None
-            and has > hs
-        ):
+        for home, away in matches:
 
-            logger.warning(
-                "Soccerway: home shots_on_target "
-                "> shots"
-            )
+            home = int(home)
+            away = int(away)
 
-            result[
-                "home_shots_on_target"
-            ] = None
+            if (
+                0 <= home <= 15
+                and 0 <= away <= 15
+            ):
+                return home, away
 
-        aws = result.get(
-            "away_shots"
-        )
-        aots = result.get(
-            "away_shots_on_target"
-        )
-
-        if (
-            aws is not None
-            and aots is not None
-            and aots > aws
-        ):
-
-            logger.warning(
-                "Soccerway: away shots_on_target "
-                "> shots"
-            )
-
-            result[
-                "away_shots_on_target"
-            ] = None
-
-        # ----------------------------------------------------
-        # Владение
-        # ----------------------------------------------------
-
-        hp = result.get(
-            "home_possession"
-        )
-        ap = result.get(
-            "away_possession"
-        )
-
-        if (
-            hp is not None
-            and ap is not None
-            and not 98 <= hp + ap <= 102
-        ):
-
-            logger.warning(
-                "Soccerway: invalid possession "
-                "%s + %s",
-                hp,
-                ap,
-            )
-
-            result[
-                "home_possession"
-            ] = None
-
-            result[
-                "away_possession"
-            ] = None
-
-        return result
-
-    # ========================================================
-    # SINGLE VALUE VALIDATION
-    # ========================================================
+        return None
 
     @staticmethod
-    def _validate_value(
-        value: Any,
-        minimum: float,
-        maximum: float,
-        key: str,
-    ) -> Optional[Any]:
+    def _reasonable_score(
+        score: Tuple[int, int],
+    ) -> bool:
 
-        if value is None:
-            return None
+        home, away = score
 
-        try:
+        return (
+            0 <= home <= 15
+            and 0 <= away <= 15
+        )
 
-            numeric = float(value)
+    @staticmethod
+    def _contains_team_pair(
+        text: str,
+        home: str,
+        away: str,
+    ) -> bool:
 
-        except (
-            TypeError,
-            ValueError,
+        normalized = text.lower()
+
+        return (
+            home.lower() in normalized
+            and away.lower() in normalized
+        )
+
+    @staticmethod
+    def _looks_like_team_name(
+        text: str,
+    ) -> bool:
+
+        if not text:
+            return False
+
+        if len(text) < 3 or len(text) > 80:
+            return False
+
+        # Командное название не должно быть
+        # просто числом / временем / датой.
+        if re.fullmatch(
+            r"[\d\s:./-]+",
+            text,
         ):
+            return False
 
-            logger.warning(
-                "Invalid Soccerway value %s=%r",
-                key,
-                value,
-            )
-
-            return None
-
-        if (
-            numeric < minimum
-            or numeric > maximum
-        ):
-
-            logger.warning(
-                "Soccerway value %s=%s "
-                "outside [%s,%s]",
-                key,
-                numeric,
-                minimum,
-                maximum,
-            )
-
-            return None
-
-        if numeric.is_integer():
-            return int(numeric)
-
-        return numeric
+        return True
 
 
 # ============================================================
-# CONVENIENCE FUNCTION
+# CONVENIENCE API
 # ============================================================
 
 def parse_soccerway_match(
@@ -1087,36 +1124,40 @@ def parse_soccerway_match(
 
     parser = SoccerwayStatsParser()
 
-    return parser.parse(url)
+    return parser.parse_match(
+        url,
+    )
 
 
 # ============================================================
-# SELF TEST
+# ТЕСТ ИЗ КОМАНДНОЙ СТРОКИ
 # ============================================================
 
 if __name__ == "__main__":
 
-    URL = (
-        "https://ru.soccerway.com/match/"
-        "dynamo-moscow-AFWA2jAQ/"
-        "krylya-sovetov-samara-SKAE94nJ/"
-        "summary/stats/overall/"
-        "?mid=C8Coobll"
+    import json
+    import sys
+
+    if len(sys.argv) < 2:
+
+        print(
+            "Usage:\n"
+            "python soccerway_stats_parser.py "
+            "<URL>"
+        )
+
+        raise SystemExit(1)
+
+    url = sys.argv[1]
+
+    data = parse_soccerway_match(
+        url,
     )
 
-    logging.basicConfig(
-        level=logging.INFO
+    print(
+        json.dumps(
+            data,
+            ensure_ascii=False,
+            indent=2,
+        )
     )
-
-    parser = SoccerwayStatsParser()
-
-    data = parser.parse(URL)
-
-    print("=" * 70)
-    print("FAJ SOCCERWAY PARSER")
-    print("=" * 70)
-
-    for key, value in data.items():
-        print(f"{key}: {value}")
-
-    print("=" * 70)
