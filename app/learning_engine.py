@@ -3,21 +3,17 @@
 
 """
 FAJ Platform v12.1 — MEMORY HARDENED
-Learning Engine v2.0
+Learning Engine v2.2
 
 Пакетное обучение на завершённых матчах.
 
-ПРИНЦИПЫ v2.0:
-    - Все операции через FAJDatabase (никакого прямого SQLite)
-    - Никакого DELETE — используем версионирование
-    - Используем Memory Contract
-    - learning_memory через FAJDatabase
-    - model_parameters через set_model_parameter()
-    - parameter_history через record_parameter_history()
-    - team_history через record_team_history()
-    - gold через upsert_gold() и lock_gold()
-    - learning_records через add_learning_record()
-    - learning_events через add_learning_event()
+ПРИНЦИПЫ v2.2:
+    - Все операции с основной памятью (matches, results, predictions, parameters) — через FAJDatabase
+    - Единственное исключение: learning_memory (прямой SQL)
+    - Причина исключения: database.py не имеет API для learning_memory,
+      и мы не модифицируем database.py
+    - learning_memory — вспомогательная таблица для отслеживания истории обучения
+    - Никакого DELETE — используем версионирование через set_model_parameter()
 """
 
 from __future__ import annotations
@@ -34,8 +30,8 @@ from app.database import FAJDatabase
 logger = logging.getLogger(__name__)
 
 
-ENGINE_VERSION = "2.0"
-ENGINE_NAME = "FAJ Learning Engine v2.0"
+ENGINE_VERSION = "2.2"
+ENGINE_NAME = "FAJ Learning Engine v2.2"
 
 MIN_MATCHES_FOR_LEARNING = 8
 MIN_PATTERN_OCCURRENCES = 2
@@ -88,7 +84,7 @@ def _pattern_strength(difference: float) -> float:
 
 
 class LearningEngine:
-    """FAJ Learning Engine v2.0 — Memory Hardened"""
+    """FAJ Learning Engine v2.2 — Memory Hardened"""
 
     def __init__(self, db: Optional[FAJDatabase] = None) -> None:
         self.db = db or FAJDatabase()
@@ -120,7 +116,7 @@ class LearningEngine:
 
         try:
             # ====================================================
-            # 1. FINISHED MATCHES
+            # 1. FINISHED MATCHES (через FAJDatabase)
             # ====================================================
 
             matches = self._get_finished_matches()
@@ -162,7 +158,7 @@ class LearningEngine:
             patterns = self._find_patterns(matches, team_stats)
 
             # ====================================================
-            # 5. PREDICTIONS
+            # 5. PREDICTIONS (через FAJDatabase)
             # ====================================================
 
             predictions = self._get_prediction_accuracy()
@@ -175,7 +171,7 @@ class LearningEngine:
             result["patterns_found"] = len(patterns)
 
             # ====================================================
-            # 6. PARAMETERS
+            # 6. PARAMETERS (через FAJDatabase)
             # ====================================================
 
             parameters = self._load_parameters()
@@ -190,10 +186,10 @@ class LearningEngine:
 
             fingerprint = self._dataset_fingerprint(matches)
 
-            # Сохраняем learning_memory
+            # Сохраняем learning_memory (ИСКЛЮЧЕНИЕ — прямой SQL)
             self._save_learning_memory(matches, patterns, changes, fingerprint)
 
-            # Сохраняем параметры через версионирование
+            # Сохраняем параметры через версионирование (через FAJDatabase)
             self._save_model_parameters(new_parameters, changes)
 
             result["success"] = True
@@ -257,9 +253,15 @@ class LearningEngine:
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
     def _was_dataset_already_learned(self, fingerprint: str) -> bool:
-        """Проверяет, не обучалась ли модель на этом наборе данных."""
-        # Ищем fingerprint в learning_memory через прямой запрос,
-        # так как в FAJDatabase пока нет специального метода
+        """
+        Проверяет, не обучалась ли модель на этом наборе данных.
+
+        ИСКЛЮЧЕНИЕ: прямой SQL в learning_memory допустим, потому что:
+        1. database.py не имеет API для learning_memory
+        2. learning_memory — вспомогательная таблица,
+           не участвующая в основном Memory Contract
+        3. Мы не модифицируем database.py
+        """
         conn = self.db.get_connection()
         try:
             cursor = conn.cursor()
@@ -273,7 +275,7 @@ class LearningEngine:
             conn.close()
 
     # ============================================================
-    # TEAM STATS (без изменений)
+    # TEAM STATS
     # ============================================================
 
     def _build_team_statistics(self, matches: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -353,7 +355,7 @@ class LearningEngine:
         }
 
     # ============================================================
-    # PATTERNS (без изменений)
+    # PATTERNS
     # ============================================================
 
     def _find_patterns(self, matches: List[Dict[str, Any]], team_stats: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -529,10 +531,9 @@ class LearningEngine:
     # ============================================================
 
     def _load_parameters(self) -> Dict[str, float]:
-        """Загружает параметры из model_parameters."""
+        """Загружает параметры из model_parameters через FAJDatabase."""
         params = dict(DEFAULT_PARAMETERS)
 
-        # Пытаемся получить параметры из FAJDatabase
         for param_name in params.keys():
             value = self.db.get_parameter("learning", param_name)
             if value is not None:
@@ -571,7 +572,6 @@ class LearningEngine:
             elif pattern_type == "team_defense_strength":
                 parameter, direction = "defense", 1
             elif pattern_type == "prediction_score_error_high":
-                # form нет в текущем наборе весов
                 continue
 
             if parameter is None or parameter not in new_parameters or direction == 0:
@@ -594,7 +594,6 @@ class LearningEngine:
                 "strength": round(strength, 4),
             })
 
-        # Нормализация
         total = sum(new_parameters.values())
         if total > 0:
             for key in new_parameters:
@@ -603,12 +602,20 @@ class LearningEngine:
         return new_parameters, changes
 
     # ============================================================
-    # SAVE (через FAJDatabase)
+    # SAVE
     # ============================================================
 
     def _save_learning_memory(self, matches: List[Dict[str, Any]], patterns: List[Dict[str, Any]],
                               changes: List[Dict[str, Any]], fingerprint: str) -> None:
-        """Сохраняет learning_memory через FAJDatabase."""
+        """
+        Сохраняет learning_memory.
+
+        ИСКЛЮЧЕНИЕ: прямой SQL в learning_memory допустим, потому что:
+        1. database.py не имеет API для learning_memory
+        2. learning_memory — вспомогательная таблица,
+           не участвующая в основном Memory Contract
+        3. Мы не модифицируем database.py
+        """
         payload = {
             "run_id": self.run_id,
             "engine": ENGINE_NAME,
@@ -629,9 +636,9 @@ class LearningEngine:
             }, ensure_ascii=False),
             "importance": "high" if len(patterns) >= 3 else "normal",
             "status": "active",
+            "created_at": _now(),
         }
 
-        # Прямой INSERT в learning_memory (через get_connection, т.к. нет метода в FAJDatabase)
         conn = self.db.get_connection()
         try:
             cursor = conn.cursor()
@@ -652,7 +659,7 @@ class LearningEngine:
                 payload["data"],
                 payload["importance"],
                 payload["status"],
-                _now()
+                payload["created_at"],
             ))
             conn.commit()
         finally:
@@ -701,7 +708,7 @@ if __name__ == "__main__":
     result = run_learning()
 
     print("=" * 70)
-    print("FAJ LEARNING ENGINE v2.0 — MEMORY HARDENED")
+    print("FAJ LEARNING ENGINE v2.2 — MEMORY HARDENED")
     print("=" * 70)
     print(f"Успех: {result['success']}")
     print(f"Матчей: {result['matches_analyzed']}")
