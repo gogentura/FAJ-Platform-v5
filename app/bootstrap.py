@@ -13,6 +13,10 @@ Bootstrap
 
 Принцип:
 
+    GitHub Storage
+        ↓
+    Local SQLite
+        ↓
     Bootstrap
         ↓
     FAJDatabase
@@ -26,8 +30,18 @@ Bootstrap
     Bootstrap НЕ обучает модель.
     Bootstrap НЕ удаляет данные.
     Bootstrap НЕ перезаписывает динамику.
-    Bootstrap только проверяет и восстанавливает
-    отсутствующие базовые данные.
+
+    GitHub используется как постоянное хранилище
+    файла data/faj.db.
+
+    Если локальной БД нет:
+        GitHub → data/faj.db
+
+    Если GitHub ещё не содержит БД:
+        database.py создаёт новую БД.
+
+    После успешного Bootstrap:
+        data/faj.db → GitHub
 """
 
 import os
@@ -35,6 +49,10 @@ import logging
 
 from app.database import FAJDatabase, DB_FILE
 from app.sync_engine import SyncEngine
+from app.github_db_sync import (
+    load_database_from_github,
+    save_database_to_github,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -76,6 +94,29 @@ def bootstrap_faj() -> dict:
     try:
 
         logger.info("🚀 Запуск FAJ Bootstrap v12.1...")
+
+        # ====================================================
+        # 0. GITHUB → LOCAL SQLITE
+        # ====================================================
+
+        logger.info("☁️ Проверяем постоянное хранилище GitHub...")
+
+        storage_result = load_database_from_github()
+
+        if storage_result.get("loaded"):
+            message = "☁️ База восстановлена из GitHub"
+            logger.info(message)
+            result["messages"].append(message)
+
+        elif storage_result.get("reason") == "github_database_not_found":
+            message = "☁️ Базы в GitHub ещё нет — будет создана новая SQLite БД"
+            logger.info(message)
+            result["messages"].append(message)
+
+        else:
+            message = "💾 Локальная база уже существует"
+            logger.info(message)
+            result["messages"].append(message)
 
         # ====================================================
         # DATABASE
@@ -130,7 +171,7 @@ def bootstrap_faj() -> dict:
                 "🔄 Команд нет — запускаем синхронизацию..."
             )
 
-            sync_result = sync.sync_teams(
+            sync.sync_teams(
                 DEFAULT_LEAGUE
             )
 
@@ -360,6 +401,41 @@ def bootstrap_faj() -> dict:
         result["messages"].append(
             f"✅ FAJ готов: {result['ready']}"
         )
+
+        # ====================================================
+        # 9. LOCAL SQLITE → GITHUB
+        # ====================================================
+
+        if result["ready"]:
+
+            try:
+
+                logger.info(
+                    "☁️ Сохраняем базу в GitHub..."
+                )
+
+                storage_result = save_database_to_github()
+
+                message = (
+                    "☁️ База успешно сохранена "
+                    "в GitHub"
+                )
+
+                logger.info(message)
+                result["messages"].append(message)
+
+            except Exception as storage_error:
+
+                logger.exception(
+                    "❌ Не удалось сохранить "
+                    "базу в GitHub"
+                )
+
+                result["messages"].append(
+                    f"⚠️ База создана локально, "
+                    f"но не сохранена в GitHub: "
+                    f"{storage_error}"
+                )
 
         return result
 
