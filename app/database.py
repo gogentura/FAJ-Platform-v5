@@ -2,11 +2,11 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ Platform v12.1 — ФИНАЛЬНАЯ СХЕМА
-Database Engine — ЕДИНЫЙ ФАЙЛ БАЗЫ ДАННЫХ 🔒
+FAJ Platform v12.1 — MEMORY HARDENED 🔒
+Database Engine — ЕДИНЫЙ ФАЙЛ БАЗЫ ДАННЫХ
 
-Схема: v12.1
-Исправления: v12.1-hotfix
+Схема: v12.1-memory-hardened
+Контракт: FAJ MEMORY CONTRACT v1.0
 """
 
 import sqlite3
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(ROOT_DIR, "data")
 DB_FILE = os.path.join(DATA_DIR, "faj.db")
-DB_SCHEMA_VERSION = "12.1"
+DB_SCHEMA_VERSION = "12.1-memory-hardened"
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -38,7 +38,7 @@ logger.info(f"📁 Database path: {DB_FILE}")
 def get_connection():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA foreign_keys = ON")  # P0.7: Гарантируем FK enforcement
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 5000")
     return conn
@@ -162,8 +162,8 @@ def get_schema_version():
 
 
 def run_migrations():
-    """Безопасное выполнение миграций FAJ Database v12.1."""
-    logger.info("🚀 Запуск миграций FAJ...")
+    """Безопасное выполнение миграций FAJ Database v12.1 Memory Hardened."""
+    logger.info("🚀 Запуск миграций FAJ Memory Hardened...")
     
     ensure_table("schema_migrations", """
         CREATE TABLE schema_migrations (
@@ -199,6 +199,7 @@ def run_migrations():
         ensure_column("matches", "updated_at", "TEXT")
         ensure_column("matches", "data_quality", "REAL DEFAULT 1.0")
         ensure_column("matches", "match_uuid", "TEXT")
+        ensure_column("matches", "fact_status", "TEXT DEFAULT 'scheduled'")  # P0.8: scheduled/played/verified/locked
         ensure_index("matches", "idx_matches_status", "status")
         ensure_index("matches", "idx_matches_date", "date")
         ensure_index("matches", "idx_matches_home_away", "home_team_id, away_team_id")
@@ -217,7 +218,100 @@ def run_migrations():
         ensure_column("team_dynamic", "last_sync", "TEXT")
     
     # ============================================================
-    # ДОБАВЛЕНИЕ КОЛОНОК В team_passports (v2.1)
+    # ДОБАВЛЕНИЕ НОВЫХ ТАБЛИЦ ДЛЯ MEMORY HARDENING
+    # ============================================================
+    
+    # P1.3: Parameter history table
+    ensure_table("parameter_history", """
+        CREATE TABLE IF NOT EXISTS parameter_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            parameter_name TEXT NOT NULL,
+            group_name TEXT,
+            model_version TEXT,
+            old_value REAL,
+            new_value REAL,
+            delta REAL,
+            reason TEXT,
+            confidence REAL,
+            reference_event_id INTEGER,
+            reference_match_id INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    ensure_index("parameter_history", "idx_param_history_name", "parameter_name")
+    ensure_index("parameter_history", "idx_param_history_version", "model_version")
+    ensure_index("parameter_history", "idx_param_history_match", "reference_match_id")
+    
+    # P1.4: Team History API
+    ensure_column("team_history", "source", "TEXT")
+    ensure_column("team_history", "reference_match_id", "INTEGER")
+    ensure_column("team_history", "reference_event_id", "INTEGER")
+    ensure_index_if_table_exists("team_history", "idx_team_history_match", "reference_match_id")
+    ensure_index_if_table_exists("team_history", "idx_team_history_event", "reference_event_id")
+    
+    # P0.8: Locked facts protection - add fact_status to match_results
+    ensure_column("match_results", "fact_status", "TEXT DEFAULT 'pending'")
+    ensure_column("match_results", "locked_at", "TEXT")
+    ensure_column("match_results", "locked_by", "TEXT")
+    
+    # P0.5: Add prediction_id to validation
+    ensure_column("prediction_validation", "prediction_id", "INTEGER")
+    ensure_column("prediction_validation", "match_prediction_id", "INTEGER")
+    ensure_column("prediction_validation", "validation_hash", "TEXT")
+    ensure_index_if_table_exists("prediction_validation", "idx_validation_prediction", "prediction_id")
+    ensure_index_if_table_exists("prediction_validation", "idx_validation_hash", "validation_hash")
+    
+    # P1.2: Add passport identity to snapshots
+    ensure_column("match_snapshots", "passport_id", "INTEGER")
+    ensure_column("match_snapshots", "passport_version", "TEXT")
+    ensure_column("match_snapshots", "dynamic_id", "INTEGER")
+    ensure_column("match_snapshots", "memory_state_id", "TEXT")
+    
+    # P1.1: Add memory_state_id to predictions
+    ensure_column("predictions", "memory_state_id", "TEXT")
+    ensure_column("predictions", "snapshot_id", "INTEGER")
+    ensure_column("predictions", "passport_revision", "TEXT")
+    ensure_column("predictions", "parameter_revision", "TEXT")
+    
+    # P1.9: Make prediction_hash UNIQUE
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT name FROM sqlite_master
+        WHERE type = 'index' AND name = 'idx_predictions_hash'
+    """)
+    if not cursor.fetchone():
+        try:
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_predictions_hash ON predictions(prediction_hash)")
+            logger.info("✅ Создан UNIQUE индекс idx_predictions_hash")
+        except Exception as e:
+            logger.warning(f"Не удалось создать UNIQUE индекс для prediction_hash: {e} (возможно, есть дубли)")
+    conn.close()
+    
+    # P0.6: Passport versioning - add UNIQUE constraint for versioned passports
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT name FROM sqlite_master
+        WHERE type = 'index' AND name = 'idx_passports_unique_version'
+    """)
+    if not cursor.fetchone():
+        try:
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_passports_unique_version 
+                ON team_passports(team_id, season_id, version, created_at)
+            """)
+            logger.info("✅ Создан UNIQUE индекс idx_passports_unique_version")
+        except Exception as e:
+            logger.warning(f"Не удалось создать UNIQUE индекс для паспортов: {e}")
+    conn.close()
+    
+    # P1.8: Gold immutable after completed - add lock mechanism
+    ensure_column("gold_dataset", "locked", "INTEGER DEFAULT 0")
+    ensure_column("gold_dataset", "locked_at", "TEXT")
+    
+    # ============================================================
+    # СУЩЕСТВУЮЩИЕ МИГРАЦИИ (сохраняем)
     # ============================================================
     
     conn = get_connection()
@@ -241,13 +335,11 @@ def run_migrations():
         ensure_column("team_passports", "faj_rating", "REAL DEFAULT 0.0")
         ensure_column("team_passports", "source", "TEXT DEFAULT 'manual'")
         ensure_column("team_passports", "updated_at", "TEXT")
-        
-        # НОВЫЕ КОЛОНКИ ДЛЯ PASSPORT MANAGER v2.1
         ensure_column("team_passports", "results_strength", "REAL")
         ensure_column("team_passports", "opponent_strength", "REAL")
         ensure_column("team_passports", "matches_count", "INTEGER DEFAULT 0")
-        
-        logger.info("✅ Проверены колонки team_passports (включая v2.1)")
+        ensure_column("team_passports", "passport_uuid", "TEXT")  # Для уникальной идентификации версии
+        logger.info("✅ Проверены колонки team_passports (включая v2.1 + Memory Hardened)")
     
     conn = get_connection()
     cursor = conn.cursor()
@@ -279,7 +371,8 @@ def run_migrations():
     
     if predictions_exists:
         ensure_column("predictions", "prediction_status", "TEXT DEFAULT 'active'")
-        logger.info("✅ Проверена колонка prediction_status в predictions")
+        ensure_column("predictions", "prediction_version", "INTEGER DEFAULT 1")
+        logger.info("✅ Проверена колонка prediction_status и prediction_version в predictions")
     
     ensure_index_if_table_exists("prediction_validation", "idx_validation_match", "match_id")
     ensure_index_if_table_exists("prediction_validation", "idx_validation_predicted", "predicted_score")
@@ -293,7 +386,7 @@ def run_migrations():
         INSERT OR IGNORE INTO schema_migrations
         (version, description, success)
         VALUES (?, ?, ?)
-    """, (DB_SCHEMA_VERSION, "FAJ Platform v12.1 database schema", 1))
+    """, (DB_SCHEMA_VERSION, "FAJ Platform v12.1 Memory Hardened", 1))
     conn.commit()
     conn.close()
     
@@ -301,14 +394,14 @@ def run_migrations():
 
 
 def init_database():
-    """Инициализация базы данных с финальной схемой v12.1"""
+    """Инициализация базы данных с финальной схемой v12.1 Memory Hardened"""
     conn = get_connection()
     cursor = conn.cursor()
     
-    logger.info("🚀 Инициализация базы данных FAJ v12.1...")
+    logger.info("🚀 Инициализация базы данных FAJ v12.1 Memory Hardened...")
     
     # ============================================================
-    # CORE TABLES
+    # CORE TABLES (сохраняем существующую структуру)
     # ============================================================
     
     cursor.execute("""
@@ -376,6 +469,7 @@ def init_database():
             parser_source TEXT,
             parser_version TEXT,
             data_quality REAL DEFAULT 1.0,
+            fact_status TEXT DEFAULT 'scheduled',
             updated_at TEXT,
             created_at TEXT,
             FOREIGN KEY(round_id) REFERENCES rounds(id),
@@ -389,7 +483,7 @@ def init_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_matches_natural_key ON matches(round_id, home_team_id, away_team_id, date)")
     
     # ============================================================
-    # MATCH PREDICTIONS (xG / lambda слой)
+    # MATCH PREDICTIONS (xG / lambda слой) — append-only
     # ============================================================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS match_predictions (
@@ -402,14 +496,17 @@ def init_database():
             home_advantage REAL,
             prediction_type TEXT DEFAULT 'standard',
             model_version TEXT,
+            prediction_revision INTEGER DEFAULT 1,
+            memory_state_id TEXT,
             created_at TEXT,
             FOREIGN KEY(match_id) REFERENCES matches(id)
         )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_match_predictions_match ON match_predictions(match_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_match_predictions_revision ON match_predictions(match_id, prediction_revision)")
     
     # ============================================================
-    # TEAM INTELLIGENCE
+    # TEAM INTELLIGENCE (сохраняем существующую структуру)
     # ============================================================
     
     cursor.execute("""
@@ -516,7 +613,7 @@ def init_database():
     
     # ============================================================
     # TEAM PASSPORTS — ОСНОВНОЙ ПАСПОРТ FAJ v12.x
-    # С НОВЫМИ КОЛОНКАМИ ДЛЯ v2.1
+    # С НОВЫМИ КОЛОНКАМИ ДЛЯ MEMORY HARDENING
     # ============================================================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS team_passports (
@@ -546,18 +643,19 @@ def init_database():
             faj_rating REAL DEFAULT 0.0,
             version TEXT NOT NULL,
             source TEXT DEFAULT 'manual',
+            passport_uuid TEXT UNIQUE,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT,
             results_strength REAL,
             opponent_strength REAL,
             matches_count INTEGER DEFAULT 0,
             FOREIGN KEY(team_id) REFERENCES teams(id),
-            FOREIGN KEY(season_id) REFERENCES seasons(id),
-            UNIQUE(team_id, season_id, version)
+            FOREIGN KEY(season_id) REFERENCES seasons(id)
         )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_passports_team_season ON team_passports(team_id, season_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_passports_version ON team_passports(version)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_passports_uuid ON team_passports(passport_uuid)")
     
     # ============================================================
     # TEAM PASSPORT META
@@ -583,7 +681,7 @@ def init_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_passport_meta_team ON team_passport_meta(team_id, season_id)")
     
     # ============================================================
-    # PREDICTIONS
+    # PREDICTIONS — с версионированием и memory_state_id
     # ============================================================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS predictions (
@@ -599,14 +697,21 @@ def init_database():
             btts REAL,
             confidence INTEGER,
             prediction_source TEXT DEFAULT 'FAJ Engine',
-            prediction_hash TEXT,
+            prediction_hash TEXT UNIQUE,
             prediction_status TEXT DEFAULT 'active',
+            prediction_version INTEGER DEFAULT 1,
+            memory_state_id TEXT,
+            snapshot_id INTEGER,
+            passport_revision TEXT,
+            parameter_revision TEXT,
             created_at TEXT,
             FOREIGN KEY(match_id) REFERENCES matches(id)
         )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_predictions_match ON predictions(match_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_predictions_status ON predictions(prediction_status)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_predictions_hash ON predictions(prediction_hash)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_predictions_memory ON predictions(memory_state_id)")
     
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS prediction_scores (
@@ -633,12 +738,15 @@ def init_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_prediction_distributions_prediction ON prediction_distributions(prediction_id)")
     
     # ============================================================
-    # PREDICTION VALIDATION
+    # PREDICTION VALIDATION — с prediction_id
     # ============================================================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS prediction_validation (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             match_id INTEGER,
+            prediction_id INTEGER,
+            match_prediction_id INTEGER,
+            validation_hash TEXT,
             predicted_score TEXT,
             actual_score TEXT,
             predicted_home_xg REAL,
@@ -661,10 +769,13 @@ def init_database():
             passport_version TEXT,
             parser_version TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(match_id) REFERENCES matches(id)
+            FOREIGN KEY(match_id) REFERENCES matches(id),
+            FOREIGN KEY(prediction_id) REFERENCES predictions(id)
         )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_validation_match ON prediction_validation(match_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_validation_prediction ON prediction_validation(prediction_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_validation_hash ON prediction_validation(validation_hash)")
     
     # ============================================================
     # EXPERT & JOURNAL
@@ -733,7 +844,7 @@ def init_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_form_team_season ON team_form_history(team_id, season_id)")
     
     # ============================================================
-    # MATCH RESULTS & STATISTICS
+    # MATCH RESULTS & STATISTICS — с fact_status для защиты
     # ============================================================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS match_results (
@@ -743,10 +854,14 @@ def init_database():
             away_goals INTEGER,
             home_penalty_goals INTEGER DEFAULT 0,
             away_penalty_goals INTEGER DEFAULT 0,
+            fact_status TEXT DEFAULT 'pending',
+            locked_at TEXT,
+            locked_by TEXT,
             FOREIGN KEY (match_id) REFERENCES matches(id)
         )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_match_results_match ON match_results(match_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_match_results_status ON match_results(fact_status)")
     
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS match_statistics (
@@ -774,7 +889,7 @@ def init_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_match_stats_team ON match_statistics(team_id)")
     
     # ============================================================
-    # TEAM DYNAMICS (ПО ТУРАМ) — ИСПРАВЛЕНО
+    # TEAM DYNAMICS (ПО ТУРАМ)
     # ============================================================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS team_dynamics (
@@ -862,7 +977,6 @@ def init_database():
     # ============================================================
     # LEARNING LAYER
     # ============================================================
-    # (таблица migrations УДАЛЕНА — используется только schema_migrations)
     
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS gold_dataset (
@@ -896,6 +1010,8 @@ def init_database():
             actual_home_goals INTEGER,
             actual_away_goals INTEGER,
             status TEXT DEFAULT 'pending',
+            locked INTEGER DEFAULT 0,
+            locked_at TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (match_id) REFERENCES matches(id)
@@ -995,7 +1111,7 @@ def init_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_gold ON audit_log(gold_id)")
     
     # ============================================================
-    # MODEL PARAMETERS
+    # MODEL PARAMETERS — с версионированием
     # ============================================================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS model_parameters (
@@ -1006,11 +1122,37 @@ def init_database():
             parameter_name TEXT NOT NULL,
             parameter_value REAL,
             description TEXT,
+            revision INTEGER DEFAULT 1,
+            is_current INTEGER DEFAULT 1,
             updated_at TEXT,
-            UNIQUE(model_version, parameter_name)
+            UNIQUE(model_version, parameter_name, revision)
         )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_params_lookup ON model_parameters(group_name, model_version, parameter_name)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_params_current ON model_parameters(model_version, parameter_name, is_current)")
+    
+    # ============================================================
+    # PARAMETER HISTORY — для отслеживания изменений
+    # ============================================================
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS parameter_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            parameter_name TEXT NOT NULL,
+            group_name TEXT,
+            model_version TEXT,
+            old_value REAL,
+            new_value REAL,
+            delta REAL,
+            reason TEXT,
+            confidence REAL,
+            reference_event_id INTEGER,
+            reference_match_id INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_param_history_name ON parameter_history(parameter_name)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_param_history_version ON parameter_history(model_version)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_param_history_match ON parameter_history(reference_match_id)")
     
     # ============================================================
     # LEARNING MEMORY
@@ -1054,7 +1196,7 @@ def init_database():
     """)
     
     # ============================================================
-    # MATCH SNAPSHOTS
+    # MATCH SNAPSHOTS — с passport_id и memory_state_id
     # ============================================================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS match_snapshots (
@@ -1078,12 +1220,17 @@ def init_database():
             xg_against REAL,
             opponent_strength REAL,
             confidence_factor REAL,
+            passport_id INTEGER,
+            passport_version TEXT,
+            dynamic_id INTEGER,
+            memory_state_id TEXT,
             created_at TEXT,
             FOREIGN KEY(match_id) REFERENCES matches(id),
             FOREIGN KEY(team_id) REFERENCES teams(id)
         )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_match_snapshots_match ON match_snapshots(match_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_match_snapshots_memory ON match_snapshots(memory_state_id)")
     
     # ============================================================
     # PLAYER IMPACT
@@ -1143,11 +1290,16 @@ def init_database():
             new_value TEXT,
             reason TEXT,
             source TEXT,
+            reference_match_id INTEGER,
+            reference_event_id INTEGER,
             created_at TEXT,
             FOREIGN KEY(team_id) REFERENCES teams(id),
             FOREIGN KEY(season_id) REFERENCES seasons(id)
         )
     """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_team_history_team ON team_history(team_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_team_history_match ON team_history(reference_match_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_team_history_event ON team_history(reference_event_id)")
     
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS match_events (
@@ -1549,18 +1701,9 @@ class FAJDatabase:
     # ============================================================
     
     def create_round(self, season_id, number, date_start="", date_end=""):
-        """
-        Идемпотентное создание тура.
-        Безопасно при повторных и параллельных вызовах.
-        UNIQUE(season_id, round_number) является
-        окончательным защитным механизмом.
-        """
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
-            # ----------------------------------------------------
-            # ATOMIC INSERT
-            # ----------------------------------------------------
             cursor.execute(
                 """
                 INSERT OR IGNORE INTO rounds (
@@ -1581,9 +1724,6 @@ class FAJDatabase:
                 ),
             )
             conn.commit()
-            # ----------------------------------------------------
-            # GET ID
-            # ----------------------------------------------------
             cursor.execute(
                 """
                 SELECT id
@@ -1631,10 +1771,12 @@ class FAJDatabase:
             conn.close()
     
     # ============================================================
-    # MATCHES
+    # MATCHES — с защитой фактических данных
     # ============================================================
     
     def upsert_match(self, data: Dict[str, Any]) -> int:
+        """ИДЕМПОТЕНТНОЕ создание/обновление календарного матча.
+        НЕ изменяет actual_home/actual_away если они уже установлены."""
         if not data:
             raise ValueError("Match data is required")
         
@@ -1678,6 +1820,15 @@ class FAJDatabase:
                 if not match_uuid:
                     match_uuid = existing["match_uuid"]
                 
+                # P0.4: Защищаем фактический результат от перезаписи через календарь
+                actual_home = data.get("actual_home")
+                actual_away = data.get("actual_away")
+                
+                # Если в существующей записи уже есть результат, не перезаписываем
+                if existing["actual_home"] is not None and existing["actual_away"] is not None:
+                    actual_home = existing["actual_home"]
+                    actual_away = existing["actual_away"]
+                
                 cursor.execute("""
                     UPDATE matches SET
                         round_id = ?, home_team_id = ?, away_team_id = ?,
@@ -1695,8 +1846,8 @@ class FAJDatabase:
                     match_date,
                     data.get("competition", "RPL"),
                     data.get("status", "scheduled"),
-                    data.get("actual_home"),
-                    data.get("actual_away"),
+                    actual_home,
+                    actual_away,
                     data.get("home_xg"),
                     data.get("away_xg"),
                     data.get("home_possession"),
@@ -1723,8 +1874,8 @@ class FAJDatabase:
                         home_shots, away_shots,
                         home_shots_on_target, away_shots_on_target,
                         parser_source, parser_version,
-                        data_quality, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        data_quality, fact_status, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     round_id, home_team_id, away_team_id, match_uuid,
                     match_date,
@@ -1743,6 +1894,7 @@ class FAJDatabase:
                     data.get("parser_source"),
                     data.get("parser_version"),
                     data.get("data_quality", 1.0),
+                    data.get("fact_status", "scheduled"),
                     now, now
                 ))
                 match_id = cursor.lastrowid
@@ -1755,57 +1907,123 @@ class FAJDatabase:
         finally:
             conn.close()
     
-    def update_result(self, match_id, home_score, away_score):
+    def update_result(self, match_id, home_score, away_score, lock: bool = False):
         """
         Записывает фактический результат матча.
         Основной источник — match_results.
-        Дополнительно обновляет matches.actual_home/away для обратной совместимости.
+        После lock факт становится неизменяемым.
         """
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
-            # Проверяем, есть ли уже результат в match_results
-            cursor.execute("SELECT id FROM match_results WHERE match_id = ?", (match_id,))
+            
+            # Проверяем, не locked ли уже результат
+            cursor.execute("""
+                SELECT fact_status, locked_at FROM match_results
+                WHERE match_id = ?
+            """, (match_id,))
             existing = cursor.fetchone()
-
+            
+            if existing and existing["fact_status"] == "locked":
+                raise ValueError(f"Match result {match_id} is LOCKED and cannot be changed")
+            
             if existing:
                 cursor.execute("""
                     UPDATE match_results
-                    SET home_goals = ?, away_goals = ?
+                    SET home_goals = ?, away_goals = ?,
+                        fact_status = ?,
+                        locked_at = ?,
+                        locked_by = ?
                     WHERE match_id = ?
-                """, (home_score, away_score, match_id))
+                """, (
+                    home_score, away_score,
+                    "locked" if lock else "verified",
+                    datetime.now().isoformat() if lock else None,
+                    "FAJ" if lock else None,
+                    match_id
+                ))
             else:
                 cursor.execute("""
-                    INSERT INTO match_results (match_id, home_goals, away_goals)
-                    VALUES (?, ?, ?)
-                """, (match_id, home_score, away_score))
-
-            # Для обратной совместимости обновляем matches
+                    INSERT INTO match_results (
+                        match_id, home_goals, away_goals,
+                        fact_status, locked_at, locked_by
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    match_id, home_score, away_score,
+                    "locked" if lock else "verified",
+                    datetime.now().isoformat() if lock else None,
+                    "FAJ" if lock else None
+                ))
+            
+            # Обновляем matches для обратной совместимости
             cursor.execute("""
                 UPDATE matches
-                SET actual_home = ?, actual_away = ?, status = 'finished', updated_at = ?
+                SET actual_home = ?, actual_away = ?,
+                    status = 'finished',
+                    fact_status = ?,
+                    updated_at = ?
                 WHERE id = ?
-            """, (home_score, away_score, datetime.now().isoformat(), match_id))
-
+            """, (
+                home_score, away_score,
+                "locked" if lock else "verified",
+                datetime.now().isoformat(),
+                match_id
+            ))
+            
             if cursor.rowcount == 0:
                 raise ValueError(f"Match not found: {match_id}")
-
+            
             conn.commit()
         except Exception:
             conn.rollback()
             raise
         finally:
             conn.close()
-
-    def get_match_result(self, match_id):
-        """
-        Возвращает фактический результат матча из match_results.
-        """
+    
+    def lock_match_result(self, match_id):
+        """Защищает результат матча от дальнейших изменений."""
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT home_goals, away_goals
+                UPDATE match_results
+                SET fact_status = 'locked', locked_at = ?, locked_by = ?
+                WHERE match_id = ? AND fact_status != 'locked'
+            """, (datetime.now().isoformat(), "FAJ", match_id))
+            
+            cursor.execute("""
+                UPDATE matches
+                SET fact_status = 'locked', updated_at = ?
+                WHERE id = ?
+            """, (datetime.now().isoformat(), match_id))
+            
+            conn.commit()
+            return cursor.rowcount > 0
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    
+    def is_result_locked(self, match_id) -> bool:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT fact_status FROM match_results
+                WHERE match_id = ?
+            """, (match_id,))
+            row = cursor.fetchone()
+            return row and row["fact_status"] == "locked"
+        finally:
+            conn.close()
+    
+    def get_match_result(self, match_id):
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT home_goals, away_goals, fact_status, locked_at
                 FROM match_results
                 WHERE match_id = ?
             """, (match_id,))
@@ -1886,54 +2104,46 @@ class FAJDatabase:
             conn.close()
     
     # ============================================================
-    # MATCH PREDICTIONS — ИДЕМПОТЕНТНАЯ ВЕРСИЯ
+    # MATCH PREDICTIONS — APPEND-ONLY ВЕРСИЯ
     # ============================================================
     
-    def save_match_prediction(self, match_id, xg_home, xg_away,
-                              lambda_home=None, lambda_away=None,
-                              home_advantage=1.0, prediction_type="standard",
-                              model_version="v12.1"):
-        """
-        Сохраняет прогноз xG для матча.
-        Идемпотентно: если уже есть запись с таким match_id и prediction_type,
-        обновляет её (или добавляет новую, если тип другой).
-        """
+    def save_match_prediction_versioned(self, match_id, xg_home, xg_away,
+                                         lambda_home=None, lambda_away=None,
+                                         home_advantage=1.0,
+                                         prediction_type="standard",
+                                         model_version="v12.1",
+                                         memory_state_id=None) -> int:
+        """P0.3: Append-only версия — создаёт новую запись, а не перезаписывает."""
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
-            # Проверяем существование записи с этим match_id и prediction_type
+            
+            # Получаем текущий revision
             cursor.execute("""
-                SELECT id FROM match_predictions
+                SELECT COALESCE(MAX(prediction_revision), 0) + 1 AS next_rev
+                FROM match_predictions
                 WHERE match_id = ? AND prediction_type = ?
-                ORDER BY created_at DESC LIMIT 1
             """, (match_id, prediction_type))
-            existing = cursor.fetchone()
-
+            row = cursor.fetchone()
+            next_rev = row["next_rev"] if row else 1
+            
             now = datetime.now().isoformat()
-            if existing:
-                cursor.execute("""
-                    UPDATE match_predictions SET
-                        xg_home = ?, xg_away = ?,
-                        lambda_home = ?, lambda_away = ?,
-                        home_advantage = ?,
-                        model_version = ?,
-                        created_at = ?
-                    WHERE id = ?
-                """, (xg_home, xg_away, lambda_home, lambda_away,
-                      home_advantage, model_version, now, existing["id"]))
-                prediction_id = existing["id"]
-            else:
-                cursor.execute("""
-                    INSERT INTO match_predictions (
-                        match_id, xg_home, xg_away,
-                        lambda_home, lambda_away,
-                        home_advantage, prediction_type, model_version, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (match_id, xg_home, xg_away,
-                      lambda_home, lambda_away,
-                      home_advantage, prediction_type, model_version, now))
-                prediction_id = cursor.lastrowid
-
+            cursor.execute("""
+                INSERT INTO match_predictions (
+                    match_id, xg_home, xg_away,
+                    lambda_home, lambda_away,
+                    home_advantage, prediction_type,
+                    model_version, prediction_revision,
+                    memory_state_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                match_id, xg_home, xg_away,
+                lambda_home, lambda_away,
+                home_advantage, prediction_type,
+                model_version, next_rev,
+                memory_state_id, now
+            ))
+            prediction_id = cursor.lastrowid
             conn.commit()
             return prediction_id
         except Exception:
@@ -1942,14 +2152,52 @@ class FAJDatabase:
         finally:
             conn.close()
     
+    def save_match_prediction(self, match_id, xg_home, xg_away,
+                               lambda_home=None, lambda_away=None,
+                               home_advantage=1.0, prediction_type="standard",
+                               model_version="v12.1"):
+        """
+        Обратная совместимость. Использует append-only версию.
+        """
+        return self.save_match_prediction_versioned(
+            match_id, xg_home, xg_away,
+            lambda_home, lambda_away,
+            home_advantage, prediction_type,
+            model_version
+        )
+    
+    def get_match_predictions(self, match_id, limit=None):
+        """Возвращает все версии прогнозов для матча."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            if limit:
+                cursor.execute("""
+                    SELECT * FROM match_predictions
+                    WHERE match_id = ?
+                    ORDER BY prediction_revision DESC, created_at DESC
+                    LIMIT ?
+                """, (match_id, limit))
+            else:
+                cursor.execute("""
+                    SELECT * FROM match_predictions
+                    WHERE match_id = ?
+                    ORDER BY prediction_revision DESC, created_at DESC
+                """, (match_id,))
+            return cursor.fetchall()
+        finally:
+            conn.close()
+    
     def get_match_prediction(self, match_id):
+        """Возвращает последнюю версию прогноза для совместимости."""
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT * FROM match_predictions
                 WHERE match_id = ?
-                ORDER BY created_at DESC LIMIT 1
+                ORDER BY prediction_revision DESC, created_at DESC
+                LIMIT 1
             """, (match_id,))
             return cursor.fetchone()
         finally:
@@ -1995,7 +2243,13 @@ class FAJDatabase:
             """, (team_id, season_id))
             existing = cursor.fetchone()
             
+            # P1.6: Записываем историю изменений
             if existing:
+                # Получаем старые значения
+                old_values = {}
+                for key in update_data:
+                    old_values[key] = existing[key]
+                
                 fields = []
                 values = []
                 for key, value in update_data.items():
@@ -2005,6 +2259,17 @@ class FAJDatabase:
                 values.append(datetime.now().isoformat())
                 values.append(existing["id"])
                 cursor.execute(f"UPDATE team_base SET {', '.join(fields)} WHERE id = ?", values)
+                
+                # Записываем историю
+                for key, new_value in update_data.items():
+                    old_value = old_values.get(key)
+                    if old_value != new_value:
+                        self.record_team_history(
+                            team_id, season_id, key,
+                            str(old_value), str(new_value),
+                            reason="team_base_update",
+                            source="FAJDatabase.update_base"
+                        )
             else:
                 defaults = {
                     "attack": 50, "defense": 50, "control": 50,
@@ -2088,6 +2353,12 @@ class FAJDatabase:
             existing = cursor.fetchone()
             
             if existing:
+                # P1.6: Записываем историю изменений
+                old_values = {}
+                for key in update_data:
+                    if key in existing:
+                        old_values[key] = existing[key]
+                
                 fields = []
                 values = []
                 for key, value in update_data.items():
@@ -2097,6 +2368,19 @@ class FAJDatabase:
                 values.append(now)
                 values.append(existing["id"])
                 cursor.execute(f"UPDATE team_dynamic SET {', '.join(fields)} WHERE id = ?", values)
+                
+                # Записываем историю для ключевых полей
+                for key in ["form", "fitness", "morale", "injury_index"]:
+                    if key in update_data and key in old_values:
+                        old_value = old_values.get(key)
+                        new_value = update_data.get(key)
+                        if old_value != new_value:
+                            self.record_team_history(
+                                team_id, season_id, key,
+                                str(old_value), str(new_value),
+                                reason="team_dynamic_update",
+                                source="FAJDatabase.update_dynamic"
+                            )
             else:
                 cursor.execute("""
                     INSERT INTO team_dynamic (
@@ -2265,34 +2549,67 @@ class FAJDatabase:
             conn.close()
     
     # ============================================================
-    # PREDICTIONS
+    # PREDICTIONS — с версионированием и hash
     # ============================================================
     
     def save_prediction(self, match_id: int, model_version: str, algorithm: str,
                         home_win: float, draw: float, away_win: float,
                         over25: float = 0.0, over35: float = 0.0, btts: float = 0.0,
                         confidence: int = 50, prediction_source: str = "FAJ Engine",
-                        prediction_hash: str = None) -> int:
+                        prediction_hash: str = None,
+                        memory_state_id: str = None,
+                        snapshot_id: int = None,
+                        passport_revision: str = None,
+                        parameter_revision: str = None) -> int:
+        """Сохраняет прогноз. Если hash совпадает — возвращает существующий."""
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
+            
+            # P1.9: Проверяем существование по hash
+            if prediction_hash:
+                cursor.execute("""
+                    SELECT id FROM predictions
+                    WHERE prediction_hash = ?
+                    LIMIT 1
+                """, (prediction_hash,))
+                existing = cursor.fetchone()
+                if existing:
+                    return existing["id"]
+            
+            # Получаем текущую версию для этого матча
+            cursor.execute("""
+                SELECT COALESCE(MAX(prediction_version), 0) + 1 AS next_ver
+                FROM predictions
+                WHERE match_id = ?
+            """, (match_id,))
+            row = cursor.fetchone()
+            next_ver = row["next_ver"] if row else 1
+            
             cursor.execute("""
                 INSERT INTO predictions (
                     match_id, model_version, algorithm,
                     home_win, draw, away_win,
                     over25, over35, btts, confidence,
-                    prediction_source, prediction_hash, prediction_status, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    prediction_source, prediction_hash,
+                    prediction_status, prediction_version,
+                    memory_state_id, snapshot_id,
+                    passport_revision, parameter_revision,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 match_id, model_version, algorithm,
                 home_win, draw, away_win,
                 over25, over35, btts, confidence,
-                prediction_source, prediction_hash, "active",
+                prediction_source, prediction_hash,
+                "active", next_ver,
+                memory_state_id, snapshot_id,
+                passport_revision, parameter_revision,
                 datetime.now().isoformat()
             ))
             prediction_id = cursor.lastrowid
             conn.commit()
-            logger.info(f"Prediction saved: id={prediction_id}, match_id={match_id}")
+            logger.info(f"Prediction saved: id={prediction_id}, match_id={match_id}, version={next_ver}")
             return prediction_id
         except Exception:
             conn.rollback()
@@ -2307,6 +2624,54 @@ class FAJDatabase:
             cursor.execute("""
                 SELECT * FROM predictions WHERE id = ? LIMIT 1
             """, (prediction_id,))
+            return cursor.fetchone()
+        finally:
+            conn.close()
+    
+    def get_prediction_by_hash(self, prediction_hash: str):
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM predictions WHERE prediction_hash = ? LIMIT 1
+            """, (prediction_hash,))
+            return cursor.fetchone()
+        finally:
+            conn.close()
+    
+    def get_predictions_by_match(self, match_id, include_history=True):
+        """Возвращает все версии прогнозов для матча."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            if include_history:
+                cursor.execute("""
+                    SELECT * FROM predictions
+                    WHERE match_id = ?
+                    ORDER BY prediction_version ASC, created_at ASC
+                """, (match_id,))
+            else:
+                cursor.execute("""
+                    SELECT * FROM predictions
+                    WHERE match_id = ? AND prediction_status = 'active'
+                    ORDER BY prediction_version DESC, created_at DESC
+                    LIMIT 1
+                """, (match_id,))
+            return cursor.fetchall()
+        finally:
+            conn.close()
+    
+    def get_latest_prediction(self, match_id):
+        """Возвращает последнюю активную версию прогноза."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM predictions
+                WHERE match_id = ? AND prediction_status = 'active'
+                ORDER BY prediction_version DESC, created_at DESC
+                LIMIT 1
+            """, (match_id,))
             return cursor.fetchone()
         finally:
             conn.close()
@@ -2345,19 +2710,6 @@ class FAJDatabase:
         finally:
             conn.close()
     
-    def get_predictions_by_match(self, match_id):
-        conn = self.get_connection()
-        try:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM predictions
-                WHERE match_id = ?
-                ORDER BY datetime(created_at) DESC, id DESC
-            """, (match_id,))
-            return cursor.fetchall()
-        finally:
-            conn.close()
-    
     def get_prediction_scores(self, prediction_id):
         conn = self.get_connection()
         try:
@@ -2372,20 +2724,37 @@ class FAJDatabase:
             conn.close()
     
     # ============================================================
-    # VALIDATION — НОВЫЙ МЕТОД ВМЕСТО save_prediction_result
+    # VALIDATION — с prediction_id
     # ============================================================
     
     def add_prediction_validation(self, data: Dict[str, Any]) -> int:
-        """
-        Сохраняет сравнение предматчевого прогноза и фактического результата.
-        Не изменяет сам прогноз (историчность сохраняется).
-        """
+        """P0.5: Сохраняет валидацию с привязкой к prediction_id."""
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
+            
+            # Генерируем validation_hash для защиты от дублей
+            validation_hash = data.get('validation_hash')
+            if not validation_hash:
+                import hashlib
+                hash_str = f"{data.get('match_id')}_{data.get('prediction_id')}_{data.get('actual_score')}"
+                validation_hash = hashlib.md5(hash_str.encode()).hexdigest()
+            
+            # Проверяем дубли
+            cursor.execute("""
+                SELECT id FROM prediction_validation
+                WHERE validation_hash = ?
+                LIMIT 1
+            """, (validation_hash,))
+            existing = cursor.fetchone()
+            if existing:
+                return existing["id"]
+            
             cursor.execute("""
                 INSERT INTO prediction_validation (
-                    match_id, predicted_score, actual_score,
+                    match_id, prediction_id, match_prediction_id,
+                    validation_hash,
+                    predicted_score, actual_score,
                     predicted_home_xg, actual_home_xg,
                     predicted_away_xg, actual_away_xg,
                     predicted_winner, actual_winner,
@@ -2394,9 +2763,12 @@ class FAJDatabase:
                     predicted_btts, actual_btts,
                     predicted_over25, actual_over25,
                     model_version, passport_version, parser_version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 data.get('match_id'),
+                data.get('prediction_id'),
+                data.get('match_prediction_id'),
+                validation_hash,
                 data.get('predicted_score'),
                 data.get('actual_score'),
                 data.get('predicted_home_xg'),
@@ -2425,6 +2797,32 @@ class FAJDatabase:
         except Exception:
             conn.rollback()
             raise
+        finally:
+            conn.close()
+    
+    def get_validation_by_match(self, match_id):
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM prediction_validation
+                WHERE match_id = ?
+                ORDER BY created_at DESC
+            """, (match_id,))
+            return cursor.fetchall()
+        finally:
+            conn.close()
+    
+    def get_validation_by_prediction(self, prediction_id):
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM prediction_validation
+                WHERE prediction_id = ?
+                ORDER BY created_at DESC
+            """, (prediction_id,))
+            return cursor.fetchall()
         finally:
             conn.close()
     
@@ -2483,37 +2881,53 @@ class FAJDatabase:
             conn.close()
     
     # ============================================================
-    # MODEL PARAMETERS
+    # MODEL PARAMETERS — с версионированием (исправлено)
     # ============================================================
-    
-    def get_model_parameters(self, model_version=None):
-        conn = self.get_connection()
-        try:
-            cursor = conn.cursor()
-            if model_version:
-                cursor.execute("""
-                    SELECT * FROM model_parameters
-                    WHERE model_version = ?
-                    ORDER BY category, parameter_name
-                """, (model_version,))
-            else:
-                cursor.execute("""
-                    SELECT * FROM model_parameters
-                    ORDER BY model_version, category, parameter_name
-                """)
-            return cursor.fetchall()
-        finally:
-            conn.close()
     
     def set_model_parameter(self, model_version, category, parameter, value,
                             description="", group_name=None):
+        """P0.2: Версионированное сохранение параметра."""
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
+            
+            # Получаем текущее значение и revision
             cursor.execute("""
-                INSERT OR REPLACE INTO model_parameters
-                (group_name, model_version, category, parameter_name, parameter_value, description, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                SELECT parameter_value, revision, is_current
+                FROM model_parameters
+                WHERE model_version = ? AND parameter_name = ?
+                ORDER BY revision DESC
+                LIMIT 1
+            """, (model_version, parameter))
+            current = cursor.fetchone()
+            
+            if current and current["is_current"] == 1 and current["parameter_value"] == value:
+                # Значение не изменилось
+                return
+            
+            # Получаем новый revision
+            cursor.execute("""
+                SELECT COALESCE(MAX(revision), 0) + 1 AS next_rev
+                FROM model_parameters
+                WHERE model_version = ? AND parameter_name = ?
+            """, (model_version, parameter))
+            row = cursor.fetchone()
+            next_rev = row["next_rev"] if row else 1
+            
+            # Снимаем флаг is_current с предыдущей записи
+            cursor.execute("""
+                UPDATE model_parameters
+                SET is_current = 0
+                WHERE model_version = ? AND parameter_name = ? AND is_current = 1
+            """, (model_version, parameter))
+            
+            # Вставляем новую запись
+            cursor.execute("""
+                INSERT INTO model_parameters (
+                    group_name, model_version, category,
+                    parameter_name, parameter_value,
+                    description, revision, is_current, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 group_name or category,
                 model_version,
@@ -2521,12 +2935,148 @@ class FAJDatabase:
                 parameter,
                 value,
                 description,
+                next_rev,
+                1,
+                datetime.now().isoformat()
+            ))
+            
+            # Записываем историю изменения
+            if current:
+                self.record_parameter_history(
+                    parameter_name=parameter,
+                    group_name=group_name or category,
+                    model_version=model_version,
+                    old_value=current["parameter_value"],
+                    new_value=value,
+                    delta=value - current["parameter_value"],
+                    reason="set_model_parameter"
+                )
+            
+            conn.commit()
+            logger.info(f"Parameter updated: {parameter} = {value} (rev {next_rev})")
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    
+    def get_model_parameters(self, model_version=None, current_only=True):
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            if model_version and current_only:
+                cursor.execute("""
+                    SELECT * FROM model_parameters
+                    WHERE model_version = ? AND is_current = 1
+                    ORDER BY category, parameter_name
+                """, (model_version,))
+            elif model_version:
+                cursor.execute("""
+                    SELECT * FROM model_parameters
+                    WHERE model_version = ?
+                    ORDER BY revision DESC, category, parameter_name
+                """, (model_version,))
+            elif current_only:
+                cursor.execute("""
+                    SELECT * FROM model_parameters
+                    WHERE is_current = 1
+                    ORDER BY model_version, category, parameter_name
+                """)
+            else:
+                cursor.execute("""
+                    SELECT * FROM model_parameters
+                    ORDER BY model_version, category, parameter_name, revision DESC
+                """)
+            return cursor.fetchall()
+        finally:
+            conn.close()
+    
+    def get_parameter_history(self, parameter_name: str, model_version: str = None,
+                              limit: int = 20) -> List[Dict[str, Any]]:
+        """Возвращает историю изменений параметра."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            if model_version:
+                cursor.execute("""
+                    SELECT * FROM parameter_history
+                    WHERE parameter_name = ? AND model_version = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                """, (parameter_name, model_version, limit))
+            else:
+                cursor.execute("""
+                    SELECT * FROM parameter_history
+                    WHERE parameter_name = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                """, (parameter_name, limit))
+            return cursor.fetchall()
+        finally:
+            conn.close()
+    
+    def record_parameter_history(self, parameter_name: str, group_name: str,
+                                 model_version: str, old_value: float,
+                                 new_value: float, delta: float,
+                                 reason: str = "", confidence: float = 1.0,
+                                 reference_event_id: int = None,
+                                 reference_match_id: int = None):
+        """P1.3: Записывает историю изменения параметра."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO parameter_history (
+                    parameter_name, group_name, model_version,
+                    old_value, new_value, delta,
+                    reason, confidence,
+                    reference_event_id, reference_match_id,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                parameter_name, group_name, model_version,
+                old_value, new_value, delta,
+                reason, confidence,
+                reference_event_id, reference_match_id,
                 datetime.now().isoformat()
             ))
             conn.commit()
         except Exception:
             conn.rollback()
             raise
+        finally:
+            conn.close()
+    
+    def get_parameter(self, group_name: str, parameter_name: str,
+                      version: str = None) -> Optional[float]:
+        """Возвращает текущее значение параметра."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            if version:
+                cursor.execute("""
+                    SELECT parameter_value
+                    FROM model_parameters
+                    WHERE group_name = ?
+                      AND parameter_name = ?
+                      AND model_version = ?
+                      AND is_current = 1
+                    LIMIT 1
+                """, (group_name, parameter_name, version))
+            else:
+                cursor.execute("""
+                    SELECT parameter_value
+                    FROM model_parameters
+                    WHERE group_name = ?
+                      AND parameter_name = ?
+                      AND is_current = 1
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                """, (group_name, parameter_name))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return row["parameter_value"]
         finally:
             conn.close()
     
@@ -2547,58 +3097,93 @@ class FAJDatabase:
             logger.error(f"Save parameter error: {e}")
             return False
     
-    def get_parameter(self, group_name: str, parameter_name: str,
-                      version: str = None) -> Optional[float]:
+    # ============================================================
+    # TEAM HISTORY API (P1.4)
+    # ============================================================
+    
+    def record_team_history(self, team_id: int, season_id: int,
+                            field: str, old_value: str, new_value: str,
+                            reason: str = "", source: str = "FAJDatabase",
+                            reference_match_id: int = None,
+                            reference_event_id: int = None) -> int:
+        """P1.4: Записывает историю изменения команды."""
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
-            if version:
-                cursor.execute("""
-                    SELECT parameter_value
-                    FROM model_parameters
-                    WHERE group_name = ?
-                      AND parameter_name = ?
-                      AND model_version = ?
-                    ORDER BY datetime(updated_at) DESC
-                    LIMIT 1
-                """, (group_name, parameter_name, version))
-            else:
-                cursor.execute("""
-                    SELECT parameter_value
-                    FROM model_parameters
-                    WHERE group_name = ?
-                      AND parameter_name = ?
-                    ORDER BY datetime(updated_at) DESC
-                    LIMIT 1
-                """, (group_name, parameter_name))
-            row = cursor.fetchone()
-            if not row:
-                return None
-            return row["parameter_value"]
+            cursor.execute("""
+                INSERT INTO team_history (
+                    team_id, season_id, field,
+                    old_value, new_value,
+                    reason, source,
+                    reference_match_id, reference_event_id,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                team_id, season_id, field,
+                str(old_value) if old_value is not None else None,
+                str(new_value) if new_value is not None else None,
+                reason, source,
+                reference_match_id, reference_event_id,
+                datetime.now().isoformat()
+            ))
+            conn.commit()
+            return cursor.lastrowid
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    
+    def get_team_history(self, team_id: int, season_id: int = None,
+                         field: str = None, limit: int = 50) -> List[Dict[str, Any]]:
+        """Возвращает историю изменений команды."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            query = "SELECT * FROM team_history WHERE team_id = ?"
+            params = [team_id]
+            
+            if season_id is not None:
+                query += " AND season_id = ?"
+                params.append(season_id)
+            
+            if field is not None:
+                query += " AND field = ?"
+                params.append(field)
+            
+            query += " ORDER BY created_at DESC LIMIT ?"
+            params.append(limit)
+            
+            cursor.execute(query, params)
+            return cursor.fetchall()
         finally:
             conn.close()
     
     # ============================================================
-    # LEARNING LAYER — ИДЕМПОТЕНТНАЯ ВЕРСИЯ (upsert_gold)
+    # LEARNING LAYER
     # ============================================================
     
     def upsert_gold(self, data: Dict[str, Any]) -> int:
         """
-        Добавляет или обновляет запись в gold_dataset по match_id.
-        Если запись уже существует, обновляет поля, которые не являются историческими
-        (т.е. статус, экспертную оценку, фактические данные, если они появились).
+        P0.1: Добавляет или обновляет запись в gold_dataset.
+        Исправлен баг с commit().
         """
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
-            # Проверяем, есть ли запись для этого match_id
-            cursor.execute("SELECT id FROM gold_dataset WHERE match_id = ?", (data.get('match_id'),))
+            
+            # Проверяем, не locked ли запись
+            cursor.execute("""
+                SELECT id, locked FROM gold_dataset
+                WHERE match_id = ?
+            """, (data.get('match_id'),))
             existing = cursor.fetchone()
+            
+            if existing and existing["locked"] == 1:
+                raise ValueError(f"Gold record {existing['id']} is LOCKED and cannot be modified")
 
             if existing:
                 gold_id = existing["id"]
-                # Обновляем только те поля, которые могут измениться после создания
-                # (статус, фактические данные, экспертная оценка)
                 cursor.execute("""
                     UPDATE gold_dataset SET
                         actual_score = COALESCE(?, actual_score),
@@ -2629,9 +3214,9 @@ class FAJDatabase:
                     datetime.now().isoformat(),
                     gold_id
                 ))
+                conn.commit()  # P0.1: Добавлен commit
                 return gold_id
             else:
-                # INSERT
                 cursor.execute("""
                     INSERT INTO gold_dataset (
                         match_id, home_team, away_team, match_date,
@@ -2677,6 +3262,24 @@ class FAJDatabase:
         finally:
             conn.close()
     
+    def lock_gold(self, gold_id: int) -> bool:
+        """P1.8: Защищает gold-запись от изменений после completion."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE gold_dataset
+                SET locked = 1, locked_at = ?, status = 'completed'
+                WHERE id = ? AND locked = 0
+            """, (datetime.now().isoformat(), gold_id))
+            conn.commit()
+            return cursor.rowcount > 0
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    
     def update_gold_actual(self, gold_id, actual_data):
         conn = self.get_connection()
         try:
@@ -2693,7 +3296,7 @@ class FAJDatabase:
                     actual_away_goals = ?,
                     status = 'completed',
                     updated_at = ?
-                WHERE id = ?
+                WHERE id = ? AND locked = 0
             """, (
                 actual_data.get('actual_score'),
                 actual_data.get('actual_xg_home'),
@@ -2733,7 +3336,7 @@ class FAJDatabase:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT * FROM gold_dataset
-                WHERE status = 'pending'
+                WHERE status = 'pending' AND locked = 0
                 ORDER BY match_date DESC
             """)
             return cursor.fetchall()
@@ -2910,7 +3513,7 @@ class FAJDatabase:
             conn.close()
     
     # ============================================================
-    # PASSPORT
+    # PASSPORT — с версионированием (исправлено)
     # ============================================================
     
     def save_passport_meta(self, team_id, season_id, passport_data):
@@ -2979,12 +3582,16 @@ class FAJDatabase:
     def save_team_passport(self, team_id: int, season_id: int,
                            data: Dict[str, Any], version: Optional[str] = None,
                            source: str = "manual") -> Optional[int]:
+        """P0.6: Версионированное сохранение паспорта."""
         if team_id is None or season_id is None:
             raise ValueError("team_id and season_id are required")
         
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
+            
+            # Генерируем уникальный UUID для этой версии паспорта
+            passport_uuid = data.get("passport_uuid") or str(uuid.uuid4())
             
             if version is None:
                 cursor.execute("""
@@ -2995,6 +3602,35 @@ class FAJDatabase:
                 row = cursor.fetchone()
                 version = row["version"] if row else "v1.0"
             
+            # Проверяем, существует ли уже такая версия
+            cursor.execute("""
+                SELECT id FROM team_passports
+                WHERE team_id = ? AND season_id = ? AND version = ?
+                LIMIT 1
+            """, (team_id, season_id, version))
+            existing = cursor.fetchone()
+            
+            if existing:
+                # Обновляем только если явно разрешено
+                if data.get("force_update", False):
+                    passport_id = existing["id"]
+                    fields = []
+                    values = []
+                    for key, value in data.items():
+                        if key in ("team_id", "season_id", "version", "passport_uuid", "force_update"):
+                            continue
+                        fields.append(f"{key} = ?")
+                        values.append(value)
+                    values.append(datetime.now().isoformat())
+                    values.append(passport_id)
+                    cursor.execute(f"UPDATE team_passports SET {', '.join(fields)}, updated_at = ? WHERE id = ?", values)
+                    conn.commit()
+                    return passport_id
+                else:
+                    # Возвращаем существующий ID
+                    return existing["id"]
+            
+            # Создаём новую версию
             passport_data = {
                 "team_id": team_id,
                 "season_id": season_id,
@@ -3020,37 +3656,19 @@ class FAJDatabase:
                 "passport_confidence": data.get("passport_confidence", 0.5),
                 "faj_rating": data.get("faj_rating", 0.0),
                 "version": version,
+                "passport_uuid": passport_uuid,
                 "source": source,
+                "created_at": datetime.now().isoformat(),
                 "updated_at": datetime.now().isoformat()
             }
             
-            cursor.execute("""
-                SELECT id, created_at FROM team_passports
-                WHERE team_id = ? AND season_id = ? AND version = ?
-                ORDER BY id DESC LIMIT 1
-            """, (team_id, season_id, version))
-            existing = cursor.fetchone()
-            
-            if existing:
-                fields = []
-                values = []
-                for key, value in passport_data.items():
-                    if key in ("team_id", "season_id", "version"):
-                        continue
-                    fields.append(f"{key} = ?")
-                    values.append(value)
-                values.append(existing["id"])
-                cursor.execute(f"UPDATE team_passports SET {', '.join(fields)} WHERE id = ?", values)
-                passport_id = existing["id"]
-            else:
-                passport_data["created_at"] = datetime.now().isoformat()
-                columns = ", ".join(passport_data.keys())
-                placeholders = ", ".join(["?"] * len(passport_data))
-                cursor.execute(f"INSERT INTO team_passports ({columns}) VALUES ({placeholders})", list(passport_data.values()))
-                passport_id = cursor.lastrowid
+            columns = ", ".join(passport_data.keys())
+            placeholders = ", ".join(["?"] * len(passport_data))
+            cursor.execute(f"INSERT INTO team_passports ({columns}) VALUES ({placeholders})", list(passport_data.values()))
+            passport_id = cursor.lastrowid
             
             conn.commit()
-            logger.info(f"Passport saved: team_id={team_id}, version={version}")
+            logger.info(f"Passport saved: team_id={team_id}, version={version}, uuid={passport_uuid}")
             return passport_id
         except Exception as e:
             conn.rollback()
@@ -3060,55 +3678,80 @@ class FAJDatabase:
             conn.close()
     
     # ============================================================
-    # VALIDATION
+    # MATCH SNAPSHOTS — с passport_id и memory_state_id
     # ============================================================
     
-    def save_prediction_validation(self, data: Dict[str, Any]) -> int:
+    def record_match_snapshot(self, match_id: int, team_id: int,
+                               data: Dict[str, Any],
+                               passport_id: int = None,
+                               passport_version: str = None,
+                               dynamic_id: int = None,
+                               memory_state_id: str = None) -> int:
+        """P1.2: Записывает снапшот с идентификаторами происхождения."""
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO prediction_validation (
-                    match_id, predicted_score, actual_score,
-                    predicted_home_xg, actual_home_xg,
-                    predicted_away_xg, actual_away_xg,
-                    predicted_winner, actual_winner,
-                    predicted_probability_home, predicted_probability_draw, predicted_probability_away,
-                    score_probability, confidence, risk,
-                    predicted_btts, actual_btts,
-                    predicted_over25, actual_over25,
-                    model_version, passport_version, parser_version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO match_snapshots (
+                    match_id, team_id,
+                    attack, defense, control, press, tempo,
+                    transition, finishing, coach_factor,
+                    squad_quality, form, fitness, fatigue, morale,
+                    xg_for, xg_against, opponent_strength, confidence_factor,
+                    passport_id, passport_version, dynamic_id, memory_state_id,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                data.get('match_id'),
-                data.get('predicted_score'),
-                data.get('actual_score'),
-                data.get('predicted_home_xg'),
-                data.get('actual_home_xg'),
-                data.get('predicted_away_xg'),
-                data.get('actual_away_xg'),
-                data.get('predicted_winner'),
-                data.get('actual_winner'),
-                data.get('predicted_probability_home'),
-                data.get('predicted_probability_draw'),
-                data.get('predicted_probability_away'),
-                data.get('score_probability'),
-                data.get('confidence'),
-                data.get('risk'),
-                data.get('predicted_btts'),
-                data.get('actual_btts'),
-                data.get('predicted_over25'),
-                data.get('actual_over25'),
-                data.get('model_version'),
-                data.get('passport_version'),
-                data.get('parser_version')
+                match_id, team_id,
+                data.get("attack"),
+                data.get("defense"),
+                data.get("control"),
+                data.get("press"),
+                data.get("tempo"),
+                data.get("transition"),
+                data.get("finishing"),
+                data.get("coach_factor"),
+                data.get("squad_quality"),
+                data.get("form"),
+                data.get("fitness"),
+                data.get("fatigue"),
+                data.get("morale"),
+                data.get("xg_for"),
+                data.get("xg_against"),
+                data.get("opponent_strength"),
+                data.get("confidence_factor"),
+                passport_id,
+                passport_version,
+                dynamic_id,
+                memory_state_id,
+                datetime.now().isoformat()
             ))
-            row_id = cursor.lastrowid
+            snapshot_id = cursor.lastrowid
             conn.commit()
-            return row_id
+            return snapshot_id
         except Exception:
             conn.rollback()
             raise
+        finally:
+            conn.close()
+    
+    def get_match_snapshots(self, match_id: int, team_id: int = None):
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            if team_id:
+                cursor.execute("""
+                    SELECT * FROM match_snapshots
+                    WHERE match_id = ? AND team_id = ?
+                    ORDER BY created_at DESC
+                """, (match_id, team_id))
+            else:
+                cursor.execute("""
+                    SELECT * FROM match_snapshots
+                    WHERE match_id = ?
+                    ORDER BY team_id, created_at DESC
+                """, (match_id,))
+            return cursor.fetchall()
         finally:
             conn.close()
     
@@ -3206,3 +3849,4 @@ if __name__ == "__main__":
     print(f"   📊 Всего таблиц: {len(status['tables'])}")
     print(f"   📁 Файл: {status['file']}")
     print(f"   📌 Версия схемы: {status.get('schema_version', 'не определена')}")
+    print(f"   🔒 Memory Hardened: v12.1")
