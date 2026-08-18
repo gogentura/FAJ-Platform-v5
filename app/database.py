@@ -38,7 +38,7 @@ logger.info(f"📁 Database path: {DB_FILE}")
 def get_connection():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")  # P0.7: Гарантируем FK enforcement
+    conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 5000")
     return conn
@@ -199,7 +199,7 @@ def run_migrations():
         ensure_column("matches", "updated_at", "TEXT")
         ensure_column("matches", "data_quality", "REAL DEFAULT 1.0")
         ensure_column("matches", "match_uuid", "TEXT")
-        ensure_column("matches", "fact_status", "TEXT DEFAULT 'scheduled'")  # P0.8: scheduled/played/verified/locked
+        ensure_column("matches", "fact_status", "TEXT DEFAULT 'scheduled'")
         ensure_index("matches", "idx_matches_status", "status")
         ensure_index("matches", "idx_matches_date", "date")
         ensure_index("matches", "idx_matches_home_away", "home_team_id, away_team_id")
@@ -273,6 +273,21 @@ def run_migrations():
     ensure_column("predictions", "passport_revision", "TEXT")
     ensure_column("predictions", "parameter_revision", "TEXT")
     
+    # ============================================================
+    # ДОБАВЛЕНИЕ prediction_revision И memory_state_id В match_predictions
+    # ============================================================
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT name FROM sqlite_master
+        WHERE type = 'table' AND name = 'match_predictions'
+    """)
+    if cursor.fetchone():
+        ensure_column("match_predictions", "prediction_revision", "INTEGER DEFAULT 1")
+        ensure_column("match_predictions", "memory_state_id", "TEXT")
+        logger.info("✅ Добавлены колонки prediction_revision и memory_state_id в match_predictions")
+    conn.close()
+    
     # P1.9: Make prediction_hash UNIQUE
     conn = get_connection()
     cursor = conn.cursor()
@@ -338,7 +353,7 @@ def run_migrations():
         ensure_column("team_passports", "results_strength", "REAL")
         ensure_column("team_passports", "opponent_strength", "REAL")
         ensure_column("team_passports", "matches_count", "INTEGER DEFAULT 0")
-        ensure_column("team_passports", "passport_uuid", "TEXT")  # Для уникальной идентификации версии
+        ensure_column("team_passports", "passport_uuid", "TEXT")
         logger.info("✅ Проверены колонки team_passports (включая v2.1 + Memory Hardened)")
     
     conn = get_connection()
@@ -484,6 +499,7 @@ def init_database():
     
     # ============================================================
     # MATCH PREDICTIONS (xG / lambda слой) — append-only
+    # С prediction_revision и memory_state_id в определении таблицы
     # ============================================================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS match_predictions (
@@ -503,7 +519,7 @@ def init_database():
         )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_match_predictions_match ON match_predictions(match_id)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_match_predictions_revision ON match_predictions(match_id, prediction_revision)")
+    # Индекс на prediction_revision создаётся ПОСЛЕ миграций
     
     # ============================================================
     # TEAM INTELLIGENCE (сохраняем существующую структуру)
@@ -1353,10 +1369,30 @@ def init_database():
         )
     """)
     
+    # ============================================================
+    # ЗАПУСК МИГРАЦИЙ
+    # ============================================================
+    
     conn.commit()
     conn.close()
     
     run_migrations()
+    
+    # ============================================================
+    # ИНДЕКС ПОСЛЕ МИГРАЦИЙ (гарантированно с существующей колонкой)
+    # ============================================================
+    
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("PRAGMA table_info(match_predictions)")
+    columns = [row[1] for row in cursor.fetchall()]
+    if "prediction_revision" in columns:
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_match_predictions_revision ON match_predictions(match_id, prediction_revision)")
+        logger.info("✅ Создан индекс idx_match_predictions_revision")
+    
+    conn.commit()
+    conn.close()
     
     logger.info(f"✅ База данных инициализирована. Версия: {DB_SCHEMA_VERSION}")
 
