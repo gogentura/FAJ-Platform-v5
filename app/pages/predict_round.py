@@ -19,8 +19,6 @@ FAJ Platform v12.1 — MEMORY HARDENED
 """
 
 import streamlit as st
-from datetime import datetime
-from typing import Dict, Any, List, Optional
 
 from app.database import FAJDatabase
 from app.match_manager import MatchManager
@@ -45,7 +43,6 @@ def main():
         st.warning("⚠️ Нет сезонов в базе данных")
         return
 
-    # Ищем сезон РПЛ 2026/27
     season_options = {}
     for s in seasons:
         name = s.get("name", "")
@@ -74,7 +71,6 @@ def main():
         st.info("ℹ️ В этом сезоне ещё нет туров")
         return
 
-    # Формируем список туров с информацией о матчах
     round_options = {}
     for r in rounds:
         round_num = r["round_number"]
@@ -109,12 +105,15 @@ def main():
     # Кнопка для расчёта прогнозов
     if st.button("🔮 Рассчитать прогнозы FAJ для всех матчей", type="primary"):
         with st.spinner("Прогнозирование..."):
-            predictions = pred_mgr.predict_round(round_id)
+            try:
+                predictions = pred_mgr.predict_round(round_id)
 
-            if predictions:
-                st.success(f"✅ Прогнозы сохранены: {len(predictions)} матчей")
-            else:
-                st.warning("⚠️ Прогнозы не были созданы")
+                if predictions:
+                    st.success(f"✅ Прогнозы сохранены: {len(predictions)} матчей")
+                else:
+                    st.warning("⚠️ Прогнозы не были созданы")
+            except Exception as e:
+                st.error(f"❌ Ошибка при прогнозировании: {e}")
 
     st.divider()
 
@@ -135,7 +134,7 @@ def main():
 
         status = match.get("status", "scheduled")
 
-        # Получаем прогнозы для матча
+        # Получаем прогнозы для матча (все версии, отсортированные по created_at)
         preds = db.get_predictions_by_match(match_id)
 
         with st.expander(f"⚽ {home_name} — {away_name} ({status})"):
@@ -146,7 +145,10 @@ def main():
                 st.markdown("**FAJ Прогноз**")
 
                 if preds:
-                    latest = preds[0]  # последний
+                    # Берём последний прогноз по created_at (порядок определяется database.py)
+                    # get_predictions_by_match уже сортирует по created_at DESC
+                    latest = preds[0]
+
                     home_win = latest.get("home_win", 0.0) * 100
                     draw = latest.get("draw", 0.0) * 100
                     away_win = latest.get("away_win", 0.0) * 100
@@ -167,15 +169,15 @@ def main():
                     st.caption(f"Модель: {latest.get('model_version', 'N/A')}")
                     st.caption(f"Создан: {latest.get('created_at', 'N/A')[:16]}")
 
+                    # Показываем количество версий прогнозов
+                    if len(preds) > 1:
+                        st.caption(f"📌 Всего версий прогнозов: {len(preds)}")
+
                 else:
                     st.info("Нет прогнозов")
 
             with col2:
                 st.markdown("**🧑‍💼 Прогноз Директора**")
-
-                # Здесь можно добавить форму для ввода прогноза Директора
-                # Используем expert_predictions через db.save_expert_prediction()
-
                 st.info("Форма для прогноза Директора будет добавлена")
 
     # ============================================================
