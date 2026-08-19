@@ -20,7 +20,8 @@ MAIN APPLICATION
     ├── import_facts                ├── history
     └── round_complete              ├── system
                                      ├── diagnostic
-                                     └── reset_data
+                                     ├── reset_data
+                                     └── soccerway_inspector
 
 СИСТЕМА:
 
@@ -509,6 +510,12 @@ with st.sidebar:
         use_container_width=True,
     ):
         navigate("diagnostic")
+
+    if st.button(
+        "🔎 Инспектор Soccerway",
+        use_container_width=True,
+    ):
+        navigate("soccerway_inspector")
 
     st.divider()
 
@@ -1124,6 +1131,28 @@ elif st.session_state.page == "diagnostic":
         st.error(
             f"❌ Ошибка: {exc}"
         )
+
+
+# ============================================================
+# SOCCERWAY INSPECTOR
+# ============================================================
+
+elif st.session_state.page == "soccerway_inspector":
+
+    try:
+
+        from app.pages.soccerway_inspector import main
+
+        main()
+
+    except Exception as exc:
+
+        st.error(
+            f"❌ Ошибка загрузки страницы: {exc}"
+        )
+
+        with st.expander("Техническая ошибка"):
+            st.exception(exc)
 
 
 # ============================================================
