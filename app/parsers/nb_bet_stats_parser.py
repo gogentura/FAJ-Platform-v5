@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-NB-BET Stats Parser v4.1
+NB-BET Stats Parser v4.2
 ============================================================
 
 ИСТОЧНИК:
@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 
 class NbBetStatsParser:
 
-    VERSION = "4.1-nb-bet"
+    VERSION = "4.2-nb-bet"
     SOURCE = "nb-bet"
     DEFAULT_TIMEOUT = 20
 
@@ -783,7 +783,7 @@ class NbBetStatsParser:
         return value[0], value[1]
 
     # ========================================================
-    # SCORE
+    # SCORE — ИСПРАВЛЕННАЯ ВЕРСИЯ
     # ========================================================
 
     def _extract_score(
@@ -794,16 +794,62 @@ class NbBetStatsParser:
     ) -> Optional[
         Tuple[int, int]
     ]:
+        """
+        Безопасное извлечение итогового счёта NB-BET.
 
-        # 1. JSON — главный источник
+        Основной источник:
+            pageSoccerEvent.match["7"]["4"]
+            pageSoccerEvent.match["8"]["4"]
+
+        Для NB-BET:
+            7 = home team
+            8 = away team
+            4 = goals
+
+        ВАЖНО:
+            Не ищем произвольный X:Y по всей странице.
+        """
+
+        # ----------------------------------------------------
+        # 1. NB-BET JSON: match["7"] / match["8"]
+        # ----------------------------------------------------
+
+        score = self._find_nb_bet_match_score(
+            event_data
+        )
+
+        if score is not None:
+            logger.info(
+                "NB-BET: score найден в "
+                "pageSoccerEvent.match[7]/match[8]: %s:%s",
+                score[0],
+                score[1],
+            )
+            return score
+
+        # ----------------------------------------------------
+        # 2. Общий JSON fallback
+        # ----------------------------------------------------
+
         score = self._find_score_in_json(
             event_data
         )
 
         if score is not None:
+            logger.info(
+                "NB-BET: score найден в JSON: %s:%s",
+                score[0],
+                score[1],
+            )
             return score
 
-        # 2. HTML
+        # ----------------------------------------------------
+        # 3. HTML fallback
+        #
+        # Только локальные score/result блоки.
+        # Никакого поиска первого X:Y по всей странице.
+        # ----------------------------------------------------
+
         selectors = (
             "[class*='score']",
             "[class*='Score']",
@@ -830,19 +876,36 @@ class NbBetStatsParser:
                 score = self._parse_score(text)
 
                 if score is not None:
+                    logger.info(
+                        "NB-BET: score найден в HTML: %s:%s",
+                        score[0],
+                        score[1],
+                    )
                     return score
 
-        # 3. title
+        # ----------------------------------------------------
+        # 4. Заголовок
+        # ----------------------------------------------------
+
         if soup.title:
 
-            score = self._parse_score(
+            title = self._clean(
                 soup.title.get_text(
                     " ",
                     strip=True,
                 )
             )
 
+            score = self._parse_score(
+                title
+            )
+
             if score is not None:
+                logger.info(
+                    "NB-BET: score найден в title: %s:%s",
+                    score[0],
+                    score[1],
+                )
                 return score
 
         logger.warning(
@@ -850,6 +913,115 @@ class NbBetStatsParser:
         )
 
         return None
+
+    # ========================================================
+    # NB-BET MATCH SCORE
+    # ========================================================
+
+    def _find_nb_bet_match_score(
+        self,
+        data: Any,
+    ) -> Optional[Tuple[int, int]]:
+        """
+        Специальный extractor структуры NB-BET:
+
+            pageSoccerEvent
+                └── match
+                    ├── "7"
+                    │    ├── "1" = home team
+                    │    ├── "4" = home goals
+                    │    └── "5" = secondary result field
+                    │
+                    └── "8"
+                         ├── "1" = away team
+                         ├── "4" = away goals
+                         └── "5" = secondary result field
+
+        Используем только поле "4" как итоговые голы.
+
+        Это принципиально:
+            "5" НЕ используется как голы,
+            чтобы не перепутать вторичное поле
+            с основным счётом.
+        """
+
+        if not isinstance(data, dict):
+            return None
+
+        match = data.get("match")
+
+        if not isinstance(match, dict):
+            return None
+
+        home = match.get("7")
+        away = match.get("8")
+
+        # На случай integer keys после другого JSON parser.
+        if home is None:
+            home = match.get(7)
+
+        if away is None:
+            away = match.get(8)
+
+        if not isinstance(home, dict):
+            return None
+
+        if not isinstance(away, dict):
+            return None
+
+        home_goals = self._safe_nb_bet_goal(
+            home.get("4")
+            if "4" in home
+            else home.get(4)
+        )
+
+        away_goals = self._safe_nb_bet_goal(
+            away.get("4")
+            if "4" in away
+            else away.get(4)
+        )
+
+        if (
+            home_goals is None
+            or away_goals is None
+        ):
+            return None
+
+        return home_goals, away_goals
+
+    # ========================================================
+    # NB-BET GOAL VALUE
+    # ========================================================
+
+    def _safe_nb_bet_goal(
+        self,
+        value: Any,
+    ) -> Optional[int]:
+        """
+        Безопасное преобразование количества голов.
+
+        0 является валидным значением.
+        Никаких truthiness-проверок вида:
+            if not value
+        потому что 0 тогда ошибочно считается отсутствием.
+        """
+
+        if value is None:
+            return None
+
+        # Иногда источник может вернуть строку.
+        try:
+            value = int(value)
+        except (
+            TypeError,
+            ValueError,
+        ):
+            return None
+
+        if not 0 <= value <= 15:
+            return None
+
+        return value
 
     def _find_score_in_json(
         self,
