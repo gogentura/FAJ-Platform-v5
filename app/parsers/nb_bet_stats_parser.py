@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-NB-BET Stats Parser v5.0
+NB-BET Stats Parser v5.1
 ============================================================
 
 РОЛЬ:
@@ -37,7 +37,7 @@ NB-BET Stats Parser v5.0
         "stats": dict,
         "data_quality": float,
         "source": "nb-bet",
-        "parser_version": "5.0-nb-bet"
+        "parser_version": "5.1-nb-bet"
     }
 
 СТАТИСТИКА:
@@ -102,7 +102,7 @@ class NbBetStatsParser:
         parse_match_page(url)
     """
 
-    VERSION = "5.0-nb-bet"
+    VERSION = "5.1-nb-bet"
     SOURCE = "nb-bet"
 
     DEFAULT_TIMEOUT = 20
@@ -397,7 +397,7 @@ class NbBetStatsParser:
         return result
 
     # ========================================================
-    # HTTP
+    # HTTP — ИСПРАВЛЕНА ВЕРСИЯ
     # ========================================================
 
     def _request_page(
@@ -405,19 +405,69 @@ class NbBetStatsParser:
         url: str,
     ) -> Optional[requests.Response]:
         """
-        Получение HTML страницы NB-BET.
+        Надёжное получение HTML страницы NB-BET.
 
-        Используется retry.
+        Назначение:
+            - получить страницу NB-BET;
+            - пережить временные HTTP-ошибки;
+            - использовать несколько вариантов HTTP-запроса;
+            - вернуть Response только если получен usable HTML.
 
-        SQLite здесь НЕ используется.
+        ВАЖНО:
+            - статистику здесь не разбираем;
+            - SQLite здесь не используется;
+            - счёт здесь не извлекается.
         """
+        if not url:
+            return None
 
-        last_error: Optional[str] = None
+        # --------------------------------------------------------
+        # Варианты заголовков
+        # --------------------------------------------------------
+        headers_variants = [
+            {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/128.0.0.0 Safari/537.36"
+                ),
+                "Accept": (
+                    "text/html,application/xhtml+xml,"
+                    "application/xml;q=0.9,"
+                    "image/avif,image/webp,*/*;q=0.8"
+                ),
+                "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Referer": "https://nb-bet.com/",
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
+            },
+            {
+                "User-Agent": (
+                    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) "
+                    "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+                    "Version/18.0 Mobile/15E148 Safari/604.1"
+                ),
+                "Accept": (
+                    "text/html,application/xhtml+xml,"
+                    "application/xml;q=0.9,*/*;q=0.8"
+                ),
+                "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+                "Referer": "https://nb-bet.com/",
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
+            },
+        ]
 
-        for attempt in range(
-            1,
-            self.MAX_RETRIES + 1,
-        ):
+        last_error = None
+
+        # --------------------------------------------------------
+        # Попытки
+        # --------------------------------------------------------
+        for attempt in range(1, self.MAX_RETRIES + 1):
+            headers = headers_variants[
+                (attempt - 1) % len(headers_variants)
+            ]
+
             try:
                 logger.info(
                     "NB-BET HTTP request %s/%s: %s",
@@ -428,32 +478,78 @@ class NbBetStatsParser:
 
                 response = self.session.get(
                     url,
+                    headers=headers,
                     timeout=self.timeout,
                     allow_redirects=True,
                 )
 
-                if response.status_code == 200:
-                    logger.info(
-                        "NB-BET HTTP 200: %s bytes",
-                        len(response.content),
+                content_type = (
+                    response.headers.get(
+                        "Content-Type",
+                        "",
                     )
-                    return response
-
-                last_error = (
-                    f"HTTP {response.status_code}"
                 )
 
-                logger.warning(
-                    "NB-BET HTTP %s "
-                    "(attempt %s/%s)",
+                content_length = len(
+                    response.content or b""
+                )
+
+                logger.info(
+                    "NB-BET HTTP response: "
+                    "status=%s, final_url=%s, "
+                    "content_type=%s, bytes=%s",
                     response.status_code,
-                    attempt,
-                    self.MAX_RETRIES,
+                    response.url,
+                    content_type,
+                    content_length,
                 )
+
+                # ------------------------------------------------
+                # Нормальный ответ
+                # ------------------------------------------------
+                if response.status_code == 200:
+                    if content_length == 0:
+                        last_error = "HTTP 200, но пустой ответ"
+                        logger.warning(
+                            "NB-BET: HTTP 200, "
+                            "но HTML пустой."
+                        )
+                    else:
+                        logger.info(
+                            "NB-BET HTTP 200: %s bytes",
+                            content_length,
+                        )
+                        return response
+
+                # ------------------------------------------------
+                # HTTP 500
+                # ------------------------------------------------
+                elif response.status_code == 500:
+                    last_error = "HTTP 500"
+                    logger.warning(
+                        "NB-BET HTTP 500 "
+                        "(attempt %s/%s)",
+                        attempt,
+                        self.MAX_RETRIES,
+                    )
+
+                # ------------------------------------------------
+                # Другие ошибки
+                # ------------------------------------------------
+                else:
+                    last_error = (
+                        f"HTTP {response.status_code}"
+                    )
+                    logger.warning(
+                        "NB-BET HTTP %s "
+                        "(attempt %s/%s)",
+                        response.status_code,
+                        attempt,
+                        self.MAX_RETRIES,
+                    )
 
             except requests.RequestException as exc:
                 last_error = str(exc)
-
                 logger.warning(
                     "NB-BET request error "
                     "(attempt %s/%s): %s",
@@ -462,11 +558,22 @@ class NbBetStatsParser:
                     exc,
                 )
 
+            # ----------------------------------------------------
+            # Пауза перед следующей попыткой
+            # ----------------------------------------------------
             if attempt < self.MAX_RETRIES:
-                time.sleep(
+                delay = (
                     self.RETRY_DELAY * attempt
                 )
+                logger.info(
+                    "NB-BET: повтор через %.1f сек.",
+                    delay,
+                )
+                time.sleep(delay)
 
+        # --------------------------------------------------------
+        # Все попытки закончились
+        # --------------------------------------------------------
         logger.error(
             "NB-BET HTTP failed after %s attempts: %s",
             self.MAX_RETRIES,
