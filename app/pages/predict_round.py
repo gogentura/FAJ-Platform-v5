@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1 — MEMORY HARDENED
-PREDICT ROUND v3.1
+PREDICT ROUND v3.2
 ============================================================
 
 НАЗНАЧЕНИЕ:
@@ -21,7 +21,7 @@ PREDICT ROUND v3.1
         ↓
     прогноз каждого матча
         ↓
-    сохранение FAJ-прогноза
+    сохранение FAJ-прогноза (через кнопку "Сохранить прогнозы FAJ")
         ↓
     ввод и сохранение прогноза Директора
 
@@ -37,6 +37,7 @@ PREDICT ROUND v3.1
 ВАЖНО:
     sqlite3.Row всегда преобразуется в dict перед использованием .get().
     Экспертный прогноз сохраняется в БД (expert_predictions).
+    FAJ прогноз сохраняется в БД (predictions + prediction_scores).
 ============================================================
 """
 
@@ -750,16 +751,17 @@ def main():
     # ========================================================
 
     existing_predictions = 0
+    predictions_data = {}
 
     for match in matches:
-
-        prediction = get_latest_prediction(
-            db,
-            match.get("id"),
-        )
+        match_id = match.get("id")
+        prediction = get_latest_prediction(db, match_id)
 
         if prediction:
             existing_predictions += 1
+            predictions_data[match_id] = prediction
+        else:
+            predictions_data[match_id] = None
 
     c1, c2 = st.columns(2)
 
@@ -776,33 +778,104 @@ def main():
         )
 
     # ========================================================
-    # 6. CALCULATE
+    # 6. КНОПКА: СОХРАНИТЬ ПРОГНОЗЫ FAJ
+    # ========================================================
+
+    st.divider()
+
+    col_save1, col_save2, col_save3 = st.columns([1, 2, 1])
+
+    with col_save2:
+        if existing_predictions == len(matches):
+            st.success("✅ Все прогнозы FAJ уже сохранены в БД")
+        else:
+            if st.button(
+                "💾 СОХРАНИТЬ ПРОГНОЗЫ FAJ",
+                type="primary",
+                use_container_width=True,
+            ):
+                progress = st.progress(0)
+                status_box = st.empty()
+
+                saved_count = 0
+                failed_count = 0
+
+                for index, match in enumerate(matches):
+                    match_id = match.get("id")
+                    home = team_name(db, match.get("home_team_id"))
+                    away = team_name(db, match.get("away_team_id"))
+
+                    # Пропускаем уже сохранённые
+                    if predictions_data.get(match_id):
+                        saved_count += 1
+                        progress.progress((index + 1) / len(matches))
+                        continue
+
+                    status_box.info(
+                        f"Расчёт {index + 1}/{len(matches)}: "
+                        f"{home} — {away}"
+                    )
+
+                    try:
+                        result = pred_mgr.predict_by_match_id(
+                            int(match["id"])
+                        )
+
+                        if result.get("status") != "error":
+                            saved_count += 1
+                        else:
+                            failed_count += 1
+                            logger.error(
+                                f"Ошибка прогноза для матча {match_id}: "
+                                f"{result.get('message', 'Неизвестная ошибка')}"
+                            )
+
+                    except Exception as exc:
+                        failed_count += 1
+                        logger.error(
+                            f"Ошибка прогноза для матча {match_id}: {exc}"
+                        )
+
+                    progress.progress((index + 1) / len(matches))
+
+                status_box.empty()
+
+                if failed_count == 0:
+                    st.success(
+                        f"✅ FAJ сохранил прогнозы всех {saved_count} матчей."
+                    )
+                    st.rerun()
+                else:
+                    st.warning(
+                        f"⚠️ Сохранено: {saved_count}. "
+                        f"Ошибок: {failed_count}."
+                    )
+
+    # ========================================================
+    # 7. КНОПКА: РАССЧИТАТЬ (ОСТАВЛЯЕМ ДЛЯ ОБРАТНОЙ СОВМЕСТИМОСТИ)
     # ========================================================
 
     st.divider()
 
     if st.button(
-        "🔮 РАССЧИТАТЬ ПРОГНОЗЫ FAJ",
-        type="primary",
+        "🔮 РАССЧИТАТЬ ПРОГНОЗЫ FAJ (устаревший)",
         use_container_width=True,
     ):
+        st.warning(
+            "Используйте кнопку 'СОХРАНИТЬ ПРОГНОЗЫ FAJ' выше. "
+            "Эта кнопка оставлена для обратной совместимости."
+        )
 
         progress = st.progress(0)
         status_box = st.empty()
 
-        results = []
+        saved_count = 0
+        failed_count = 0
 
         for index, match in enumerate(matches):
-
-            home = team_name(
-                db,
-                match.get("home_team_id"),
-            )
-
-            away = team_name(
-                db,
-                match.get("away_team_id"),
-            )
+            match_id = match.get("id")
+            home = team_name(db, match.get("home_team_id"))
+            away = team_name(db, match.get("away_team_id"))
 
             status_box.info(
                 f"Расчёт {index + 1}/{len(matches)}: "
@@ -814,63 +887,33 @@ def main():
                     int(match["id"])
                 )
 
-                results.append(result)
+                if result.get("status") != "error":
+                    saved_count += 1
+                else:
+                    failed_count += 1
 
             except Exception as exc:
+                failed_count += 1
+                logger.error(f"Ошибка прогноза: {exc}")
 
-                results.append(
-                    {
-                        "status": "error",
-                        "match_id": match.get("id"),
-                        "home_team": home,
-                        "away_team": away,
-                        "message": str(exc),
-                    }
-                )
-
-            progress.progress(
-                (index + 1) / len(matches)
-            )
+            progress.progress((index + 1) / len(matches))
 
         status_box.empty()
 
-        success_count = sum(
-            1
-            for result in results
-            if result.get("status") != "error"
-        )
-
-        error_count = len(results) - success_count
-
-        if error_count == 0:
-
+        if failed_count == 0:
             st.success(
                 f"✅ FAJ рассчитал и сохранил "
-                f"прогнозы всех {success_count} матчей."
+                f"прогнозы всех {saved_count} матчей."
             )
-
+            st.rerun()
         else:
-
             st.warning(
-                f"⚠️ Сохранено прогнозов: "
-                f"{success_count}. "
-                f"Ошибок: {error_count}."
+                f"⚠️ Сохранено: {saved_count}. "
+                f"Ошибок: {failed_count}."
             )
-
-            for result in results:
-
-                if result.get("status") == "error":
-
-                    st.error(
-                        f"{result.get('home_team', '?')} — "
-                        f"{result.get('away_team', '?')}: "
-                        f"{result.get('message', 'Ошибка')}"
-                    )
-
-        st.rerun()
 
     # ========================================================
-    # 7. CARDS
+    # 8. CARDS
     # ========================================================
 
     st.divider()
@@ -878,13 +921,8 @@ def main():
     st.subheader("📊 Карточки прогнозов")
 
     for match in matches:
-
         match_id = match.get("id")
-
-        prediction = get_latest_prediction(
-            db,
-            match_id,
-        )
+        prediction = predictions_data.get(match_id)
 
         render_prediction_card(
             db=db,
@@ -893,7 +931,7 @@ def main():
         )
 
     # ========================================================
-    # 8. BACK
+    # 9. BACK
     # ========================================================
 
     st.divider()
