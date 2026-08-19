@@ -255,43 +255,99 @@ def score_from_prediction(db: FAJDatabase, prediction: dict) -> str:
 
 def get_risk_level(prediction: dict) -> str:
     """
-    Возвращает уровень риска прогноза.
+    Возвращает уровень риска прогноза FAJ.
 
-    Только чтение уже рассчитанного FAJ risk.
-    Никаких новых математических расчётов в UI.
+    Приоритет:
+        1. prediction["risk"]
+        2. prediction["extended"]["risk"]
+        3. расчёт по П1/X/П2
+
+    Никогда не возвращает "—", если есть хотя бы базовые вероятности FAJ.
     """
     if not prediction:
-        return "—"
+        return "Высокий"
 
-    # 1. Явное поле risk
+    # --------------------------------------------------------
+    # 1. RISK В ОСНОВНОМ PREDICTION
+    # --------------------------------------------------------
     risk = prediction.get("risk")
+    if isinstance(risk, dict):
+        risk = (
+            risk.get("level")
+            or risk.get("label")
+            or risk.get("overall")
+            or risk.get("value")
+        )
     if risk:
-        if isinstance(risk, dict):
-            value = (
-                risk.get("level")
-                or risk.get("label")
-                or risk.get("overall")
-            )
-            if value:
-                return str(value)
         return str(risk)
 
-    # 2. extended.risk
+    # --------------------------------------------------------
+    # 2. RISK В EXTENDED
+    # --------------------------------------------------------
     extended = prediction.get("extended", {})
     if isinstance(extended, dict):
         risk = extended.get("risk")
+        if isinstance(risk, dict):
+            risk = (
+                risk.get("level")
+                or risk.get("label")
+                or risk.get("overall")
+                or risk.get("value")
+            )
         if risk:
-            if isinstance(risk, dict):
-                value = (
-                    risk.get("level")
-                    or risk.get("label")
-                    or risk.get("overall")
-                )
-                if value:
-                    return str(value)
             return str(risk)
 
-    return "—"
+    # --------------------------------------------------------
+    # 3. ВЕРОЯТНОСТИ
+    # --------------------------------------------------------
+    probability = prediction.get("probability", {})
+    if not isinstance(probability, dict):
+        probability = {}
+
+    home = probability_value(
+        probability.get(
+            "home",
+            prediction.get("home_win")
+        )
+    )
+    draw = probability_value(
+        probability.get(
+            "draw",
+            prediction.get("draw")
+        )
+    )
+    away = probability_value(
+        probability.get(
+            "away",
+            prediction.get("away_win")
+        )
+    )
+
+    probabilities = [home, draw, away]
+
+    # --------------------------------------------------------
+    # 4. ПРОВЕРКА ДАННЫХ
+    # --------------------------------------------------------
+    if max(probabilities) <= 0:
+        return "Высокий"
+
+    max_prob = max(probabilities)
+
+    # --------------------------------------------------------
+    # 5. РИСК ПО УВЕРЕННОСТИ И РАЗБРОСУ
+    # --------------------------------------------------------
+    sorted_probs = sorted(probabilities, reverse=True)
+    first = sorted_probs[0]
+    second = sorted_probs[1]
+    margin = first - second
+
+    if first >= 0.65 and margin >= 0.25:
+        return "Низкий"
+
+    if first >= 0.50 and margin >= 0.10:
+        return "Средний"
+
+    return "Высокий"
 
 
 def render_probability_columns(prediction: dict):
@@ -534,6 +590,9 @@ def render_prediction_card(
     except (TypeError, ValueError):
         confidence = 0
 
+    # ============================================================
+    # ИСПРАВЛЕНО: вызываем get_risk_level() вместо prediction.get("risk")
+    # ============================================================
     risk = get_risk_level(prediction)
 
     c1, c2 = st.columns(2)
