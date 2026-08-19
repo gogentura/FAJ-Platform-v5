@@ -14,17 +14,14 @@ NB-BET Stats Parser v4.3
     pageSoccerEvent.match
 
 СТРУКТУРА NB-BET:
-
     match["7"]
         "1" = домашняя команда
         "4" = голы хозяев
         "5" = вторичное поле
-
     match["8"]
         "1" = гостевая команда
         "4" = голы гостей
         "5" = вторичное поле
-
     match["17"][0]
         "1"  = possession
         "5"  = corners
@@ -47,11 +44,9 @@ NB-BET Stats Parser v4.3
 
 ВАЖНО:
     0:0 является валидным результатом.
-
     Отсутствие счёта НЕ означает отсутствие статистики.
     Если HTTP или SCORE недоступны, уже полученные stats
     не уничтожаются.
-
 ============================================================
 """
 
@@ -76,7 +71,6 @@ class NbBetStatsParser:
 
     VERSION = "4.3-nb-bet"
     SOURCE = "nb-bet"
-
     DEFAULT_TIMEOUT = 20
     MAX_RETRIES = 3
     RETRY_DELAY = 1.5
@@ -192,7 +186,6 @@ class NbBetStatsParser:
         self,
         timeout: int = DEFAULT_TIMEOUT,
     ):
-
         self.timeout = timeout
 
         self.session = requests.Session()
@@ -233,18 +226,13 @@ class NbBetStatsParser:
 
         result = {
             "success": False,
-
             "home_team": None,
             "away_team": None,
-
             "home_goals": None,
             "away_goals": None,
-
             "stats": {},
-
             "source": self.SOURCE,
             "parser_version": self.VERSION,
-
             "data_quality": 0.0,
         }
 
@@ -265,11 +253,9 @@ class NbBetStatsParser:
         response = self._request_page(url)
 
         if response is None:
-
             logger.error(
                 "NB-BET: страницу получить не удалось."
             )
-
             return result
 
         html = response.text
@@ -294,7 +280,6 @@ class NbBetStatsParser:
         )
 
         if event_data is None:
-
             logger.warning(
                 "NB-BET: pageSoccerEvent не разобран."
             )
@@ -325,7 +310,6 @@ class NbBetStatsParser:
         )
 
         if score is not None:
-
             result["home_goals"] = score[0]
             result["away_goals"] = score[1]
 
@@ -367,7 +351,6 @@ class NbBetStatsParser:
         # ----------------------------------------------------
 
         if result["success"]:
-
             logger.info(
                 "NB-BET факт успешно разобран: "
                 "%s %s:%s %s | stats=%s | quality=%s",
@@ -378,9 +361,7 @@ class NbBetStatsParser:
                 len(result["stats"]),
                 result["data_quality"],
             )
-
         else:
-
             logger.warning(
                 "NB-BET неполный результат: "
                 "teams=%s/%s score=%s:%s stats=%s quality=%s",
@@ -408,7 +389,6 @@ class NbBetStatsParser:
         Важно:
             HTTP 500 = проблема получения страницы,
             а не проблема SCORE parser.
-
         Не смешиваем эти два случая.
         """
 
@@ -418,9 +398,7 @@ class NbBetStatsParser:
             1,
             self.MAX_RETRIES + 1,
         ):
-
             try:
-
                 logger.info(
                     "NB-BET HTTP request %s/%s: %s",
                     attempt,
@@ -435,12 +413,10 @@ class NbBetStatsParser:
                 )
 
                 if response.status_code == 200:
-
                     logger.info(
                         "NB-BET HTTP 200: %s bytes",
                         len(response.content),
                     )
-
                     return response
 
                 last_error = (
@@ -456,7 +432,6 @@ class NbBetStatsParser:
                 )
 
             except requests.RequestException as exc:
-
                 last_error = str(exc)
 
                 logger.warning(
@@ -468,7 +443,6 @@ class NbBetStatsParser:
                 )
 
             if attempt < self.MAX_RETRIES:
-
                 time.sleep(
                     self.RETRY_DELAY * attempt
                 )
@@ -495,7 +469,6 @@ class NbBetStatsParser:
         for index, script in enumerate(
             scripts
         ):
-
             text = (
                 script.string
                 or script.get_text()
@@ -518,11 +491,9 @@ class NbBetStatsParser:
             )
 
             if data is not None:
-
                 logger.info(
                     "NB-BET: pageSoccerEvent успешно разобран"
                 )
-
                 return data
 
         logger.warning(
@@ -564,14 +535,12 @@ class NbBetStatsParser:
         )
 
         if colon >= 0:
-
             start = text.find(
                 "{",
                 colon,
             )
 
             if start >= 0:
-
                 json_text = (
                     self._extract_balanced_object(
                         text,
@@ -580,9 +549,7 @@ class NbBetStatsParser:
                 )
 
                 if json_text:
-
                     try:
-
                         data = json.loads(
                             json_text
                         )
@@ -608,7 +575,6 @@ class NbBetStatsParser:
         )
 
         if start >= 0:
-
             json_text = (
                 self._extract_balanced_object(
                     text,
@@ -617,9 +583,7 @@ class NbBetStatsParser:
             )
 
             if json_text:
-
                 try:
-
                     data = json.loads(
                         json_text
                     )
@@ -645,28 +609,24 @@ class NbBetStatsParser:
         )
 
         if match_position < 0:
-
             match_position = text.find(
                 "'match'",
                 position,
             )
 
         if match_position < 0:
-
             match_position = text.find(
                 "match",
                 position,
             )
 
         if match_position >= 0:
-
             match_start = text.find(
                 "{",
                 match_position,
             )
 
             if match_start >= 0:
-
                 match_text = (
                     self._extract_balanced_object(
                         text,
@@ -675,9 +635,7 @@ class NbBetStatsParser:
                 )
 
                 if match_text:
-
                     try:
-
                         match_data = json.loads(
                             match_text
                         )
@@ -713,13 +671,11 @@ class NbBetStatsParser:
             start,
             len(text),
         ):
-
             char = text[index]
 
             if in_string:
 
                 if escaped:
-
                     escaped = False
                     continue
 
@@ -733,11 +689,9 @@ class NbBetStatsParser:
                 continue
 
             if char == '"':
-
                 in_string = True
 
             elif char == "{":
-
                 depth += 1
 
             elif char == "}":
@@ -745,7 +699,6 @@ class NbBetStatsParser:
                 depth -= 1
 
                 if depth == 0:
-
                     return text[
                         start:index + 1
                     ]
@@ -778,7 +731,6 @@ class NbBetStatsParser:
         )
 
         if pair:
-
             normalized = (
                 self._normalize_pair(
                     pair[0],
@@ -798,7 +750,6 @@ class NbBetStatsParser:
         )
 
         if pair:
-
             normalized = (
                 self._normalize_pair(
                     pair[0],
@@ -818,7 +769,6 @@ class NbBetStatsParser:
         for element in soup.find_all(
             ["h1", "h2", "h3"]
         ):
-
             text = self._clean(
                 element.get_text(
                     " ",
@@ -830,7 +780,6 @@ class NbBetStatsParser:
                 candidates.append(text)
 
         if soup.title:
-
             candidates.append(
                 self._clean(
                     soup.title.get_text(
@@ -891,7 +840,6 @@ class NbBetStatsParser:
         )
 
         if match:
-
             slug = match.group(1)
 
             slug = re.sub(
@@ -1018,16 +966,13 @@ class NbBetStatsParser:
             data,
             dict,
         ):
-
             for home_key, away_key in (
                 self.TEAM_PAIRS
             ):
-
                 if (
                     home_key in data
                     and away_key in data
                 ):
-
                     home = self._team_value(
                         data[home_key]
                     )
@@ -1040,7 +985,6 @@ class NbBetStatsParser:
                         return home, away
 
             for value in data.values():
-
                 pair = (
                     self._find_teams_in_json(
                         value
@@ -1054,9 +998,7 @@ class NbBetStatsParser:
             data,
             list,
         ):
-
             for value in data:
-
                 pair = (
                     self._find_teams_in_json(
                         value
@@ -1087,16 +1029,13 @@ class NbBetStatsParser:
             value,
             dict,
         ):
-
             for key in (
                 "name",
                 "teamName",
                 "team_name",
                 "title",
             ):
-
                 if key in value:
-
                     candidate = (
                         self._team_value(
                             value[key]
@@ -1138,7 +1077,6 @@ class NbBetStatsParser:
         lowered = text.lower()
 
         for home, away in known_pairs:
-
             separator = " "
 
             candidate = (
@@ -1146,7 +1084,6 @@ class NbBetStatsParser:
             )
 
             if candidate in lowered:
-
                 index = lowered.find(
                     away
                 )
@@ -1182,7 +1119,6 @@ class NbBetStatsParser:
             return None
 
         try:
-
             normalized_home, normalized_away = (
                 normalize_team_names(
                     home,
@@ -1201,7 +1137,6 @@ class NbBetStatsParser:
                 )
 
         except Exception as exc:
-
             logger.debug(
                 "NB-BET team normalizer failed: %s",
                 exc,
@@ -1264,18 +1199,14 @@ class NbBetStatsParser:
         for raw_key, raw_value in (
             first.items()
         ):
-
             try:
-
                 key = int(
                     raw_key
                 )
-
             except (
                 TypeError,
                 ValueError,
             ):
-
                 continue
 
             stat_name = (
@@ -1366,7 +1297,6 @@ class NbBetStatsParser:
         )
 
         if score is not None:
-
             logger.info(
                 "NB-BET SCORE: "
                 "pageSoccerEvent.match[7/8][4] "
@@ -1374,7 +1304,6 @@ class NbBetStatsParser:
                 score[0],
                 score[1],
             )
-
             return score
 
         # ----------------------------------------------------
@@ -1388,14 +1317,12 @@ class NbBetStatsParser:
         )
 
         if score is not None:
-
             logger.info(
                 "NB-BET SCORE: "
                 "generic JSON %s:%s",
                 score[0],
                 score[1],
             )
-
             return score
 
         # ----------------------------------------------------
@@ -1410,19 +1337,14 @@ class NbBetStatsParser:
         )
 
         for selector in selectors:
-
             try:
-
                 elements = soup.select(
                     selector
                 )
-
             except Exception:
-
                 elements = []
 
             for element in elements:
-
                 text = self._clean(
                     element.get_text(
                         " ",
@@ -1437,14 +1359,12 @@ class NbBetStatsParser:
                 )
 
                 if score is not None:
-
                     logger.info(
                         "NB-BET SCORE: "
                         "HTML %s:%s",
                         score[0],
                         score[1],
                     )
-
                     return score
 
         # ----------------------------------------------------
@@ -1452,7 +1372,6 @@ class NbBetStatsParser:
         # ----------------------------------------------------
 
         if soup.title:
-
             title = self._clean(
                 soup.title.get_text(
                     " ",
@@ -1467,14 +1386,12 @@ class NbBetStatsParser:
             )
 
             if score is not None:
-
                 logger.info(
                     "NB-BET SCORE: "
                     "title %s:%s",
                     score[0],
                     score[1],
                 )
-
                 return score
 
         logger.warning(
@@ -1588,16 +1505,13 @@ class NbBetStatsParser:
             return None
 
         try:
-
             value = int(
                 value
             )
-
         except (
             TypeError,
             ValueError,
         ):
-
             return None
 
         if not 0 <= value <= 15:
@@ -1623,16 +1537,13 @@ class NbBetStatsParser:
             data,
             dict,
         ):
-
             for home_key, away_key in (
                 self.SCORE_PAIRS
             ):
-
                 if (
                     home_key in data
                     and away_key in data
                 ):
-
                     score = (
                         self._make_score(
                             data[
@@ -1650,7 +1561,6 @@ class NbBetStatsParser:
             for key in (
                 self.SCORE_FIELDS
             ):
-
                 if key not in data:
                     continue
 
@@ -1664,7 +1574,6 @@ class NbBetStatsParser:
                     return score
 
             for value in data.values():
-
                 score = (
                     self._find_score_in_json(
                         value
@@ -1680,9 +1589,7 @@ class NbBetStatsParser:
             data,
             list,
         ):
-
             for value in data:
-
                 score = (
                     self._find_score_in_json(
                         value
@@ -1698,7 +1605,6 @@ class NbBetStatsParser:
             data,
             str,
         ):
-
             return self._parse_score(
                 data
             )
@@ -1720,7 +1626,6 @@ class NbBetStatsParser:
             value,
             str,
         ):
-
             return self._parse_score(
                 value
             )
@@ -1729,9 +1634,7 @@ class NbBetStatsParser:
             value,
             (list, tuple),
         ):
-
             if len(value) >= 2:
-
                 return self._make_score(
                     value[0],
                     value[1],
@@ -1741,7 +1644,6 @@ class NbBetStatsParser:
             value,
             dict,
         ):
-
             return self._find_score_in_json(
                 value
             )
@@ -1761,20 +1663,16 @@ class NbBetStatsParser:
     ]:
 
         try:
-
             home = int(
                 home
             )
-
             away = int(
                 away
             )
-
         except (
             TypeError,
             ValueError,
         ):
-
             return None
 
         if not (
@@ -1833,9 +1731,7 @@ class NbBetStatsParser:
             for name, keys in (
                 self.RESULT_KEYS.items()
             ):
-
                 if key in keys:
-
                     stat_type = name
                     break
 
@@ -1881,9 +1777,7 @@ class NbBetStatsParser:
             hp is not None
             and ap is not None
         ):
-
             if not 98 <= hp + ap <= 102:
-
                 logger.warning(
                     "NB-BET: invalid possession "
                     "%s + %s",
@@ -1907,7 +1801,6 @@ class NbBetStatsParser:
             "home",
             "away",
         ):
-
             total_key = (
                 f"{side}_total_passes"
             )
@@ -1929,7 +1822,6 @@ class NbBetStatsParser:
                 and accurate is not None
                 and accurate > total
             ):
-
                 result[
                     total_key
                 ] = None
@@ -1951,15 +1843,11 @@ class NbBetStatsParser:
     ) -> Optional[Any]:
 
         try:
-
             if stat_type == "xg":
-
                 value = float(
                     value
                 )
-
             else:
-
                 value = int(
                     value
                 )
@@ -1968,7 +1856,6 @@ class NbBetStatsParser:
             TypeError,
             ValueError,
         ):
-
             return None
 
         limits = self.LIMITS.get(
@@ -1976,7 +1863,6 @@ class NbBetStatsParser:
         )
 
         if limits:
-
             minimum, maximum = limits
 
             if not (
@@ -1984,7 +1870,6 @@ class NbBetStatsParser:
                 <= value
                 <= maximum
             ):
-
                 return None
 
         return value
@@ -2015,7 +1900,6 @@ class NbBetStatsParser:
             return
 
         if smaller > larger:
-
             stats[
                 smaller_key
             ] = None
@@ -2040,7 +1924,6 @@ class NbBetStatsParser:
             result.get("home_team")
             and result.get("away_team")
         ):
-
             quality += 0.25
 
         # Итоговый счёт
@@ -2054,14 +1937,12 @@ class NbBetStatsParser:
             result.get("away_goals")
             is not None
         ):
-
             quality += 0.50
 
         # Статистика
         if result.get(
             "stats"
         ):
-
             quality += 0.25
 
         return round(
@@ -2130,7 +2011,6 @@ class NbBetStatsParser:
             home is None
             or away is None
         ):
-
             return None
 
         return (
@@ -2183,7 +2063,6 @@ if __name__ == "__main__":
     )
 
     if len(sys.argv) < 2:
-
         print(
             "Usage:"
         )
@@ -2203,12 +2082,10 @@ if __name__ == "__main__":
     )
 
     print("=" * 70)
-
     print(
         "FAJ NB-BET PARSER "
         f"v{parser.VERSION}"
     )
-
     print("=" * 70)
 
     print(
@@ -2250,7 +2127,6 @@ if __name__ == "__main__":
     for key, value in (
         result["stats"].items()
     ):
-
         print(
             f"  {key}: {value}"
         )
