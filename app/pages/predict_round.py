@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1 — MEMORY HARDENED
-PREDICT ROUND v3.0
+PREDICT ROUND v3.1
 ============================================================
 
 НАЗНАЧЕНИЕ:
@@ -23,7 +23,7 @@ PREDICT ROUND v3.0
         ↓
     сохранение FAJ-прогноза
         ↓
-    ввод прогноза Директора
+    ввод и сохранение прогноза Директора
 
 СТРАНИЦА НЕ ОТВЕЧАЕТ ЗА:
     - создание матчей;
@@ -36,16 +36,21 @@ PREDICT ROUND v3.0
 
 ВАЖНО:
     sqlite3.Row всегда преобразуется в dict перед использованием .get().
+    Экспертный прогноз сохраняется в БД (expert_predictions).
 ============================================================
 """
 
 from __future__ import annotations
 
+import logging
 import streamlit as st
 
 from app.database import FAJDatabase
 from app.match_manager import MatchManager
 from app.core.prediction_manager import get_prediction_manager
+
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -478,7 +483,7 @@ def render_prediction_card(
     )
 
     # --------------------------------------------------------
-    # EXPERT
+    # EXPERT — С СОХРАНЕНИЕМ В БД
     # --------------------------------------------------------
 
     st.markdown("### 🧑‍💼 Прогноз Директора")
@@ -490,11 +495,37 @@ def render_prediction_card(
         "",
     )
 
+    # Проверяем, есть ли уже сохранённый экспертный прогноз в БД
+    try:
+        existing_expert_db = db.get_expert_predictions(match_id)
+        if existing_expert_db and not existing_expert:
+            first = row_dict(existing_expert_db[0])
+            if first:
+                existing_expert = first.get("score", "")
+                st.session_state[expert_key] = existing_expert
+    except Exception:
+        pass
+
     expert_score = st.text_input(
         "Ваш счёт",
         value=existing_expert,
         placeholder="Например: 2:1",
         key=f"expert_input_{match_id}",
+    )
+
+    expert_comment = st.text_input(
+        "Комментарий (опционально)",
+        value="",
+        placeholder="Краткое обоснование...",
+        key=f"expert_comment_{match_id}",
+    )
+
+    expert_confidence = st.slider(
+        "Уверенность эксперта, %",
+        min_value=0,
+        max_value=100,
+        value=50,
+        key=f"expert_confidence_{match_id}",
     )
 
     if expert_score:
@@ -511,6 +542,32 @@ def render_prediction_card(
                     st.success(
                         f"Эксперт: **{home_score}:{away_score}**"
                     )
+
+                    # ===== СОХРАНЕНИЕ В БД =====
+                    try:
+                        # Проверяем, есть ли уже запись
+                        existing = db.get_expert_predictions(match_id)
+                        if not existing:
+                            db.save_expert_prediction(
+                                match_id=match_id,
+                                expert_name="Директор",
+                                score=expert_score,
+                                comment=expert_comment,
+                                confidence=expert_confidence,
+                            )
+                            logger.info(
+                                f"Экспертный прогноз сохранён: "
+                                f"match_id={match_id}, score={expert_score}"
+                            )
+                            st.success("✅ Прогноз эксперта сохранён в БД")
+                        else:
+                            st.info("ℹ️ Прогноз эксперта уже сохранён в БД")
+                    except Exception as e:
+                        logger.error(
+                            f"Ошибка сохранения экспертного прогноза: {e}"
+                        )
+                        st.warning(f"⚠️ Ошибка сохранения: {e}")
+                    # =====================================
 
             except ValueError:
                 st.warning(
