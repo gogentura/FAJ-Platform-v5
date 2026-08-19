@@ -310,28 +310,68 @@ class NbBetStatsParser:
         return result
 
     # ========================================================
-    # EVENT JSON
+    # EVENT JSON — ДИАГНОСТИЧЕСКАЯ ВЕРСИЯ
     # ========================================================
 
     def _extract_event_data(
         self,
         soup: BeautifulSoup,
     ) -> Optional[Dict[str, Any]]:
-
-        for script in soup.find_all("script"):
-
+        for index, script in enumerate(
+            soup.find_all("script")
+        ):
             text = script.string or script.get_text()
-
             if not text:
                 continue
-
             if "pageSoccerEvent" not in text:
                 continue
 
-            data = self._parse_page_soccer_event(text)
+            logger.warning(
+                "NB-BET DEBUG: pageSoccerEvent найден в script #%s",
+                index,
+            )
+
+            position = text.find("pageSoccerEvent")
+
+            logger.warning(
+                "NB-BET DEBUG: position=%s length=%s",
+                position,
+                len(text),
+            )
+
+            # Показываем небольшой фрагмент вокруг pageSoccerEvent
+            fragment_start = max(
+                0,
+                position - 300,
+            )
+            fragment_end = min(
+                len(text),
+                position + 1500,
+            )
+
+            logger.warning(
+                "NB-BET DEBUG EVENT FRAGMENT:\n%s",
+                text[fragment_start:fragment_end],
+            )
+
+            data = self._parse_page_soccer_event(
+                text
+            )
 
             if data is not None:
+                logger.warning(
+                    "NB-BET DEBUG: pageSoccerEvent успешно разобран"
+                )
                 return data
+
+            logger.warning(
+                "NB-BET DEBUG: pageSoccerEvent найден, "
+                "но JSON object не разобран"
+            )
+
+        logger.warning(
+            "NB-BET DEBUG: pageSoccerEvent не найден"
+        )
 
         return None
 
@@ -783,7 +823,7 @@ class NbBetStatsParser:
         return value[0], value[1]
 
     # ========================================================
-    # SCORE — ИСПРАВЛЕННАЯ ВЕРСИЯ
+    # SCORE
     # ========================================================
 
     def _extract_score(
