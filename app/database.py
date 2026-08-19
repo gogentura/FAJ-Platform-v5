@@ -3888,43 +3888,54 @@ class FAJDatabase:
             conn.close()
     
     # ============================================================
-    # DELETE METHODS
+    # DELETE METHODS — ИСПРАВЛЕНА ВЕРСИЯ
     # ============================================================
     
     def delete_match(self, match_id: int) -> bool:
         """
-        Удаляет матч по ID.
+        Удаляет матч и все связанные с ним данные.
         Возвращает True если матч был удалён, False если не найден.
         """
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
             
-            # Проверяем, есть ли результаты у матча
-            cursor.execute("""
-                SELECT id FROM match_results WHERE match_id = ?
-            """, (match_id,))
-            if cursor.fetchone():
-                # Если есть результаты — сначала удаляем их
-                cursor.execute("""
-                    DELETE FROM match_results WHERE match_id = ?
-                """, (match_id,))
+            # Все таблицы, которые могут ссылаться на match_id
+            related_tables = [
+                "match_results",
+                "match_statistics",
+                "predictions",
+                "prediction_scores",
+                "prediction_distributions",
+                "prediction_validation",
+                "gold_dataset",
+                "learning_records",
+                "learning_events",
+                "expert_predictions",
+                "match_predictions",
+                "match_snapshots",
+                "journal",
+                "audit_log",
+                "team_form_history",
+                "match_events",
+            ]
             
-            # Удаляем прогнозы, связанные с матчем
-            cursor.execute("""
-                DELETE FROM predictions WHERE match_id = ?
-            """, (match_id,))
+            for table in related_tables:
+                try:
+                    cursor.execute(f"DELETE FROM {table} WHERE match_id = ?", (match_id,))
+                except Exception as e:
+                    logger.debug(f"Ошибка удаления из {table}: {e}")
             
             # Удаляем сам матч
-            cursor.execute("""
-                DELETE FROM matches WHERE id = ?
-            """, (match_id,))
+            cursor.execute("DELETE FROM matches WHERE id = ?", (match_id,))
             
             conn.commit()
             return cursor.rowcount > 0
-        except Exception:
+            
+        except Exception as e:
             conn.rollback()
-            raise
+            logger.error(f"Delete match error: {e}")
+            return False
         finally:
             conn.close()
     
