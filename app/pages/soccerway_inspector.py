@@ -4,39 +4,43 @@
 """
 ============================================================
 FAJ Platform v12.1
-SOCCERWAY INSPECTOR v1.1
+SOCCERWAY INSPECTOR v1.0
+NB-BET MODE
 ============================================================
+
+ВАЖНО:
+
+    Имя файла и название страницы сохраняются:
+        Soccerway Inspector
+
+    НО источник теперь:
+        https://nb-bet.com/
 
 Назначение:
 
-    Универсальный HTML Inspector.
-
-    Изначально создан для исследования Soccerway.
-    Сейчас используется также для исследования NB-BET.
+    Исследование РЕАЛЬНОГО HTML NB-BET.
 
     Inspector:
-
         1. Загружает HTML
-        2. Определяет HTTP-статус
-        3. Ищет команды
-        4. Ищет score
-        5. Ищет статистические labels
-        6. Ищет таблицы и строки статистики
-        7. Ищет реальные CSS-классы
-        8. Ищет data-* атрибуты
-        9. Ищет JSON
-        10. Ищет JavaScript
-        11. Ищет fetch / API / XMLHttpRequest / axios
-        12. Ищет window.* / environment
-        13. Ищет iframe
-        14. Ищет HTML-фрагменты вокруг команд
-        15. Формирует ОДИН копируемый отчёт
+        2. Определяет команды
+        3. Ищет счёт
+        4. Ищет статистические показатели
+        5. Ищет xG
+        6. Ищет удары
+        7. Ищет удары в створ
+        8. Ищет угловые
+        9. Ищет передачи
+       10. Ищет владение
+       11. Ищет все найденные строки статистики
+       12. Ищет data-* атрибуты
+       13. Ищет JSON / scripts
+       14. Показывает HTML-фрагменты
+       15. Формирует ОДИН копируемый отчёт
 
 ВАЖНО:
 
     Inspector ничего не записывает в БД.
     Ничего не изменяет.
-    Не выполняет INSERT / UPDATE / DELETE / DROP.
 ============================================================
 """
 
@@ -56,7 +60,7 @@ from bs4 import BeautifulSoup
 # CONFIG
 # ============================================================
 
-VERSION = "1.1"
+VERSION = "1.0-NB-BET"
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -64,111 +68,10 @@ USER_AGENT = (
     "Chrome/128.0 Safari/537.36"
 )
 
-# ============================================================
-# NB-BET TEST URL
-# ============================================================
-
 DEFAULT_URL = (
     "https://nb-bet.com/Events/"
     "1670580-dinamo-moskva-krylya-sovetov-prognoz-na-match"
 )
-
-
-# ============================================================
-# KNOWN TEAMS / MATCH TERMS
-# ============================================================
-
-TEAM_TERMS = [
-    "динамо",
-    "dinamo",
-    "dynamo",
-    "москва",
-    "moskva",
-    "moscow",
-    "крылья",
-    "krylya",
-    "советов",
-    "sovetov",
-    "samara",
-    "самара",
-]
-
-
-# ============================================================
-# STATISTICS TERMS
-# ============================================================
-
-STAT_TERMS = [
-    "ожидаемые голы",
-    "expected goals",
-    "xg",
-    "xgot",
-
-    "владение",
-    "possession",
-
-    "удары",
-    "shots",
-    "shots on target",
-    "удары в створ",
-
-    "голевые моменты",
-    "big chances",
-
-    "угловые",
-    "corners",
-
-    "передачи",
-    "passes",
-
-    "точность передач",
-    "pass accuracy",
-
-    "фолы",
-    "fouls",
-
-    "отборы",
-    "tackles",
-
-    "дуэли",
-    "duels",
-
-    "выносы",
-    "clearances",
-
-    "перехваты",
-    "interceptions",
-
-    "сэйвы",
-    "saves",
-
-    "удары от ворот",
-    "goal kicks",
-
-    "офсайды",
-    "offsides",
-
-    "желтые карточки",
-    "yellow cards",
-
-    "красные карточки",
-    "red cards",
-
-    "атаки",
-    "attacks",
-
-    "опасные атаки",
-    "dangerous attacks",
-
-    "вбрасывания",
-    "throw ins",
-
-    "штрафные",
-    "free kicks",
-
-    "пенальти",
-    "penalties",
-]
 
 
 # ============================================================
@@ -189,7 +92,6 @@ def load_page(url: str) -> Tuple[int, str]:
                 "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
             ),
             "Referer": "https://nb-bet.com/",
-            "Connection": "keep-alive",
         },
         timeout=30,
     )
@@ -216,10 +118,7 @@ def clean_text(value: str) -> str:
     return value.strip()
 
 
-def short_text(
-    value: str,
-    limit: int = 500,
-) -> str:
+def short_text(value: str, limit: int = 500) -> str:
 
     value = clean_text(value)
 
@@ -234,12 +133,10 @@ def css_path(element) -> str:
     parts = []
 
     current = element
+
     depth = 0
 
-    while (
-        current is not None
-        and current.name != "[document]"
-    ):
+    while current is not None and current.name != "[document]":
 
         if depth >= 8:
             break
@@ -278,18 +175,91 @@ def css_path(element) -> str:
 
 
 # ============================================================
-# TEAM SEARCH
+# TEAM / SCORE
 # ============================================================
 
-def find_teams(
+def find_match_header(
     soup: BeautifulSoup,
 ) -> List[str]:
 
     results = []
 
+    page_text = clean_text(
+        soup.get_text(
+            " ",
+            strip=True,
+        )
+    )
+
+    # --------------------------------------------------------
+    # SCORE
+    # --------------------------------------------------------
+
+    score_patterns = [
+        r"(?<!\d)(\d{1,2})\s*:\s*(\d{1,2})(?!\d)",
+        r"(?<!\d)(\d{1,2})\s*-\s*(\d{1,2})(?!\d)",
+    ]
+
+    scores = []
+
+    for pattern in score_patterns:
+
+        for match in re.finditer(
+            pattern,
+            page_text,
+        ):
+
+            score = match.group(0)
+
+            if score not in scores:
+
+                scores.append(score)
+
+    results.append(
+        "SCORE CANDIDATES:"
+    )
+
+    if scores:
+
+        results.extend(
+            scores[:30]
+        )
+
+    else:
+
+        results.append(
+            "NOT FOUND"
+        )
+
+    # --------------------------------------------------------
+    # TITLE
+    # --------------------------------------------------------
+
+    title = ""
+
+    if soup.title:
+
+        title = clean_text(
+            soup.title.get_text(
+                " ",
+                strip=True,
+            )
+        )
+
+    results.append(
+        ""
+    )
+
+    results.append(
+        "TITLE: " + title
+    )
+
+    # --------------------------------------------------------
+    # URL-style team names
+    # --------------------------------------------------------
+
     for element in soup.find_all(
-        ["title", "h1", "h2", "h3", "h4",
-         "div", "span", "a", "p", "td"]
+        ["h1", "h2", "h3"]
     ):
 
         text = clean_text(
@@ -302,75 +272,56 @@ def find_teams(
         if not text:
             continue
 
-        normalized = text.lower()
+        if (
+            "динамо" in text.lower()
+            or "крыл" in text.lower()
+        ):
 
-        matched = [
-            term
-            for term in TEAM_TERMS
-            if term in normalized
-        ]
-
-        if not matched:
-            continue
-
-        results.append(
-            "\n".join(
-                [
-                    "TEXT: " + short_text(text, 500),
-                    "MATCHED TERMS: " + ", ".join(matched),
-                    "TAG: " + str(element.name),
-                    "CLASS: " + str(element.get("class")),
-                    "ID: " + str(element.get("id")),
-                    "PATH: " + css_path(element),
-                    "-" * 70,
-                ]
+            results.append(
+                "HEADER: " + text
             )
-        )
 
-    return list(
-        dict.fromkeys(results)
-    )[:500]
+    return results
 
 
 # ============================================================
-# SCORE
+# NB-BET STATISTICS
 # ============================================================
 
-def find_scores(
+STAT_TERMS = [
+    "ожидаемые голы",
+    "xg",
+    "ожидаемые голы (xg)",
+    "удары",
+    "удары в створ",
+    "угловые",
+    "передачи",
+    "точность передач",
+    "точные передачи",
+    "всего передач",
+    "владение мячом",
+    "владение мячом (%)",
+    "офсайды",
+    "фолы",
+    "желтые карточки",
+    "красные карточки",
+    "сэйвы",
+    "спасения",
+]
+
+
+def find_statistics(
     soup: BeautifulSoup,
 ) -> List[str]:
 
-    patterns = [
-        re.compile(
-            r"(?<!\d)(\d{1,2})\s*[-:]\s*(\d{1,2})(?!\d)"
-        ),
-        re.compile(
-            r"(?<!\d)(\d{1,2})\s*[–—]\s*(\d{1,2})(?!\d)"
-        ),
-    ]
-
     results = []
 
-    # TITLE
-    if soup.title:
+    seen = set()
 
-        text = soup.title.get_text(
-            " ",
-            strip=True,
-        )
+    # --------------------------------------------------------
+    # Ищем элементы с текстом статистики
+    # --------------------------------------------------------
 
-        for pattern in patterns:
-
-            for match in pattern.finditer(text):
-
-                results.append(
-                    "TITLE | "
-                    + match.group(0)
-                    + " | "
-                    + text
-                )
-
-    # BODY ELEMENTS
     for element in soup.find_all():
 
         text = clean_text(
@@ -383,100 +334,34 @@ def find_scores(
         if not text:
             continue
 
-        classes = " ".join(
-            element.get("class") or []
-        ).lower()
-
-        identifier = (
-            str(element.get("id") or "")
-            .lower()
-        )
-
-        relevant = (
-            "score" in classes
-            or "result" in classes
-            or "score" in identifier
-            or "result" in identifier
-        )
-
-        if not relevant:
-            continue
-
-        for pattern in patterns:
-
-            for match in pattern.finditer(text):
-
-                results.append(
-                    "ELEMENT | "
-                    + match.group(0)
-                    + " | TAG="
-                    + str(element.name)
-                    + " | CLASS="
-                    + classes
-                    + " | TEXT="
-                    + short_text(text, 300)
-                )
-
-    # META
-    for meta in soup.find_all("meta"):
-
-        content = meta.get("content") or ""
-
-        for pattern in patterns:
-
-            match = pattern.search(content)
-
-            if match:
-
-                results.append(
-                    "META | "
-                    + match.group(0)
-                    + " | "
-                    + short_text(content, 500)
-                )
-
-    return list(
-        dict.fromkeys(results)
-    )
-
-
-# ============================================================
-# STAT LABELS
-# ============================================================
-
-def find_statistics(
-    soup: BeautifulSoup,
-) -> List[str]:
-
-    results = []
-
-    for element in soup.find_all(
-        ["div", "span", "td", "li", "p", "th"]
-    ):
-
-        text = clean_text(
-            element.get_text(
-                " ",
-                strip=True,
-            )
-        )
-
-        if not text:
-            continue
-
         normalized = text.lower()
 
-        matched_term = None
+        matched = None
 
         for term in STAT_TERMS:
 
-            if normalized == term:
+            if term in normalized:
 
-                matched_term = term
+                matched = term
                 break
 
-        if matched_term is None:
+        if matched is None:
             continue
+
+        # Не берём гигантские контейнеры
+        if len(text) > 1500:
+            continue
+
+        key = (
+            element.name,
+            text,
+            str(element.get("class")),
+        )
+
+        if key in seen:
+            continue
+
+        seen.add(key)
 
         parent = element.parent
 
@@ -498,41 +383,38 @@ def find_statistics(
         results.append(
             "\n".join(
                 [
-                    "LABEL: " + text,
-                    "MATCH: " + matched_term,
+                    "TERM: " + matched,
+                    "TEXT: " + text,
+                    "TAG: " + element.name,
                     "CLASSES: " + (classes or "-"),
                     "PATH: " + css_path(element),
-                    "PARENT: " + short_text(parent_text, 700),
+                    "PARENT: " + short_text(
+                        parent_text,
+                        700,
+                    ),
                     "-" * 70,
                 ]
             )
         )
 
-    return list(
-        dict.fromkeys(results)
-    )
+    return results[:500]
 
 
 # ============================================================
-# NUMERIC STATISTIC CANDIDATES
+# NUMERIC STAT BLOCKS
 # ============================================================
 
-def find_numeric_blocks(
+def find_numeric_stat_blocks(
     soup: BeautifulSoup,
 ) -> List[str]:
 
     results = []
 
-    number_pattern = re.compile(
-        r"(?<![\w])"
-        r"(\d+(?:[.,]\d+)?%?)"
-        r"(?:\s+|\s*[/|]\s*|\s*[-–—]\s*)"
-        r"(\d+(?:[.,]\d+)?%?)"
-        r"(?![\w])"
-    )
+    # Ищем небольшие элементы, где одновременно
+    # присутствуют числа и знакомые статистические слова.
 
     for element in soup.find_all(
-        ["div", "span", "td", "li", "tr", "p"]
+        ["div", "span", "li", "td", "tr"]
     ):
 
         text = clean_text(
@@ -545,91 +427,58 @@ def find_numeric_blocks(
         if not text:
             continue
 
-        if len(text) > 500:
-            continue
-
-        matches = list(
-            number_pattern.finditer(text)
-        )
-
-        if not matches:
+        if len(text) > 1000:
             continue
 
         normalized = text.lower()
 
-        nearby_stat = any(
+        relevant = any(
             term in normalized
             for term in STAT_TERMS
         )
 
-        if not nearby_stat:
+        if not relevant:
             continue
 
-        for match in matches:
-
-            results.append(
-                "\n".join(
-                    [
-                        "NUMERIC BLOCK: " + match.group(0),
-                        "TEXT: " + text,
-                        "TAG: " + str(element.name),
-                        "CLASS: " + str(element.get("class")),
-                        "ID: " + str(element.get("id")),
-                        "PATH: " + css_path(element),
-                        "-" * 70,
-                    ]
-                )
-            )
-
-    return list(
-        dict.fromkeys(results)
-    )[:500]
-
-
-# ============================================================
-# TABLES
-# ============================================================
-
-def inspect_tables(
-    soup: BeautifulSoup,
-) -> List[str]:
-
-    results = []
-
-    for index, table in enumerate(
-        soup.find_all("table")
-    ):
-
-        text = clean_text(
-            table.get_text(
-                " ",
-                strip=True,
-            )
+        numbers = re.findall(
+            r"(?<!\d)\d+(?:[.,]\d+)?%?",
+            text,
         )
 
-        if not text:
+        if not numbers:
             continue
 
         results.append(
             "\n".join(
                 [
-                    "TABLE #" + str(index),
-                    "CLASS: " + str(table.get("class")),
-                    "ID: " + str(table.get("id")),
-                    "PATH: " + css_path(table),
-                    "TEXT: " + short_text(text, 2000),
+                    "TAG: " + element.name,
+                    "CLASS: " + str(
+                        element.get("class")
+                    ),
+                    "ID: " + str(
+                        element.get("id")
+                    ),
+                    "PATH: " + css_path(
+                        element
+                    ),
+                    "TEXT: " + text,
+                    "NUMBERS: " + ", ".join(
+                        numbers
+                    ),
                     "HTML:",
-                    str(table)[:10000],
+                    str(element)[:5000],
                     "=" * 100,
                 ]
             )
         )
 
-    return results[:100]
+    return list(
+        dict.fromkeys(results)
+    )[:300]
 
 
 # ============================================================
-# CLASS FREQUENCY
+# CSS CLASSES
 # ============================================================
 
 def find_relevant_classes(
@@ -658,12 +507,11 @@ def find_relevant_classes(
                 term in normalized
                 for term in STAT_TERMS
             )
-            or any(
-                term in normalized
-                for term in TEAM_TERMS
-            )
-            or "score" in normalized
-            or "result" in normalized
+            or "динамо" in normalized
+            or "крыл" in normalized
+            or "матч" in normalized
+            or "статист" in normalized
+            or "xg" in normalized
         )
 
         if not relevant:
@@ -675,7 +523,7 @@ def find_relevant_classes(
 
     return [
         str(cls) + "  |  " + str(count)
-        for cls, count in counter.most_common(300)
+        for cls, count in counter.most_common(200)
     ]
 
 
@@ -691,9 +539,7 @@ def find_data_attributes(
 
     for element in soup.find_all():
 
-        attrs = element.attrs
-
-        for key, value in attrs.items():
+        for key, value in element.attrs.items():
 
             if not key.startswith("data-"):
                 continue
@@ -706,24 +552,24 @@ def find_data_attributes(
             )
 
             results.append(
-                key
-                + "="
-                + str(value)
-                + " | tag="
-                + str(element.name)
-                + " | class="
-                + str(element.get("class"))
-                + " | text="
-                + short_text(text, 250)
+                key + "=" + str(value)
+                + " | tag=" + element.name
+                + " | class=" + str(
+                    element.get("class")
+                )
+                + " | text=" + short_text(
+                    text,
+                    250,
+                )
             )
 
     return list(
         dict.fromkeys(results)
-    )[:1500]
+    )[:1000]
 
 
 # ============================================================
-# API / JAVASCRIPT
+# SCRIPTS
 # ============================================================
 
 def inspect_scripts(
@@ -731,31 +577,6 @@ def inspect_scripts(
 ) -> List[str]:
 
     results = []
-
-    markers = [
-        "window.environment",
-        "window.",
-        "fetch(",
-        "fetch (",
-        "axios",
-        "xmlhttprequest",
-        "ajax",
-        "/api/",
-        "api/",
-        "graphql",
-        "event_id",
-        "eventid",
-        "match_id",
-        "matchid",
-        "statistics",
-        "stats",
-        "score",
-        "participants",
-        "teams",
-        "events",
-        "nb-bet",
-        "football",
-    ]
 
     for index, script in enumerate(
         soup.find_all("script")
@@ -770,7 +591,18 @@ def inspect_scripts(
 
         interesting = any(
             marker in lowered
-            for marker in markers
+            for marker in [
+                "event",
+                "match",
+                "stat",
+                "xg",
+                "score",
+                "dinamo",
+                "krylya",
+                "крыл",
+                "динамо",
+                "nb-bet",
+            ]
         )
 
         if not interesting:
@@ -780,20 +612,24 @@ def inspect_scripts(
             "\n".join(
                 [
                     "SCRIPT #" + str(index),
-                    "TYPE: " + str(script.get("type")),
-                    "SRC: " + str(script.get("src")),
+                    "TYPE: " + str(
+                        script.get("type")
+                    ),
+                    "SRC: " + str(
+                        script.get("src")
+                    ),
                     "CONTENT:",
-                    text[:20000],
+                    text[:15000],
                     "=" * 100,
                 ]
             )
         )
 
-    return results[:200]
+    return results[:100]
 
 
 # ============================================================
-# JSON BLOCKS
+# JSON
 # ============================================================
 
 def inspect_json(
@@ -815,124 +651,17 @@ def inspect_json(
         if not text:
             continue
 
-        if (
-            "json" in script_type
-            or "application/ld+json" in script_type
-            or "__next_data__" in text.lower()
-        ):
+        if "json" in script_type:
 
             results.append(
-                text[:30000]
+                text[:20000]
             )
 
     return results[:100]
 
 
 # ============================================================
-# API / URL CANDIDATES
-# ============================================================
-
-def inspect_urls(
-    soup: BeautifulSoup,
-) -> List[str]:
-
-    results = []
-
-    url_pattern = re.compile(
-        r"""https?://[^\s"'<>]+"""
-        r"""|["'](/[^"'<>]{1,300})["']"""
-    )
-
-    # SCRIPT CONTENT
-    for script in soup.find_all("script"):
-
-        text = script.string or script.get_text()
-
-        if not text:
-            continue
-
-        for match in url_pattern.finditer(text):
-
-            value = (
-                match.group(0)
-                .strip("\"'")
-            )
-
-            lowered = value.lower()
-
-            if any(
-                marker in lowered
-                for marker in [
-                    "api",
-                    "event",
-                    "match",
-                    "stat",
-                    "score",
-                    "football",
-                    "bet",
-                ]
-            ):
-
-                results.append(value)
-
-    # LINKS
-    for link in soup.find_all("a", href=True):
-
-        href = str(
-            link.get("href")
-        )
-
-        lowered = href.lower()
-
-        if any(
-            marker in lowered
-            for marker in [
-                "api",
-                "event",
-                "match",
-                "stat",
-            ]
-        ):
-
-            results.append(href)
-
-    return list(
-        dict.fromkeys(results)
-    )[:500]
-
-
-# ============================================================
-# IFRAMES
-# ============================================================
-
-def inspect_iframes(
-    soup: BeautifulSoup,
-) -> List[str]:
-
-    results = []
-
-    for index, iframe in enumerate(
-        soup.find_all("iframe")
-    ):
-
-        results.append(
-            "\n".join(
-                [
-                    "IFRAME #" + str(index),
-                    "SRC: " + str(iframe.get("src")),
-                    "TITLE: " + str(iframe.get("title")),
-                    "CLASS: " + str(iframe.get("class")),
-                    "ID: " + str(iframe.get("id")),
-                    "-" * 70,
-                ]
-            )
-        )
-
-    return results
-
-
-# ============================================================
-# MATCH CONTAINERS
+# MATCH / STAT CONTAINERS
 # ============================================================
 
 def inspect_match_containers(
@@ -944,18 +673,16 @@ def inspect_match_containers(
     markers = [
         "match",
         "event",
-        "summary",
+        "stat",
         "statistics",
-        "stats",
         "score",
         "team",
-        "participant",
         "game",
-        "fixture",
+        "xg",
     ]
 
     for element in soup.find_all(
-        ["div", "section", "article", "main"]
+        ["div", "section", "article", "table"]
     ):
 
         classes = " ".join(
@@ -966,14 +693,15 @@ def inspect_match_containers(
             element.get("id") or ""
         )
 
-        lowered = (
+        marker_text = (
             classes + " " + element_id
         ).lower()
 
         if not any(
-            marker in lowered
+            marker in marker_text
             for marker in markers
         ):
+
             continue
 
         text = clean_text(
@@ -986,27 +714,32 @@ def inspect_match_containers(
         if len(text) < 5:
             continue
 
-        if len(text) > 2000:
-            text = text[:2000] + "..."
+        if len(text) > 1500:
+
+            text = text[:1500] + "..."
 
         results.append(
             "\n".join(
                 [
-                    "TAG: " + str(element.name),
+                    "TAG: " + element.name,
                     "CLASS: " + classes,
                     "ID: " + element_id,
-                    "PATH: " + css_path(element),
+                    "PATH: " + css_path(
+                        element
+                    ),
                     "TEXT: " + text,
                     "-" * 70,
                 ]
             )
         )
 
-    return results[:500]
+    return list(
+        dict.fromkeys(results)
+    )[:500]
 
 
 # ============================================================
-# HTML STAT FRAGMENTS
+# RAW STAT HTML
 # ============================================================
 
 def inspect_stat_fragments(
@@ -1016,7 +749,7 @@ def inspect_stat_fragments(
     results = []
 
     for element in soup.find_all(
-        ["div", "tr", "li", "section"]
+        ["div", "tr", "li", "table"]
     ):
 
         text = clean_text(
@@ -1035,164 +768,31 @@ def inspect_stat_fragments(
             term in normalized
             for term in STAT_TERMS
         ):
+
             continue
 
-        if len(text) > 1500:
-            continue
-
-        results.append(
-            "\n".join(
-                [
-                    "TAG: " + str(element.name),
-                    "CLASS: " + str(element.get("class")),
-                    "ID: " + str(element.get("id")),
-                    "PATH: " + css_path(element),
-                    "HTML:",
-                    str(element)[:7000],
-                    "=" * 100,
-                ]
-            )
-        )
-
-    return list(
-        dict.fromkeys(results)
-    )[:400]
-
-
-# ============================================================
-# TEAM HTML FRAGMENTS
-# ============================================================
-
-def inspect_team_fragments(
-    soup: BeautifulSoup,
-) -> List[str]:
-
-    results = []
-
-    for element in soup.find_all(
-        ["div", "section", "article", "a", "span", "h1", "h2", "h3"]
-    ):
-
-        text = clean_text(
-            element.get_text(
-                " ",
-                strip=True,
-            )
-        )
-
-        if not text:
-            continue
-
-        normalized = text.lower()
-
-        if not any(
-            term in normalized
-            for term in TEAM_TERMS
-        ):
-            continue
-
-        if len(text) > 1000:
+        if len(text) > 1200:
             continue
 
         results.append(
             "\n".join(
                 [
-                    "TAG: " + str(element.name),
-                    "CLASS: " + str(element.get("class")),
-                    "ID: " + str(element.get("id")),
-                    "PATH: " + css_path(element),
-                    "TEXT: " + text,
+                    "TAG: " + element.name,
+                    "CLASS: " + str(
+                        element.get("class")
+                    ),
+                    "ID: " + str(
+                        element.get("id")
+                    ),
+                    "PATH: " + css_path(
+                        element
+                    ),
                     "HTML:",
-                    str(element)[:5000],
+                    str(element)[:8000],
                     "=" * 100,
                 ]
             )
         )
-
-    return list(
-        dict.fromkeys(results)
-    )[:300]
-
-
-# ============================================================
-# RAW HTML SEARCH
-# ============================================================
-
-def inspect_raw_html(
-    html_text: str,
-) -> List[str]:
-
-    results = []
-
-    markers = [
-        "динамо",
-        "dinamo",
-        "dynamo",
-        "крылья",
-        "krylya",
-        "sovetov",
-        "1670580",
-        "stats",
-        "statistics",
-        "score",
-        "event",
-        "match",
-        "api",
-        "fetch",
-    ]
-
-    lowered = html_text.lower()
-
-    for marker in markers:
-
-        positions = []
-
-        start = 0
-
-        while True:
-
-            position = lowered.find(
-                marker,
-                start,
-            )
-
-            if position == -1:
-                break
-
-            positions.append(position)
-
-            start = position + len(marker)
-
-            if len(positions) >= 20:
-                break
-
-        for position in positions:
-
-            begin = max(
-                0,
-                position - 700,
-            )
-
-            end = min(
-                len(html_text),
-                position + 1500,
-            )
-
-            fragment = html_text[
-                begin:end
-            ]
-
-            results.append(
-                "\n".join(
-                    [
-                        "MARKER: " + marker,
-                        "POSITION: " + str(position),
-                        "RAW HTML:",
-                        fragment,
-                        "=" * 100,
-                    ]
-                )
-            )
 
     return list(
         dict.fromkeys(results)
@@ -1219,18 +819,23 @@ def build_report(
     lines.append(
         "============================================================"
     )
+
     lines.append(
         "FAJ SOCCERWAY INSPECTOR REPORT"
     )
+
+    lines.append(
+        "SOURCE: NB-BET"
+    )
+
     lines.append(
         "VERSION: " + VERSION
     )
-    lines.append(
-        "SOURCE: NB-BET TEST"
-    )
+
     lines.append(
         "============================================================"
     )
+
     lines.append("")
 
     # --------------------------------------------------------
@@ -1258,10 +863,11 @@ def build_report(
     )
 
     lines.append(
-        "HTML BYTES: "
-        + str(
+        "HTML BYTES: " + str(
             len(
-                html_text.encode("utf-8")
+                html_text.encode(
+                    "utf-8"
+                )
             )
         )
     )
@@ -1269,57 +875,18 @@ def build_report(
     lines.append("")
 
     # --------------------------------------------------------
-    # TITLE
+    # MATCH HEADER
     # --------------------------------------------------------
 
     lines.append(
-        "3. TITLE"
+        "3. MATCH HEADER"
     )
 
-    title = (
-        soup.title.get_text(
-            " ",
-            strip=True,
+    lines.extend(
+        find_match_header(
+            soup
         )
-        if soup.title
-        else ""
     )
-
-    lines.append(title)
-
-    lines.append("")
-
-    # --------------------------------------------------------
-    # TEAMS
-    # --------------------------------------------------------
-
-    lines.append(
-        "4. TEAM CANDIDATES"
-    )
-
-    teams = find_teams(soup)
-
-    if teams:
-        lines.extend(teams)
-    else:
-        lines.append("NOT FOUND")
-
-    lines.append("")
-
-    # --------------------------------------------------------
-    # SCORE
-    # --------------------------------------------------------
-
-    lines.append(
-        "5. SCORE CANDIDATES"
-    )
-
-    scores = find_scores(soup)
-
-    if scores:
-        lines.extend(scores)
-    else:
-        lines.append("NOT FOUND")
 
     lines.append("")
 
@@ -1328,134 +895,164 @@ def build_report(
     # --------------------------------------------------------
 
     lines.append(
-        "6. STATISTIC LABELS"
+        "4. NB-BET STATISTICS"
     )
 
-    statistics = find_statistics(soup)
+    statistics = find_statistics(
+        soup
+    )
 
     if statistics:
-        lines.extend(statistics)
+
+        lines.extend(
+            statistics
+        )
+
     else:
-        lines.append("NOT FOUND")
+
+        lines.append(
+            "NOT FOUND"
+        )
 
     lines.append("")
 
     # --------------------------------------------------------
-    # NUMERIC STATS
+    # NUMERIC BLOCKS
     # --------------------------------------------------------
 
     lines.append(
-        "7. NUMERIC STATISTIC BLOCKS"
+        "5. NUMERIC STATISTIC BLOCKS"
     )
 
-    numeric_blocks = find_numeric_blocks(soup)
+    numeric_blocks = (
+        find_numeric_stat_blocks(
+            soup
+        )
+    )
 
     if numeric_blocks:
-        lines.extend(numeric_blocks)
+
+        lines.extend(
+            numeric_blocks
+        )
+
     else:
-        lines.append("NOT FOUND")
+
+        lines.append(
+            "NOT FOUND"
+        )
 
     lines.append("")
 
     # --------------------------------------------------------
-    # TABLES
+    # CSS
     # --------------------------------------------------------
 
     lines.append(
-        "8. HTML TABLES"
+        "6. RELEVANT CSS CLASSES"
     )
 
-    tables = inspect_tables(soup)
-
-    if tables:
-        lines.extend(tables)
-    else:
-        lines.append("NOT FOUND")
-
-    lines.append("")
-
-    # --------------------------------------------------------
-    # CLASSES
-    # --------------------------------------------------------
-
-    lines.append(
-        "9. RELEVANT CSS CLASSES"
+    relevant_classes = (
+        find_relevant_classes(
+            soup
+        )
     )
-
-    relevant_classes = find_relevant_classes(soup)
 
     if relevant_classes:
-        lines.extend(relevant_classes)
+
+        lines.extend(
+            relevant_classes
+        )
+
     else:
-        lines.append("NOT FOUND")
+
+        lines.append(
+            "NOT FOUND"
+        )
 
     lines.append("")
 
     # --------------------------------------------------------
-    # MATCH CONTAINERS
+    # CONTAINERS
     # --------------------------------------------------------
 
     lines.append(
-        "10. MATCH / EVENT / STATS CONTAINERS"
+        "7. MATCH / STAT CONTAINERS"
     )
 
-    containers = inspect_match_containers(soup)
+    containers = (
+        inspect_match_containers(
+            soup
+        )
+    )
 
     if containers:
-        lines.extend(containers)
+
+        lines.extend(
+            containers
+        )
+
     else:
-        lines.append("NOT FOUND")
+
+        lines.append(
+            "NOT FOUND"
+        )
 
     lines.append("")
 
     # --------------------------------------------------------
-    # STAT HTML
+    # RAW STAT HTML
     # --------------------------------------------------------
 
     lines.append(
-        "11. REAL STAT HTML FRAGMENTS"
+        "8. REAL STAT HTML FRAGMENTS"
     )
 
-    fragments = inspect_stat_fragments(soup)
+    fragments = (
+        inspect_stat_fragments(
+            soup
+        )
+    )
 
     if fragments:
-        lines.extend(fragments)
+
+        lines.extend(
+            fragments
+        )
+
     else:
-        lines.append("NOT FOUND")
+
+        lines.append(
+            "NOT FOUND"
+        )
 
     lines.append("")
 
     # --------------------------------------------------------
-    # TEAM HTML
+    # DATA
     # --------------------------------------------------------
 
     lines.append(
-        "12. TEAM HTML FRAGMENTS"
+        "9. DATA-* ATTRIBUTES"
     )
 
-    team_fragments = inspect_team_fragments(soup)
-
-    if team_fragments:
-        lines.extend(team_fragments)
-    else:
-        lines.append("NOT FOUND")
-
-    lines.append("")
-
-    # --------------------------------------------------------
-    # DATA ATTRIBUTES
-    # --------------------------------------------------------
-
-    lines.append(
-        "13. DATA-* ATTRIBUTES"
+    data_attributes = (
+        find_data_attributes(
+            soup
+        )
     )
-
-    data_attributes = find_data_attributes(soup)
 
     if data_attributes:
-        lines.extend(data_attributes)
+
+        lines.extend(
+            data_attributes
+        )
+
     else:
-        lines.append("NOT FOUND")
+
+        lines.append(
+            "NOT FOUND"
+        )
 
     lines.append("")
 
@@ -1464,17 +1061,24 @@ def build_report(
     # --------------------------------------------------------
 
     lines.append(
-        "14. JSON BLOCKS"
+        "10. JSON BLOCKS"
     )
 
-    json_blocks = inspect_json(soup)
+    json_blocks = inspect_json(
+        soup
+    )
 
     if json_blocks:
 
         for block in json_blocks:
 
-            lines.append(block)
-            lines.append("=" * 100)
+            lines.append(
+                block
+            )
+
+            lines.append(
+                "=" * 100
+            )
 
     else:
 
@@ -1489,68 +1093,58 @@ def build_report(
     # --------------------------------------------------------
 
     lines.append(
-        "15. INTERESTING JAVASCRIPT"
+        "11. INTERESTING SCRIPTS"
     )
 
-    scripts = inspect_scripts(soup)
+    scripts = inspect_scripts(
+        soup
+    )
 
     if scripts:
-        lines.extend(scripts)
+
+        lines.extend(
+            scripts
+        )
+
     else:
-        lines.append("NOT FOUND")
+
+        lines.append(
+            "NOT FOUND"
+        )
 
     lines.append("")
 
     # --------------------------------------------------------
-    # URL / API CANDIDATES
+    # RAW HTML SEARCH
     # --------------------------------------------------------
 
     lines.append(
-        "16. API / URL CANDIDATES"
+        "12. RAW HTML KEYWORDS"
     )
 
-    urls = inspect_urls(soup)
+    raw_lower = html_text.lower()
 
-    if urls:
-        lines.extend(urls)
-    else:
-        lines.append("NOT FOUND")
+    keywords = [
+        "xg",
+        "ожидаемые голы",
+        "удары",
+        "удары в створ",
+        "угловые",
+        "передачи",
+        "владение",
+        "динамо",
+        "крылья",
+    ]
 
-    lines.append("")
+    for keyword in keywords:
 
-    # --------------------------------------------------------
-    # IFRAMES
-    # --------------------------------------------------------
+        count = raw_lower.count(
+            keyword.lower()
+        )
 
-    lines.append(
-        "17. IFRAMES"
-    )
-
-    iframes = inspect_iframes(soup)
-
-    if iframes:
-        lines.extend(iframes)
-    else:
-        lines.append("NOT FOUND")
-
-    lines.append("")
-
-    # --------------------------------------------------------
-    # RAW HTML MARKERS
-    # --------------------------------------------------------
-
-    lines.append(
-        "18. RAW HTML MARKER FRAGMENTS"
-    )
-
-    raw_fragments = inspect_raw_html(
-        html_text
-    )
-
-    if raw_fragments:
-        lines.extend(raw_fragments)
-    else:
-        lines.append("NOT FOUND")
+        lines.append(
+            f"{keyword}: {count}"
+        )
 
     lines.append("")
 
@@ -1574,7 +1168,7 @@ def build_report(
 
 
 # ============================================================
-# STREAMLIT PAGE
+# STREAMLIT
 # ============================================================
 
 def main():
@@ -1590,17 +1184,17 @@ def main():
     )
 
     st.caption(
-        "Исследование HTML Soccerway / NB-BET "
-        "для создания финального парсера статистики."
+        "NB-BET HTML Inspector. "
+        "Название Inspector сохранено для совместимости."
     )
 
     url = st.text_input(
-        "URL матча",
+        "URL матча NB-BET",
         value=DEFAULT_URL,
     )
 
     if st.button(
-        "🔎 ИССЛЕДОВАТЬ СТРАНИЦУ",
+        "🔎 ИССЛЕДОВАТЬ NB-BET",
         type="primary",
         width="stretch",
     ):
@@ -1614,13 +1208,15 @@ def main():
             st.stop()
 
         with st.spinner(
-            "Загружаем и исследуем HTML..."
+            "Загружаем и исследуем NB-BET..."
         ):
 
             try:
 
-                status, html_text = load_page(
-                    url.strip()
+                status, html_text = (
+                    load_page(
+                        url.strip()
+                    )
                 )
 
                 report = build_report(
@@ -1639,7 +1235,9 @@ def main():
                     + " | "
                     + str(
                         len(
-                            html_text.encode("utf-8")
+                            html_text.encode(
+                                "utf-8"
+                            )
                         )
                     )
                     + " байт"
@@ -1662,8 +1260,9 @@ def main():
         )
 
         st.info(
-            "Скопируйте весь отчёт целиком "
-            "и пришлите его мне."
+            "Скопируйте весь отчёт и пришлите его сюда. "
+            "По нему определим точную HTML-структуру NB-BET "
+            "и затем сделаем рабочий NB-BET parser."
         )
 
         escaped = html.escape(
@@ -1688,22 +1287,13 @@ def main():
 
         <button
             onclick="
-                const area =
-                    document.getElementById('faj-report');
-
+                const area = document.getElementById('faj-report');
                 area.focus();
                 area.select();
-
-                navigator.clipboard.writeText(
-                    area.value
-                );
-
-                this.innerText =
-                    '✅ СКОПИРОВАНО';
-
+                navigator.clipboard.writeText(area.value);
+                this.innerText='✅ СКОПИРОВАНО';
                 setTimeout(() => {
-                    this.innerText =
-                        '📋 СКОПИРОВАТЬ ВЕСЬ ОТЧЁТ';
+                    this.innerText='📋 СКОПИРОВАТЬ ВЕСЬ ОТЧЁТ';
                 }, 2000);
             "
             style="
@@ -1735,10 +1325,6 @@ def main():
             width="stretch",
         )
 
-
-# ============================================================
-# ENTRY POINT
-# ============================================================
 
 if __name__ == "__main__":
     main()
