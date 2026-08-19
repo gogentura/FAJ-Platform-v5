@@ -1195,14 +1195,18 @@ def render_match_card(db: FAJDatabase, match: Dict[str, Any], index: int) -> Non
     )
 
     # --------------------------------------------------------
-    # COMPARISON
+    # COMPARISON — ИСПРАВЛЕНО
     # --------------------------------------------------------
 
     st.markdown("#### 📊 Сравнение")
 
+    # Берём счёт из existing_result (зафиксированный), а не из fact (парсер)
     actual_score = None
-    if home_goals is not None and away_goals is not None:
-        actual_score = clean_score(f"{home_goals}:{away_goals}")
+    if existing_result:
+        actual_home = existing_result.get("home_goals")
+        actual_away = existing_result.get("away_goals")
+        if actual_home is not None and actual_away is not None:
+            actual_score = clean_score(f"{actual_home}:{actual_away}")
 
     faj_score = extract_prediction_score(prediction)
 
