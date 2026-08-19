@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-IMPORT FACTS v3.4
+IMPORT FACTS v3.5
 ============================================================
 
 Назначение:
@@ -72,7 +72,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 APP_VERSION = "12.1"
-IMPORT_FACTS_VERSION = "3.4"
+IMPORT_FACTS_VERSION = "3.5"
 MODEL_VERSION = "v12.1"
 PARSER_VERSION = "nb-bet-v5.0"
 
@@ -938,10 +938,9 @@ def render_match_card(db: FAJDatabase, match: Dict[str, Any], index: int) -> Non
         st.metric("Статус", "🔒 LOCKED" if locked else "⏳ Ожидает")
 
     # --------------------------------------------------------
-    # СОСТОЯНИЯ
+    # 1. РУЧНОЙ РЕЗУЛЬТАТ — ПРИОРИТЕТ (из БД)
     # --------------------------------------------------------
 
-    # Проверяем, есть ли уже счёт в БД
     existing_result = db.get_match_result(match_id)
 
     if existing_result:
@@ -953,28 +952,20 @@ def render_match_card(db: FAJDatabase, match: Dict[str, Any], index: int) -> Non
         away_goals = None
         score_locked = False
 
-    # Проверяем статистику
-    stats = {}
-    try:
-        match_data = db.get_matches(round_id=None)
-        for m in match_data:
-            if m.get("id") == match_id:
-                stats = {
-                    "home_xg": m.get("home_xg"),
-                    "away_xg": m.get("away_xg"),
-                    "home_shots": m.get("home_shots"),
-                    "away_shots": m.get("away_shots"),
-                    "home_shots_on_target": m.get("home_shots_on_target"),
-                    "away_shots_on_target": m.get("away_shots_on_target"),
-                    "home_possession": m.get("home_possession"),
-                    "away_possession": m.get("away_possession"),
-                    "home_corners": m.get("home_corners"),
-                    "away_corners": m.get("away_corners"),
-                }
-                break
-    except Exception:
-        pass
+    # --------------------------------------------------------
+    # 2. СТАТИСТИКА — ТОЛЬКО ИЗ NB-BET (НЕ СЧЁТ)
+    # --------------------------------------------------------
 
+    fact = st.session_state.get(f"{key_prefix}_fact")
+
+    if fact:
+        stats = fact.get("stats", {})
+        if not isinstance(stats, dict):
+            stats = {}
+    else:
+        stats = {}
+
+    # Проверяем, есть ли статистика
     stats_present = any(v is not None for v in stats.values())
 
     # --------------------------------------------------------
@@ -1009,7 +1000,7 @@ def render_match_card(db: FAJDatabase, match: Dict[str, Any], index: int) -> Non
             "✅ Зафиксировать счёт",
             key=f"{key_prefix}_fix_score",
             disabled=score_locked or not score_input.strip(),
-            width="stretch",
+            use_container_width=True,
         ):
             normalized_score = clean_score(score_input)
 
@@ -1054,25 +1045,25 @@ def render_match_card(db: FAJDatabase, match: Dict[str, Any], index: int) -> Non
         "📥 Забрать данные",
         key=f"{key_prefix}_fetch_stats",
         disabled=not url.strip() or score_locked,
-        width="stretch",
+        use_container_width=True,
     ):
         if not url.strip():
             st.error("Сначала вставьте ссылку на NB-BET.")
         else:
             with st.spinner("Загружаем статистику..."):
                 try:
-                    fact = parse_fact_url(url.strip())
+                    parsed_fact = parse_fact_url(url.strip())
 
-                    st.session_state[f"{key_prefix}_fact"] = fact
+                    # Сохраняем ТОЛЬКО статистику, счёт НЕ трогаем
+                    st.session_state[f"{key_prefix}_fact"] = parsed_fact
 
-                    # Проверяем, получена ли статистика
-                    if not fact.get("stats"):
+                    if not parsed_fact.get("stats"):
                         st.warning(
                             "NB-BET статистика не получена. "
                             "Факт НЕ готов."
                         )
                     else:
-                        quality = fact.get("data_quality", 0.0)
+                        quality = parsed_fact.get("data_quality", 0.0)
                         st.success(
                             f"NB-BET статистика получена. "
                             f"Quality: {quality:.2f}"
@@ -1082,34 +1073,17 @@ def render_match_card(db: FAJDatabase, match: Dict[str, Any], index: int) -> Non
                             "результата и не извлекается "
                             "статистическим parser."
                         )
+                        st.rerun()
 
                 except Exception as exc:
                     logger.exception("Ошибка NB-BET parser")
                     st.error(f"Ошибка parser: {exc}")
 
-    fact = st.session_state.get(f"{key_prefix}_fact")
+    # --------------------------------------------------------
+    # ОТОБРАЖЕНИЕ СТАТИСТИКИ
+    # --------------------------------------------------------
 
-    if fact:
-        # ----------------------------------------------------
-        # FACT SCORE
-        # ----------------------------------------------------
-
-        home_goals = fact.get("home_goals")
-        away_goals = fact.get("away_goals")
-
-        if home_goals is not None and away_goals is not None:
-            st.markdown(f"**Факт счёта: {home_goals}:{away_goals}**")
-        else:
-            st.warning("⚠️ Счёт матча пока отсутствует.")
-
-        stats = fact.get("stats", {})
-        if not isinstance(stats, dict):
-            stats = {}
-
-        # ----------------------------------------------------
-        # STATISTICS
-        # ----------------------------------------------------
-
+    if stats_present:
         stat_rows = [
             ("xG", stats.get("home_xg"), stats.get("away_xg")),
             ("Удары", stats.get("home_shots"), stats.get("away_shots")),
@@ -1123,24 +1097,24 @@ def render_match_card(db: FAJDatabase, match: Dict[str, Any], index: int) -> Non
         ]
 
         filtered_rows = [
-            (name, home, away)
-            for name, home, away in stat_rows
-            if home is not None or away is not None
+            (name, home_val, away_val)
+            for name, home_val, away_val in stat_rows
+            if home_val is not None or away_val is not None
         ]
 
         if filtered_rows:
             table_data = []
-            for name, home, away in filtered_rows:
+            for name, home_val, away_val in filtered_rows:
                 table_data.append({
                     "Показатель": name,
-                    home_team: home if home is not None else "—",
-                    away_team: away if away is not None else "—",
+                    home_team: home_val if home_val is not None else "—",
+                    away_team: away_val if away_val is not None else "—",
                 })
 
-            st.dataframe(table_data, width="stretch", hide_index=True)
+            st.dataframe(table_data, use_container_width=True, hide_index=True)
 
     # --------------------------------------------------------
-    # EXPERT INPUT
+    # ЭКСПЕРТНЫЙ ПРОГНОЗ
     # --------------------------------------------------------
 
     st.markdown("#### 🧠 Экспертный прогноз директора")
@@ -1195,12 +1169,12 @@ def render_match_card(db: FAJDatabase, match: Dict[str, Any], index: int) -> Non
     )
 
     # --------------------------------------------------------
-    # COMPARISON — ИСПРАВЛЕНО
+    # СРАВНЕНИЕ
     # --------------------------------------------------------
 
     st.markdown("#### 📊 Сравнение")
 
-    # Берём счёт из existing_result (зафиксированный), а не из fact (парсер)
+    # Счёт из existing_result (БД), а не из fact (парсер)
     actual_score = None
     if existing_result:
         actual_home = existing_result.get("home_goals")
@@ -1216,43 +1190,42 @@ def render_match_card(db: FAJDatabase, match: Dict[str, Any], index: int) -> Non
         {"Источник": "Факт", "Счёт": actual_score or "—"},
     ]
 
-    st.dataframe(comparison, width="stretch", hide_index=True)
+    st.dataframe(comparison, use_container_width=True, hide_index=True)
 
     # --------------------------------------------------------
-    # SAVE
+    # СОХРАНЕНИЕ ФАКТА
     # --------------------------------------------------------
 
+    # Кнопка активна только если счёт уже зафиксирован в БД
     if st.button(
         "✅ Сохранить факты",
         key=f"{key_prefix}_save",
         type="primary",
-        width="stretch",
+        use_container_width=True,
         disabled=score_locked or home_goals is None or away_goals is None,
     ):
         try:
-            fact = st.session_state.get(f"{key_prefix}_fact")
-
-            if fact is None:
-                fact = {
-                    "home_goals": home_goals,
-                    "away_goals": away_goals,
-                    "stats": {},
-                    "source_url": None,
-                    "parser_source": "manual",
-                    "parser_version": PARSER_VERSION,
-                    "data_quality": 0.0,
-                }
+            # Собираем факт для сохранения
+            fact_data = {
+                "home_goals": home_goals,
+                "away_goals": away_goals,
+                "stats": stats,
+                "source_url": url if url else None,
+                "parser_source": "nb-bet" if stats else "manual",
+                "parser_version": PARSER_VERSION,
+                "data_quality": 0.0,
+            }
 
             result = save_match_fact(
                 db=db,
                 match=match,
-                fact=fact,
+                fact=fact_data,
                 expert_score=clean_score(expert_score_input) or "",
                 expert_comment=expert_comment,
                 expert_confidence=expert_confidence,
             )
 
-            st.success("Факт сохранён и защищён.")
+            st.success("✅ Факт сохранён и защищён.")
             st.caption(
                 f"Match ID: {result['match_id']} | "
                 f"Validation ID: {result['validation_id']} | "
@@ -1260,10 +1233,11 @@ def render_match_card(db: FAJDatabase, match: Dict[str, Any], index: int) -> Non
             )
 
             st.session_state[f"{key_prefix}_saved"] = True
+            st.rerun()
 
         except Exception as exc:
             logger.exception("Ошибка сохранения факта")
-            st.error(f"Ошибка сохранения: {exc}")
+            st.error(f"❌ Ошибка сохранения: {exc}")
 
     st.divider()
 
@@ -1349,7 +1323,7 @@ def main() -> None:
     if st.button(
         "🧠 Обучение",
         type="primary",
-        width="stretch",
+        use_container_width=True,
     ):
         try:
             with st.spinner("FAJ Learning Engine обучается..."):
