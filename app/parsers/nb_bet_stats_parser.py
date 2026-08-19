@@ -1,0 +1,1436 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+============================================================
+FAJ Platform v12.1
+NB-BET Stats Parser v4.0
+============================================================
+
+ИСТОЧНИК:
+    NB-BET
+
+URL:
+    https://nb-bet.com/Events/<event_id>-...
+
+ОСНОВНОЙ ИСТОЧНИК СТАТИСТИКИ:
+    pageSoccerEvent.match.17[0]
+
+КАРТА NB-BET:
+
+    1  -> possession
+    5  -> corners
+    7  -> shots
+    8  -> shots_on_target
+    21 -> xG
+    22 -> total_passes
+    23 -> pass_accuracy
+    39 -> accurate_passes
+    46 -> tackles
+
+ПРИНЦИП:
+
+    Parser только читает страницу.
+    Parser ничего не пишет в SQLite.
+    Parser ничего не удаляет.
+    Parser не изменяет прогнозы.
+    Parser не делает предположений.
+
+Если данные неоднозначны:
+    None
+
+============================================================
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+from typing import Any, Dict, Optional, Tuple
+
+import requests
+from bs4 import BeautifulSoup
+
+from app.parsers.rpl_normalizer import normalize_team_names
+
+
+logger = logging.getLogger(__name__)
+
+
+class NbBetStatsParser:
+    """
+    Парсер статистики матчей с NB-BET.
+    """
+
+    VERSION = "4.0-nb-bet"
+
+    SOURCE = "nb-bet"
+
+    DEFAULT_TIMEOUT = 20
+
+    STAT_MAP = {
+        1: "possession",
+        5: "corners",
+        7: "shots",
+        8: "shots_on_target",
+        21: "xg",
+        22: "total_passes",
+        23: "pass_accuracy",
+        39: "accurate_passes",
+        46: "tackles",
+    }
+
+    RESULT_KEYS = {
+        "possession": (
+            "home_possession",
+            "away_possession",
+        ),
+        "corners": (
+            "home_corners",
+            "away_corners",
+        ),
+        "shots": (
+            "home_shots",
+            "away_shots",
+        ),
+        "shots_on_target": (
+            "home_shots_on_target",
+            "away_shots_on_target",
+        ),
+        "xg": (
+            "home_xg",
+            "away_xg",
+        ),
+        "total_passes": (
+            "home_total_passes",
+            "away_total_passes",
+        ),
+        "pass_accuracy": (
+            "home_pass_accuracy",
+            "away_pass_accuracy",
+        ),
+        "accurate_passes": (
+            "home_accurate_passes",
+            "away_accurate_passes",
+        ),
+        "tackles": (
+            "home_tackles",
+            "away_tackles",
+        ),
+    }
+
+    LIMITS = {
+        "possession": (0, 100),
+        "corners": (0, 30),
+        "shots": (0, 80),
+        "shots_on_target": (0, 50),
+        "xg": (0.0, 10.0),
+        "total_passes": (0, 1500),
+        "pass_accuracy": (0, 100),
+        "accurate_passes": (0, 1500),
+        "tackles": (0, 100),
+    }
+
+    def __init__(self, timeout: int = DEFAULT_TIMEOUT):
+        self.timeout = timeout
+
+        self.session = requests.Session()
+
+        self.session.headers.update(
+            {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) "
+                    "Chrome/128.0 Safari/537.36"
+                ),
+                "Accept": (
+                    "text/html,application/xhtml+xml,"
+                    "application/xml;q=0.9,image/avif,"
+                    "image/webp,*/*;q=0.8"
+                ),
+                "Accept-Language": (
+                    "ru-RU,ru;q=0.9,en;q=0.8"
+                ),
+                "Referer": "https://nb-bet.com/",
+            }
+        )
+
+    # ========================================================
+    # PUBLIC
+    # ========================================================
+
+    def parse(self, url: str) -> Dict[str, Any]:
+        result = {
+            "success": False,
+            "home_team": None,
+            "away_team": None,
+            "home_goals": None,
+            "away_goals": None,
+            "stats": {},
+            "source": self.SOURCE,
+            "parser_version": self.VERSION,
+            "data_quality": 0.0,
+        }
+
+        if not url:
+            return result
+
+        if "nb-bet.com" not in url.lower():
+            logger.warning(
+                "NB-BET parser получил не NB-BET URL: %s",
+                url,
+            )
+            return result
+
+        try:
+            response = self.session.get(
+                url,
+                timeout=self.timeout,
+            )
+
+            response.raise_for_status()
+
+            html = response.text
+
+            soup = BeautifulSoup(
+                html,
+                "html.parser",
+            )
+
+            # ------------------------------------------------
+            # 1. КОМАНДЫ
+            # ------------------------------------------------
+
+            home_team, away_team = (
+                self._extract_teams(
+                    soup,
+                    url,
+                )
+            )
+
+            result["home_team"] = home_team
+            result["away_team"] = away_team
+
+            if not home_team or not away_team:
+                logger.warning(
+                    "NB-BET: команды не определены: %s",
+                    url,
+                )
+                return result
+
+            # ------------------------------------------------
+            # 2. JSON pageSoccerEvent
+            # ------------------------------------------------
+
+            event_data = self._extract_event_data(
+                soup
+            )
+
+            # ------------------------------------------------
+            # 3. СТАТИСТИКА
+            # ------------------------------------------------
+
+            stats = self._extract_nb_bet_stats(
+                event_data
+            )
+
+            # ------------------------------------------------
+            # 4. РЕЗУЛЬТАТ
+            # ------------------------------------------------
+
+            score = self._extract_score(
+                soup,
+                html,
+                home_team,
+                away_team,
+                event_data,
+            )
+
+            if score:
+                result["home_goals"] = score[0]
+                result["away_goals"] = score[1]
+
+            # ------------------------------------------------
+            # 5. VALIDATION
+            # ------------------------------------------------
+
+            stats = self._validate_stats(
+                stats
+            )
+
+            result["stats"] = stats
+
+            # ------------------------------------------------
+            # 6. QUALITY
+            # ------------------------------------------------
+
+            result["data_quality"] = (
+                self._calculate_quality(
+                    result
+                )
+            )
+
+            if (
+                result["home_goals"] is not None
+                and result["away_goals"] is not None
+            ):
+                result["success"] = True
+
+            return result
+
+        except requests.RequestException as exc:
+            logger.error(
+                "NB-BET request error: %s",
+                exc,
+            )
+
+        except Exception as exc:
+            logger.exception(
+                "NB-BET parser error: %s",
+                exc,
+            )
+
+        return result
+
+    # ========================================================
+    # TEAMS
+    # ========================================================
+
+    def _extract_teams(
+        self,
+        soup: BeautifulSoup,
+        url: str,
+    ) -> Tuple[
+        Optional[str],
+        Optional[str],
+    ]:
+
+        candidates = []
+
+        # ----------------------------------------------------
+        # H1 / title
+        # ----------------------------------------------------
+
+        for element in soup.find_all(
+            ["h1", "h2"]
+        ):
+            text = self._clean(
+                element.get_text(
+                    " ",
+                    strip=True,
+                )
+            )
+
+            if text:
+                candidates.append(text)
+
+        if soup.title:
+            candidates.append(
+                self._clean(
+                    soup.title.get_text(
+                        " ",
+                        strip=True,
+                    )
+                )
+            )
+
+        # ----------------------------------------------------
+        # URL slug
+        # ----------------------------------------------------
+
+        slug_match = re.search(
+            r"/Events/\d+-([^/?#]+)",
+            url,
+            re.IGNORECASE,
+        )
+
+        if slug_match:
+            slug = slug_match.group(1)
+
+            slug = re.sub(
+                r"-prognoz-na-match.*$",
+                "",
+                slug,
+                flags=re.IGNORECASE,
+            )
+
+            slug = slug.replace(
+                "-",
+                " ",
+            )
+
+            candidates.append(slug)
+
+        # ----------------------------------------------------
+        # Пытаемся найти пару команд
+        # ----------------------------------------------------
+
+        separators = (
+            " — ",
+            " – ",
+            " - ",
+            " vs ",
+            " VS ",
+            " против ",
+        )
+
+        for text in candidates:
+
+            for separator in separators:
+
+                if separator not in text:
+                    continue
+
+                parts = [
+                    x.strip()
+                    for x in text.split(
+                        separator,
+                        1,
+                    )
+                ]
+
+                if len(parts) != 2:
+                    continue
+
+                home, away = (
+                    normalize_team_names(
+                        parts[0],
+                        parts[1],
+                        strict=True,
+                    )
+                )
+
+                if home and away:
+                    return home, away
+
+        # ----------------------------------------------------
+        # Последняя попытка:
+        # ищем известные команды в тексте страницы
+        # ----------------------------------------------------
+
+        full_text = self._clean(
+            soup.get_text(
+                " ",
+                strip=True,
+            )
+        )
+
+        known = []
+
+        for team_candidate in self._find_known_teams(
+            full_text
+        ):
+            if team_candidate not in known:
+                known.append(
+                    team_candidate
+                )
+
+        if len(known) >= 2:
+            return known[0], known[1]
+
+        return None, None
+
+    def _find_known_teams(
+        self,
+        text: str,
+    ) -> list:
+
+        result = []
+
+        # Проверяем пары через normalizer.
+        # Normalizer является источником истины
+        # для названий команд FAJ.
+
+        words = re.split(
+            r"\s{2,}|[|•]",
+            text,
+        )
+
+        for item in words:
+
+            item = self._clean(item)
+
+            if not item:
+                continue
+
+            home, away = normalize_team_names(
+                item,
+                item,
+                strict=True,
+            )
+
+            if home and away and home == away:
+                result.append(home)
+
+        return result
+
+    # ========================================================
+    # EVENT JSON
+    # ========================================================
+
+    def _extract_event_data(
+        self,
+        soup: BeautifulSoup,
+    ) -> Optional[Dict[str, Any]]:
+
+        scripts = soup.find_all(
+            "script"
+        )
+
+        # ----------------------------------------------------
+        # 1. Ищем pageSoccerEvent
+        # ----------------------------------------------------
+
+        for script in scripts:
+
+            text = script.string or script.get_text()
+
+            if not text:
+                continue
+
+            if "pageSoccerEvent" not in text:
+                continue
+
+            data = self._parse_page_soccer_event(
+                text
+            )
+
+            if data is not None:
+                return data
+
+        return None
+
+    def _parse_page_soccer_event(
+        self,
+        text: str,
+    ) -> Optional[Dict[str, Any]]:
+
+        # ----------------------------------------------------
+        # Вариант A:
+        # pageSoccerEvent = {...}
+        # ----------------------------------------------------
+
+        marker = "pageSoccerEvent"
+
+        position = text.find(marker)
+
+        if position < 0:
+            return None
+
+        start = text.find(
+            "{",
+            position,
+        )
+
+        if start < 0:
+            return None
+
+        json_text = self._extract_balanced_object(
+            text,
+            start,
+        )
+
+        if not json_text:
+            return None
+
+        # ----------------------------------------------------
+        # JSON
+        # ----------------------------------------------------
+
+        try:
+            return json.loads(
+                json_text
+            )
+
+        except json.JSONDecodeError:
+            pass
+
+        # ----------------------------------------------------
+        # Иногда JS содержит объект в скрипте,
+        # но вокруг есть дополнительные конструкции.
+        # Пробуем вытащить match напрямую.
+        # ----------------------------------------------------
+
+        match_pos = text.find(
+            '"match"',
+            position,
+        )
+
+        if match_pos < 0:
+            match_pos = text.find(
+                "match",
+                position,
+            )
+
+        if match_pos < 0:
+            return None
+
+        match_start = text.find(
+            "{",
+            match_pos,
+        )
+
+        if match_start < 0:
+            return None
+
+        match_text = self._extract_balanced_object(
+            text,
+            match_start,
+        )
+
+        if not match_text:
+            return None
+
+        try:
+            return {
+                "match": json.loads(
+                    match_text
+                )
+            }
+
+        except json.JSONDecodeError:
+            return None
+
+    # ========================================================
+    # BALANCED JSON
+    # ========================================================
+
+    def _extract_balanced_object(
+        self,
+        text: str,
+        start: int,
+    ) -> Optional[str]:
+
+        if start < 0 or start >= len(text):
+            return None
+
+        depth = 0
+        in_string = False
+        escaped = False
+
+        for index in range(
+            start,
+            len(text),
+        ):
+
+            char = text[index]
+
+            if in_string:
+
+                if escaped:
+                    escaped = False
+                    continue
+
+                if char == "\\":
+                    escaped = True
+                    continue
+
+                if char == '"':
+                    in_string = False
+
+                continue
+
+            if char == '"':
+                in_string = True
+                continue
+
+            if char == "{":
+                depth += 1
+
+            elif char == "}":
+
+                depth -= 1
+
+                if depth == 0:
+                    return text[
+                        start:index + 1
+                    ]
+
+        return None
+
+    # ========================================================
+    # NB-BET STATS
+    # ========================================================
+
+    def _extract_nb_bet_stats(
+        self,
+        event_data: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+
+        if not event_data:
+            return {}
+
+        match = event_data.get(
+            "match"
+        )
+
+        if not isinstance(
+            match,
+            dict,
+        ):
+            return {}
+
+        stats_block = match.get(
+            "17"
+        )
+
+        if stats_block is None:
+            stats_block = match.get(
+                17
+            )
+
+        if not isinstance(
+            stats_block,
+            list,
+        ):
+            return {}
+
+        if not stats_block:
+            return {}
+
+        first = stats_block[0]
+
+        if not isinstance(
+            first,
+            dict,
+        ):
+            return {}
+
+        result = {}
+
+        for raw_key, raw_value in first.items():
+
+            try:
+                key = int(raw_key)
+            except (
+                TypeError,
+                ValueError,
+            ):
+                continue
+
+            stat_name = self.STAT_MAP.get(
+                key
+            )
+
+            if not stat_name:
+                continue
+
+            pair = self._extract_pair(
+                raw_value
+            )
+
+            if pair is None:
+                continue
+
+            home, away = pair
+
+            keys = self.RESULT_KEYS[
+                stat_name
+            ]
+
+            result[keys[0]] = home
+            result[keys[1]] = away
+
+        return result
+
+    # ========================================================
+    # PAIR
+    # ========================================================
+
+    def _extract_pair(
+        self,
+        value: Any,
+    ) -> Optional[
+        Tuple[Any, Any]
+    ]:
+
+        if not isinstance(
+            value,
+            (list, tuple),
+        ):
+            return None
+
+        if len(value) < 2:
+            return None
+
+        home = value[0]
+        away = value[1]
+
+        return home, away
+
+    # ========================================================
+    # SCORE
+    # ========================================================
+
+    def _extract_score(
+        self,
+        soup: BeautifulSoup,
+        html: str,
+        home_team: str,
+        away_team: str,
+        event_data: Optional[
+            Dict[str, Any]
+        ],
+    ) -> Optional[
+        Tuple[int, int]
+    ]:
+
+        # ----------------------------------------------------
+        # 1. Ищем очевидный score/result блок
+        # ----------------------------------------------------
+
+        selectors = [
+            "[class*='score']",
+            "[class*='Score']",
+            "[class*='result']",
+            "[class*='Result']",
+        ]
+
+        for selector in selectors:
+
+            try:
+                elements = soup.select(
+                    selector
+                )
+            except Exception:
+                elements = []
+
+            for element in elements:
+
+                text = self._clean(
+                    element.get_text(
+                        " ",
+                        strip=True,
+                    )
+                )
+
+                score = self._parse_score(
+                    text
+                )
+
+                if score is None:
+                    continue
+
+                context = self._clean(
+                    element.parent.get_text(
+                        " ",
+                        strip=True,
+                    )
+                    if element.parent
+                    else ""
+                )
+
+                if (
+                    self._teams_in_text(
+                        context,
+                        home_team,
+                        away_team,
+                    )
+                ):
+                    return score
+
+        # ----------------------------------------------------
+        # 2. Ищем score в небольшом локальном блоке
+        # ----------------------------------------------------
+
+        for element in soup.find_all(
+            ["div", "section", "article"]
+        ):
+
+            text = self._clean(
+                element.get_text(
+                    " ",
+                    strip=True,
+                )
+            )
+
+            if not text:
+                continue
+
+            if len(text) > 1200:
+                continue
+
+            if not self._teams_in_text(
+                text,
+                home_team,
+                away_team,
+            ):
+                continue
+
+            score = self._parse_score(
+                text
+            )
+
+            if score is not None:
+                return score
+
+        # ----------------------------------------------------
+        # 3. Ищем score рядом с заголовком страницы
+        # ----------------------------------------------------
+
+        title_text = ""
+
+        if soup.title:
+            title_text = self._clean(
+                soup.title.get_text(
+                    " ",
+                    strip=True,
+                )
+            )
+
+        score = self._parse_score(
+            title_text
+        )
+
+        if score is not None:
+            return score
+
+        # ----------------------------------------------------
+        # 4. JSON — проверяем возможные поля результата
+        # ----------------------------------------------------
+
+        score = self._find_score_in_json(
+            event_data
+        )
+
+        if score is not None:
+            return score
+
+        logger.warning(
+            "NB-BET: score не найден безопасным способом."
+        )
+
+        return None
+
+    def _find_score_in_json(
+        self,
+        data: Any,
+    ) -> Optional[
+        Tuple[int, int]
+    ]:
+
+        if isinstance(
+            data,
+            dict,
+        ):
+
+            # Явные варианты.
+            pairs = [
+                (
+                    "homeGoals",
+                    "awayGoals",
+                ),
+                (
+                    "home_goals",
+                    "away_goals",
+                ),
+                (
+                    "homeScore",
+                    "awayScore",
+                ),
+                (
+                    "home_score",
+                    "away_score",
+                ),
+            ]
+
+            for home_key, away_key in pairs:
+
+                if (
+                    home_key in data
+                    and away_key in data
+                ):
+
+                    score = self._make_score(
+                        data[home_key],
+                        data[away_key],
+                    )
+
+                    if score:
+                        return score
+
+            for value in data.values():
+
+                score = self._find_score_in_json(
+                    value
+                )
+
+                if score:
+                    return score
+
+        elif isinstance(
+            data,
+            list,
+        ):
+
+            for value in data:
+
+                score = self._find_score_in_json(
+                    value
+                )
+
+                if score:
+                    return score
+
+        return None
+
+    def _make_score(
+        self,
+        home: Any,
+        away: Any,
+    ) -> Optional[
+        Tuple[int, int]
+    ]:
+
+        try:
+            home = int(home)
+            away = int(away)
+        except (
+            TypeError,
+            ValueError,
+        ):
+            return None
+
+        if not (
+            0 <= home <= 15
+            and
+            0 <= away <= 15
+        ):
+            return None
+
+        return home, away
+
+    def _parse_score(
+        self,
+        text: str,
+    ) -> Optional[
+        Tuple[int, int]
+    ]:
+
+        if not text:
+            return None
+
+        matches = re.findall(
+            r"\b(\d{1,2})\s*[:\-]\s*(\d{1,2})\b",
+            text,
+        )
+
+        if len(matches) != 1:
+            return None
+
+        return self._make_score(
+            matches[0][0],
+            matches[0][1],
+        )
+
+    # ========================================================
+    # VALIDATION
+    # ========================================================
+
+    def _validate_stats(
+        self,
+        stats: Dict[str, Any],
+    ) -> Dict[str, Any]:
+
+        result = {}
+
+        for key, value in stats.items():
+
+            stat_type = None
+
+            for name, keys in self.RESULT_KEYS.items():
+
+                if key in keys:
+                    stat_type = name
+                    break
+
+            if stat_type is None:
+                continue
+
+            value = self._validate_value(
+                stat_type,
+                value,
+            )
+
+            result[key] = value
+
+        # ----------------------------------------------------
+        # shots on target <= shots
+        # ----------------------------------------------------
+
+        self._invalidate_relation(
+            result,
+            "home_shots_on_target",
+            "home_shots",
+        )
+
+        self._invalidate_relation(
+            result,
+            "away_shots_on_target",
+            "away_shots",
+        )
+
+        # ----------------------------------------------------
+        # possession
+        # ----------------------------------------------------
+
+        hp = result.get(
+            "home_possession"
+        )
+
+        ap = result.get(
+            "away_possession"
+        )
+
+        if hp is not None and ap is not None:
+
+            if not 98 <= hp + ap <= 102:
+
+                logger.warning(
+                    "NB-BET: possession invalid: %s + %s",
+                    hp,
+                    ap,
+                )
+
+                result[
+                    "home_possession"
+                ] = None
+
+                result[
+                    "away_possession"
+                ] = None
+
+        # ----------------------------------------------------
+        # passes consistency
+        # ----------------------------------------------------
+
+        for side in (
+            "home",
+            "away",
+        ):
+
+            total_key = (
+                f"{side}_total_passes"
+            )
+
+            accurate_key = (
+                f"{side}_accurate_passes"
+            )
+
+            total = result.get(
+                total_key
+            )
+
+            accurate = result.get(
+                accurate_key
+            )
+
+            if (
+                total is not None
+                and accurate is not None
+                and accurate > total
+            ):
+
+                result[
+                    total_key
+                ] = None
+
+                result[
+                    accurate_key
+                ] = None
+
+        return result
+
+    def _validate_value(
+        self,
+        stat_type: str,
+        value: Any,
+    ) -> Optional[Any]:
+
+        try:
+
+            if stat_type == "xg":
+                value = float(value)
+            else:
+                value = int(value)
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            return None
+
+        limits = self.LIMITS.get(
+            stat_type
+        )
+
+        if limits:
+
+            minimum, maximum = limits
+
+            if not (
+                minimum
+                <= value
+                <= maximum
+            ):
+                return None
+
+        return value
+
+    def _invalidate_relation(
+        self,
+        stats: Dict[str, Any],
+        smaller_key: str,
+        larger_key: str,
+    ):
+
+        smaller = stats.get(
+            smaller_key
+        )
+
+        larger = stats.get(
+            larger_key
+        )
+
+        if (
+            smaller is None
+            or larger is None
+        ):
+            return
+
+        if smaller > larger:
+
+            stats[
+                smaller_key
+            ] = None
+
+            stats[
+                larger_key
+            ] = None
+
+    # ========================================================
+    # HELPERS
+    # ========================================================
+
+    def _teams_in_text(
+        self,
+        text: str,
+        home_team: str,
+        away_team: str,
+    ) -> bool:
+
+        if not text:
+            return False
+
+        normalized = self._clean(
+            text
+        ).lower()
+
+        return (
+            home_team.lower() in normalized
+            and
+            away_team.lower() in normalized
+        )
+
+    def _clean(
+        self,
+        text: str,
+    ) -> str:
+
+        if not text:
+            return ""
+
+        text = text.replace(
+            "\xa0",
+            " ",
+        )
+
+        text = re.sub(
+            r"\s+",
+            " ",
+            text,
+        )
+
+        return text.strip()
+
+    # ========================================================
+    # QUALITY
+    # ========================================================
+
+    def _calculate_quality(
+        self,
+        result: Dict[str, Any],
+    ) -> float:
+
+        quality = 0.0
+
+        if (
+            result.get("home_team")
+            and result.get("away_team")
+        ):
+            quality += 0.25
+
+        if (
+            result.get("home_goals") is not None
+            and
+            result.get("away_goals") is not None
+        ):
+            quality += 0.50
+
+        if result.get("stats"):
+            quality += 0.25
+
+        return round(
+            quality,
+            2,
+        )
+
+    # ========================================================
+    # COMPATIBILITY
+    # ========================================================
+
+    def parse_match_page(
+        self,
+        url: str,
+    ) -> Dict[str, Any]:
+
+        return self.parse(
+            url
+        )
+
+    def parse_score(
+        self,
+        url: str,
+    ) -> Optional[
+        Tuple[int, int]
+    ]:
+
+        parsed = self.parse(
+            url
+        )
+
+        home = parsed.get(
+            "home_goals"
+        )
+
+        away = parsed.get(
+            "away_goals"
+        )
+
+        if (
+            home is None
+            or away is None
+        ):
+            return None
+
+        return home, away
+
+
+# ============================================================
+# CONVENIENCE
+# ============================================================
+
+def parse_match_stats(
+    url: str,
+) -> Dict[str, Any]:
+
+    return NbBetStatsParser().parse_match_page(
+        url
+    )
+
+
+def parse_match_score(
+    url: str,
+) -> Optional[
+    Tuple[int, int]
+]:
+
+    return NbBetStatsParser().parse_score(
+        url
+    )
+
+
+# ============================================================
+# SELF TEST
+# ============================================================
+
+if __name__ == "__main__":
+
+    import sys
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format=(
+            "%(levelname)s | %(message)s"
+        ),
+    )
+
+    if len(sys.argv) < 2:
+        print(
+            "Usage:"
+        )
+        print(
+            "python "
+            "app/parsers/nb_bet_stats_parser.py "
+            "<NB-BET URL>"
+        )
+        raise SystemExit(1)
+
+    parser = NbBetStatsParser()
+
+    result = parser.parse(
+        sys.argv[1]
+    )
+
+    print("=" * 70)
+    print(
+        "FAJ NB-BET PARSER "
+        f"v{parser.VERSION}"
+    )
+    print("=" * 70)
+
+    print(
+        "Success:",
+        result["success"],
+    )
+
+    print(
+        "Source:",
+        result["source"],
+    )
+
+    print(
+        "Home:",
+        result["home_team"],
+    )
+
+    print(
+        "Away:",
+        result["away_team"],
+    )
+
+    print(
+        "Score:",
+        result["home_goals"],
+        ":",
+        result["away_goals"],
+    )
+
+    print(
+        "Quality:",
+        result["data_quality"],
+    )
+
+    print("\nStats:")
+
+    for key, value in result[
+        "stats"
+    ].items():
+
+        print(
+            f"  {key}: {value}"
+        )
+
+    print("=" * 70)
