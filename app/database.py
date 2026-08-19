@@ -3888,17 +3888,21 @@ class FAJDatabase:
             conn.close()
     
     # ============================================================
-    # DELETE METHODS — ИСПРАВЛЕНА ВЕРСИЯ
+    # DELETE METHODS — ИСПРАВЛЕНА ВЕРСИЯ С PRAGMA
     # ============================================================
     
     def delete_match(self, match_id: int) -> bool:
         """
         Удаляет матч и все связанные с ним данные.
+        Использует PRAGMA foreign_keys = OFF для обхода ограничений.
         Возвращает True если матч был удалён, False если не найден.
         """
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
+            
+            # Временно отключаем проверку внешних ключей
+            cursor.execute("PRAGMA foreign_keys = OFF")
             
             # Все таблицы, которые могут ссылаться на match_id
             related_tables = [
@@ -3918,6 +3922,8 @@ class FAJDatabase:
                 "audit_log",
                 "team_form_history",
                 "match_events",
+                "standings",
+                "team_dynamics",
             ]
             
             for table in related_tables:
@@ -3928,12 +3934,20 @@ class FAJDatabase:
             
             # Удаляем сам матч
             cursor.execute("DELETE FROM matches WHERE id = ?", (match_id,))
+            deleted = cursor.rowcount > 0
+            
+            # Включаем проверку обратно
+            cursor.execute("PRAGMA foreign_keys = ON")
             
             conn.commit()
-            return cursor.rowcount > 0
+            return deleted
             
         except Exception as e:
             conn.rollback()
+            try:
+                cursor.execute("PRAGMA foreign_keys = ON")
+            except:
+                pass
             logger.error(f"Delete match error: {e}")
             return False
         finally:
