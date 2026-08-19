@@ -427,470 +427,472 @@ def element_html(
 
 
 # ============================================================
-# STREAMLIT
+# MAIN
 # ============================================================
 
-st.set_page_config(
-    page_title="FAJ — Soccerway Inspector",
-    page_icon="🔎",
-    layout="wide",
-)
+def main():
 
-st.title(
-    "🔎 FAJ — Soccerway HTML Inspector"
-)
+    st.set_page_config(
+        page_title="FAJ — Soccerway Inspector",
+        page_icon="🔎",
+        layout="wide",
+    )
 
-st.caption(
-    "Диагностика реальной HTML-структуры Soccerway"
-)
+    st.title(
+        "🔎 FAJ — Soccerway HTML Inspector"
+    )
 
-st.warning(
-    "Эта страница только читает Soccerway. "
-    "База FAJ не используется и не изменяется."
-)
+    st.caption(
+        "Диагностика реальной HTML-структуры Soccerway"
+    )
 
-url = st.text_input(
-    "🔗 URL матча Soccerway",
-    value=DEFAULT_URL,
-)
+    st.warning(
+        "Эта страница только читает Soccerway. "
+        "База FAJ не используется и не изменяется."
+    )
 
-inspect_button = st.button(
-    "🔎 Исследовать страницу",
-    type="primary",
-    use_container_width=True,
-)
+    url = st.text_input(
+        "🔗 URL матча Soccerway",
+        value=DEFAULT_URL,
+    )
+
+    inspect_button = st.button(
+        "🔎 Исследовать страницу",
+        type="primary",
+        use_container_width=True,
+    )
 
 
-if inspect_button:
+    if inspect_button:
 
-    if not url.strip():
+        if not url.strip():
 
-        st.error(
-            "Введите URL."
-        )
-
-        st.stop()
-
-    try:
-
-        with st.spinner(
-            "Получаем реальный HTML Soccerway..."
-        ):
-
-            html, status_code = load_page(
-                url.strip()
+            st.error(
+                "Введите URL."
             )
 
-            soup = BeautifulSoup(
-                html,
-                "html.parser",
+            st.stop()
+
+        try:
+
+            with st.spinner(
+                "Получаем реальный HTML Soccerway..."
+            ):
+
+                html, status_code = load_page(
+                    url.strip()
+                )
+
+                soup = BeautifulSoup(
+                    html,
+                    "html.parser",
+                )
+
+            st.success(
+                f"HTTP {status_code} | "
+                f"{len(html):,} байт"
             )
 
-        st.success(
-            f"HTTP {status_code} | "
-            f"{len(html):,} байт"
-        )
+        except Exception as exc:
 
-    except Exception as exc:
-
-        st.error(
-            f"Ошибка загрузки: {exc}"
-        )
-
-        st.stop()
-
-    # ========================================================
-    # BASIC
-    # ========================================================
-
-    st.header(
-        "1. Основная информация"
-    )
-
-    title = ""
-
-    if soup.title:
-
-        title = norm(
-            soup.title.get_text(
-                " ",
-                strip=True,
+            st.error(
+                f"Ошибка загрузки: {exc}"
             )
+
+            st.stop()
+
+        # ========================================================
+        # BASIC
+        # ========================================================
+
+        st.header(
+            "1. Основная информация"
         )
 
-    st.write(
-        {
-            "title": title,
-            "html_bytes": len(html),
-            "status": status_code,
-        }
-    )
+        title = ""
 
-    # ========================================================
-    # SCORE
-    # ========================================================
+        if soup.title:
 
-    st.header(
-        "2. Реальные элементы со счётом"
-    )
-
-    scores = find_score_elements(
-        soup
-    )
-
-    if scores:
-
-        st.dataframe(
-            scores,
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    else:
-
-        st.error(
-            "Элементы со счётом не найдены."
-        )
-
-    # ========================================================
-    # KEYWORDS
-    # ========================================================
-
-    st.header(
-        "3. Реальные элементы статистики"
-    )
-
-    keyword_elements = (
-        find_keyword_elements(
-            soup
-        )
-    )
-
-    if keyword_elements:
-
-        st.dataframe(
-            keyword_elements,
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    else:
-
-        st.error(
-            "Статистические элементы не найдены."
-        )
-
-    # ========================================================
-    # XG CHAIN
-    # ========================================================
-
-    st.header(
-        "4. Родительская структура вокруг xG"
-    )
-
-    xg_chain = find_best_keyword_chain(
-        soup,
-        "xg",
-    )
-
-    if xg_chain:
-
-        st.dataframe(
-            xg_chain,
-            use_container_width=True,
-            hide_index=True,
-        )
-
-        # HTML последнего найденного элемента
-
-        for item in xg_chain:
-
-            if item["level"] == 0:
-                break
-
-        # Находим снова короткий xG element
-
-        for element in soup.find_all(True):
-
-            text = norm(
-                element.get_text(
+            title = norm(
+                soup.title.get_text(
                     " ",
                     strip=True,
                 )
             )
 
-            if (
-                text
-                and "xg" in text.lower()
-                and len(text) <= 150
-            ):
-
-                st.subheader(
-                    "HTML элемента xG"
-                )
-
-                st.code(
-                    element_html(
-                        element
-                    ),
-                    language="html",
-                )
-
-                break
-
-    else:
-
-        st.warning(
-            "Элемент xG в HTML не найден."
+        st.write(
+            {
+                "title": title,
+                "html_bytes": len(html),
+                "status": status_code,
+            }
         )
 
-    # ========================================================
-    # POSSESSION
-    # ========================================================
+        # ========================================================
+        # SCORE
+        # ========================================================
 
-    st.header(
-        "5. Родительская структура вокруг «Владение»"
-    )
+        st.header(
+            "2. Реальные элементы со счётом"
+        )
 
-    possession_chain = (
-        find_best_keyword_chain(
+        scores = find_score_elements(
+            soup
+        )
+
+        if scores:
+
+            st.dataframe(
+                scores,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        else:
+
+            st.error(
+                "Элементы со счётом не найдены."
+            )
+
+        # ========================================================
+        # KEYWORDS
+        # ========================================================
+
+        st.header(
+            "3. Реальные элементы статистики"
+        )
+
+        keyword_elements = (
+            find_keyword_elements(
+                soup
+            )
+        )
+
+        if keyword_elements:
+
+            st.dataframe(
+                keyword_elements,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        else:
+
+            st.error(
+                "Статистические элементы не найдены."
+            )
+
+        # ========================================================
+        # XG CHAIN
+        # ========================================================
+
+        st.header(
+            "4. Родительская структура вокруг xG"
+        )
+
+        xg_chain = find_best_keyword_chain(
             soup,
-            "владение",
-        )
-    )
-
-    if possession_chain:
-
-        st.dataframe(
-            possession_chain,
-            use_container_width=True,
-            hide_index=True,
+            "xg",
         )
 
-    else:
+        if xg_chain:
 
-        st.warning(
-            "Элемент «Владение» не найден."
-        )
+            st.dataframe(
+                xg_chain,
+                use_container_width=True,
+                hide_index=True,
+            )
 
-    # ========================================================
-    # SHOTS
-    # ========================================================
+            # HTML последнего найденного элемента
 
-    st.header(
-        "6. Родительская структура вокруг «Удары»"
-    )
+            for item in xg_chain:
 
-    shots_chain = (
-        find_best_keyword_chain(
-            soup,
-            "удары",
-        )
-    )
+                if item["level"] == 0:
+                    break
 
-    if shots_chain:
+            # Находим снова короткий xG element
 
-        st.dataframe(
-            shots_chain,
-            use_container_width=True,
-            hide_index=True,
-        )
+            for element in soup.find_all(True):
 
-    else:
-
-        st.warning(
-            "Элемент «Удары» не найден."
-        )
-
-    # ========================================================
-    # CLASSES
-    # ========================================================
-
-    st.header(
-        "7. Часто используемые CSS-классы"
-    )
-
-    classes = class_frequency(
-        soup
-    )
-
-    class_rows = [
-        {
-            "class": cls,
-            "count": count,
-        }
-        for cls, count in classes
-    ]
-
-    st.dataframe(
-        class_rows,
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    # ========================================================
-    # DATA ATTRIBUTES
-    # ========================================================
-
-    st.header(
-        "8. Data-* атрибуты"
-    )
-
-    data_rows = []
-
-    seen_data = set()
-
-    for element in soup.find_all(True):
-
-        for key, value in element.attrs.items():
-
-            if not str(key).startswith(
-                "data-"
-            ):
-                continue
-
-            row = {
-                "tag": element.name,
-                "attribute": key,
-                "value": str(value),
-                "class": " ".join(
-                    str(x)
-                    for x in (
-                        element.get("class")
-                        or []
-                    )
-                ),
-                "text": norm(
+                text = norm(
                     element.get_text(
                         " ",
                         strip=True,
                     )
-                )[:200],
+                )
+
+                if (
+                    text
+                    and "xg" in text.lower()
+                    and len(text) <= 150
+                ):
+
+                    st.subheader(
+                        "HTML элемента xG"
+                    )
+
+                    st.code(
+                        element_html(
+                            element
+                        ),
+                        language="html",
+                    )
+
+                    break
+
+        else:
+
+            st.warning(
+                "Элемент xG в HTML не найден."
+            )
+
+        # ========================================================
+        # POSSESSION
+        # ========================================================
+
+        st.header(
+            "5. Родительская структура вокруг «Владение»"
+        )
+
+        possession_chain = (
+            find_best_keyword_chain(
+                soup,
+                "владение",
+            )
+        )
+
+        if possession_chain:
+
+            st.dataframe(
+                possession_chain,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        else:
+
+            st.warning(
+                "Элемент «Владение» не найден."
+            )
+
+        # ========================================================
+        # SHOTS
+        # ========================================================
+
+        st.header(
+            "6. Родительская структура вокруг «Удары»"
+        )
+
+        shots_chain = (
+            find_best_keyword_chain(
+                soup,
+                "удары",
+            )
+        )
+
+        if shots_chain:
+
+            st.dataframe(
+                shots_chain,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        else:
+
+            st.warning(
+                "Элемент «Удары» не найден."
+            )
+
+        # ========================================================
+        # CLASSES
+        # ========================================================
+
+        st.header(
+            "7. Часто используемые CSS-классы"
+        )
+
+        classes = class_frequency(
+            soup
+        )
+
+        class_rows = [
+            {
+                "class": cls,
+                "count": count,
             }
+            for cls, count in classes
+        ]
 
-            signature = tuple(
-                row.items()
+        st.dataframe(
+            class_rows,
+                use_container_width=True,
+                hide_index=True,
             )
 
-            if signature in seen_data:
-                continue
+        # ========================================================
+        # DATA ATTRIBUTES
+        # ========================================================
 
-            seen_data.add(
-                signature
-            )
+        st.header(
+            "8. Data-* атрибуты"
+        )
 
-            data_rows.append(
-                row
-            )
+        data_rows = []
+
+        seen_data = set()
+
+        for element in soup.find_all(True):
+
+            for key, value in element.attrs.items():
+
+                if not str(key).startswith(
+                    "data-"
+                ):
+                    continue
+
+                row = {
+                    "tag": element.name,
+                    "attribute": key,
+                    "value": str(value),
+                    "class": " ".join(
+                        str(x)
+                        for x in (
+                            element.get("class")
+                            or []
+                        )
+                    ),
+                    "text": norm(
+                        element.get_text(
+                            " ",
+                            strip=True,
+                        )
+                    )[:200],
+                }
+
+                signature = tuple(
+                    row.items()
+                )
+
+                if signature in seen_data:
+                    continue
+
+                seen_data.add(
+                    signature
+                )
+
+                data_rows.append(
+                    row
+                )
+
+                if len(data_rows) >= 200:
+                    break
 
             if len(data_rows) >= 200:
                 break
 
-        if len(data_rows) >= 200:
-            break
+        if data_rows:
 
-    if data_rows:
-
-        st.dataframe(
-            data_rows,
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    else:
-
-        st.info(
-            "data-* атрибуты не обнаружены."
-        )
-
-    # ========================================================
-    # JSON / SCRIPT
-    # ========================================================
-
-    st.header(
-        "9. Script / JSON признаки"
-    )
-
-    scripts = soup.find_all(
-        "script"
-    )
-
-    script_rows = []
-
-    for index, script in enumerate(
-        scripts
-    ):
-
-        text = script.string or script.get_text(
-            " ",
-            strip=False,
-        )
-
-        text = str(text or "")
-
-        if not text.strip():
-            continue
-
-        lower = text.lower()
-
-        interesting = any(
-            token in lower
-            for token in (
-                "xg",
-                "shots",
-                "possession",
-                "match",
-                "statistics",
-                "stats",
-                "home",
-                "away",
+            st.dataframe(
+                data_rows,
+                use_container_width=True,
+                hide_index=True,
             )
+
+        else:
+
+            st.info(
+                "data-* атрибуты не обнаружены."
+            )
+
+        # ========================================================
+        # JSON / SCRIPT
+        # ========================================================
+
+        st.header(
+            "9. Script / JSON признаки"
         )
 
-        if not interesting:
-            continue
-
-        script_rows.append(
-            {
-                "index": index,
-                "type": script.get("type"),
-                "id": script.get("id"),
-                "length": len(text),
-                "preview": text[:1000],
-            }
+        scripts = soup.find_all(
+            "script"
         )
 
-        if len(script_rows) >= 30:
-            break
+        script_rows = []
 
-    if script_rows:
+        for index, script in enumerate(
+            scripts
+        ):
 
-        st.dataframe(
-            script_rows,
-            use_container_width=True,
-            hide_index=True,
+            text = script.string or script.get_text(
+                " ",
+                strip=False,
+            )
+
+            text = str(text or "")
+
+            if not text.strip():
+                continue
+
+            lower = text.lower()
+
+            interesting = any(
+                token in lower
+                for token in (
+                    "xg",
+                    "shots",
+                    "possession",
+                    "match",
+                    "statistics",
+                    "stats",
+                    "home",
+                    "away",
+                )
+            )
+
+            if not interesting:
+                continue
+
+            script_rows.append(
+                {
+                    "index": index,
+                    "type": script.get("type"),
+                    "id": script.get("id"),
+                    "length": len(text),
+                    "preview": text[:1000],
+                }
+            )
+
+            if len(script_rows) >= 30:
+                break
+
+        if script_rows:
+
+            st.dataframe(
+                script_rows,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        else:
+
+            st.info(
+                "Очевидных script-блоков со статистикой не найдено."
+            )
+
+        # ========================================================
+        # FINAL
+        # ========================================================
+
+        st.header(
+            "10. Что прислать мне"
         )
 
-    else:
-
-        st.info(
-            "Очевидных script-блоков со статистикой не найдено."
+        st.success(
+            "Inspector завершил исследование."
         )
 
-    # ========================================================
-    # FINAL
-    # ========================================================
-
-    st.header(
-        "10. Что прислать мне"
-    )
-
-    st.success(
-        "Inspector завершил исследование."
-    )
-
-    st.markdown(
-        """
+        st.markdown(
+            """
 **Не нужно присылать весь HTML.**
 
 Мне нужны результаты разделов:
@@ -906,4 +908,12 @@ if inspect_button:
 
 После этого я перепишу `soccerway_stats_parser.py` по реальной структуре страницы.
 """
-    )
+        )
+
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
+
+if __name__ == "__main__":
+    main()
