@@ -158,13 +158,12 @@ def css_path(element) -> str:
 
         elif classes:
 
-            part = (
-                name
-                + "".join(
-                    f".{re.sub(r'[^a-zA-Z0-9_-]', '', c)}"
-                    for c in classes[:3]
-                )
+            class_str = "".join(
+                f".{re.sub(r'[^a-zA-Z0-9_-]', '', str(c))}"
+                for c in classes[:3]
             )
+
+            part = name + class_str
 
         else:
 
@@ -207,8 +206,7 @@ def find_scores(soup: BeautifulSoup) -> List[str]:
             for match in pattern.finditer(text):
 
                 results.append(
-                    f"TITLE | {match.group(0)} | "
-                    f"{text}"
+                    "TITLE | " + match.group(0) + " | " + text
                 )
 
     # элементы с score/result
@@ -238,9 +236,9 @@ def find_scores(soup: BeautifulSoup) -> List[str]:
             for match in pattern.finditer(text):
 
                 results.append(
-                    f"ELEMENT | {match.group(0)} | "
-                    f"classes={classes} | "
-                    f"text={short_text(text, 300)}"
+                    "ELEMENT | " + match.group(0) + " | "
+                    "classes=" + classes + " | "
+                    "text=" + short_text(text, 300)
                 )
 
     # META
@@ -356,10 +354,10 @@ def find_statistics(soup: BeautifulSoup) -> List[str]:
         results.append(
             "\n".join(
                 [
-                    f"LABEL: {text}",
-                    f"CLASSES: {classes or '-'}",
-                    f"PATH: {css_path(element)}",
-                    f"PARENT: {short_text(parent_text, 700)}",
+                    "LABEL: " + text,
+                    "CLASSES: " + (classes or "-"),
+                    "PATH: " + css_path(element),
+                    "PARENT: " + short_text(parent_text, 700),
                     "-" * 70,
                 ]
             )
@@ -411,10 +409,10 @@ def find_relevant_classes(
 
         for cls in classes:
 
-            counter[cls] += 1
+            counter[str(cls)] += 1
 
     return [
-        f"{cls}  |  {count}"
+        str(cls) + "  |  " + str(count)
         for cls, count in counter.most_common(200)
     ]
 
@@ -446,10 +444,10 @@ def find_data_attributes(
             )
 
             results.append(
-                f"{key}={value} | "
-                f"tag={element.name} | "
-                f"class={element.get('class')} | "
-                f"text={short_text(text, 250)}"
+                key + "=" + str(value) + " | "
+                "tag=" + element.name + " | "
+                "class=" + str(element.get("class")) + " | "
+                "text=" + short_text(text, 250)
             )
 
     return list(
@@ -498,9 +496,9 @@ def inspect_scripts(
         results.append(
             "\n".join(
                 [
-                    f"SCRIPT #{index}",
-                    f"TYPE: {script.get('type')}",
-                    f"SRC: {script.get('src')}",
+                    "SCRIPT #" + str(index),
+                    "TYPE: " + str(script.get("type")),
+                    "SRC: " + str(script.get("src")),
                     "CONTENT:",
                     text[:15000],
                     "=" * 100,
@@ -602,11 +600,11 @@ def inspect_match_containers(
         results.append(
             "\n".join(
                 [
-                    f"TAG: {element.name}",
-                    f"CLASS: {classes}",
-                    f"ID: {element.get('id')}",
-                    f"PATH: {css_path(element)}",
-                    f"TEXT: {text}",
+                    "TAG: " + element.name,
+                    "CLASS: " + classes,
+                    "ID: " + str(element.get("id")),
+                    "PATH: " + css_path(element),
+                    "TEXT: " + text,
                     "-" * 70,
                 ]
             )
@@ -655,11 +653,11 @@ def inspect_stat_fragments(
         results.append(
             "\n".join(
                 [
-                    f"TAG: {element.name}",
-                    f"CLASS: {element.get('class')}",
-                    f"ID: {element.get('id')}",
-                    f"PATH: {css_path(element)}",
-                    f"HTML:",
+                    "TAG: " + element.name,
+                    "CLASS: " + str(element.get("class")),
+                    "ID: " + str(element.get("id")),
+                    "PATH: " + css_path(element),
+                    "HTML:",
                     str(element)[:5000],
                     "=" * 100,
                 ]
@@ -695,7 +693,7 @@ def build_report(
         "FAJ SOCCERWAY INSPECTOR REPORT"
     )
     lines.append(
-        f"VERSION: {VERSION}"
+        "VERSION: " + VERSION
     )
     lines.append(
         "============================================================"
@@ -712,10 +710,10 @@ def build_report(
         "2. HTTP"
     )
     lines.append(
-        f"STATUS: {status}"
+        "STATUS: " + str(status)
     )
     lines.append(
-        f"HTML BYTES: {len(html_text.encode('utf-8'))}"
+        "HTML BYTES: " + str(len(html_text.encode("utf-8")))
     )
     lines.append("")
 
@@ -1030,14 +1028,14 @@ def main():
                 ] = report
 
                 st.success(
-                    f"HTTP {status} | "
-                    f"{len(html_text.encode('utf-8')):,} байт"
+                    "HTTP " + str(status) + " | "
+                    + str(len(html_text.encode("utf-8"))) + " байт"
                 )
 
             except Exception as exc:
 
                 st.error(
-                    f"Ошибка: {exc}"
+                    "Ошибка: " + str(exc)
                 )
 
     report = st.session_state.get(
@@ -1064,7 +1062,7 @@ def main():
             report
         )
 
-        component = f"""
+        component = """
         <textarea
             id="faj-report"
             style="
@@ -1078,7 +1076,7 @@ def main():
                 background:#111;
                 color:#eee;
             "
-            readonly>{escaped}</textarea>
+            readonly>""" + escaped + """</textarea>
 
         <button
             onclick="
