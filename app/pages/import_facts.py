@@ -4,14 +4,14 @@
 """
 ============================================================
 FAJ Platform v12.1
-IMPORT FACTS v3.1 — SOCCERWAY
+IMPORT FACTS v3.2 — NB-BET
 ============================================================
 
 Назначение:
     Импорт фактических данных сыгранного тура.
 
 ИСТОЧНИКИ:
-    - Soccerway (основной)
+    - NB-BET (основной)
     - Ручной ввод (запасной)
 
 ЦЕПОЧКА:
@@ -20,7 +20,7 @@ IMPORT FACTS v3.1 — SOCCERWAY
       ↓
     MATCHES
       ↓
-    SOURCE URL (Soccerway)
+    SOURCE URL (NB-BET)
       ↓
     RESULT + STATISTICS
       ↓
@@ -70,7 +70,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import streamlit as st
 
 from app.database import FAJDatabase
-from app.parsers.soccerway_stats_parser import SoccerwayStatsParser
+from app.parsers.nb_bet_stats_parser import NbBetStatsParser
 from app.parsers.rpl_normalizer import normalize_team_names
 
 
@@ -82,9 +82,9 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 APP_VERSION = "12.1"
-IMPORT_FACTS_VERSION = "3.1"
+IMPORT_FACTS_VERSION = "3.2"
 MODEL_VERSION = "v12.1"
-PARSER_VERSION = "soccerway-v1.0"
+PARSER_VERSION = "nb-bet-v4.0"
 
 DEFAULT_DB_PATH = "data/faj.db"
 
@@ -462,18 +462,18 @@ def get_latest_expert(
 
 
 # ============================================================
-# FACT PARSING — SOCCERWAY
+# FACT PARSING — NB-BET
 # ============================================================
 
 def parse_fact_url(url: str) -> Dict[str, Any]:
     """
-    Получает факт матча через SoccerwayStatsParser.
+    Получает факт матча через NbBetStatsParser.
     Один parser отвечает одновременно за:
         - команды
         - счёт
         - статистику
     """
-    parser = SoccerwayStatsParser()
+    parser = NbBetStatsParser()
     parsed = parser.parse_match_page(url)
 
     stats = parsed.get("stats", {}) or {}
@@ -485,8 +485,8 @@ def parse_fact_url(url: str) -> Dict[str, Any]:
         "home_team": parsed.get("home_team"),
         "away_team": parsed.get("away_team"),
         "source_url": url,
-        "parser_source": "soccerway",
-        "parser_version": parsed.get("parser_version", "soccerway-v1.0"),
+        "parser_source": "nb-bet",
+        "parser_version": parsed.get("parser_version", "nb-bet-v4.0"),
         "parsed_at": datetime.now().isoformat(),
     }
 
@@ -861,9 +861,9 @@ def render_match_card(
     # --------------------------------------------------------
 
     url = st.text_input(
-        "🔗 Ссылка на матч (Soccerway)",
+        "🔗 Ссылка на матч (NB-BET)",
         key=f"{key_prefix}_url",
-        placeholder="https://ru.soccerway.com/...",
+        placeholder="https://nb-bet.com/Events/...",
     )
 
     if st.button(
