@@ -3,7 +3,7 @@
 
 """
 FAJ Platform v12.1 — MEMORY HARDENED
-Управление туром v3.0
+Управление туром v3.1
 
 Главный экран FAJ.
 
@@ -12,6 +12,7 @@ FAJ Platform v12.1 — MEMORY HARDENED
     - выбор тура;
     - создание тура;
     - добавление матчей;
+    - СОХРАНЕНИЕ ТУРА (НОВОЕ);
     - удаление матча;
     - удаление тура;
     - отображение текущих матчей тура;
@@ -37,6 +38,62 @@ import streamlit as st
 
 from app.database import FAJDatabase
 from app.match_manager import MatchManager
+
+
+# ============================================================
+# КОНФИГУРАЦИЯ ЛИГ
+# ============================================================
+
+LEAGUE_CONFIG = {
+    "РПЛ": {
+        "max_rounds": 30,
+        "max_teams": 16,
+    },
+    "АПЛ": {
+        "max_rounds": 38,
+        "max_teams": 20,
+    },
+    "Ла Лига": {
+        "max_rounds": 38,
+        "max_teams": 20,
+    },
+    "Лига чемпионов": {
+        "max_rounds": 17,
+        "max_teams": 36,
+    },
+}
+
+ROUND_LABELS = {
+    "Лига чемпионов": {
+        1: "Общий этап — Тур 1",
+        2: "Общий этап — Тур 2",
+        3: "Общий этап — Тур 3",
+        4: "Общий этап — Тур 4",
+        5: "Общий этап — Тур 5",
+        6: "Общий этап — Тур 6",
+        7: "Общий этап — Тур 7",
+        8: "Общий этап — Тур 8",
+        9: "Стыковые матчи (1-й матч)",
+        10: "Стыковые матчи (2-й матч)",
+        11: "1/8 финала (1-й матч)",
+        12: "1/8 финала (2-й матч)",
+        13: "Четвертьфиналы (1-й матч)",
+        14: "Четвертьфиналы (2-й матч)",
+        15: "Полуфиналы (1-й матч)",
+        16: "Полуфиналы (2-й матч)",
+        17: "Финал",
+    }
+}
+
+
+def get_max_rounds(league: str) -> int:
+    return LEAGUE_CONFIG.get(league, {}).get("max_rounds", 30)
+
+
+def get_round_label(league: str, round_number: int) -> str:
+    if league in ROUND_LABELS:
+        return ROUND_LABELS[league].get(round_number, f"Тур {round_number}")
+    return f"Тур {round_number}"
 
 
 # ============================================================
@@ -97,12 +154,7 @@ def main():
 
     st.subheader("🏆 Лига")
 
-    leagues = [
-        "РПЛ",
-        "АПЛ",
-        "Ла Лига",
-        "Лига чемпионов",
-    ]
+    leagues = list(LEAGUE_CONFIG.keys())
 
     league = st.selectbox(
         "Выберите соревнование",
@@ -110,6 +162,8 @@ def main():
         index=0,
         key="tour_league",
     )
+
+    max_rounds = get_max_rounds(league)
 
     # ========================================================
     # 2. СЕЗОН
@@ -122,13 +176,12 @@ def main():
         if str(row_value(s, "league", "")) == league
     ]
 
-    # Для текущего проекта РПЛ 2026/27.
-    # Для остальных лиг показываем сообщение, если сезон ещё
-    # не создан в БД.
-
     if not league_seasons:
         st.warning(
             f"⚠️ В базе пока нет сезона для «{league}»."
+        )
+        st.info(
+            "Сначала создайте сезон в базе данных."
         )
         return
 
@@ -163,7 +216,6 @@ def main():
         )
         return
 
-    # Создаём map ОДИН раз.
     name_to_id = {
         team_name(team): int(team_id(team))
         for team in teams
@@ -187,22 +239,26 @@ def main():
         }
     )
 
-    # Добавляем возможность создать новый тур.
-    max_round = max(round_numbers, default=0)
+    # Максимальный существующий тур
+    max_existing = max(round_numbers, default=0)
 
-    selectable_rounds = sorted(
-        set(round_numbers + [max_round + 1])
-    )
+    # Создаём список для выбора: существующие туры + следующий (если не превышает лимит)
+    selectable_rounds = list(round_numbers)
+
+    if max_existing < max_rounds:
+        selectable_rounds.append(max_existing + 1)
+
+    selectable_rounds = sorted(set(selectable_rounds))
+
+    # Индекс для выбора — последний
+    default_index = len(selectable_rounds) - 1 if selectable_rounds else 0
 
     round_number = st.selectbox(
         "Выберите тур",
         selectable_rounds,
-        index=(
-            selectable_rounds.index(max_round + 1)
-            if max_round + 1 in selectable_rounds
-            else 0
-        ),
+        index=default_index,
         key="tour_round_number",
+        format_func=lambda x: get_round_label(league, x),
     )
 
     # ========================================================
@@ -230,30 +286,33 @@ def main():
     if not round_exists:
 
         st.info(
-            f"⚪ Тур {round_number} ещё не создан."
+            f"⚪ {get_round_label(league, round_number)} ещё не создан."
         )
 
-        if st.button(
-            "➕ Создать тур",
-            type="primary",
-            key="create_round",
-        ):
-            try:
-                round_id = db.create_round(
-                    sid,
-                    int(round_number),
-                )
+        col1, col2 = st.columns(2)
 
-                st.success(
-                    f"✅ Тур {round_number} создан."
-                )
+        with col1:
+            if st.button(
+                "➕ Создать тур",
+                type="primary",
+                key="create_round",
+            ):
+                try:
+                    round_id = db.create_round(
+                        sid,
+                        int(round_number),
+                    )
 
-                st.rerun()
+                    st.success(
+                        f"✅ {get_round_label(league, round_number)} создан."
+                    )
 
-            except Exception as exc:
-                st.error(
-                    f"❌ Не удалось создать тур: {exc}"
-                )
+                    st.rerun()
+
+                except Exception as exc:
+                    st.error(
+                        f"❌ Не удалось создать тур: {exc}"
+                    )
 
         return
 
@@ -262,7 +321,7 @@ def main():
     # ========================================================
 
     st.success(
-        f"🟡 Тур {round_number} создан"
+        f"🟡 {get_round_label(league, round_number)} создан"
     )
 
     matches = match_mgr.get_round_matches(round_id)
@@ -270,14 +329,6 @@ def main():
     # ========================================================
     # 8. ТУРНИРНАЯ ТАБЛИЦА / РЕЙТИНГ
     # ========================================================
-    #
-    # Пока оставляем этот блок безопасным:
-    # он не вмешивается в календарь и не создаёт
-    # дополнительных зависимостей.
-    #
-    # Когда подключим standings_manager / FAJ Rating,
-    # сюда будет выведен реальный расчёт из БД.
-    #
 
     with st.expander("📊 Турнирная таблица", expanded=False):
         st.info(
@@ -298,7 +349,7 @@ def main():
     # ========================================================
 
     st.subheader(
-        f"⚽ Матчи тура {round_number}"
+        f"⚽ Матчи {get_round_label(league, round_number)}"
     )
 
     if not matches:
@@ -318,7 +369,6 @@ def main():
             home_id = row_value(match, "home_team_id")
             away_id = row_value(match, "away_team_id")
 
-            # Обратный map для отображения.
             id_to_name = {
                 int(team_id(team)): team_name(team)
                 for team in teams
@@ -401,7 +451,52 @@ def main():
             st.divider()
 
     # ========================================================
-    # 10. ДОБАВЛЕНИЕ МАТЧА
+    # 10. СОХРАНИТЬ ТУР (НОВОЕ!)
+    # ========================================================
+
+    if matches:
+        st.divider()
+
+        st.subheader("💾 Сохранение тура")
+
+        col_save1, col_save2 = st.columns(2)
+
+        with col_save1:
+            if st.button(
+                "💾 Сохранить тур",
+                type="primary",
+                key="save_round",
+                use_container_width=True,
+            ):
+                try:
+                    # Все матчи уже сохранены в БД при добавлении,
+                    # но на всякий случай пробегаемся и сохраняем.
+                    saved_count = 0
+                    for match in matches:
+                        match_data = dict(match)
+                        match_id = match_mgr.save_match(match_data)
+                        if match_id:
+                            saved_count += 1
+
+                    st.success(
+                        f"✅ Тур {round_number} сохранён "
+                        f"({saved_count} матчей)"
+                    )
+
+                except Exception as exc:
+                    st.error(
+                        f"❌ Ошибка сохранения тура: {exc}"
+                    )
+
+        with col_save2:
+            st.info(
+                "Матчи сохраняются в БД автоматически "
+                "при добавлении. Эта кнопка — дополнительная "
+                "страховка."
+            )
+
+    # ========================================================
+    # 11. ДОБАВЛЕНИЕ МАТЧА
     # ========================================================
 
     st.subheader("➕ Добавить матч")
@@ -454,8 +549,6 @@ def main():
 
         with col2:
 
-            # Если хозяева выбраны — не показываем
-            # их повторно среди гостей.
             away_options = [
                 name
                 for name in available_team_names
@@ -572,7 +665,7 @@ def main():
                             )
 
     # ========================================================
-    # 11. УДАЛИТЬ ТУР
+    # 12. УДАЛИТЬ ТУР
     # ========================================================
 
     st.divider()
@@ -584,7 +677,6 @@ def main():
         key="delete_round",
     ):
 
-        # Дополнительное подтверждение.
         st.session_state[
             "confirm_delete_round"
         ] = True
@@ -595,8 +687,8 @@ def main():
     ):
 
         st.warning(
-            f"⚠️ Вы собираетесь удалить тур "
-            f"{round_number} и его матчи."
+            f"⚠️ Вы собираетесь удалить "
+            f"{get_round_label(league, round_number)} и его матчи."
         )
 
         col_confirm, col_cancel = st.columns(2)
@@ -622,7 +714,7 @@ def main():
                     if deleted:
 
                         st.success(
-                            f"✅ Тур {round_number} удалён."
+                            f"✅ {get_round_label(league, round_number)} удалён."
                         )
 
                         st.rerun()
@@ -653,7 +745,7 @@ def main():
                 st.rerun()
 
     # ========================================================
-    # 12. НАВИГАЦИЯ
+    # 13. НАВИГАЦИЯ
     # ========================================================
 
     if matches:
