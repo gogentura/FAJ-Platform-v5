@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1 — MEMORY HARDENED
-PREDICT ROUND v3.2
+PREDICT ROUND v3.3
 ============================================================
 
 НАЗНАЧЕНИЕ:
@@ -179,24 +179,117 @@ def get_top_scores(db: FAJDatabase, prediction_id: int):
         return []
 
 
-def score_from_prediction(prediction: dict):
+def score_from_prediction(db: FAJDatabase, prediction: dict) -> str:
     """
-    Пытается определить основной вероятный счёт.
+    Возвращает наиболее вероятный точный счёт.
 
-    Приоритет:
+    Источник истины:
         1. prediction["most_likely_score"]
         2. prediction["predicted_score"]
         3. prediction["score"]
+        4. prediction_scores (rank=1)
+        5. extended.top_scores[0]
     """
+    if not prediction:
+        return "—"
+
+    # 1-3. Явные поля prediction
     for key in (
         "most_likely_score",
         "predicted_score",
         "score",
     ):
         value = prediction.get(key)
-
         if value:
             return str(value)
+
+    # 4. prediction_scores
+    try:
+        prediction_id = (
+            prediction.get("prediction_id")
+            or prediction.get("id")
+        )
+        if prediction_id and hasattr(db, "get_prediction_scores"):
+            scores = db.get_prediction_scores(prediction_id)
+            rows = [
+                row_dict(row)
+                for row in (scores or [])
+            ]
+            rows = [row for row in rows if row]
+            if rows:
+                rows.sort(
+                    key=lambda x: float(
+                        x.get("probability", 0) or 0
+                    ),
+                    reverse=True,
+                )
+                score = rows[0].get("score")
+                if score:
+                    return str(score)
+    except Exception as exc:
+        logger.debug(
+            "Ошибка чтения prediction_scores: %s",
+            exc,
+        )
+
+    # 5. extended.top_scores
+    extended = prediction.get("extended", {})
+    if isinstance(extended, dict):
+        top_scores = extended.get(
+            "top_scores",
+            [],
+        )
+        if isinstance(top_scores, list) and top_scores:
+            first = row_dict(top_scores[0])
+            if first:
+                score = first.get("score")
+                if score:
+                    return str(score)
+                home = first.get("home")
+                away = first.get("away")
+                if home is not None and away is not None:
+                    return f"{home}:{away}"
+
+    return "—"
+
+
+def get_risk_level(prediction: dict) -> str:
+    """
+    Возвращает уровень риска прогноза.
+
+    Только чтение уже рассчитанного FAJ risk.
+    Никаких новых математических расчётов в UI.
+    """
+    if not prediction:
+        return "—"
+
+    # 1. Явное поле risk
+    risk = prediction.get("risk")
+    if risk:
+        if isinstance(risk, dict):
+            value = (
+                risk.get("level")
+                or risk.get("label")
+                or risk.get("overall")
+            )
+            if value:
+                return str(value)
+        return str(risk)
+
+    # 2. extended.risk
+    extended = prediction.get("extended", {})
+    if isinstance(extended, dict):
+        risk = extended.get("risk")
+        if risk:
+            if isinstance(risk, dict):
+                value = (
+                    risk.get("level")
+                    or risk.get("label")
+                    or risk.get("overall")
+                )
+                if value:
+                    return str(value)
+            return str(risk)
 
     return "—"
 
@@ -264,7 +357,7 @@ def render_prediction_card(
 
     st.markdown("### 🎯 Основной прогноз")
 
-    score = score_from_prediction(prediction)
+    score = score_from_prediction(db, prediction)
 
     probability = prediction.get("probability", {})
     if not isinstance(probability, dict):
@@ -441,14 +534,7 @@ def render_prediction_card(
     except (TypeError, ValueError):
         confidence = 0
 
-    risk = prediction.get("risk")
-
-    if isinstance(risk, dict):
-        risk = (
-            risk.get("level")
-            or risk.get("label")
-            or risk.get("overall")
-        )
+    risk = get_risk_level(prediction)
 
     c1, c2 = st.columns(2)
 
@@ -461,7 +547,7 @@ def render_prediction_card(
     with c2:
         st.metric(
             "Риск",
-            str(risk) if risk else "—",
+            risk,
         )
 
     # --------------------------------------------------------
