@@ -3924,6 +3924,12 @@ class FAJDatabase:
                 "match_events",
                 "standings",
                 "team_dynamics",
+                "xg_memory",
+                "player_impact",
+                "team_competition_profile",
+                "team_events",
+                "team_history",
+                "parameter_history",
             ]
             
             for table in related_tables:
@@ -3931,6 +3937,10 @@ class FAJDatabase:
                     cursor.execute(f"DELETE FROM {table} WHERE match_id = ?", (match_id,))
                 except Exception as e:
                     logger.debug(f"Ошибка удаления из {table}: {e}")
+            
+            # Отдельно для таблиц с reference_match_id
+            cursor.execute("DELETE FROM parameter_history WHERE reference_match_id = ?", (match_id,))
+            cursor.execute("DELETE FROM team_history WHERE reference_match_id = ?", (match_id,))
             
             # Удаляем сам матч
             cursor.execute("DELETE FROM matches WHERE id = ?", (match_id,))
