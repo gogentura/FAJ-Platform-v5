@@ -916,7 +916,7 @@ def render_match_card(db: FAJDatabase, match: Dict[str, Any], index: int) -> Non
     # Проверяем статистику
     stats = {}
     try:
-        match_data = db.get_matches(round_id=None)  # получим все матчи
+        match_data = db.get_matches(round_id=None)
         for m in match_data:
             if m.get("id") == match_id:
                 stats = {
@@ -1024,10 +1024,8 @@ def render_match_card(db: FAJDatabase, match: Dict[str, Any], index: int) -> Non
                     result = load_stats_from_url(url.strip())
 
                     if result["success"] and result["stats"]:
-                        # Сохраняем статистику в БД
                         db.update_match_stats(match_id, result["stats"])
 
-                        # Обновляем fact в session state
                         fact = {
                             "home_goals": home_goals,
                             "away_goals": away_goals,
@@ -1058,7 +1056,6 @@ def render_match_card(db: FAJDatabase, match: Dict[str, Any], index: int) -> Non
         if not isinstance(stats, dict):
             stats = {}
 
-        # Показываем статистику, только если есть данные
         stat_rows = [
             ("xG", stats.get("home_xg"), stats.get("away_xg")),
             ("Удары", stats.get("home_shots"), stats.get("away_shots")),
@@ -1071,8 +1068,251 @@ def render_match_card(db: FAJDatabase, match: Dict[str, Any], index: int) -> Non
             ("Отборы", stats.get("home_tackles"), stats.get("away_tackles")),
         ]
 
-        # Фильтруем только те строки, где есть хоть одно значение
         filtered_rows = [
             (name, home, away)
             for name, home, away in stat_rows
-            if home is not None or away
+            if home is not None or away is not None
+        ]
+
+        if filtered_rows:
+            table_data = []
+            for name, home, away in filtered_rows:
+                table_data.append({
+                    "Показатель": name,
+                    home_team: home if home is not None else "—",
+                    away_team: away if away is not None else "—",
+                })
+
+            st.dataframe(table_data, width="stretch", hide_index=True)
+
+    # --------------------------------------------------------
+    # EXPERT INPUT
+    # --------------------------------------------------------
+
+    st.markdown("#### 🧠 Экспертный прогноз директора")
+
+    existing_expert_score = ""
+    if expert:
+        existing_expert_score = (
+            clean_score(
+                expert.get("score")
+                if expert.get("score") is not None
+                else expert.get("expert_score")
+            )
+            or ""
+        )
+
+    expert_score_input = st.text_input(
+        "Счёт эксперта",
+        value=existing_expert_score,
+        key=f"{key_prefix}_expert_score",
+        placeholder="Например: 2:1",
+        disabled=score_locked,
+    )
+
+    expert_comment = st.text_area(
+        "Комментарий эксперта",
+        value=(
+            expert.get("comment")
+            if expert and expert.get("comment") is not None
+            else (
+                expert.get("reasoning")
+                if expert and expert.get("reasoning") is not None
+                else ""
+            )
+        ),
+        key=f"{key_prefix}_expert_comment",
+        disabled=score_locked,
+    )
+
+    existing_confidence = 50
+    if expert:
+        value = safe_int(expert.get("confidence"))
+        if value is not None:
+            existing_confidence = max(0, min(100, value))
+
+    expert_confidence = st.slider(
+        "Уверенность эксперта",
+        min_value=0,
+        max_value=100,
+        value=existing_confidence,
+        key=f"{key_prefix}_expert_confidence",
+        disabled=score_locked,
+    )
+
+    # --------------------------------------------------------
+    # COMPARISON
+    # --------------------------------------------------------
+
+    st.markdown("#### 📊 Сравнение")
+
+    actual_score = None
+    if home_goals is not None and away_goals is not None:
+        actual_score = clean_score(f"{home_goals}:{away_goals}")
+
+    faj_score = extract_prediction_score(prediction)
+
+    comparison = [
+        {"Источник": "FAJ", "Счёт": faj_score or "—"},
+        {"Источник": "Эксперт", "Счёт": clean_score(expert_score_input) or "—"},
+        {"Источник": "Факт", "Счёт": actual_score or "—"},
+    ]
+
+    st.dataframe(comparison, width="stretch", hide_index=True)
+
+    # --------------------------------------------------------
+    # SAVE
+    # --------------------------------------------------------
+
+    if st.button(
+        "✅ Сохранить факты",
+        key=f"{key_prefix}_save",
+        type="primary",
+        width="stretch",
+        disabled=score_locked or home_goals is None or away_goals is None,
+    ):
+        try:
+            fact = st.session_state.get(f"{key_prefix}_fact")
+
+            if fact is None:
+                fact = {
+                    "home_goals": home_goals,
+                    "away_goals": away_goals,
+                    "stats": {},
+                    "source_url": None,
+                    "parser_source": "manual",
+                    "parser_version": PARSER_VERSION,
+                    "data_quality": 0.0,
+                }
+
+            result = save_match_fact(
+                db=db,
+                match=match,
+                fact=fact,
+                expert_score=clean_score(expert_score_input) or "",
+                expert_comment=expert_comment,
+                expert_confidence=expert_confidence,
+            )
+
+            st.success("Факт сохранён и защищён.")
+            st.caption(
+                f"Match ID: {result['match_id']} | "
+                f"Validation ID: {result['validation_id']} | "
+                f"Gold ID: {result['gold_id']}"
+            )
+
+            st.session_state[f"{key_prefix}_saved"] = True
+
+        except Exception as exc:
+            logger.exception("Ошибка сохранения факта")
+            st.error(f"Ошибка сохранения: {exc}")
+
+    st.divider()
+
+
+# ============================================================
+# LEARNING
+# ============================================================
+
+def run_learning() -> Any:
+    from app.learning_engine import run_learning
+    return run_learning(db_path=DEFAULT_DB_PATH, force=False)
+
+
+# ============================================================
+# MAIN PAGE
+# ============================================================
+
+def main() -> None:
+    st.set_page_config(
+        page_title="FAJ — Импорт фактов",
+        page_icon="⚽",
+        layout="wide",
+    )
+
+    st.title("⚽ FAJ — Импорт фактов")
+    st.caption(f"FAJ Platform {APP_VERSION} | Import Facts {IMPORT_FACTS_VERSION}")
+
+    db = get_database()
+
+    # ========================================================
+    # HEADER
+    # ========================================================
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        league = st.selectbox(
+            "🏆 Лига",
+            list(LEAGUES.keys()),
+            index=0,
+        )
+
+    with col2:
+        round_number = st.number_input(
+            "🔢 Тур",
+            min_value=1,
+            max_value=30,
+            value=1,
+            step=1,
+        )
+
+    st.session_state["selected_league"] = league
+    st.session_state["selected_round"] = int(round_number)
+
+    # ========================================================
+    # MATCHES
+    # ========================================================
+
+    matches = get_round_matches(db, int(round_number))
+
+    st.markdown(f"## {league} — {round_number}-й тур")
+
+    if not matches:
+        st.warning("Матчи выбранного тура не найдены.")
+        st.stop()
+
+    st.info(f"Найдено матчей: {len(matches)}")
+
+    # ========================================================
+    # MATCH CARDS
+    # ========================================================
+
+    for index, match in enumerate(matches):
+        render_match_card(db=db, match=match, index=index)
+
+    # ========================================================
+    # LEARNING
+    # ========================================================
+
+    st.markdown("## 🧠 Обучение")
+    st.caption("Обучение запускается после сохранения фактов тура.")
+
+    if st.button(
+        "🧠 Обучение",
+        type="primary",
+        width="stretch",
+    ):
+        try:
+            with st.spinner("FAJ Learning Engine обучается..."):
+                result = run_learning()
+
+            st.success("Обучение завершено.")
+            if result is not None:
+                st.write(result)
+
+        except Exception as exc:
+            logger.exception("Ошибка Learning Engine")
+            st.error(f"Ошибка Learning Engine: {exc}")
+
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
+
+if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+    )
+    main()
