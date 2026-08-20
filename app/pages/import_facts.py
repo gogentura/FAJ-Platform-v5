@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-IMPORT FACTS v4.1
+IMPORT FACTS v4.2
 ============================================================
 
 НАЗНАЧЕНИЕ:
@@ -102,29 +102,35 @@ API может заполнить только реально полученны
 Если API не дал данные — Soccer365 остаётся доступным.
 
 ============================================================
-ИЗМЕНЕНИЯ V4.1
+ИЗМЕНЕНИЯ V4.2
 ============================================================
 
-1. normalize_source_stats() расширен:
+1. Bombardir полностью удалён:
+   - удалён импорт BombardirParser
+   - удалена функция parse_bombardir()
+   - удалён параметр bombardir_fact из build_hybrid_fact()
+   - удалён вызов bombardir_fact из render_match_card()
+
+2. normalize_source_stats() расширен:
    - добавлены fouls
    - добавлены yellow_cards
    - добавлены red_cards
 
-2. parse_soccer365() теперь использует parse_match():
+3. parse_soccer365() теперь использует parse_match():
    - Soccer365 становится полноценным источником статистики
    - больше не только xG
 
-3. build_hybrid_fact():
+4. build_hybrid_fact():
    - приоритет: API → Soccer365 (поле за полем)
-   - Bombardir исключён из основного конвейера
+   - Bombardir полностью исключён
 
-4. stats_source теперь указывает soccer365
+5. stats_source теперь указывает soccer365
 
-5. save_match_fact() расширен новыми полями
+6. save_match_fact() расширен новыми полями
 
-6. fact_status() расширен новыми полями
+7. fact_status() расширен новыми полями
 
-7. Таблица на экране показывает новые поля
+8. Таблица на экране показывает новые поля
 
 ============================================================
 """
@@ -140,13 +146,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import streamlit as st
 
 from app.database import FAJDatabase
-
 from app.parsers.soccer365_parser import Soccer365Parser
-
-# Bombardir оставлен для обратной совместимости,
-# но больше не используется в основном конвейере
-from app.parsers.bombardir_parser import BombardirParser
-
 from app.parsers.rpl_normalizer import normalize_team_names
 
 
@@ -158,7 +158,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 APP_VERSION = "12.1"
-IMPORT_FACTS_VERSION = "4.1"
+IMPORT_FACTS_VERSION = "4.2"
 MODEL_VERSION = "v12.1"
 
 DEFAULT_DB_PATH = "data/faj.db"
@@ -971,67 +971,6 @@ def parse_api_fact(
 
 
 # ============================================================
-# BOMBARDIR (резервный, сохранён для обратной совместимости)
-# ============================================================
-
-def parse_bombardir(
-    url: str,
-) -> Dict[str, Any]:
-
-    result = {
-        "stats": {},
-        "source": "bombardir",
-        "source_url": url,
-        "quality": 0.0,
-        "error": None,
-    }
-
-    if not url or not url.strip():
-        return result
-
-    try:
-
-        parser = BombardirParser()
-
-        parsed = parser.parse_stats(
-            url.strip()
-        )
-
-        data = object_to_dict(parsed)
-
-        stats = data.get(
-            "stats",
-            data,
-        )
-
-        result["stats"] = normalize_source_stats(
-            stats
-        )
-
-        result["quality"] = (
-            safe_float(
-                data.get(
-                    "data_quality",
-                    0.0,
-                )
-            )
-            or 0.0
-        )
-
-        return result
-
-    except Exception as exc:
-
-        logger.exception(
-            "Bombardir parser error"
-        )
-
-        result["error"] = str(exc)
-
-        return result
-
-
-# ============================================================
 # SOCCER365 — ПОЛНЫЙ СБОРЩИК
 # ============================================================
 
@@ -1241,63 +1180,37 @@ def parse_soccer365(
 
 
 # ============================================================
-# HYBRID FACT
+# HYBRID FACT — БЕЗ BOMBARDIR
 # ============================================================
 
 def build_hybrid_fact(
     league: str,
     match: Dict[str, Any],
     api_fact: Optional[Dict[str, Any]] = None,
-    bombardir_fact: Optional[Dict[str, Any]] = None,
     soccer365_fact: Optional[Dict[str, Any]] = None,
     manual_home_goals: Optional[int] = None,
     manual_away_goals: Optional[int] = None,
 ) -> Dict[str, Any]:
-
     """
-    Объединяет источники без перезаписи
-    реально полученных фактов.
+    Объединяет источники фактов.
 
-    Приоритет:
+    SCORE:
+        API → manual
 
-        SCORE:
-            API → manual
+    STATS:
+        API → Soccer365, поле за полем
 
-        STATS (каждое поле отдельно):
-            API → Soccer365
+    XG:
+        API → Soccer365
 
-        XG:
-            API → Soccer365
-
-    Важнейшее правило:
-
-        API может дать только часть данных.
-
-    Например:
-
-        API:
-            score ✅
-            stats ✅
-            xG ❌
-
-        Тогда:
-
-            score = API
-            stats = API
-            xG = Soccer365
-
+    Bombardir:
+        НЕ ИСПОЛЬЗУЕТСЯ.
     """
-
     api_fact = api_fact or {}
-    bombardir_fact = bombardir_fact or {}
     soccer365_fact = soccer365_fact or {}
 
     api_stats = normalize_source_stats(
         api_fact.get("stats", {})
-    )
-
-    bombardir_stats = normalize_source_stats(
-        bombardir_fact.get("stats", {})
     )
 
     soccer365_stats = normalize_source_stats(
@@ -1338,12 +1251,12 @@ def build_hybrid_fact(
             score_source = "manual"
 
     # --------------------------------------------------------
-    # STATS — API → Soccer365 (поле за полем)
+    # STATS — API → SOCCER365 (поле за полем)
     # --------------------------------------------------------
 
     stats = {}
 
-    for key in [
+    stat_keys = [
         # possession
         "home_possession",
         "away_possession",
@@ -1373,8 +1286,9 @@ def build_hybrid_fact(
         "away_yellow_cards",
         "home_red_cards",
         "away_red_cards",
-    ]:
+    ]
 
+    for key in stat_keys:
         value = api_stats.get(key)
         if value is not None:
             stats[key] = value
@@ -1385,7 +1299,7 @@ def build_hybrid_fact(
             stats[key] = value
 
     # --------------------------------------------------------
-    # XG — API → Soccer365
+    # XG — API → SOCCER365
     # --------------------------------------------------------
 
     home_xg = api_stats.get(
@@ -1456,40 +1370,40 @@ def build_hybrid_fact(
 
     quality = available / total
 
+    # --------------------------------------------------------
+    # SOURCE OF STATS
+    # --------------------------------------------------------
+
+    api_stat_fields = any(
+        api_stats.get(key) is not None
+        for key in stat_keys
+    )
+
+    soccer365_stat_fields = any(
+        soccer365_stats.get(key) is not None
+        for key in stat_keys
+    )
+
+    if api_stat_fields:
+        stats_source = "data-football"
+    elif soccer365_stat_fields:
+        stats_source = "soccer365"
+    else:
+        stats_source = None
+
     return {
         "home_goals": home_goals,
         "away_goals": away_goals,
-
         "stats": stats,
-
         "score_source": score_source,
-        "stats_source": (
-            "data-football"
-            if any(
-                api_stats.get(key) is not None
-                for key in api_stats
-            )
-            else (
-                "soccer365"
-                if soccer365_stats
-                else None
-            )
-        ),
+        "stats_source": stats_source,
         "xg_source": xg_source,
-
         "source_url": (
             soccer365_fact.get("source_url")
-            or bombardir_fact.get("source_url")
         ),
-
-        "parser_source": (
-            "hybrid"
-        ),
-
+        "parser_source": "hybrid",
         "parser_version": IMPORT_FACTS_VERSION,
-
         "data_quality": quality,
-
         "parsed_at": datetime.now().isoformat(),
     }
 
@@ -2804,7 +2718,7 @@ def render_match_card(
             st.rerun()
 
     # ========================================================
-    # BUILD HYBRID FACT
+    # BUILD HYBRID FACT — БЕЗ BOMBARDIR
     # ========================================================
 
     soccer365_fact = st.session_state.get(
@@ -2820,7 +2734,6 @@ def render_match_card(
         league=league,
         match=match,
         api_fact=api_fact,
-        bombardir_fact={},  # больше не используется
         soccer365_fact=soccer365_fact,
         manual_home_goals=manual_home,
         manual_away_goals=manual_away,
