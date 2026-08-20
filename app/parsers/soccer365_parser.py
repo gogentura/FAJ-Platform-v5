@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-SOCCER365 PARSER v1.0
+SOCCER365 PARSER v1.1
 ============================================================
 
 НАЗНАЧЕНИЕ:
@@ -12,75 +12,38 @@ SOCCER365 PARSER v1.0
     Soccer365 является источником фактической
     статистики сыгранного матча и xG.
 
-    Парсер НЕ отвечает за:
-        - ввод фактического счёта в FAJ;
-        - прогноз FAJ;
-        - обучение;
-        - запись в SQLite.
+    Parser НЕ:
+        - записывает данные в SQLite;
+        - изменяет matches;
+        - изменяет match_results;
+        - создаёт прогнозы;
+        - обучает модель.
 
-    Его задача:
+    Parser только:
 
         Soccer365 URL
              ↓
         HTML
              ↓
-        Match Statistics
+        Блок "Весь матч"
              ↓
-        FACT NORMALIZER
+        FACTS
              ↓
         import_facts.py
 
 ============================================================
 
-ОСНОВНЫЕ ФАКТЫ:
-
-    xG
-    shots
-    shots on target
-    possession
-    corners
-    fouls
-    offsides
-    yellow cards
-    red cards
-    passes
-    pass accuracy
-    free kicks
-    throw-ins
-    crosses
-    clearances
-    big chances
-    tackles
-
-============================================================
-
 ВАЖНО:
 
-    Soccer365 может содержать:
+    Soccer365 показывает:
 
         Весь матч
         1-й тайм
         2-й тайм
 
-    FAJ использует только:
+    FAJ использует ТОЛЬКО:
 
         ВЕСЬ МАТЧ
-
-============================================================
-
-ПРИНЦИПЫ:
-
-    SQLite не используется.
-
-    Parser ничего не записывает в БД.
-
-    Parser ничего не удаляет.
-
-    Parser ничего не изменяет в FAJ.
-
-    None != 0.
-
-    Отсутствующий показатель не является ошибкой.
 
 ============================================================
 """
@@ -103,8 +66,7 @@ logger = logging.getLogger(__name__)
 # CONFIG
 # ============================================================
 
-PARSER_VERSION = "1.0"
-
+PARSER_VERSION = "1.1"
 SOURCE_NAME = "soccer365"
 
 DEFAULT_TIMEOUT = 20
@@ -120,23 +82,27 @@ USER_AGENT = (
 
 # ============================================================
 # STATISTIC MAP
+#
+# Soccer365 structure:
+#
+#     HOME
+#     LABEL
+#     AWAY
+#
+# Example:
+#
+#     2.25
+#     Ожидаемые голы (xG)
+#     1.52
+#
 # ============================================================
 
 STAT_LABELS = {
 
-    # --------------------------------------------------------
-    # xG
-    # --------------------------------------------------------
-
     "home_xg": [
         "ожидаемые голы (xg)",
         "ожидаемые голы",
-        "xg",
     ],
-
-    # --------------------------------------------------------
-    # SHOTS
-    # --------------------------------------------------------
 
     "home_shots": [
         "удары",
@@ -153,40 +119,21 @@ STAT_LABELS = {
         "blocked shots",
     ],
 
-    "home_shots_off_target": [
-        "удары мимо",
-        "shots off target",
-    ],
-
     "home_shots_woodwork": [
         "удары в каркас",
         "shots against woodwork",
         "shots hit woodwork",
     ],
 
-    # --------------------------------------------------------
-    # GOALKEEPER
-    # --------------------------------------------------------
-
     "home_saves": [
         "сейвы",
         "saves",
     ],
 
-    # --------------------------------------------------------
-    # POSSESSION
-    # --------------------------------------------------------
-
     "home_possession": [
         "владение %",
-        "владение",
         "possession %",
-        "possession",
     ],
-
-    # --------------------------------------------------------
-    # SET PIECES
-    # --------------------------------------------------------
 
     "home_corners": [
         "угловые",
@@ -209,10 +156,6 @@ STAT_LABELS = {
         "crosses",
     ],
 
-    # --------------------------------------------------------
-    # DISCIPLINE
-    # --------------------------------------------------------
-
     "home_fouls": [
         "фолы",
         "fouls",
@@ -234,10 +177,6 @@ STAT_LABELS = {
         "red cards",
     ],
 
-    # --------------------------------------------------------
-    # PASSES
-    # --------------------------------------------------------
-
     "home_total_passes": [
         "передачи",
         "passes",
@@ -250,10 +189,6 @@ STAT_LABELS = {
         "pass accuracy",
     ],
 
-    # --------------------------------------------------------
-    # DEFENCE
-    # --------------------------------------------------------
-
     "home_tackles": [
         "отборы",
         "tackles",
@@ -263,10 +198,6 @@ STAT_LABELS = {
         "выносы",
         "clearances",
     ],
-
-    # --------------------------------------------------------
-    # CHANCES
-    # --------------------------------------------------------
 
     "home_big_chances": [
         "голевые моменты",
@@ -286,7 +217,7 @@ STAT_LABELS = {
 
 
 # ============================================================
-# RESULT FACTORY
+# RESULT
 # ============================================================
 
 def empty_result() -> Dict[str, Any]:
@@ -303,6 +234,7 @@ def empty_result() -> Dict[str, Any]:
         "source_url": None,
 
         "quality": 0.0,
+        "data_quality": 0.0,
 
         "parser_version": PARSER_VERSION,
 
@@ -313,7 +245,7 @@ def empty_result() -> Dict[str, Any]:
 
 
 # ============================================================
-# TEXT HELPERS
+# TEXT
 # ============================================================
 
 def normalize_text(value: Any) -> str:
@@ -345,16 +277,17 @@ def normalize_label(value: Any) -> str:
         value
     ).lower()
 
-    text = text.replace("ё", "е")
-
-    text = re.sub(
-        r"\s+",
-        " ",
-        text,
+    text = text.replace(
+        "ё",
+        "е",
     )
 
     return text.strip()
 
+
+# ============================================================
+# NUMBERS
+# ============================================================
 
 def safe_int(
     value: Any,
@@ -363,10 +296,9 @@ def safe_int(
     if value is None:
         return None
 
-    if isinstance(value, bool):
-        return int(value)
-
-    text = normalize_text(value)
+    text = normalize_text(
+        value
+    )
 
     match = re.search(
         r"-?\d+",
@@ -377,10 +309,13 @@ def safe_int(
         return None
 
     try:
+
         return int(
             match.group(0)
         )
+
     except ValueError:
+
         return None
 
 
@@ -391,7 +326,9 @@ def safe_float(
     if value is None:
         return None
 
-    text = normalize_text(value)
+    text = normalize_text(
+        value
+    )
 
     text = text.replace(
         ",",
@@ -407,65 +344,47 @@ def safe_float(
         return None
 
     try:
+
         return float(
             match.group(0)
         )
+
     except ValueError:
+
         return None
 
 
 # ============================================================
-# SCORE
+# VALUE CONVERSION
 # ============================================================
 
-def clean_score(
+def convert_value(
+    key: str,
     value: Any,
-) -> Optional[str]:
+) -> Optional[Any]:
 
     if value is None:
         return None
 
-    text = normalize_text(value)
+    if key.endswith(
+        "_xg"
+    ):
+        return safe_float(
+            value
+        )
 
-    match = re.search(
-        r"(?<!\d)"
-        r"(\d{1,2})"
-        r"\s*[:\-]"
-        r"\s*"
-        r"(\d{1,2})"
-        r"(?!\d)",
-        text,
+    return safe_int(
+        value
     )
-
-    if not match:
-        return None
-
-    home = safe_int(
-        match.group(1)
-    )
-
-    away = safe_int(
-        match.group(2)
-    )
-
-    if home is None or away is None:
-        return None
-
-    if home < 0 or away < 0:
-        return None
-
-    if home > 20 or away > 20:
-        return None
-
-    return f"{home}:{away}"
 
 
 # ============================================================
-# REQUEST
+# HTTP
 # ============================================================
 
 def fetch_html(
     url: str,
+    timeout: int = DEFAULT_TIMEOUT,
 ) -> Tuple[str, str]:
 
     if not url:
@@ -475,37 +394,48 @@ def fetch_html(
 
     url = url.strip()
 
-    headers = {
-        "User-Agent": USER_AGENT,
-        "Accept": (
-            "text/html,"
-            "application/xhtml+xml,"
-            "application/xml;q=0.9,"
-            "image/avif,"
-            "image/webp,"
-            "*/*;q=0.8"
-        ),
-        "Accept-Language": (
-            "ru-RU,ru;q=0.9,"
-            "en-US;q=0.7,en;q=0.5"
-        ),
-        "Cache-Control": "no-cache",
-    }
-
     response = requests.get(
         url,
-        headers=headers,
-        timeout=DEFAULT_TIMEOUT,
+        headers={
+            "User-Agent": USER_AGENT,
+            "Accept": (
+                "text/html,"
+                "application/xhtml+xml,"
+                "application/xml;q=0.9,"
+                "*/*;q=0.8"
+            ),
+            "Accept-Language": (
+                "ru-RU,ru;q=0.9,"
+                "en-US;q=0.8,en;q=0.5"
+            ),
+            "Cache-Control": "no-cache",
+        },
+        timeout=timeout,
         allow_redirects=True,
     )
 
     response.raise_for_status()
 
-    response.encoding = (
-        response.apparent_encoding
-        or response.encoding
-        or "utf-8"
+    # Soccer365 отдаёт UTF-8.
+    # Не доверяем apparent_encoding,
+    # если сервер уже сообщил charset.
+
+    content_type = (
+        response.headers
+        .get(
+            "Content-Type",
+            ""
+        )
+        .lower()
     )
+
+    if "charset=utf-8" in content_type:
+
+        response.encoding = "utf-8"
+
+    elif not response.encoding:
+
+        response.encoding = "utf-8"
 
     return (
         response.text,
@@ -528,7 +458,7 @@ def make_soup(
 
 
 # ============================================================
-# MATCH TEAMS
+# TEAMS
 # ============================================================
 
 def extract_teams(
@@ -578,7 +508,11 @@ def extract_teams(
                 )
 
                 if home and away:
-                    return home, away
+
+                    return (
+                        home,
+                        away,
+                    )
 
     # --------------------------------------------------------
     # TITLE
@@ -613,20 +547,16 @@ def extract_teams(
             )
 
             if home and away:
-                return home, away
 
-    return None, None
+                return (
+                    home,
+                    away,
+                )
 
+    # --------------------------------------------------------
+    # SCORE HEADER FALLBACK
+    # --------------------------------------------------------
 
-# ============================================================
-# MATCH SCORE
-# ============================================================
-
-def extract_score(
-    soup: BeautifulSoup,
-) -> Optional[str]:
-
-    # Soccer365 score elements.
     score1 = soup.select_one(
         ".score1"
     )
@@ -637,340 +567,279 @@ def extract_score(
 
     if score1 and score2:
 
-        home = safe_int(
-            score1.get_text(
-                " ",
-                strip=True,
-            )
+        parent = (
+            score1.parent
         )
-
-        away = safe_int(
-            score2.get_text(
-                " ",
-                strip=True,
-            )
-        )
-
-        if (
-            home is not None
-            and away is not None
-        ):
-
-            return (
-                f"{home}:{away}"
-            )
-
-    # --------------------------------------------------------
-    # FALLBACK: visible text
-    # --------------------------------------------------------
-
-    text = normalize_text(
-        soup.get_text(
-            " ",
-            strip=True,
-        )
-    )
-
-    # Не пытаемся угадывать любой X:Y
-    # на странице, потому что там много
-    # прогнозов пользователей.
-
-    return None
-
-
-# ============================================================
-# STATISTICS SECTION
-# ============================================================
-
-def find_statistics_container(
-    soup: BeautifulSoup,
-) -> Optional[Any]:
-
-    # --------------------------------------------------------
-    # 1. Ищем заголовок
-    # --------------------------------------------------------
-
-    candidates = soup.find_all(
-        string=re.compile(
-            r"Статистика матча",
-            re.IGNORECASE,
-        )
-    )
-
-    for candidate in candidates:
-
-        parent = getattr(
-            candidate,
-            "parent",
-            None,
-        )
-
-        if parent is None:
-            continue
-
-        # ----------------------------------------------------
-        # Поднимаемся вверх по DOM.
-        #
-        # Ищем контейнер, содержащий
-        # несколько известных статистических
-        # названий.
-        # ----------------------------------------------------
-
-        current = parent
-
-        for _ in range(8):
-
-            if current is None:
-                break
-
-            text = normalize_label(
-                current.get_text(
-                    " ",
-                    strip=True,
-                )
-            )
-
-            score = 0
-
-            for label in (
-                "ожидаемые голы",
-                "удары",
-                "владение",
-                "угловые",
-                "фолы",
-                "передачи",
-            ):
-
-                if label in text:
-                    score += 1
-
-            if score >= 3:
-                return current
-
-            current = getattr(
-                current,
-                "parent",
-                None,
-            )
-
-    return None
-
-
-# ============================================================
-# STAT ROW PARSER
-# ============================================================
-
-def parse_stat_rows(
-    container: Any,
-) -> List[
-    Tuple[
-        str,
-        str,
-        str,
-    ]
-]:
-
-    rows = []
-
-    if container is None:
-        return rows
-
-    # --------------------------------------------------------
-    # STRATEGY 1
-    #
-    # Табличная структура.
-    # --------------------------------------------------------
-
-    for row in container.select(
-        "tr"
-    ):
-
-        cells = row.find_all(
-            [
-                "td",
-                "th",
-            ]
-        )
-
-        values = [
-            normalize_text(
-                cell.get_text(
-                    " ",
-                    strip=True,
-                )
-            )
-            for cell in cells
-        ]
-
-        values = [
-            value
-            for value in values
-            if value
-        ]
-
-        if len(values) >= 3:
-
-            rows.append(
-                (
-                    values[0],
-                    values[1],
-                    values[2],
-                )
-            )
-
-    if rows:
-        return rows
-
-    # --------------------------------------------------------
-    # STRATEGY 2
-    #
-    # div-based structure.
-    # --------------------------------------------------------
-
-    known_labels = set()
-
-    for aliases in STAT_LABELS.values():
-
-        for alias in aliases:
-
-            known_labels.add(
-                normalize_label(
-                    alias
-                )
-            )
-
-    elements = container.find_all(
-        [
-            "div",
-            "span",
-            "li",
-            "p",
-        ]
-    )
-
-    for index, element in enumerate(
-        elements
-    ):
-
-        label = normalize_label(
-            element.get_text(
-                " ",
-                strip=True,
-            )
-        )
-
-        if not label:
-            continue
-
-        if label not in known_labels:
-            continue
-
-        # ----------------------------------------------------
-        # Соседние элементы
-        # ----------------------------------------------------
-
-        nearby = []
-
-        parent = element.parent
 
         if parent:
 
-            children = parent.find_all(
-                recursive=False
+            links = parent.find_all(
+                "a"
             )
 
-            for child in children:
+            team_names = []
+
+            for link in links:
 
                 text = normalize_text(
-                    child.get_text(
+                    link.get_text(
                         " ",
                         strip=True,
                     )
                 )
 
                 if text:
-                    nearby.append(
+
+                    team_names.append(
                         text
                     )
 
-        # ----------------------------------------------------
-        # Если в parent нашли:
-        #
-        # label / home / away
-        # ----------------------------------------------------
+            if len(team_names) >= 2:
 
-        if len(nearby) >= 3:
-
-            try:
-
-                position = nearby.index(
-                    normalize_text(
-                        element.get_text(
-                            " ",
-                            strip=True,
-                        )
-                    )
+                return (
+                    team_names[0],
+                    team_names[-1],
                 )
 
-            except ValueError:
-
-                position = 0
-
-            if (
-                position + 2
-                < len(nearby)
-            ):
-
-                rows.append(
-                    (
-                        nearby[position],
-                        nearby[position + 1],
-                        nearby[position + 2],
-                    )
-                )
-
-    return rows
+    return (
+        None,
+        None,
+    )
 
 
 # ============================================================
-# TEXT STATISTICS FALLBACK
+# SCORE
 # ============================================================
 
-def extract_stat_from_text(
+def extract_score(
+    soup: BeautifulSoup,
+) -> Optional[str]:
+
+    score1 = soup.select_one(
+        ".score1"
+    )
+
+    score2 = soup.select_one(
+        ".score2"
+    )
+
+    if not score1 or not score2:
+
+        return None
+
+    home = safe_int(
+        score1.get_text(
+            " ",
+            strip=True,
+        )
+    )
+
+    away = safe_int(
+        score2.get_text(
+            " ",
+            strip=True,
+        )
+    )
+
+    if (
+        home is None
+        or away is None
+    ):
+
+        return None
+
+    if home < 0 or away < 0:
+
+        return None
+
+    if home > 20 or away > 20:
+
+        return None
+
+    return (
+        f"{home}:{away}"
+    )
+
+
+# ============================================================
+# FULL MATCH BLOCK
+# ============================================================
+
+def extract_full_match_block(
+    soup: BeautifulSoup,
+) -> str:
+    """
+    Извлекает только статистику:
+
+        ВЕСЬ МАТЧ
+
+    ВАЖНО:
+
+    На Soccer365 порядок такой:
+
+        Статистика матча
+        Весь матч
+        1-й тайм
+        2-й тайм
+
+        2.25
+        Ожидаемые голы (xG)
+        1.52
+
+        18
+        Удары
+        14
+
+        ...
+
+    Поэтому нельзя обрезать текст
+    на первом "1-й тайм".
+
+    Вместо этого берём:
+
+        первое появление первого
+        статистического показателя
+
+    до
+
+        второго появления этого же
+        показателя.
+
+    На реальной странице Soccer365
+    первый показатель — xG.
+    """
+
+    full_text = normalize_text(
+        soup.get_text(
+            " ",
+            strip=True,
+        )
+    )
+
+    marker = re.search(
+        r"Статистика матча",
+        full_text,
+        flags=re.IGNORECASE,
+    )
+
+    if not marker:
+
+        return ""
+
+    text = full_text[
+        marker.end():
+    ]
+
+    # --------------------------------------------------------
+    # Ищем первое xG.
+    # --------------------------------------------------------
+
+    xg_matches = list(
+        re.finditer(
+            r"Ожидаемые голы\s*\(\s*xg\s*\)",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+    if not xg_matches:
+
+        # fallback для английской версии
+        xg_matches = list(
+            re.finditer(
+                r"expected goals\s*\(\s*xg\s*\)",
+                text,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    if not xg_matches:
+
+        return ""
+
+    # --------------------------------------------------------
+    # Первый xG = Весь матч.
+    # Второй xG = начало следующего
+    # блока.
+    # --------------------------------------------------------
+
+    start = 0
+
+    end = len(text)
+
+    if len(xg_matches) >= 2:
+
+        end = xg_matches[1].start()
+
+    block = text[
+        start:end
+    ]
+
+    return normalize_text(
+        block
+    )
+
+
+# ============================================================
+# STATISTIC EXTRACTION
+# ============================================================
+
+def extract_pair_around_label(
     text: str,
     aliases: List[str],
 ) -> Optional[
     Tuple[
-        Any,
-        Any,
+        str,
+        str,
     ]
 ]:
+    """
+    Soccer365:
 
-    normalized = normalize_text(
+        HOME
+        LABEL
+        AWAY
+
+    Например:
+
+        2.25 Ожидаемые голы (xG) 1.52
+
+    Поэтому ищем число СЛЕВА
+    и число СПРАВА от label.
+    """
+
+    normalized = normalize_label(
         text
     )
 
     # --------------------------------------------------------
-    # Для каждого alias ищем его первое
-    # вхождение после начала блока.
+    # Более длинные alias проверяем первыми.
+    # Это защищает:
+    #
+    # "удары в створ"
+    #
+    # от простого:
+    #
+    # "удары"
     # --------------------------------------------------------
 
-    for alias in aliases:
+    sorted_aliases = sorted(
+        aliases,
+        key=lambda x: len(x),
+        reverse=True,
+    )
 
-        alias_text = normalize_text(
+    for alias in sorted_aliases:
+
+        label = normalize_label(
             alias
         )
 
-        if not alias_text:
-            continue
-
         pattern = (
-            re.escape(
-                alias_text
-            )
-            + r"\s+"
             r"([0-9]+(?:[.,][0-9]+)?)"
             r"\s+"
+            + re.escape(label)
+            + r"\s+"
             r"([0-9]+(?:[.,][0-9]+)?)"
         )
 
@@ -991,254 +860,74 @@ def extract_stat_from_text(
 
 
 # ============================================================
-# VALUE TYPE
+# PARSE STATISTICS
 # ============================================================
 
-def convert_stat_value(
-    key: str,
-    value: Any,
-) -> Optional[Any]:
-
-    if value is None:
-        return None
-
-    # --------------------------------------------------------
-    # xG
-    # --------------------------------------------------------
-
-    if key.endswith(
-        "_xg"
-    ):
-
-        return safe_float(
-            value
-        )
-
-    # --------------------------------------------------------
-    # Everything else
-    # --------------------------------------------------------
-
-    return safe_int(
-        value
-    )
-
-
-# ============================================================
-# APPLY ROWS
-# ============================================================
-
-def apply_stat_rows(
-    stats: Dict[str, Any],
-    rows: List[
-        Tuple[
-            str,
-            str,
-            str,
-        ]
-    ],
-) -> None:
-
-    alias_to_key = {}
-
-    for key, aliases in STAT_LABELS.items():
-
-        for alias in aliases:
-
-            alias_to_key[
-                normalize_label(
-                    alias
-                )
-            ] = key
-
-    for label, home, away in rows:
-
-        normalized = normalize_label(
-            label
-        )
-
-        key = alias_to_key.get(
-            normalized
-        )
-
-        if key is None:
-            continue
-
-        away_key = key.replace(
-            "home_",
-            "away_",
-            1,
-        )
-
-        stats[key] = convert_stat_value(
-            key,
-            home,
-        )
-
-        stats[away_key] = convert_stat_value(
-            away_key,
-            away,
-        )
-
-
-# ============================================================
-# TEXT PARSER
-# ============================================================
-
-def parse_statistics_text(
-    container: Any,
-) -> Dict[str, Any]:
-
-    stats = {}
-
-    if container is None:
-        return stats
-
-    text = normalize_text(
-        container.get_text(
-            " ",
-            strip=True,
-        )
-    )
-
-    # --------------------------------------------------------
-    # ВАЖНО:
-    #
-    # Soccer365 после полного матча может
-    # содержать статистику 1-го и 2-го тайма.
-    #
-    # Поэтому сначала пытаемся ограничить
-    # поиск первым блоком "Весь матч".
-    # --------------------------------------------------------
-
-    first_half_position = re.search(
-        r"\b1[- ]й\s+тайм\b",
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    if first_half_position:
-
-        text = text[
-            :first_half_position.start()
-        ]
-
-    # --------------------------------------------------------
-    # Парсим каждый показатель.
-    # --------------------------------------------------------
-
-    for key, aliases in STAT_LABELS.items():
-
-        values = extract_stat_from_text(
-            text,
-            aliases,
-        )
-
-        if values is None:
-            continue
-
-        home_value, away_value = values
-
-        stats[key] = convert_stat_value(
-            key,
-            home_value,
-        )
-
-        away_key = key.replace(
-            "home_",
-            "away_",
-            1,
-        )
-
-        stats[away_key] = convert_stat_value(
-            away_key,
-            away_value,
-        )
-
-    return stats
-
-
-# ============================================================
-# DIRECT FULL TEXT FALLBACK
-# ============================================================
-
-def parse_statistics_direct(
+def parse_full_match_statistics(
     soup: BeautifulSoup,
 ) -> Dict[str, Any]:
 
-    stats = {}
+    stats: Dict[str, Any] = {}
 
-    full_text = normalize_text(
-        soup.get_text(
-            " ",
-            strip=True,
+    block = extract_full_match_block(
+        soup
+    )
+
+    if not block:
+
+        logger.warning(
+            "Soccer365: блок 'Весь матч' не найден."
         )
-    )
 
-    # --------------------------------------------------------
-    # Находим начало статистики.
-    # --------------------------------------------------------
-
-    marker = re.search(
-        r"Статистика матча",
-        full_text,
-        flags=re.IGNORECASE,
-    )
-
-    if not marker:
         return stats
 
-    text = full_text[
-        marker.end():
-    ]
-
     # --------------------------------------------------------
-    # Останавливаемся перед первым
-    # таймом.
+    # Каждый показатель ищем независимо.
+    #
+    # Отсутствие одного показателя
+    # НЕ является ошибкой.
     # --------------------------------------------------------
 
-    first_half = re.search(
-        r"\b1[- ]й\s+тайм\b",
-        text,
-        flags=re.IGNORECASE,
-    )
+    for home_key, aliases in STAT_LABELS.items():
 
-    if first_half:
-
-        text = text[
-            :first_half.start()
-        ]
-
-    # --------------------------------------------------------
-    # Парсим показатели.
-    # --------------------------------------------------------
-
-    for key, aliases in STAT_LABELS.items():
-
-        values = extract_stat_from_text(
-            text,
+        pair = extract_pair_around_label(
+            block,
             aliases,
         )
 
-        if values is None:
+        if pair is None:
+
             continue
 
-        home_value, away_value = values
+        home_value, away_value = pair
 
-        stats[key] = convert_stat_value(
-            key,
-            home_value,
-        )
-
-        away_key = key.replace(
+        away_key = home_key.replace(
             "home_",
             "away_",
             1,
         )
 
-        stats[away_key] = convert_stat_value(
+        converted_home = convert_value(
+            home_key,
+            home_value,
+        )
+
+        converted_away = convert_value(
             away_key,
             away_value,
         )
+
+        if converted_home is not None:
+
+            stats[
+                home_key
+            ] = converted_home
+
+        if converted_away is not None:
+
+            stats[
+                away_key
+            ] = converted_away
 
     return stats
 
@@ -1251,60 +940,62 @@ def calculate_quality(
     stats: Dict[str, Any],
 ) -> float:
 
-    groups = {
+    groups = [
 
-        "xg": (
+        (
             "home_xg",
             "away_xg",
         ),
 
-        "shots": (
+        (
             "home_shots",
             "away_shots",
         ),
 
-        "shots_on_target": (
+        (
             "home_shots_on_target",
             "away_shots_on_target",
         ),
 
-        "possession": (
+        (
             "home_possession",
             "away_possession",
         ),
 
-        "corners": (
+        (
             "home_corners",
             "away_corners",
         ),
 
-        "passes": (
+        (
             "home_total_passes",
             "away_total_passes",
         ),
 
-        "pass_accuracy": (
+        (
             "home_pass_accuracy",
             "away_pass_accuracy",
         ),
 
-        "tackles": (
+        (
             "home_tackles",
             "away_tackles",
         ),
-    }
+    ]
 
     available = 0
 
-    for keys in groups.values():
+    for home_key, away_key in groups:
 
-        if any(
-            stats.get(key) is not None
-            for key in keys
+        if (
+            stats.get(home_key) is not None
+            or stats.get(away_key) is not None
         ):
+
             available += 1
 
     if not groups:
+
         return 0.0
 
     return round(
@@ -1314,24 +1005,19 @@ def calculate_quality(
 
 
 # ============================================================
-# MAIN PARSER
+# PARSER
 # ============================================================
 
 class Soccer365Parser:
 
     """
-    Основной parser Soccer365.
+    Production parser Soccer365.
 
-    Совместим с текущим import_facts.py:
-
-        parser = Soccer365Parser()
-
-        result = parser.parse_xg(url)
-
-    Но также предоставляет:
+    Совместимость:
 
         parser.parse(url)
 
+        parser.parse_xg(url)
     """
 
     def __init__(
@@ -1342,7 +1028,7 @@ class Soccer365Parser:
         self.timeout = timeout
 
     # --------------------------------------------------------
-    # GENERIC PARSE
+    # PARSE
     # --------------------------------------------------------
 
     def parse(
@@ -1352,20 +1038,27 @@ class Soccer365Parser:
 
         result = empty_result()
 
-        result["source_url"] = (
+        result[
+            "source_url"
+        ] = (
             url.strip()
             if url
             else None
         )
 
-        result["parsed_at"] = (
-            datetime.now().isoformat()
-        )
+        result[
+            "parsed_at"
+        ] = datetime.now().isoformat()
 
         try:
 
+            # ------------------------------------------------
+            # HTTP
+            # ------------------------------------------------
+
             html, final_url = fetch_html(
-                url
+                url,
+                timeout=self.timeout,
             )
 
             result[
@@ -1398,11 +1091,9 @@ class Soccer365Parser:
             # ------------------------------------------------
             # SCORE
             #
-            # Только для диагностики.
-            #
-            # import_facts НЕ использует
-            # Soccer365 как источник фактического
-            # счёта.
+            # Только диагностический факт.
+            # import_facts решает сам,
+            # как использовать счёт.
             # ------------------------------------------------
 
             result[
@@ -1412,91 +1103,12 @@ class Soccer365Parser:
             )
 
             # ------------------------------------------------
-            # STATISTICS CONTAINER
+            # STATISTICS
             # ------------------------------------------------
 
-            container = (
-                find_statistics_container(
-                    soup
-                )
+            stats = parse_full_match_statistics(
+                soup
             )
-
-            stats = {}
-
-            # ------------------------------------------------
-            # TABLE / DOM PARSER
-            # ------------------------------------------------
-
-            if container is not None:
-
-                rows = parse_stat_rows(
-                    container
-                )
-
-                if rows:
-
-                    apply_stat_rows(
-                        stats,
-                        rows,
-                    )
-
-                # ------------------------------------------------
-                # TEXT FALLBACK WITHIN CONTAINER
-                # ------------------------------------------------
-
-                text_stats = (
-                    parse_statistics_text(
-                        container
-                    )
-                )
-
-                for key, value in text_stats.items():
-
-                    if (
-                        stats.get(key)
-                        is None
-                    ):
-
-                        stats[key] = value
-
-            # ------------------------------------------------
-            # GLOBAL TEXT FALLBACK
-            # ------------------------------------------------
-
-            if not stats:
-
-                stats = parse_statistics_direct(
-                    soup
-                )
-
-            else:
-
-                # Дополняем отсутствующие поля
-                # глобальным fallback.
-                direct_stats = (
-                    parse_statistics_direct(
-                        soup
-                    )
-                )
-
-                for key, value in direct_stats.items():
-
-                    if (
-                        stats.get(key)
-                        is None
-                    ):
-
-                        stats[key] = value
-
-            # ------------------------------------------------
-            # CLEAN NONE VALUES
-            # ------------------------------------------------
-
-            stats = {
-                key: value
-                for key, value in stats.items()
-                if value is not None
-            }
 
             result[
                 "stats"
@@ -1506,19 +1118,24 @@ class Soccer365Parser:
             # QUALITY
             # ------------------------------------------------
 
-            result[
-                "quality"
-            ] = calculate_quality(
+            quality = calculate_quality(
                 stats
             )
+
+            result[
+                "quality"
+            ] = quality
+
+            result[
+                "data_quality"
+            ] = quality
 
             return result
 
         except requests.RequestException as exc:
 
             logger.exception(
-                "Soccer365 HTTP error: %s",
-                exc,
+                "Soccer365 HTTP error"
             )
 
             result[
@@ -1542,32 +1159,13 @@ class Soccer365Parser:
             return result
 
     # --------------------------------------------------------
-    # CURRENT IMPORT_Facts COMPATIBILITY
+    # IMPORT_FACTS COMPATIBILITY
     # --------------------------------------------------------
 
     def parse_xg(
         self,
         url: str,
     ) -> Dict[str, Any]:
-
-        """
-        Совместимость с текущим import_facts.py.
-
-        Несмотря на старое имя parse_xg(),
-        теперь Soccer365 возвращает НЕ только xG,
-        а всю доступную статистику.
-
-        Формат специально сохранён:
-
-            {
-                "stats": {...},
-                "home_team": ...,
-                "away_team": ...,
-                "score": ...,
-                "data_quality": ...,
-                ...
-            }
-        """
 
         parsed = self.parse(
             url
@@ -1628,10 +1226,6 @@ def parse_soccer365(
     url: str,
 ) -> Dict[str, Any]:
 
-    """
-    Удобная функция для прямого использования.
-    """
-
     parser = Soccer365Parser()
 
     return parser.parse(
@@ -1646,6 +1240,7 @@ def parse_soccer365(
 if __name__ == "__main__":
 
     import sys
+    import json
 
     logging.basicConfig(
         level=logging.INFO,
@@ -1659,14 +1254,14 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
 
         print(
-            "Использование:"
+            "Usage:"
         )
 
         print(
             "python "
             "app/parsers/"
             "soccer365_parser.py "
-            "https://soccer365.ru/games/..."
+            "https://soccer365.ru/games/2478604/"
         )
 
         raise SystemExit(1)
@@ -1679,60 +1274,10 @@ if __name__ == "__main__":
         url
     )
 
-    print()
     print(
-        "=================================================="
-    )
-    print(
-        "SOCCER365 PARSER"
-    )
-    print(
-        "=================================================="
-    )
-
-    print(
-        f"Source URL: "
-        f"{result.get('source_url')}"
-    )
-
-    print(
-        f"Home: "
-        f"{result.get('home_team')}"
-    )
-
-    print(
-        f"Away: "
-        f"{result.get('away_team')}"
-    )
-
-    print(
-        f"Score: "
-        f"{result.get('score')}"
-    )
-
-    print(
-        f"Quality: "
-        f"{result.get('quality')}"
-    )
-
-    print(
-        f"Error: "
-        f"{result.get('error')}"
-    )
-
-    print()
-    print(
-        "STATISTICS:"
-    )
-
-    for key, value in (
-        result.get(
-            "stats",
-            {},
+        json.dumps(
+            result,
+            ensure_ascii=False,
+            indent=2,
         )
-        .items()
-    ):
-
-        print(
-            f"  {key}: {value}"
-        )
+    )
