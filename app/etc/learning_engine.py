@@ -592,3 +592,9 @@ if __name__ == "__main__":
         print(
             f"ETC Learning Engine initialization error: {exc}"
         )
+
+
+# ============================================================
+# COMPATIBILITY ALIAS
+# ============================================================
+LearningEngine = ETCLearningEngine
