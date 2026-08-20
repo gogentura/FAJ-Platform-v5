@@ -11,33 +11,36 @@ PARSER DIAGNOSTIC v1.0
 
     Диагностика внешних страниц перед созданием парсеров.
 
-    Источники:
+    Поддерживаемые источники:
 
         Bombardir
         Soccer365
 
-    Модуль НЕ записывает данные в SQLite.
+ПРИНЦИП:
 
-    Модуль НЕ изменяет:
-        matches
-        match_results
-        match_statistics
-        predictions
-        gold
-        learning_memory
+    Сначала изучаем реальную HTML-структуру страницы.
+
+    Только после этого создаём production parser.
+
+ВАЖНО:
+
+    Этот модуль НЕ записывает данные в SQLite.
+
+    Он НЕ изменяет FAJ Database.
+
+    Он НЕ создаёт факты матча.
 
     Он только получает страницу и формирует
-    технический диагностический отчёт.
+    диагностический отчёт.
 
 ============================================================
 """
 
 from __future__ import annotations
 
-import json
 import re
+import time
 import html
-import hashlib
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
 from urllib.parse import urlparse
@@ -60,153 +63,198 @@ USER_AGENT = (
     "(Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 "
     "(KHTML, like Gecko) "
-    "Chrome/139.0 Safari/537.36"
+    "Chrome/138.0.0.0 Safari/537.36"
 )
 
-HEADERS = {
-    "User-Agent": USER_AGENT,
-    "Accept": (
-        "text/html,application/xhtml+xml,"
-        "application/xml;q=0.9,image/avif,"
-        "image/webp,*/*;q=0.8"
-    ),
-    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-    "Connection": "keep-alive",
-}
+
+# ============================================================
+# PAGE CONFIG
+# ============================================================
+
+def configure_page() -> None:
+
+    st.set_page_config(
+        page_title="FAJ — Parser Diagnostic",
+        page_icon="🔬",
+        layout="wide",
+    )
 
 
 # ============================================================
-# URL VALIDATION
+# URL
 # ============================================================
 
-def validate_url(
-    url: str,
-    expected_domain: str,
-) -> Tuple[bool, str]:
-
-    url = (url or "").strip()
+def validate_url(url: str) -> Tuple[bool, str]:
 
     if not url:
-        return False, "URL не указан."
+        return False, "URL пустой."
+
+    url = url.strip()
 
     try:
+
         parsed = urlparse(url)
-    except Exception:
-        return False, "Не удалось разобрать URL."
 
-    if parsed.scheme not in ("http", "https"):
-        return False, "URL должен начинаться с http:// или https://."
+        if parsed.scheme not in (
+            "http",
+            "https",
+        ):
+            return False, "URL должен начинаться с http:// или https://"
 
-    hostname = (parsed.hostname or "").lower()
+        if not parsed.netloc:
+            return False, "Не удалось определить домен."
 
-    if not hostname:
-        return False, "В URL отсутствует домен."
+        return True, ""
 
-    if expected_domain not in hostname:
-        return (
-            False,
-            f"Ожидался домен {expected_domain}, "
-            f"получен {hostname}.",
+    except Exception as exc:
+
+        return False, f"Ошибка URL: {exc}"
+
+
+def detect_source(url: str) -> str:
+
+    try:
+
+        host = (
+            urlparse(url)
+            .netloc
+            .lower()
+            .replace("www.", "")
         )
 
-    return True, ""
+        if "bombardir.ru" in host:
+            return "Bombardir"
+
+        if "soccer365.ru" in host:
+            return "Soccer365"
+
+        return host
+
+    except Exception:
+
+        return "Unknown"
 
 
 # ============================================================
 # HTTP
 # ============================================================
 
-def fetch_page(url: str) -> Dict[str, Any]:
+def download_page(url: str) -> Dict[str, Any]:
+
+    started = time.time()
 
     result: Dict[str, Any] = {
         "success": False,
         "url": url,
-        "final_url": None,
         "status_code": None,
+        "final_url": None,
         "content_type": None,
-        "content_length": None,
         "encoding": None,
         "elapsed": None,
-        "html": "",
-        "error": None,
+        "text": "",
         "headers": {},
+        "error": None,
     }
-
-    started = datetime.now()
 
     try:
 
         response = requests.get(
             url,
-            headers=HEADERS,
+            headers={
+                "User-Agent": USER_AGENT,
+                "Accept": (
+                    "text/html,"
+                    "application/xhtml+xml,"
+                    "application/xml;q=0.9,"
+                    "*/*;q=0.8"
+                ),
+                "Accept-Language": (
+                    "ru-RU,ru;q=0.9,"
+                    "en-US;q=0.8,en;q=0.7"
+                ),
+            },
             timeout=REQUEST_TIMEOUT,
             allow_redirects=True,
         )
 
-        elapsed = (
-            datetime.now() - started
-        ).total_seconds()
-
-        result["elapsed"] = elapsed
         result["status_code"] = response.status_code
         result["final_url"] = response.url
-        result["content_type"] = response.headers.get(
-            "Content-Type"
+        result["content_type"] = (
+            response.headers.get(
+                "Content-Type"
+            )
         )
-        result["content_length"] = len(
-            response.content
+
+        result["encoding"] = (
+            response.encoding
         )
-        result["encoding"] = response.encoding
+
         result["headers"] = dict(
             response.headers
         )
 
-        result["html"] = response.text
+        result["text"] = response.text
 
         result["success"] = (
-            response.status_code >= 200
-            and response.status_code < 400
+            response.status_code == 200
         )
 
-        if not result["success"]:
-            result["error"] = (
-                f"HTTP status {response.status_code}"
-            )
-
-        return result
-
-    except requests.exceptions.Timeout:
-
-        result["error"] = (
-            f"Timeout: сайт не ответил "
-            f"за {REQUEST_TIMEOUT} секунд."
-        )
-
-        return result
-
-    except requests.exceptions.RequestException as exc:
+    except requests.RequestException as exc:
 
         result["error"] = (
             f"HTTP error: {exc}"
         )
 
-        return result
-
     except Exception as exc:
 
         result["error"] = (
-            f"Неизвестная ошибка: {exc}"
+            f"Unexpected error: {exc}"
         )
 
-        return result
+    finally:
+
+        result["elapsed"] = round(
+            time.time() - started,
+            3,
+        )
+
+    return result
 
 
 # ============================================================
-# HTML HELPERS
+# TEXT NORMALIZATION
 # ============================================================
 
-def strip_html(text: str) -> str:
+def normalize_whitespace(text: str) -> str:
 
+    text = re.sub(
+        r"\r\n?",
+        "\n",
+        text,
+    )
+
+    text = re.sub(
+        r"[ \t]+",
+        " ",
+        text,
+    )
+
+    text = re.sub(
+        r"\n{3,}",
+        "\n\n",
+        text,
+    )
+
+    return text.strip()
+
+
+def strip_html_to_text(
+    source: str,
+) -> str:
+
+    text = source
+
+    # Remove scripts
     text = re.sub(
         r"<script\b[^>]*>.*?</script>",
         " ",
@@ -214,6 +262,7 @@ def strip_html(text: str) -> str:
         flags=re.I | re.S,
     )
 
+    # Remove styles
     text = re.sub(
         r"<style\b[^>]*>.*?</style>",
         " ",
@@ -221,6 +270,30 @@ def strip_html(text: str) -> str:
         flags=re.I | re.S,
     )
 
+    # Remove comments
+    text = re.sub(
+        r"<!--.*?-->",
+        " ",
+        text,
+        flags=re.S,
+    )
+
+    # Basic line breaks
+    text = re.sub(
+        r"<br\s*/?>",
+        "\n",
+        text,
+        flags=re.I,
+    )
+
+    text = re.sub(
+        r"</(p|div|tr|li|h1|h2|h3|h4|h5|h6)>",
+        "\n",
+        text,
+        flags=re.I,
+    )
+
+    # Remove remaining tags
     text = re.sub(
         r"<[^>]+>",
         " ",
@@ -229,1106 +302,1080 @@ def strip_html(text: str) -> str:
 
     text = html.unescape(text)
 
-    text = re.sub(
-        r"\s+",
-        " ",
-        text,
+    return normalize_whitespace(
+        text
     )
 
-    return text.strip()
 
+# ============================================================
+# HTML STRUCTURE
+# ============================================================
 
-def extract_title(html_text: str) -> str:
+def extract_title(
+    source: str,
+) -> str:
 
     match = re.search(
         r"<title[^>]*>(.*?)</title>",
-        html_text,
+        source,
         flags=re.I | re.S,
     )
 
     if not match:
         return ""
 
-    return strip_html(
-        match.group(1)
+    return normalize_whitespace(
+        html.unescape(
+            match.group(1)
+        )
     )
 
 
 def extract_meta(
-    html_text: str,
-    name: str,
-) -> str:
+    source: str,
+) -> List[Dict[str, str]]:
 
-    patterns = [
-        rf'<meta[^>]+name=["\']{re.escape(name)}["\'][^>]+content=["\'](.*?)["\']',
-        rf'<meta[^>]+property=["\']{re.escape(name)}["\'][^>]+content=["\'](.*?)["\']',
-    ]
+    result = []
 
-    for pattern in patterns:
-
-        match = re.search(
-            pattern,
-            html_text,
-            flags=re.I | re.S,
-        )
-
-        if match:
-            return html.unescape(
-                match.group(1)
-            ).strip()
-
-    return ""
-
-
-# ============================================================
-# STRUCTURE ANALYSIS
-# ============================================================
-
-def count_tag(
-    html_text: str,
-    tag: str,
-) -> int:
-
-    return len(
-        re.findall(
-            rf"<{tag}\b",
-            html_text,
-            flags=re.I,
-        )
+    pattern = re.compile(
+        r"<meta\b([^>]*)>",
+        flags=re.I | re.S,
     )
 
-
-def extract_tables(
-    html_text: str,
-) -> List[Dict[str, Any]]:
-
-    tables = []
-
-    for index, match in enumerate(
-        re.finditer(
-            r"<table\b[^>]*>(.*?)</table>",
-            html_text,
-            flags=re.I | re.S,
-        ),
-        start=1,
+    for match in pattern.finditer(
+        source
     ):
 
-        table_html = match.group(0)
+        attrs = match.group(1)
 
-        rows = re.findall(
-            r"<tr\b[^>]*>(.*?)</tr>",
-            table_html,
-            flags=re.I | re.S,
+        name_match = re.search(
+            r'(?:name|property|itemprop)\s*=\s*["\']([^"\']+)["\']',
+            attrs,
+            flags=re.I,
         )
 
-        tables.append(
-            {
-                "number": index,
-                "html_size": len(table_html),
-                "rows": len(rows),
-                "text": strip_html(
-                    table_html
-                )[:1500],
-            }
+        content_match = re.search(
+            r'content\s*=\s*["\']([^"\']*)["\']',
+            attrs,
+            flags=re.I,
         )
 
-    return tables
+        if name_match:
+
+            result.append(
+                {
+                    "name": name_match.group(1),
+                    "content": (
+                        content_match.group(1)
+                        if content_match
+                        else ""
+                    ),
+                }
+            )
+
+    return result
+
+
+def extract_links(
+    source: str,
+    limit: int = 200,
+) -> List[str]:
+
+    links = []
+
+    pattern = re.compile(
+        r'<a\b[^>]*href\s*=\s*["\']([^"\']+)["\']',
+        flags=re.I,
+    )
+
+    for match in pattern.finditer(
+        source
+    ):
+
+        href = html.unescape(
+            match.group(1)
+        ).strip()
+
+        if href and href not in links:
+
+            links.append(href)
+
+        if len(links) >= limit:
+            break
+
+    return links
 
 
 def extract_scripts(
-    html_text: str,
-) -> List[Dict[str, Any]]:
+    source: str,
+    limit: int = 100,
+) -> List[str]:
 
     scripts = []
 
-    for index, match in enumerate(
-        re.finditer(
-            r"<script\b([^>]*)>(.*?)</script>",
-            html_text,
-            flags=re.I | re.S,
-        ),
-        start=1,
+    pattern = re.compile(
+        r"<script\b([^>]*)>",
+        flags=re.I | re.S,
+    )
+
+    for match in pattern.finditer(
+        source
     ):
 
-        attributes = match.group(1) or ""
-        content = match.group(2) or ""
-
-        scripts.append(
-            {
-                "number": index,
-                "attributes": attributes.strip(),
-                "size": len(content),
-                "preview": content[:1000],
-            }
+        attrs = normalize_whitespace(
+            match.group(1)
         )
+
+        if attrs:
+
+            scripts.append(
+                attrs
+            )
+
+        if len(scripts) >= limit:
+            break
 
     return scripts
 
 
-def extract_links(
-    html_text: str,
-) -> List[str]:
+# ============================================================
+# INTERESTING TERMS
+# ============================================================
 
-    links = re.findall(
-        r'href=["\']([^"\']+)["\']',
-        html_text,
-        flags=re.I,
-    )
+INTERESTING_TERMS = [
 
-    unique = []
+    # Score
+    "счёт",
+    "счет",
+    "result",
+    "score",
+    "full-time",
+    "fulltime",
 
-    for link in links:
+    # xG
+    "xg",
+    "expected goals",
+    "ожидаемые голы",
 
-        if link not in unique:
-            unique.append(link)
+    # Possession
+    "владение",
+    "possession",
 
-    return unique[:100]
+    # Shots
+    "удары",
+    "shots",
+    "shots on target",
+    "удары в створ",
+
+    # Corners
+    "угловые",
+    "corners",
+
+    # Passes
+    "передачи",
+    "passes",
+    "pass accuracy",
+
+    # Fouls
+    "фолы",
+    "fouls",
+
+    # Cards
+    "желтые",
+    "красные",
+    "yellow",
+    "red",
+
+    # Match
+    "матч",
+    "match",
+    "game",
+]
 
 
-def extract_classes(
-    html_text: str,
-) -> List[str]:
+def find_interesting_terms(
+    source: str,
+) -> List[Dict[str, Any]]:
 
-    classes = re.findall(
-        r'class=["\']([^"\']+)["\']',
-        html_text,
-        flags=re.I,
-    )
+    lower = source.lower()
 
     result = []
 
-    for item in classes:
+    for term in INTERESTING_TERMS:
 
-        for cls in item.split():
-
-            if cls and cls not in result:
-                result.append(cls)
-
-    return result[:200]
-
-
-# ============================================================
-# JSON DETECTION
-# ============================================================
-
-def looks_like_json(
-    text: str,
-) -> bool:
-
-    text = text.strip()
-
-    if not text:
-        return False
-
-    if not (
-        text.startswith("{")
-        or text.startswith("[")
-    ):
-        return False
-
-    try:
-        json.loads(text)
-        return True
-    except Exception:
-        return False
-
-
-def detect_json_scripts(
-    scripts: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-
-    found = []
-
-    for script in scripts:
-
-        content = script.get(
-            "preview",
-            "",
+        count = lower.count(
+            term.lower()
         )
 
-        if looks_like_json(content):
+        if count:
 
-            found.append(
+            result.append(
                 {
-                    "script": script["number"],
-                    "type": "JSON",
-                    "preview": content[:2000],
+                    "term": term,
+                    "count": count,
                 }
             )
 
-    return found
+    return result
 
 
 # ============================================================
-# DATA PATTERN DETECTION
+# CONTEXT SEARCH
 # ============================================================
 
-PATTERNS = {
-
-    "xG": [
-        r"\bxG\b",
-        r"\bXG\b",
-        r"expected\s+goals",
-        r"expected_goals",
-    ],
-
-    "Владение": [
-        r"владение",
-        r"possession",
-    ],
-
-    "Удары": [
-        r"\bудары\b",
-        r"\bshots\b",
-    ],
-
-    "Удары в створ": [
-        r"удары\s+в\s+створ",
-        r"shots\s+on\s+target",
-        r"on\s+target",
-    ],
-
-    "Угловые": [
-        r"углов",
-        r"corners",
-    ],
-
-    "Передачи": [
-        r"передач",
-        r"passes",
-    ],
-
-    "Точность передач": [
-        r"точност.*передач",
-        r"pass\s+accuracy",
-    ],
-
-    "Точные передачи": [
-        r"точн.*передач",
-        r"accurate\s+passes",
-    ],
-
-    "Отборы": [
-        r"отбор",
-        r"tackles",
-    ],
-
-    "Счёт": [
-        r"\b\d{1,2}\s*[:\-]\s*\d{1,2}\b",
-    ],
-}
-
-
-def detect_patterns(
-    text: str,
-) -> Dict[str, List[str]]:
-
-    results = {}
-
-    for name, patterns in PATTERNS.items():
-
-        matches = []
-
-        for pattern in patterns:
-
-            for match in re.finditer(
-                pattern,
-                text,
-                flags=re.I,
-            ):
-
-                start = max(
-                    0,
-                    match.start() - 100,
-                )
-
-                end = min(
-                    len(text),
-                    match.end() + 150,
-                )
-
-                fragment = text[
-                    start:end
-                ]
-
-                fragment = re.sub(
-                    r"\s+",
-                    " ",
-                    fragment,
-                )
-
-                if fragment not in matches:
-                    matches.append(
-                        fragment
-                    )
-
-                if len(matches) >= 5:
-                    break
-
-            if len(matches) >= 5:
-                break
-
-        results[name] = matches
-
-    return results
-
-
-# ============================================================
-# NUMERIC PATTERNS
-# ============================================================
-
-def detect_numbers(
-    text: str,
+def extract_contexts(
+    source: str,
+    terms: List[str],
+    radius: int = 500,
+    max_contexts: int = 30,
 ) -> List[str]:
 
-    patterns = [
-        r"\b\d{1,3}[.,]\d{1,3}\b",
-        r"\b\d{1,3}%\b",
-        r"\b\d{1,3}\b",
-    ]
+    contexts = []
 
-    found = []
+    lower = source.lower()
 
-    for pattern in patterns:
+    for term in terms:
 
-        for match in re.finditer(
-            pattern,
-            text,
-        ):
+        start = 0
 
-            value = match.group(0)
+        while True:
 
-            if value not in found:
-                found.append(value)
-
-            if len(found) >= 100:
-                return found
-
-    return found
-
-
-# ============================================================
-# HTML FRAGMENTS AROUND KEYWORDS
-# ============================================================
-
-def extract_html_fragments(
-    html_text: str,
-    keywords: List[str],
-) -> List[str]:
-
-    fragments = []
-
-    lower_html = html_text.lower()
-
-    for keyword in keywords:
-
-        position = lower_html.find(
-            keyword.lower()
-        )
-
-        if position == -1:
-            continue
-
-        start = max(
-            0,
-            position - 500,
-        )
-
-        end = min(
-            len(html_text),
-            position + 1500,
-        )
-
-        fragment = html_text[
-            start:end
-        ]
-
-        if fragment not in fragments:
-            fragments.append(
-                fragment
+            position = lower.find(
+                term.lower(),
+                start,
             )
 
-    return fragments[:10]
+            if position == -1:
+                break
+
+            left = max(
+                0,
+                position - radius,
+            )
+
+            right = min(
+                len(source),
+                position
+                + len(term)
+                + radius,
+            )
+
+            context = source[
+                left:right
+            ]
+
+            context = normalize_whitespace(
+                context
+            )
+
+            contexts.append(
+                f"[TERM: {term}]\n"
+                f"{context}"
+            )
+
+            if len(contexts) >= max_contexts:
+                return contexts
+
+            start = (
+                position
+                + len(term)
+            )
+
+    return contexts
 
 
 # ============================================================
-# DIAGNOSTIC REPORT
+# RAW HTML SAMPLE
+# ============================================================
+
+def build_html_sample(
+    source: str,
+    max_chars: int = 12000,
+) -> str:
+
+    if len(source) <= max_chars:
+
+        return source
+
+    half = max_chars // 2
+
+    return (
+        source[:half]
+        + "\n\n"
+        + "..."
+        + "\n\n"
+        + source[-half:]
+    )
+
+
+# ============================================================
+# JSON-LD
+# ============================================================
+
+def extract_json_ld(
+    source: str,
+) -> List[str]:
+
+    result = []
+
+    pattern = re.compile(
+        r'<script[^>]*type\s*=\s*["\']application/ld\+json["\'][^>]*>'
+        r"(.*?)"
+        r"</script>",
+        flags=re.I | re.S,
+    )
+
+    for match in pattern.finditer(
+        source
+    ):
+
+        content = match.group(1).strip()
+
+        if content:
+
+            result.append(
+                content
+            )
+
+    return result
+
+
+# ============================================================
+# DATA ATTRIBUTES
+# ============================================================
+
+def extract_data_attributes(
+    source: str,
+    limit: int = 300,
+) -> List[str]:
+
+    result = []
+
+    pattern = re.compile(
+        r'\s(data-[a-zA-Z0-9_-]+)\s*=\s*["\']([^"\']*)["\']',
+        flags=re.I,
+    )
+
+    for match in pattern.finditer(
+        source
+    ):
+
+        item = (
+            f"{match.group(1)}="
+            f"{match.group(2)}"
+        )
+
+        if item not in result:
+
+            result.append(
+                item
+            )
+
+        if len(result) >= limit:
+            break
+
+    return result
+
+
+# ============================================================
+# CLASS / ID DISCOVERY
+# ============================================================
+
+def extract_classes_and_ids(
+    source: str,
+    limit: int = 300,
+) -> Dict[str, List[str]]:
+
+    classes = []
+    ids = []
+
+    class_pattern = re.compile(
+        r'\bclass\s*=\s*["\']([^"\']+)["\']',
+        flags=re.I,
+    )
+
+    id_pattern = re.compile(
+        r'\bid\s*=\s*["\']([^"\']+)["\']',
+        flags=re.I,
+    )
+
+    for match in class_pattern.finditer(
+        source
+    ):
+
+        value = normalize_whitespace(
+            match.group(1)
+        )
+
+        for item in value.split():
+
+            if item not in classes:
+
+                classes.append(
+                    item
+                )
+
+            if len(classes) >= limit:
+                break
+
+        if len(classes) >= limit:
+            break
+
+    for match in id_pattern.finditer(
+        source
+    ):
+
+        value = normalize_whitespace(
+            match.group(1)
+        )
+
+        if value not in ids:
+
+            ids.append(
+                value
+            )
+
+        if len(ids) >= limit:
+            break
+
+    return {
+        "classes": classes,
+        "ids": ids,
+    }
+
+
+# ============================================================
+# REPORT
 # ============================================================
 
 def build_report(
     source_name: str,
-    expected_domain: str,
-    url: str,
-    page: Dict[str, Any],
+    result: Dict[str, Any],
 ) -> str:
 
-    timestamp = datetime.now().isoformat()
-
-    html_text = page.get(
-        "html",
+    source = result.get(
+        "text",
         "",
     )
 
+    final_url = result.get(
+        "final_url"
+    )
+
+    status_code = result.get(
+        "status_code"
+    )
+
     title = extract_title(
-        html_text
+        source
     )
 
-    description = extract_meta(
-        html_text,
-        "description",
-    )
-
-    og_title = extract_meta(
-        html_text,
-        "og:title",
-    )
-
-    visible_text = strip_html(
-        html_text
-    )
-
-    tables = extract_tables(
-        html_text
-    )
-
-    scripts = extract_scripts(
-        html_text
+    meta = extract_meta(
+        source
     )
 
     links = extract_links(
-        html_text
+        source
     )
 
-    classes = extract_classes(
-        html_text
+    scripts = extract_scripts(
+        source
     )
 
-    patterns = detect_patterns(
-        visible_text
+    json_ld = extract_json_ld(
+        source
     )
 
-    numbers = detect_numbers(
-        visible_text
-    )
-
-    html_hash = hashlib.sha256(
-        html_text.encode(
-            "utf-8",
-            errors="ignore",
+    data_attributes = (
+        extract_data_attributes(
+            source
         )
-    ).hexdigest()
-
-    report = []
-
-    report.append(
-        "=" * 70
     )
 
-    report.append(
-        f"FAJ SOURCE DIAGNOSTIC v{DIAGNOSTIC_VERSION}"
+    classes_ids = (
+        extract_classes_and_ids(
+            source
+        )
     )
 
-    report.append(
-        "=" * 70
+    interesting = (
+        find_interesting_terms(
+            source
+        )
     )
 
-    report.append("")
-
-    report.append(
-        f"SOURCE: {source_name}"
+    contexts = extract_contexts(
+        source,
+        [
+            item["term"]
+            for item in interesting
+        ],
     )
 
-    report.append(
-        f"EXPECTED DOMAIN: {expected_domain}"
+    text = strip_html_to_text(
+        source
     )
 
-    report.append(
-        f"DIAGNOSTIC TIME: {timestamp}"
+    lines = []
+
+    lines.append(
+        "============================================================"
     )
 
-    report.append(
-        f"INPUT URL: {url}"
+    lines.append(
+        "FAJ PARSER DIAGNOSTIC REPORT"
     )
 
-    report.append(
-        f"FINAL URL: {page.get('final_url')}"
+    lines.append(
+        "============================================================"
     )
 
-    report.append("")
-
-    report.append(
-        "-" * 70
+    lines.append(
+        f"Diagnostic version: {DIAGNOSTIC_VERSION}"
     )
 
-    report.append(
-        "HTTP"
+    lines.append(
+        f"FAJ Platform: {APP_VERSION}"
     )
 
-    report.append(
-        "-" * 70
+    lines.append(
+        f"Source: {source_name}"
     )
 
-    report.append(
-        f"SUCCESS: {page.get('success')}"
+    lines.append(
+        f"Generated: {datetime.now().isoformat()}"
     )
 
-    report.append(
-        f"STATUS CODE: {page.get('status_code')}"
+    lines.append("")
+
+    # --------------------------------------------------------
+    # HTTP
+    # --------------------------------------------------------
+
+    lines.append(
+        "================ HTTP ================="
     )
 
-    report.append(
-        f"CONTENT TYPE: {page.get('content_type')}"
+    lines.append(
+        f"Status code: {status_code}"
     )
 
-    report.append(
-        f"CONTENT LENGTH: {page.get('content_length')}"
+    lines.append(
+        f"Original URL: {result.get('url')}"
     )
 
-    report.append(
-        f"ENCODING: {page.get('encoding')}"
+    lines.append(
+        f"Final URL: {final_url}"
     )
 
-    report.append(
-        f"ELAPSED: {page.get('elapsed')} sec"
+    lines.append(
+        f"Content-Type: {result.get('content_type')}"
     )
 
-    report.append(
-        f"ERROR: {page.get('error')}"
+    lines.append(
+        f"Encoding: {result.get('encoding')}"
     )
 
-    report.append("")
-
-    report.append(
-        "-" * 70
+    lines.append(
+        f"Request time: {result.get('elapsed')} sec"
     )
 
-    report.append(
-        "PAGE IDENTITY"
+    if result.get("error"):
+
+        lines.append(
+            f"ERROR: {result.get('error')}"
+        )
+
+    lines.append("")
+
+    # --------------------------------------------------------
+    # PAGE
+    # --------------------------------------------------------
+
+    lines.append(
+        "================ PAGE ================="
     )
 
-    report.append(
-        "-" * 70
+    lines.append(
+        f"Title: {title}"
     )
 
-    report.append(
-        f"TITLE: {title}"
+    lines.append(
+        f"HTML length: {len(source)}"
     )
 
-    report.append(
-        f"DESCRIPTION: {description}"
+    lines.append(
+        f"Visible text length: {len(text)}"
     )
 
-    report.append(
-        f"OG TITLE: {og_title}"
+    lines.append("")
+
+    # --------------------------------------------------------
+    # META
+    # --------------------------------------------------------
+
+    lines.append(
+        "================ META ================="
     )
 
-    report.append("")
+    for item in meta[:100]:
 
-    report.append(
-        "-" * 70
+        lines.append(
+            f"{item['name']} = {item['content']}"
+        )
+
+    lines.append("")
+
+    # --------------------------------------------------------
+    # INTERESTING TERMS
+    # --------------------------------------------------------
+
+    lines.append(
+        "================ INTERESTING TERMS ================="
     )
 
-    report.append(
-        "HTML STRUCTURE"
+    for item in interesting:
+
+        lines.append(
+            f"{item['term']} -> {item['count']}"
+        )
+
+    lines.append("")
+
+    # --------------------------------------------------------
+    # CONTEXTS
+    # --------------------------------------------------------
+
+    lines.append(
+        "================ CONTEXTS ================="
     )
 
-    report.append(
-        "-" * 70
-    )
-
-    for tag in (
-        "html",
-        "head",
-        "body",
-        "div",
-        "span",
-        "table",
-        "tr",
-        "td",
-        "script",
-        "a",
+    for index, context in enumerate(
+        contexts,
+        start=1,
     ):
 
-        report.append(
-            f"<{tag}>: {count_tag(html_text, tag)}"
+        lines.append(
+            f"\n--- CONTEXT {index} ---\n"
         )
 
-    report.append(
-        f"HTML SHA256: {html_hash}"
-    )
+        lines.append(
+            context
+        )
 
-    report.append("")
+    lines.append("")
 
     # --------------------------------------------------------
-    # TABLES
+    # JSON-LD
     # --------------------------------------------------------
 
-    report.append(
-        "-" * 70
+    lines.append(
+        "================ JSON-LD ================="
     )
 
-    report.append(
-        f"TABLES: {len(tables)}"
-    )
+    for index, item in enumerate(
+        json_ld,
+        start=1,
+    ):
 
-    report.append(
-        "-" * 70
-    )
-
-    for table in tables:
-
-        report.append(
-            f"TABLE #{table['number']}"
+        lines.append(
+            f"\n--- JSON-LD {index} ---"
         )
 
-        report.append(
-            f"HTML SIZE: {table['html_size']}"
+        lines.append(
+            item[:10000]
         )
 
-        report.append(
-            f"ROWS: {table['rows']}"
-        )
-
-        report.append(
-            f"TEXT: {table['text']}"
-        )
-
-        report.append("")
+    lines.append("")
 
     # --------------------------------------------------------
-    # SCRIPTS
+    # DATA ATTRIBUTES
     # --------------------------------------------------------
 
-    report.append(
-        "-" * 70
+    lines.append(
+        "================ DATA ATTRIBUTES ================="
     )
 
-    report.append(
-        f"SCRIPTS: {len(scripts)}"
-    )
+    for item in data_attributes:
 
-    report.append(
-        "-" * 70
-    )
-
-    for script in scripts[:50]:
-
-        report.append(
-            f"SCRIPT #{script['number']}"
+        lines.append(
+            item
         )
 
-        report.append(
-            f"ATTRIBUTES: {script['attributes']}"
-        )
-
-        report.append(
-            f"SIZE: {script['size']}"
-        )
-
-        report.append(
-            f"PREVIEW:\n{script['preview'][:1000]}"
-        )
-
-        report.append("")
+    lines.append("")
 
     # --------------------------------------------------------
-    # JSON
+    # CLASSES / IDS
     # --------------------------------------------------------
 
-    json_scripts = detect_json_scripts(
-        scripts
+    lines.append(
+        "================ CLASSES ================="
     )
 
-    report.append(
-        "-" * 70
-    )
+    for item in classes_ids["classes"]:
 
-    report.append(
-        f"POSSIBLE JSON SCRIPTS: {len(json_scripts)}"
-    )
-
-    report.append(
-        "-" * 70
-    )
-
-    for item in json_scripts:
-
-        report.append(
-            f"SCRIPT #{item['script']}"
+        lines.append(
+            item
         )
 
-        report.append(
-            item["preview"]
+    lines.append("")
+
+    lines.append(
+        "================ IDS ================="
+    )
+
+    for item in classes_ids["ids"]:
+
+        lines.append(
+            item
         )
 
-        report.append("")
-
-    # --------------------------------------------------------
-    # PATTERNS
-    # --------------------------------------------------------
-
-    report.append(
-        "-" * 70
-    )
-
-    report.append(
-        "IMPORTANT DATA PATTERNS"
-    )
-
-    report.append(
-        "-" * 70
-    )
-
-    for name, matches in patterns.items():
-
-        report.append(
-            f"\n### {name}"
-        )
-
-        if not matches:
-
-            report.append(
-                "NOT FOUND"
-            )
-
-        else:
-
-            for fragment in matches:
-
-                report.append(
-                    f"- {fragment}"
-                )
+    lines.append("")
 
     # --------------------------------------------------------
     # LINKS
     # --------------------------------------------------------
 
-    report.append(
-        "-" * 70
-    )
-
-    report.append(
-        "LINKS"
-    )
-
-    report.append(
-        "-" * 70
+    lines.append(
+        "================ LINKS ================="
     )
 
     for link in links:
 
-        report.append(
+        lines.append(
             link
         )
 
+    lines.append("")
+
     # --------------------------------------------------------
-    # CLASSES
+    # SCRIPTS
     # --------------------------------------------------------
 
-    report.append(
-        "-" * 70
+    lines.append(
+        "================ SCRIPTS ================="
     )
 
-    report.append(
-        "CSS CLASSES"
-    )
+    for script in scripts:
 
-    report.append(
-        "-" * 70
-    )
-
-    for cls in classes:
-
-        report.append(
-            cls
+        lines.append(
+            script
         )
 
-    # --------------------------------------------------------
-    # NUMBERS
-    # --------------------------------------------------------
-
-    report.append(
-        "-" * 70
-    )
-
-    report.append(
-        "DETECTED NUMERIC VALUES"
-    )
-
-    report.append(
-        "-" * 70
-    )
-
-    report.append(
-        ", ".join(numbers)
-    )
-
-    # --------------------------------------------------------
-    # HTML FRAGMENTS
-    # --------------------------------------------------------
-
-    fragments = extract_html_fragments(
-        html_text,
-        [
-            "xG",
-            "expected",
-            "possession",
-            "владение",
-            "shots",
-            "удары",
-            "corners",
-            "углов",
-            "passes",
-            "передач",
-        ],
-    )
-
-    report.append(
-        "-" * 70
-    )
-
-    report.append(
-        "IMPORTANT HTML FRAGMENTS"
-    )
-
-    report.append(
-        "-" * 70
-    )
-
-    for index, fragment in enumerate(
-        fragments,
-        start=1,
-    ):
-
-        report.append(
-            f"\n### FRAGMENT #{index}"
-        )
-
-        report.append(
-            fragment
-        )
+    lines.append("")
 
     # --------------------------------------------------------
     # VISIBLE TEXT
     # --------------------------------------------------------
 
-    report.append(
-        "-" * 70
+    lines.append(
+        "================ VISIBLE TEXT ================="
     )
 
-    report.append(
-        "VISIBLE TEXT PREVIEW"
+    lines.append(
+        text[:20000]
     )
 
-    report.append(
-        "-" * 70
-    )
-
-    report.append(
-        visible_text[:10000]
-    )
+    lines.append("")
 
     # --------------------------------------------------------
-    # RAW HTML PREVIEW
+    # RAW HTML
     # --------------------------------------------------------
 
-    report.append(
-        "-" * 70
+    lines.append(
+        "================ RAW HTML SAMPLE ================="
     )
 
-    report.append(
-        "RAW HTML PREVIEW"
+    lines.append(
+        build_html_sample(
+            source,
+            max_chars=20000,
+        )
     )
 
-    report.append(
-        "-" * 70
+    lines.append("")
+
+    lines.append(
+        "============================================================"
     )
 
-    report.append(
-        html_text[:15000]
+    lines.append(
+        "END OF REPORT"
     )
 
-    report.append("")
-
-    report.append(
-        "=" * 70
+    lines.append(
+        "============================================================"
     )
 
-    report.append(
-        "END OF DIAGNOSTIC REPORT"
+    return "\n".join(
+        lines
     )
-
-    report.append(
-        "=" * 70
-    )
-
-    return "\n".join(report)
 
 
 # ============================================================
-# RUN DIAGNOSTIC
+# DIAGNOSTIC RUNNER
 # ============================================================
 
 def run_diagnostic(
-    source_name: str,
-    expected_domain: str,
     url: str,
-) -> Dict[str, Any]:
+) -> Tuple[Dict[str, Any], str]:
 
-    valid, error = validate_url(
-        url,
-        expected_domain,
-    )
-
-    if not valid:
-
-        return {
-            "success": False,
-            "error": error,
-            "report": "",
-        }
-
-    page = fetch_page(
+    source_name = detect_source(
         url
     )
 
-    if not page["success"]:
-
-        report = build_report(
-            source_name,
-            expected_domain,
-            url,
-            page,
-        )
-
-        return {
-            "success": False,
-            "error": page.get(
-                "error"
-            ),
-            "report": report,
-        }
+    result = download_page(
+        url
+    )
 
     report = build_report(
         source_name,
-        expected_domain,
-        url,
-        page,
+        result,
     )
 
-    return {
-        "success": True,
-        "error": None,
-        "report": report,
-    }
+    return result, report
 
 
 # ============================================================
 # UI
 # ============================================================
 
-def main() -> None:
+def render_source_block(
+    title: str,
+    key_prefix: str,
+) -> None:
 
-    st.set_page_config(
-        page_title="FAJ — Parser Diagnostic",
-        page_icon="🔎",
-        layout="wide",
+    st.subheader(
+        title
     )
 
+    url = st.text_input(
+        "Ссылка",
+        key=f"{key_prefix}_url",
+        placeholder="Вставьте полную ссылку...",
+    )
+
+    if st.button(
+        f"🔬 Исследовать {title}",
+        key=f"{key_prefix}_run",
+        type="primary",
+        use_container_width=True,
+    ):
+
+        valid, error = validate_url(
+            url
+        )
+
+        if not valid:
+
+            st.error(
+                f"❌ {error}"
+            )
+
+            return
+
+        with st.spinner(
+            f"Получаем страницу {title}..."
+        ):
+
+            result, report = run_diagnostic(
+                url
+            )
+
+        st.session_state[
+            f"{key_prefix}_result"
+        ] = result
+
+        st.session_state[
+            f"{key_prefix}_report"
+        ] = report
+
+        st.rerun()
+
+    result = st.session_state.get(
+        f"{key_prefix}_result"
+    )
+
+    report = st.session_state.get(
+        f"{key_prefix}_report"
+    )
+
+    if not result:
+        return
+
+    st.divider()
+
+    if result.get("success"):
+
+        st.success(
+            "✅ Страница успешно получена."
+        )
+
+    else:
+
+        st.error(
+            "❌ Не удалось нормально получить страницу."
+        )
+
+    # --------------------------------------------------------
+    # QUICK STATUS
+    # --------------------------------------------------------
+
+    c1, c2, c3, c4 = st.columns(4)
+
+    with c1:
+
+        st.metric(
+            "HTTP",
+            result.get(
+                "status_code"
+            )
+            or "—",
+        )
+
+    with c2:
+
+        st.metric(
+            "Размер HTML",
+            f"{len(result.get('text', '')):,}",
+        )
+
+    with c3:
+
+        st.metric(
+            "Время",
+            f"{result.get('elapsed', 0)} s",
+        )
+
+    with c4:
+
+        st.metric(
+            "Источник",
+            detect_source(
+                result.get(
+                    "url",
+                    "",
+                )
+            ),
+        )
+
+    if result.get(
+        "final_url"
+    ):
+
+        st.caption(
+            f"Фактический URL: "
+            f"{result['final_url']}"
+        )
+
+    # --------------------------------------------------------
+    # REPORT
+    # --------------------------------------------------------
+
+    st.subheader(
+        "📋 Диагностический отчёт"
+    )
+
+    st.text_area(
+        "Отчёт можно полностью скопировать",
+        value=report,
+        height=500,
+        key=f"{key_prefix}_report_view",
+    )
+
+    st.download_button(
+        "💾 Сохранить отчёт",
+        data=report,
+        file_name=(
+            f"faj_{key_prefix}_"
+            "diagnostic.txt"
+        ),
+        mime="text/plain",
+        key=f"{key_prefix}_download",
+        use_container_width=True,
+    )
+
+    # --------------------------------------------------------
+    # RAW HTML
+    # --------------------------------------------------------
+
+    with st.expander(
+        "🔎 Посмотреть полученный HTML"
+    ):
+
+        st.code(
+            result.get(
+                "text",
+                "",
+            )[:30000],
+            language="html",
+        )
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main() -> None:
+
+    configure_page()
+
     st.title(
-        "🔎 FAJ — Диагностика парсеров"
+        "🔬 FAJ — Диагностика парсеров"
     )
 
     st.caption(
-        f"FAJ Platform {APP_VERSION} | "
-        f"Parser Diagnostic {DIAGNOSTIC_VERSION}"
+        "Изучаем реальные страницы Bombardir и Soccer365 "
+        "перед созданием production-парсеров."
     )
 
-    st.info(
-        "Эта страница только исследует внешние сайты. "
-        "Она не записывает данные в FAJ и не изменяет SQLite."
+    st.warning(
+        "⚠️ Этот модуль ничего не записывает в SQLite "
+        "и не изменяет данные FAJ."
     )
+
+    st.divider()
+
+    # ========================================================
+    # INSTRUCTIONS
+    # ========================================================
+
+    st.markdown(
+        """
+### Как работаем
+
+**1. Bombardir**
+
+Вставьте ссылку на страницу матча, например:
+
+`https://bombardir.ru/online/...`
+
+Нажмите **«Исследовать Bombardir»**.
+
+**2. Soccer365**
+
+Вставьте ссылку на страницу матча, например:
+
+`https://soccer365.ru/games/...`
+
+Нажмите **«Исследовать Soccer365»**.
+
+После получения отчёта скопируйте его и пришлите сюда.
+
+Мы сначала изучим структуру сайтов, а уже потом напишем парсеры.
+"""
+    )
+
+    st.divider()
 
     # ========================================================
     # BOMBARDIR
     # ========================================================
 
-    st.markdown(
-        "## 📊 Bombardir"
+    render_source_block(
+        "📊 Bombardir",
+        "bombardir",
     )
-
-    bombardir_url = st.text_input(
-        "Ссылка на страницу матча Bombardir",
-        placeholder=(
-            "https://bombardir.ru/online/..."
-        ),
-        key="diagnostic_bombardir_url",
-    )
-
-    if st.button(
-        "🔎 Исследовать Bombardir",
-        key="diagnostic_bombardir_button",
-        use_container_width=True,
-    ):
-
-        with st.spinner(
-            "Исследуем страницу Bombardir..."
-        ):
-
-            result = run_diagnostic(
-                source_name="Bombardir",
-                expected_domain="bombardir.ru",
-                url=bombardir_url,
-            )
-
-        st.session_state[
-            "diagnostic_bombardir_result"
-        ] = result
-
-    bombardir_result = st.session_state.get(
-        "diagnostic_bombardir_result"
-    )
-
-    if bombardir_result:
-
-        if bombardir_result["success"]:
-
-            st.success(
-                "✅ Страница Bombardir получена."
-            )
-
-        else:
-
-            st.error(
-                "❌ Не удалось получить страницу."
-            )
-
-            if bombardir_result.get(
-                "error"
-            ):
-
-                st.warning(
-                    bombardir_result["error"]
-                )
-
-        if bombardir_result.get(
-            "report"
-        ):
-
-            st.text_area(
-                "📋 Отчёт Bombardir — скопируй полностью",
-                value=bombardir_result["report"],
-                height=600,
-                key="bombardir_report",
-            )
-
-            st.download_button(
-                "💾 Сохранить отчёт Bombardir",
-                data=bombardir_result["report"],
-                file_name="bombardir_diagnostic.txt",
-                mime="text/plain",
-                use_container_width=True,
-            )
 
     st.divider()
 
@@ -1336,89 +1383,16 @@ def main() -> None:
     # SOCCER365
     # ========================================================
 
-    st.markdown(
-        "## 🎯 Soccer365"
+    render_source_block(
+        "🎯 Soccer365",
+        "soccer365",
     )
-
-    soccer365_url = st.text_input(
-        "Ссылка на страницу матча Soccer365",
-        placeholder=(
-            "https://soccer365.ru/games/..."
-        ),
-        key="diagnostic_soccer365_url",
-    )
-
-    if st.button(
-        "🔎 Исследовать Soccer365",
-        key="diagnostic_soccer365_button",
-        use_container_width=True,
-    ):
-
-        with st.spinner(
-            "Исследуем страницу Soccer365..."
-        ):
-
-            result = run_diagnostic(
-                source_name="Soccer365",
-                expected_domain="soccer365.ru",
-                url=soccer365_url,
-            )
-
-        st.session_state[
-            "diagnostic_soccer365_result"
-        ] = result
-
-    soccer365_result = st.session_state.get(
-        "diagnostic_soccer365_result"
-    )
-
-    if soccer365_result:
-
-        if soccer365_result["success"]:
-
-            st.success(
-                "✅ Страница Soccer365 получена."
-            )
-
-        else:
-
-            st.error(
-                "❌ Не удалось получить страницу."
-            )
-
-            if soccer365_result.get(
-                "error"
-            ):
-
-                st.warning(
-                    soccer365_result["error"]
-                )
-
-        if soccer365_result.get(
-            "report"
-        ):
-
-            st.text_area(
-                "📋 Отчёт Soccer365 — скопируй полностью",
-                value=soccer365_result["report"],
-                height=600,
-                key="soccer365_report",
-            )
-
-            st.download_button(
-                "💾 Сохранить отчёт Soccer365",
-                data=soccer365_result["report"],
-                file_name="soccer365_diagnostic.txt",
-                mime="text/plain",
-                use_container_width=True,
-            )
 
     st.divider()
 
     st.caption(
-        "FAJ Parser Diagnostic не является парсером. "
-        "Он предназначен для исследования структуры источников "
-        "перед созданием устойчивых адаптеров."
+        f"FAJ Platform v{APP_VERSION} · "
+        f"Parser Diagnostic v{DIAGNOSTIC_VERSION}"
     )
 
 
@@ -1427,4 +1401,5 @@ def main() -> None:
 # ============================================================
 
 if __name__ == "__main__":
+
     main()
