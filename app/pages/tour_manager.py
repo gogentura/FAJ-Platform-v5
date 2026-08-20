@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-TOUR MANAGER v5.0
+TOUR MANAGER v4.1
 ============================================================
 
 НАЗНАЧЕНИЕ:
@@ -18,7 +18,7 @@ TOUR MANAGER v5.0
     - добавление матчей;
     - просмотр матчей тура;
     - удаление матчей;
-    - ОЧИСТКА матчей тура (сам тур НЕ удаляется);
+    - удаление туров;
     - переход к Predict Round;
     - переход к Import Facts.
 
@@ -72,11 +72,21 @@ Tour Manager НЕ рассчитывает:
 Внутренние чемпионаты и Лига чемпионов
 являются отдельными competition-контекстами.
 
-ТУРЫ НЕ УДАЛЯЮТСЯ.
+ВАЖНО:
 
-Удаляются только матчи тура.
+LOCKED / исторический матч НЕ блокирует
+ручное удаление.
 
-Это гарантирует целостность календаря сезона.
+Причина:
+    пользователь может самостоятельно создать
+    ошибочный матч, ошибочно импортировать данные
+    или обнаружить ошибку в календаре.
+
+Поэтому Tour Manager сохраняет возможность
+исправления календаря вручную.
+
+Перед удалением заблокированного матча
+показывается предупреждение.
 
 ============================================================
 """
@@ -440,54 +450,30 @@ def main() -> None:
         sid
     )
 
-    round_numbers = sorted(
-        {
-            int(
-                row_value(
-                    current_round,
-                    "round_number",
-                    0,
-                )
-            )
-            for current_round in rounds
-            if row_value(
-                current_round,
-                "round_number",
-            ) is not None
-        }
-    )
-
-    max_existing = max(
-        round_numbers,
-        default=0,
-    )
-
+    # ========================================================
+    # ВСЕ ДОПУСТИМЫЕ НОМЕРА ТУРОВ
+    # ========================================================
+    #
+    # ВАЖНО:
+    # Номер тура не зависит от того,
+    # существует ли тур сейчас в БД.
+    #
+    # Это позволяет:
+    #   - восстановить удалённый тур;
+    #   - создать пропущенный тур;
+    #   - очистить матчи тура;
+    #   - заново добавить матчи.
+    #
+    # Сам тур является частью структуры календаря.
+    #
     selectable_rounds = list(
-        round_numbers
-    )
-
-    if max_existing < max_rounds:
-
-        selectable_rounds.append(
-            max_existing + 1
-        )
-
-    selectable_rounds = sorted(
-        set(selectable_rounds)
-    )
-
-    if not selectable_rounds:
-
-        selectable_rounds = [1]
-
-    default_index = (
-        len(selectable_rounds) - 1
+        range(1, max_rounds + 1)
     )
 
     round_number = st.selectbox(
         "Выберите тур",
         selectable_rounds,
-        index=default_index,
+        index=0,
         key="tour_round_number",
         format_func=lambda number:
             get_round_label(
@@ -1280,143 +1266,131 @@ def main() -> None:
                             )
 
     # ========================================================
-    # 14. ОЧИСТКА МАТЧЕЙ ТУРА
+    # 14. DELETE ROUND
     # ========================================================
 
     st.divider()
 
     st.subheader(
-        "🗑 Очистка матчей тура"
+        "⚠️ Управление туром"
     )
 
-    if not matches:
+    if locked_round:
 
-        st.info(
-            "В этом туре нет матчей для очистки."
+        st.warning(
+            "⚠️ В туре есть заблокированные "
+            "исторические матчи."
         )
 
-    else:
+        st.info(
+            "Удаление всё равно разрешено, "
+            "поскольку Tour Manager должен "
+            "позволять исправлять ошибочно "
+            "созданный или импортированный тур."
+        )
+
+    if st.button(
+        "🗑️ Удалить тур",
+        key="delete_round",
+        use_container_width=True,
+    ):
+
+        st.session_state[
+            "confirm_delete_round"
+        ] = True
+
+    if st.session_state.get(
+        "confirm_delete_round",
+        False,
+    ):
 
         if locked_round:
 
+            st.error(
+                "⚠️ ВНИМАНИЕ: этот тур содержит "
+                "заблокированные исторические факты."
+            )
+
             st.warning(
-                "⚠️ В туре есть заблокированные "
-                "исторические матчи."
+                "Удаление тура удалит его матчи "
+                "через database.py. "
+                "Продолжайте только если тур "
+                "создан ошибочно."
             )
 
-            st.info(
-                "Очистка удалит все матчи тура, "
-                "включая заблокированные. "
-                "Сам тур останется в календаре."
+        else:
+
+            st.warning(
+                f"⚠️ Вы собираетесь удалить "
+                f"{get_round_label(competition, round_number)} "
+                f"и его матчи."
             )
 
-        if st.button(
-            "🗑 Очистить все матчи тура",
-            key="clear_round_matches",
-            use_container_width=True,
-        ):
+        col_confirm, col_cancel = (
+            st.columns(2)
+        )
 
-            st.session_state[
-                "confirm_clear_round_matches"
-            ] = True
+        with col_confirm:
 
-        if st.session_state.get(
-            "confirm_clear_round_matches",
-            False,
-        ):
-
-            if locked_round:
-
-                st.error(
-                    "⚠️ ВНИМАНИЕ: этот тур содержит "
-                    "заблокированные исторические факты."
-                )
-
-                st.warning(
-                    "Очистка удалит ВСЕ матчи тура, "
-                    "включая заблокированные. "
-                    "Сам тур останется в календаре."
-                )
-
-            else:
-
-                st.warning(
-                    f"⚠️ Вы собираетесь удалить ВСЕ матчи "
-                    f"{get_round_label(competition, round_number)}. "
-                    f"Сам тур останется."
-                )
-
-            col_confirm, col_cancel = (
-                st.columns(2)
+            button_text = (
+                "⚠️ Да, удалить ошибочный тур"
+                if locked_round
+                else "Да, удалить тур"
             )
 
-            with col_confirm:
+            if st.button(
+                button_text,
+                type="primary",
+                key="confirm_delete_round_button",
+                use_container_width=True,
+            ):
 
-                button_text = (
-                    "⚠️ Да, очистить все матчи"
-                    if locked_round
-                    else "Да, очистить все матчи"
-                )
+                try:
 
-                if st.button(
-                    button_text,
-                    type="primary",
-                    key="confirm_clear_round_matches_button",
-                    use_container_width=True,
-                ):
+                    deleted = db.delete_round(
+                        round_id
+                    )
 
-                    try:
+                    st.session_state[
+                        "confirm_delete_round"
+                    ] = False
 
-                        deleted_count = 0
-
-                        for match in matches:
-
-                            match_id = row_value(
-                                match,
-                                "id",
-                            )
-
-                            if match_id is not None:
-
-                                deleted = db.delete_match(
-                                    int(match_id)
-                                )
-
-                                if deleted:
-
-                                    deleted_count += 1
-
-                        st.session_state[
-                            "confirm_clear_round_matches"
-                        ] = False
+                    if deleted:
 
                         st.success(
-                            f"✅ Удалено матчей: {deleted_count}. "
-                            f"Тур {get_round_label(competition, round_number)} "
-                            f"остался."
+                            f"✅ "
+                            f"{get_round_label(competition, round_number)} "
+                            f"удалён."
                         )
 
                         st.rerun()
 
-                    except Exception as exc:
+                    else:
 
-                        st.error(
-                            f"❌ Ошибка очистки тура: {exc}"
+                        st.warning(
+                            "Тур уже отсутствует."
                         )
 
-            with col_cancel:
+                except Exception as exc:
 
-                if st.button(
-                    "Отмена",
-                    key="cancel_clear_round_matches",
-                    use_container_width=True,
-                ):
+                    st.error(
+                        "❌ Ошибка удаления тура: "
+                        f"{exc}"
+                    )
 
-                    st.session_state[
-                        "confirm_clear_round_matches"
-                    ] = False
+        with col_cancel:
 
-                    st.rerun()
+            if st.button(
+                "Отмена",
+                key="cancel_delete_round",
+                use_container_width=True,
+            ):
+
+                st.session_state[
+                    "confirm_delete_round"
+                ] = False
+
+                st.rerun()
 
     # ========================================================
     # 15. NAVIGATION
