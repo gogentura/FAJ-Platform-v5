@@ -18,7 +18,8 @@ MAIN APPLICATION
     ├── tour_manager                ├── passports
     ├── predict_round               ├── analytics
     ├── import_facts                ├── history
-    └── round_complete              ├── system
+    └── round_complete              ├── etc
+                                     ├── system
                                      ├── diagnostic
                                      └── reset_data
 
@@ -28,9 +29,9 @@ MAIN APPLICATION
         ↓
     Round Center
         ↓
-    FAJ Cycle
+    FAJ Cycle (оркестратор, без кнопки в UI)
         ↓
-    Learning Engine
+    Learning Engine → ETC → Predictions
 
 ПРИНЦИПЫ:
 
@@ -109,22 +110,6 @@ except Exception:
 
 
 # ============================================================
-# FAJ CYCLE
-# ============================================================
-
-try:
-    from app.faj_cycle import run_faj_cycle
-
-    FAJ_CYCLE_AVAILABLE = True
-    FAJ_CYCLE_IMPORT_ERROR = None
-
-except Exception as exc:
-    run_faj_cycle = None
-    FAJ_CYCLE_AVAILABLE = False
-    FAJ_CYCLE_IMPORT_ERROR = str(exc)
-
-
-# ============================================================
 # SESSION STATE
 # ============================================================
 
@@ -133,9 +118,6 @@ if "page" not in st.session_state:
 
 if "bootstrap_result" not in st.session_state:
     st.session_state.bootstrap_result = None
-
-if "cycle_result" not in st.session_state:
-    st.session_state.cycle_result = None
 
 
 # ============================================================
@@ -493,6 +475,12 @@ with st.sidebar:
         navigate("history")
 
     if st.button(
+        "🧠 ETC",
+        use_container_width=True,
+    ):
+        navigate("etc")
+
+    if st.button(
         "⚙️ Система",
         use_container_width=True,
     ):
@@ -509,46 +497,6 @@ with st.sidebar:
         use_container_width=True,
     ):
         navigate("diagnostic")
-
-    st.divider()
-
-    # ========================================================
-    # FAJ CYCLE
-    # ========================================================
-
-    if st.button(
-        "🔄 Запустить FAJ Cycle",
-        type="primary",
-        use_container_width=True,
-    ):
-
-        if FAJ_CYCLE_AVAILABLE and run_faj_cycle:
-
-            with st.spinner(
-                "🧠 FAJ Cycle выполняет полный цикл..."
-            ):
-
-                try:
-
-                    st.session_state.cycle_result = (
-                        run_faj_cycle()
-                    )
-
-                except Exception as exc:
-
-                    st.session_state.cycle_result = {
-                        "success": False,
-                        "errors": [str(exc)],
-                    }
-
-            st.rerun()
-
-        else:
-
-            st.error(
-                "❌ FAJ Cycle недоступен: "
-                f"{FAJ_CYCLE_IMPORT_ERROR or 'Ошибка импорта'}"
-            )
 
     st.divider()
 
@@ -849,6 +797,28 @@ elif st.session_state.page == "history":
             "Прогнозы",
             counts["predictions"],
         )
+
+
+# ============================================================
+# ETC — EVOLUTION TRAINING CENTER
+# ============================================================
+
+elif st.session_state.page == "etc":
+
+    try:
+
+        from app.pages.etc import main
+
+        main()
+
+    except Exception as exc:
+
+        st.error(
+            f"❌ Ошибка загрузки страницы ETC: {exc}"
+        )
+
+        with st.expander("Техническая ошибка"):
+            st.exception(exc)
 
 
 # ============================================================
