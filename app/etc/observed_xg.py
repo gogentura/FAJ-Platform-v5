@@ -5,77 +5,52 @@
 ============================================================
 FAJ Platform v12.1
 Evolution Training Center
-Observed xG Engine v1.0
+Observed xG v1.0
 ============================================================
 
 НАЗНАЧЕНИЕ:
 
-    Получение и нормализация фактического Observed xG
-    после завершения матча.
-
-АРХИТЕКТУРА:
-
-    match
-       │
-       ├── Predictive xG
-       │      └── НЕ изменяем
-       │
-       └── match_statistics
-              └── фактический xG
-                       │
-                       ▼
-                 Observed xG
-                       │
-                       ▼
-                ETC / Calibration
-
-ПРИНЦИПЫ:
-
-    1. SQLite only.
-    2. FAJDatabase — единый источник доступа к БД.
-    3. Не удаляем данные.
-    4. Не изменяем исторические факты.
-    5. Не подменяем Observed xG фактическими голами.
-    6. Не изменяем Predictive xG.
-    7. Не изменяем FAJ Rating.
-    8. Не изменяем model_parameters.
-    9. Не выполняем обучение.
-   10. Если Observed xG отсутствует — возвращаем статус
-       missing, а не выдумываем значение.
-
-Observed xG:
-
-    match_statistics.xg
-
-Predictive xG:
-
-    matches.home_xg
-    matches.away_xg
-
-    и/или
-
-    match_predictions.xg_home
-    match_predictions.xg_away
+    Получение и нормализация фактического xG матча
+    для Evolution Training Center (ETC).
 
 ВАЖНО:
 
-    Этот модуль является первым слоем ETC.
+    Predictive xG:
+        matches.home_xg
+        matches.away_xg
 
-    Он только отвечает на вопрос:
+    Observed xG:
+        match_statistics.xg
 
-        "Какой фактический xG был зафиксирован
-         для завершённого матча?"
+Observed xG — это ФАКТ после завершения матча.
 
-    Сравнение Predictive vs Observed выполняет
-    следующий модуль:
+МОДУЛЬ НЕ:
 
-        xg_calibration.py
+    - изменяет прогнозы;
+    - изменяет FAJ Rating;
+    - изменяет model_parameters;
+    - запускает обучение;
+    - создаёт новые прогнозы;
+    - удаляет данные;
+    - изменяет match_results;
+    - изменяет gold_dataset.
+
+МОДУЛЬ:
+
+    1. получает матч;
+    2. получает фактическую статистику;
+    3. извлекает xG, если он предоставлен источником;
+    4. проверяет качество данных;
+    5. при отсутствии xG может рассчитать fallback-оценку;
+    6. возвращает унифицированный результат ETC.
+
+SQLite only.
+FAJDatabase — единственный источник доступа к БД.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from app.database import FAJDatabase
@@ -84,328 +59,243 @@ from app.database import FAJDatabase
 logger = logging.getLogger(__name__)
 
 
-ENGINE_NAME = "FAJ Observed xG Engine"
-ENGINE_VERSION = "1.0"
+OBSERVED_XG_VERSION = "1.0"
+MODULE_NAME = "FAJ ETC Observed xG v1.0"
 
 
 # ============================================================
-# HELPERS
+# SAFE CONVERSION
 # ============================================================
 
-def _now() -> str:
-    return datetime.now().isoformat()
-
-
-def _safe_float(value: Any) -> Optional[float]:
+def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
     """
-    Безопасное преобразование значения в float.
-
-    None / некорректное значение -> None.
+    Безопасно преобразует значение в float.
     """
     if value is None:
-        return None
+        return default
 
     try:
         return float(value)
     except (TypeError, ValueError):
-        return None
+        return default
 
 
-def _safe_int(value: Any) -> Optional[int]:
+def _safe_int(value: Any, default: int = 0) -> int:
     """
-    Безопасное преобразование значения в int.
+    Безопасно преобразует значение в int.
     """
     if value is None:
-        return None
+        return default
 
     try:
         return int(value)
     except (TypeError, ValueError):
-        return None
+        return default
 
 
-# ============================================================
-# OBSERVED XG ENGINE
-# ============================================================
-
-class ObservedXGEngine:
+def _clamp(value: float, minimum: float, maximum: float) -> float:
     """
-    FAJ Observed xG Engine v1.0.
+    Ограничивает значение диапазоном.
+    """
+    return max(minimum, min(maximum, value))
 
-    Отвечает только за получение фактического xG
-    из match_statistics.
 
-    Никакого обучения и изменения модели здесь нет.
+# ============================================================
+# OBSERVED XG
+# ============================================================
+
+class ObservedXG:
+    """
+    FAJ ETC — Observed xG Engine.
+
+    Отвечает только за фактический xG.
+
+    Источник №1:
+        match_statistics.xg
+
+    Источник №2:
+        fallback-расчёт из фактической статистики,
+        если источник не предоставил xG.
     """
 
     def __init__(self, db: Optional[FAJDatabase] = None) -> None:
         self.db = db or FAJDatabase()
 
     # ========================================================
-    # PUBLIC API
+    # PUBLIC
     # ========================================================
 
-    def get_match_observed_xg(
-        self,
-        match_id: int,
-    ) -> Dict[str, Any]:
+    def get_match(self, match_id: int) -> Dict[str, Any]:
         """
-        Получает Observed xG одного матча.
+        Получает Observed xG для одного завершённого матча.
 
-        Возвращает нормализованный словарь:
-
-        {
-            "success": True/False,
-            "status": "complete"/"missing"/"invalid"/"error",
-            "match_id": ...,
-            "home_team_id": ...,
-            "away_team_id": ...,
-            "observed_home_xg": ...,
-            "observed_away_xg": ...,
-            "source": "match_statistics",
-            "quality": ...
-        }
+        Возвращает унифицированную структуру.
         """
 
-        result: Dict[str, Any] = {
+        result = {
             "success": False,
-            "status": "missing",
-            "engine": ENGINE_NAME,
-            "version": ENGINE_VERSION,
+            "module": MODULE_NAME,
+            "version": OBSERVED_XG_VERSION,
             "match_id": match_id,
+
             "home_team_id": None,
             "away_team_id": None,
-            "observed_home_xg": None,
-            "observed_away_xg": None,
-            "source": "match_statistics",
+
+            "home_xg": None,
+            "away_xg": None,
+
+            "home_xg_source": None,
+            "away_xg_source": None,
+
+            "home_statistics": {},
+            "away_statistics": {},
+
             "quality": "unknown",
-            "checked_at": _now(),
-            "error": None,
+            "errors": [],
         }
 
         try:
-            # ------------------------------------------------
-            # 1. Получаем матч
-            # ------------------------------------------------
-
             match = self._get_match(match_id)
 
             if not match:
-                result["status"] = "error"
-                result["error"] = f"Матч {match_id} не найден."
+                result["errors"].append(
+                    f"Матч {match_id} не найден."
+                )
                 return result
 
-            home_team_id = _safe_int(match.get("home_team_id"))
-            away_team_id = _safe_int(match.get("away_team_id"))
-
-            result["home_team_id"] = home_team_id
-            result["away_team_id"] = away_team_id
-
-            # ------------------------------------------------
-            # 2. Получаем фактическую статистику
-            # ------------------------------------------------
+            result["home_team_id"] = match.get("home_team_id")
+            result["away_team_id"] = match.get("away_team_id")
 
             statistics = self._get_match_statistics(match_id)
 
             if not statistics:
-                result["status"] = "missing"
-                result["quality"] = "no_statistics"
+                result["errors"].append(
+                    f"Фактическая статистика для матча "
+                    f"{match_id} отсутствует."
+                )
                 return result
 
-            # ------------------------------------------------
-            # 3. Ищем xG по командам
-            # ------------------------------------------------
+            home_stats = self._find_team_stats(
+                statistics,
+                match.get("home_team_id")
+            )
 
-            home_xg = None
-            away_xg = None
+            away_stats = self._find_team_stats(
+                statistics,
+                match.get("away_team_id")
+            )
 
-            for row in statistics:
-                team_id = _safe_int(row.get("team_id"))
-                xg = _safe_float(row.get("xg"))
-
-                if team_id is None or xg is None:
-                    continue
-
-                if team_id == home_team_id:
-                    home_xg = xg
-
-                elif team_id == away_team_id:
-                    away_xg = xg
-
-            result["observed_home_xg"] = home_xg
-            result["observed_away_xg"] = away_xg
+            result["home_statistics"] = home_stats or {}
+            result["away_statistics"] = away_stats or {}
 
             # ------------------------------------------------
-            # 4. Проверка полноты
+            # PRIMARY SOURCE
             # ------------------------------------------------
 
-            if home_xg is None and away_xg is None:
-                result["status"] = "missing"
-                result["quality"] = "xg_missing"
-                return result
+            home_xg = _safe_float(
+                home_stats.get("xg") if home_stats else None
+            )
 
-            if home_xg is None or away_xg is None:
-                result["status"] = "invalid"
-                result["quality"] = "partial_xg"
-                return result
+            away_xg = _safe_float(
+                away_stats.get("xg") if away_stats else None
+            )
 
-            # ------------------------------------------------
-            # 5. Проверка диапазона
-            # ------------------------------------------------
+            if home_xg is not None:
+                result["home_xg"] = _clamp(home_xg, 0.0, 10.0)
+                result["home_xg_source"] = "match_statistics"
 
-            if home_xg < 0 or away_xg < 0:
-                result["status"] = "invalid"
-                result["quality"] = "negative_xg"
-                result["error"] = "Observed xG не может быть отрицательным."
-                return result
+            if away_xg is not None:
+                result["away_xg"] = _clamp(away_xg, 0.0, 10.0)
+                result["away_xg_source"] = "match_statistics"
 
             # ------------------------------------------------
-            # 6. Всё хорошо
+            # FALLBACK
             # ------------------------------------------------
 
-            result["success"] = True
-            result["status"] = "complete"
-            result["quality"] = "complete"
+            if result["home_xg"] is None and home_stats:
+                fallback = self._estimate_xg(home_stats)
+
+                if fallback is not None:
+                    result["home_xg"] = fallback
+                    result["home_xg_source"] = "statistical_fallback"
+
+            if result["away_xg"] is None and away_stats:
+                fallback = self._estimate_xg(away_stats)
+
+                if fallback is not None:
+                    result["away_xg"] = fallback
+                    result["away_xg_source"] = "statistical_fallback"
+
+            # ------------------------------------------------
+            # QUALITY
+            # ------------------------------------------------
+
+            result["quality"] = self._calculate_quality(
+                result["home_xg"],
+                result["away_xg"],
+                result["home_xg_source"],
+                result["away_xg_source"],
+            )
+
+            if result["home_xg"] is None:
+                result["errors"].append(
+                    "Home Observed xG отсутствует."
+                )
+
+            if result["away_xg"] is None:
+                result["errors"].append(
+                    "Away Observed xG отсутствует."
+                )
+
+            result["success"] = (
+                result["home_xg"] is not None
+                and result["away_xg"] is not None
+            )
 
             return result
 
         except Exception as exc:
             logger.exception(
-                "Observed xG error for match_id=%s",
-                match_id,
+                "Observed xG error for match %s",
+                match_id
             )
 
-            result["status"] = "error"
-            result["error"] = str(exc)
-
+            result["errors"].append(str(exc))
             return result
 
     # ========================================================
-    # BATCH
+    # MATCH
     # ========================================================
 
-    def get_observed_xg_for_matches(
-        self,
-        match_ids: List[int],
-    ) -> List[Dict[str, Any]]:
+    def _get_match(self, match_id: int) -> Optional[Dict[str, Any]]:
         """
-        Получает Observed xG для списка матчей.
-
-        Никаких изменений БД.
-        """
-
-        results: List[Dict[str, Any]] = []
-
-        for match_id in match_ids:
-            results.append(
-                self.get_match_observed_xg(match_id)
-            )
-
-        return results
-
-    # ========================================================
-    # COMPLETED MATCHES
-    # ========================================================
-
-    def get_completed_matches_with_observed_xg(
-        self,
-        limit: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
-        """
-        Возвращает завершённые матчи, для которых
-        удалось получить полный Observed xG.
-
-        ВАЖНО:
-
-        Матч считается подходящим только если:
-
-            home Observed xG != None
-            AND
-            away Observed xG != None
-        """
-
-        matches = self.db.get_matches()
-
-        results: List[Dict[str, Any]] = []
-
-        for match in matches:
-
-            match_id = _safe_int(match.get("id"))
-
-            if match_id is None:
-                continue
-
-            # Проверяем наличие фактического результата.
-            match_result = self.db.get_match_result(match_id)
-
-            if not match_result:
-                continue
-
-            home_goals = match_result.get("home_goals")
-            away_goals = match_result.get("away_goals")
-
-            if home_goals is None or away_goals is None:
-                continue
-
-            observed = self.get_match_observed_xg(match_id)
-
-            if not observed["success"]:
-                continue
-
-            item = dict(match)
-
-            item.update({
-                "observed_home_xg": observed["observed_home_xg"],
-                "observed_away_xg": observed["observed_away_xg"],
-                "observed_xg_status": observed["status"],
-                "observed_xg_quality": observed["quality"],
-                "observed_xg_source": observed["source"],
-            })
-
-            results.append(item)
-
-            if limit is not None and len(results) >= limit:
-                break
-
-        return results
-
-    # ========================================================
-    # DATABASE READERS
-    # ========================================================
-
-    def _get_match(
-        self,
-        match_id: int,
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Получает матч.
-
-        Используем FAJDatabase.get_matches(),
-        чтобы не создавать новый DB API.
+        Получает матч через FAJDatabase.
         """
 
         matches = self.db.get_matches()
 
         for match in matches:
-            if _safe_int(match.get("id")) == match_id:
-                return match
+            if int(match.get("id", -1)) == int(match_id):
+                return dict(match)
 
         return None
 
+    # ========================================================
+    # MATCH STATISTICS
+    # ========================================================
+
     def _get_match_statistics(
         self,
-        match_id: int,
+        match_id: int
     ) -> List[Dict[str, Any]]:
         """
         Получает фактическую статистику матча.
 
         database.py v12.1 не предоставляет отдельного
-        публичного метода get_match_statistics().
+        get_match_statistics(), поэтому используем
+        существующее соединение FAJDatabase.
 
-        Поэтому используем существующий get_connection()
-        только для READ.
-
-        Никаких INSERT / UPDATE / DELETE.
+        Только SELECT.
         """
 
         conn = self.db.get_connection()
@@ -415,27 +305,12 @@ class ObservedXGEngine:
 
             cursor.execute(
                 """
-                SELECT
-                    id,
-                    match_id,
-                    team_id,
-                    possession,
-                    shots,
-                    shots_on_target,
-                    corners,
-                    fouls,
-                    yellow_cards,
-                    red_cards,
-                    xg,
-                    big_chances,
-                    saves,
-                    passes,
-                    pass_accuracy
+                SELECT *
                 FROM match_statistics
                 WHERE match_id = ?
-                ORDER BY team_id ASC, id ASC
+                ORDER BY team_id ASC
                 """,
-                (match_id,),
+                (match_id,)
             )
 
             rows = cursor.fetchall()
@@ -445,78 +320,195 @@ class ObservedXGEngine:
         finally:
             conn.close()
 
+    # ========================================================
+    # TEAM STATISTICS
+    # ========================================================
+
+    @staticmethod
+    def _find_team_stats(
+        statistics: List[Dict[str, Any]],
+        team_id: Optional[int]
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Находит статистику конкретной команды.
+        """
+
+        if team_id is None:
+            return None
+
+        for row in statistics:
+            if row.get("team_id") == team_id:
+                return row
+
+        return None
+
+    # ========================================================
+    # FALLBACK XG
+    # ========================================================
+
+    def _estimate_xg(
+        self,
+        stats: Dict[str, Any]
+    ) -> Optional[float]:
+        """
+        Fallback-оценка Observed xG.
+
+        ВАЖНО:
+
+        Это НЕ основная формула FAJ xG.
+
+        Это только временная оценка фактического
+        качества атакующих действий, если источник
+        не предоставил xG.
+
+        Приоритет:
+
+            shots_on_target
+            shots
+            big_chances
+
+        Не используем голы — Observed xG должен быть
+        независим от фактического счёта.
+
+        Формула:
+
+            xG ≈
+                shots * 0.04
+                + shots_on_target * 0.10
+                + big_chances * 0.20
+
+        Затем ограничиваем диапазон [0.05, 5.0].
+        """
+
+        shots = _safe_int(stats.get("shots"), 0)
+        shots_on_target = _safe_int(
+            stats.get("shots_on_target"),
+            0
+        )
+        big_chances = _safe_int(
+            stats.get("big_chances"),
+            0
+        )
+
+        if (
+            shots <= 0
+            and shots_on_target <= 0
+            and big_chances <= 0
+        ):
+            return None
+
+        estimate = (
+            shots * 0.04
+            + shots_on_target * 0.10
+            + big_chances * 0.20
+        )
+
+        return round(
+            _clamp(estimate, 0.05, 5.0),
+            4
+        )
+
+    # ========================================================
+    # QUALITY
+    # ========================================================
+
+    @staticmethod
+    def _calculate_quality(
+        home_xg: Optional[float],
+        away_xg: Optional[float],
+        home_source: Optional[str],
+        away_source: Optional[str],
+    ) -> str:
+        """
+        Определяет качество Observed xG.
+        """
+
+        if home_xg is None or away_xg is None:
+            return "insufficient"
+
+        if (
+            home_source == "match_statistics"
+            and away_source == "match_statistics"
+        ):
+            return "high"
+
+        if (
+            home_source == "match_statistics"
+            or away_source == "match_statistics"
+        ):
+            return "medium"
+
+        if (
+            home_source == "statistical_fallback"
+            and away_source == "statistical_fallback"
+        ):
+            return "fallback"
+
+        return "unknown"
+
 
 # ============================================================
-# PUBLIC FUNCTIONS
+# PUBLIC API
 # ============================================================
 
 def get_observed_xg(
     match_id: int,
-    db: Optional[FAJDatabase] = None,
+    db: Optional[FAJDatabase] = None
 ) -> Dict[str, Any]:
     """
-    Удобный публичный API.
+    Удобная публичная функция.
 
     Пример:
 
-        result = get_observed_xg(match_id)
+        data = get_observed_xg(123)
 
-        if result["success"]:
-            print(result["observed_home_xg"])
-            print(result["observed_away_xg"])
+        print(data["home_xg"])
+        print(data["away_xg"])
     """
 
-    engine = ObservedXGEngine(db=db)
+    engine = ObservedXG(db=db)
 
-    return engine.get_match_observed_xg(match_id)
-
-
-def get_completed_matches_with_observed_xg(
-    limit: Optional[int] = None,
-    db: Optional[FAJDatabase] = None,
-) -> List[Dict[str, Any]]:
-    """
-    Удобный публичный API для ETC.
-    """
-
-    engine = ObservedXGEngine(db=db)
-
-    return engine.get_completed_matches_with_observed_xg(
-        limit=limit
-    )
+    return engine.get_match(match_id)
 
 
 # ============================================================
-# SELF TEST / MANUAL EXECUTION
+# TEST / MANUAL EXECUTION
 # ============================================================
 
 if __name__ == "__main__":
+    import sys
 
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(message)s",
+        format="%(asctime)s | %(levelname)s | %(message)s"
     )
 
-    engine = ObservedXGEngine()
-
-    print("=" * 70)
-    print("FAJ OBSERVED xG ENGINE v1.0")
-    print("=" * 70)
-
-    matches = engine.get_completed_matches_with_observed_xg(
-        limit=10
-    )
-
-    print(f"Матчей с Observed xG: {len(matches)}")
-
-    for match in matches:
+    if len(sys.argv) < 2:
         print(
-            f"{match.get('home_team_id')} "
-            f"vs "
-            f"{match.get('away_team_id')} | "
-            f"Observed xG: "
-            f"{match.get('observed_home_xg')} : "
-            f"{match.get('observed_away_xg')}"
+            "Использование:\n"
+            "python -m app.etc.observed_xg MATCH_ID"
         )
+        raise SystemExit(1)
+
+    match_id = int(sys.argv[1])
+
+    data = get_observed_xg(match_id)
+
+    print("=" * 70)
+    print("FAJ ETC — OBSERVED xG")
+    print("=" * 70)
+    print(f"Матч:       {data['match_id']}")
+    print(f"Home xG:    {data['home_xg']}")
+    print(f"Away xG:    {data['away_xg']}")
+    print(f"Источник H: {data['home_xg_source']}")
+    print(f"Источник A: {data['away_xg_source']}")
+    print(f"Качество:   {data['quality']}")
+    print(f"Успех:      {data['success']}")
+
+    if data["errors"]:
+        print("\nОшибки:")
+
+        for error in data["errors"]:
+            print(f"  ❌ {error}")
 
     print("=" * 70)
