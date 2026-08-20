@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-TOUR MANAGER v4.0
+TOUR MANAGER v4.1
 ============================================================
 
 НАЗНАЧЕНИЕ:
@@ -17,8 +17,8 @@ TOUR MANAGER v4.0
     - создание тура;
     - добавление матчей;
     - просмотр матчей тура;
-    - удаление НЕСЫГРАННЫХ матчей;
-    - удаление НЕСЫГРАННЫХ туров;
+    - удаление матчей;
+    - удаление туров;
     - переход к Predict Round;
     - переход к Import Facts.
 
@@ -45,7 +45,7 @@ Predict Round
       ↓
  Import Facts
       ↓
-Played Tours
+ Played Tours
       ↓
  FAJ ETC
       ↓
@@ -57,21 +57,37 @@ Calibration / Rating / Learning
 
 SQLite only.
 
-database.py — единственный источник работы со схемой БД.
+database.py — единственный источник работы
+со схемой БД.
 
-Tour Manager НЕ рассчитывает рейтинг.
+Tour Manager НЕ рассчитывает:
+    - xG;
+    - рейтинг;
+    - обучение;
+    - статистику;
+    - паспорта.
 
 Паспорт клуба ≠ FAJ Club Rating.
 
 Внутренние чемпионаты и Лига чемпионов
 являются отдельными competition-контекстами.
 
-ЗАБЛОКИРОВАННЫЕ МАТЧИ НЕ УДАЛЯЮТСЯ.
+ВАЖНО:
 
-ЗАБЛОКИРОВАННЫЙ ТУР НЕ УДАЛЯЕТСЯ.
+LOCKED / исторический матч НЕ блокирует
+ручное удаление.
 
-Исторические факты не должны уничтожаться
-через страницу календаря.
+Причина:
+    пользователь может самостоятельно создать
+    ошибочный матч, ошибочно импортировать данные
+    или обнаружить ошибку в календаре.
+
+Поэтому Tour Manager сохраняет возможность
+исправления календаря вручную.
+
+Перед удалением заблокированного матча
+показывается предупреждение.
+
 ============================================================
 """
 
@@ -117,6 +133,10 @@ COMPETITION_CONFIG = {
 }
 
 
+# ============================================================
+# ROUND LABELS
+# ============================================================
+
 ROUND_LABELS = {
     "Лига чемпионов": {
         1: "Общий этап — Тур 1",
@@ -157,7 +177,9 @@ def get_config(competition: str) -> dict[str, Any]:
 
 
 def get_max_rounds(competition: str) -> int:
-    return int(get_config(competition)["max_rounds"])
+    return int(
+        get_config(competition)["max_rounds"]
+    )
 
 
 def get_round_label(
@@ -165,7 +187,10 @@ def get_round_label(
     round_number: int,
 ) -> str:
 
-    labels = ROUND_LABELS.get(competition, {})
+    labels = ROUND_LABELS.get(
+        competition,
+        {},
+    )
 
     return labels.get(
         int(round_number),
@@ -181,7 +206,12 @@ def row_value(
 
     try:
         return row[key]
-    except (KeyError, IndexError, TypeError):
+
+    except (
+        KeyError,
+        IndexError,
+        TypeError,
+    ):
         return default
 
 
@@ -196,9 +226,13 @@ def team_id(team: Any) -> Any:
 def team_name(team: Any) -> str:
 
     if isinstance(team, dict):
-        return str(team.get("name", ""))
+        return str(
+            team.get("name", "")
+        )
 
-    return str(team["name"])
+    return str(
+        team["name"]
+    )
 
 
 def season_id(season: Any) -> Any:
@@ -212,9 +246,13 @@ def season_id(season: Any) -> Any:
 def season_name(season: Any) -> str:
 
     if isinstance(season, dict):
-        return str(season.get("name", ""))
+        return str(
+            season.get("name", "")
+        )
 
-    return str(season["name"])
+    return str(
+        season["name"]
+    )
 
 
 # ============================================================
@@ -226,28 +264,23 @@ def match_is_locked(
     match_id: int,
 ) -> bool:
 
+    """
+    Проверяет наличие заблокированного результата.
+
+    ВАЖНО:
+        LOCKED используется только как информационный
+        статус.
+
+        Он НЕ запрещает удаление матча.
+    """
+
     try:
-        return bool(db.is_result_locked(match_id))
+        return bool(
+            db.is_result_locked(match_id)
+        )
+
     except Exception:
         return False
-
-
-def round_has_locked_matches(
-    db: FAJDatabase,
-    matches: list[Any],
-) -> bool:
-
-    for match in matches:
-
-        match_id = row_value(match, "id")
-
-        if match_id is None:
-            continue
-
-        if match_is_locked(db, int(match_id)):
-            return True
-
-    return False
 
 
 # ============================================================
@@ -263,6 +296,7 @@ def main() -> None:
     )
 
     db = FAJDatabase()
+
     match_mgr = MatchManager(db)
 
     # ========================================================
@@ -271,7 +305,9 @@ def main() -> None:
 
     st.subheader("🏆 Соревнование")
 
-    competitions = list(COMPETITION_CONFIG.keys())
+    competitions = list(
+        COMPETITION_CONFIG.keys()
+    )
 
     competition = st.selectbox(
         "Выберите соревнование",
@@ -280,16 +316,21 @@ def main() -> None:
         key="tour_competition",
     )
 
-    config = get_config(competition)
+    config = get_config(
+        competition
+    )
 
-    is_ucl = config["type"] == "ucl"
+    is_ucl = (
+        config["type"] == "ucl"
+    )
 
     if is_ucl:
 
         st.info(
-            "🏆 Лига чемпионов работает в отдельном "
-            "турнирном контуре. Турнирная таблица и "
-            "FAJ Rating ЛЧ не смешиваются с внутренними "
+            "🏆 Лига чемпионов работает "
+            "в отдельном турнирном контуре. "
+            "Турнирная таблица и FAJ Rating ЛЧ "
+            "не смешиваются с внутренними "
             "чемпионатами."
         )
 
@@ -316,39 +357,48 @@ def main() -> None:
     if not league_seasons:
 
         st.warning(
-            f"⚠️ В базе пока нет сезона для "
-            f"«{competition}»."
+            f"⚠️ В базе пока нет сезона "
+            f"для «{competition}»."
         )
 
         st.info(
-            "Сначала создайте соответствующий сезон "
-            "в базе данных."
+            "Сначала создайте соответствующий "
+            "сезон в базе данных."
         )
 
         return
 
     # --------------------------------------------------------
-    # Выбираем сезон 2026/27, если он есть.
+    # Предпочитаем сезон 2026/27.
     # --------------------------------------------------------
 
     selected_season = None
 
     for season in league_seasons:
 
-        name = season_name(season)
+        name = season_name(
+            season
+        )
 
         if (
             "2026/27" in name
             or "2026-27" in name
             or "2026" in name
         ):
+
             selected_season = season
+
             break
 
     if selected_season is None:
-        selected_season = league_seasons[0]
 
-    sid = season_id(selected_season)
+        selected_season = (
+            league_seasons[0]
+        )
+
+    sid = season_id(
+        selected_season
+    )
 
     st.caption(
         f"Сезон: **{season_name(selected_season)}**"
@@ -358,30 +408,33 @@ def main() -> None:
     # 3. TEAMS
     # ========================================================
 
-    teams = db.get_teams(league=competition)
+    teams = db.get_teams(
+        league=competition
+    )
 
     if not teams:
 
         st.warning(
-            f"⚠️ В базе нет команд для "
-            f"«{competition}»."
+            f"⚠️ В базе нет команд "
+            f"для «{competition}»."
         )
 
         if is_ucl:
 
             st.info(
-                "Для Лиги чемпионов команды будут "
-                "загружены отдельным контуром."
+                "Для Лиги чемпионов команды "
+                "будут загружены отдельным "
+                "турнирным контуром."
             )
 
         return
 
     name_to_id = {
-        team_name(team): int(team_id(team))
+        team_name(team): int(
+            team_id(team)
+        )
         for team in teams
     }
-
-    team_names = sorted(name_to_id.keys())
 
     # ========================================================
     # 4. ROUND
@@ -389,22 +442,26 @@ def main() -> None:
 
     st.subheader("📅 Тур")
 
-    max_rounds = get_max_rounds(competition)
+    max_rounds = get_max_rounds(
+        competition
+    )
 
-    rounds = db.get_rounds(sid)
+    rounds = db.get_rounds(
+        sid
+    )
 
     round_numbers = sorted(
         {
             int(
                 row_value(
-                    r,
+                    current_round,
                     "round_number",
                     0,
                 )
             )
-            for r in rounds
+            for current_round in rounds
             if row_value(
-                r,
+                current_round,
                 "round_number",
             ) is not None
         }
@@ -415,9 +472,12 @@ def main() -> None:
         default=0,
     )
 
-    selectable_rounds = list(round_numbers)
+    selectable_rounds = list(
+        round_numbers
+    )
 
     if max_existing < max_rounds:
+
         selectable_rounds.append(
             max_existing + 1
         )
@@ -439,10 +499,10 @@ def main() -> None:
         selectable_rounds,
         index=default_index,
         key="tour_round_number",
-        format_func=lambda x:
+        format_func=lambda number:
             get_round_label(
                 competition,
-                x,
+                number,
             ),
     )
 
@@ -465,7 +525,10 @@ def main() -> None:
             == int(round_number)
         ):
 
-            existing_round = current_round
+            existing_round = (
+                current_round
+            )
+
             break
 
     # ========================================================
@@ -475,7 +538,8 @@ def main() -> None:
     if existing_round is None:
 
         st.info(
-            f"⚪ {get_round_label(competition, round_number)} "
+            f"⚪ "
+            f"{get_round_label(competition, round_number)} "
             f"ещё не создан."
         )
 
@@ -488,21 +552,25 @@ def main() -> None:
 
             try:
 
-                created_round_id = db.create_round(
-                    sid,
-                    int(round_number),
+                created_round_id = (
+                    db.create_round(
+                        sid,
+                        int(round_number),
+                    )
                 )
 
                 if created_round_id is None:
 
                     st.error(
-                        "❌ База данных не вернула ID тура."
+                        "❌ База данных "
+                        "не вернула ID тура."
                     )
 
                     return
 
                 st.success(
-                    f"✅ {get_round_label(competition, round_number)} "
+                    f"✅ "
+                    f"{get_round_label(competition, round_number)} "
                     f"создан."
                 )
 
@@ -511,7 +579,8 @@ def main() -> None:
             except Exception as exc:
 
                 st.error(
-                    f"❌ Не удалось создать тур: {exc}"
+                    f"❌ Не удалось создать тур: "
+                    f"{exc}"
                 )
 
         return
@@ -524,7 +593,8 @@ def main() -> None:
     )
 
     st.success(
-        f"🟢 {get_round_label(competition, round_number)} "
+        f"🟢 "
+        f"{get_round_label(competition, round_number)} "
         f"создан"
     )
 
@@ -532,22 +602,48 @@ def main() -> None:
     # 7. MATCHES
     # ========================================================
 
-    matches = match_mgr.get_round_matches(
-        round_id
-    )
-
-    locked_round = round_has_locked_matches(
-        db,
-        matches,
+    matches = (
+        match_mgr.get_round_matches(
+            round_id
+        )
     )
 
     # ========================================================
-    # 8. INFO
+    # 8. LOCK INFORMATION
+    # ========================================================
+
+    locked_count = 0
+
+    for match in matches:
+
+        current_match_id = row_value(
+            match,
+            "id",
+        )
+
+        if current_match_id is None:
+            continue
+
+        if match_is_locked(
+            db,
+            int(current_match_id),
+        ):
+
+            locked_count += 1
+
+    locked_round = (
+        locked_count > 0
+    )
+
+    # ========================================================
+    # 9. INFO
     # ========================================================
 
     st.divider()
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3 = st.columns(
+        3
+    )
 
     with col1:
 
@@ -557,21 +653,6 @@ def main() -> None:
         )
 
     with col2:
-
-        locked_count = sum(
-            1
-            for match in matches
-            if row_value(match, "id") is not None
-            and match_is_locked(
-                db,
-                int(
-                    row_value(
-                        match,
-                        "id",
-                    )
-                ),
-            )
-        )
 
         st.metric(
             "LOCKED",
@@ -584,7 +665,7 @@ def main() -> None:
 
             st.metric(
                 "Статус",
-                "🔒 История",
+                "📚 История",
             )
 
         else:
@@ -595,7 +676,7 @@ def main() -> None:
             )
 
     # ========================================================
-    # 9. TOURNAMENT TABLE / RATING
+    # 10. TOURNAMENT TABLE / RATING
     # ========================================================
 
     with st.expander(
@@ -603,11 +684,21 @@ def main() -> None:
         expanded=False,
     ):
 
-        st.info(
-            "Турнирная таблица не рассчитывается "
-            "Tour Manager. Она будет строиться "
-            "из подтверждённых фактов матчей."
-        )
+        if is_ucl:
+
+            st.info(
+                "Турнирная таблица Лиги чемпионов "
+                "будет рассчитываться отдельно "
+                "от внутренних чемпионатов."
+            )
+
+        else:
+
+            st.info(
+                "Турнирная таблица не рассчитывается "
+                "Tour Manager. Она будет строиться "
+                "из подтверждённых фактов матчей."
+            )
 
     with st.expander(
         "⭐ FAJ Club Rating",
@@ -628,7 +719,7 @@ def main() -> None:
             )
 
     # ========================================================
-    # 10. MATCH LIST
+    # 11. MATCH LIST
     # ========================================================
 
     st.subheader(
@@ -690,7 +781,9 @@ def main() -> None:
             if match_id is None:
                 continue
 
-            match_id = int(match_id)
+            match_id = int(
+                match_id
+            )
 
             match_date = row_value(
                 match,
@@ -709,8 +802,8 @@ def main() -> None:
                 match_id,
             )
 
-            col_match, col_delete = st.columns(
-                [5, 1]
+            col_match, col_delete = (
+                st.columns([5, 1])
             )
 
             with col_match:
@@ -719,14 +812,16 @@ def main() -> None:
 
                     st.markdown(
                         f"### 🔒 {index}. "
-                        f"{home_name} — {away_name}"
+                        f"{home_name} — "
+                        f"{away_name}"
                     )
 
                 else:
 
                     st.markdown(
                         f"### {index}. "
-                        f"{home_name} — {away_name}"
+                        f"{home_name} — "
+                        f"{away_name}"
                     )
 
                 if match_date:
@@ -741,40 +836,76 @@ def main() -> None:
 
                 if locked:
 
-                    st.success(
-                        "Факт матча заблокирован. "
-                        "Исторические данные защищены."
+                    st.warning(
+                        "⚠️ Факт матча заблокирован. "
+                        "Удаление всё равно разрешено "
+                        "для исправления ошибки календаря "
+                        "или ошибочно импортированного "
+                        "матча."
                     )
 
             with col_delete:
 
-                if locked:
+                if st.button(
+                    "🗑️ Удалить",
+                    key=f"delete_match_{match_id}",
+                    use_container_width=True,
+                ):
 
-                    st.button(
-                        "🔒 LOCKED",
-                        key=f"locked_{match_id}",
-                        disabled=True,
-                        use_container_width=True,
-                    )
+                    if locked:
 
-                else:
+                        st.session_state[
+                            f"confirm_delete_locked_{match_id}"
+                        ] = True
+
+                    else:
+
+                        st.session_state[
+                            f"confirm_delete_{match_id}"
+                        ] = True
+
+            # ------------------------------------------------
+            # CONFIRM NORMAL DELETE
+            # ------------------------------------------------
+
+            if st.session_state.get(
+                f"confirm_delete_{match_id}",
+                False,
+            ):
+
+                st.warning(
+                    f"Удалить матч "
+                    f"**{home_name} — {away_name}**?"
+                )
+
+                confirm_col, cancel_col = (
+                    st.columns(2)
+                )
+
+                with confirm_col:
 
                     if st.button(
-                        "🗑️ Удалить",
-                        key=f"delete_match_{match_id}",
-                        use_container_width=True,
+                        "Да, удалить",
+                        type="primary",
+                        key=f"confirm_delete_button_{match_id}",
                     ):
 
                         try:
 
-                            deleted = db.delete_match(
-                                match_id
+                            deleted = (
+                                db.delete_match(
+                                    match_id
+                                )
                             )
+
+                            st.session_state[
+                                f"confirm_delete_{match_id}"
+                            ] = False
 
                             if deleted:
 
                                 st.success(
-                                    "Матч удалён."
+                                    "✅ Матч удалён."
                                 )
 
                                 st.rerun()
@@ -788,18 +919,120 @@ def main() -> None:
                         except Exception as exc:
 
                             st.error(
-                                f"❌ Ошибка удаления: {exc}"
+                                f"❌ Ошибка удаления: "
+                                f"{exc}"
                             )
+
+                with cancel_col:
+
+                    if st.button(
+                        "Отмена",
+                        key=f"cancel_delete_{match_id}",
+                    ):
+
+                        st.session_state[
+                            f"confirm_delete_{match_id}"
+                        ] = False
+
+                        st.rerun()
+
+            # ------------------------------------------------
+            # CONFIRM LOCKED DELETE
+            # ------------------------------------------------
+
+            if st.session_state.get(
+                f"confirm_delete_locked_{match_id}",
+                False,
+            ):
+
+                st.error(
+                    "⚠️ ВНИМАНИЕ: этот матч содержит "
+                    "заблокированный исторический факт."
+                )
+
+                st.warning(
+                    "Удаление уничтожит запись матча "
+                    "через механизм database.py. "
+                    "Используйте это только если матч "
+                    "создан или импортирован ошибочно."
+                )
+
+                confirm_col, cancel_col = (
+                    st.columns(2)
+                )
+
+                with confirm_col:
+
+                    if st.button(
+                        "⚠️ Да, удалить ошибочный матч",
+                        type="primary",
+                        key=(
+                            f"confirm_locked_delete_"
+                            f"button_{match_id}"
+                        ),
+                    ):
+
+                        try:
+
+                            deleted = (
+                                db.delete_match(
+                                    match_id
+                                )
+                            )
+
+                            st.session_state[
+                                f"confirm_delete_locked_{match_id}"
+                            ] = False
+
+                            if deleted:
+
+                                st.success(
+                                    "✅ Ошибочный матч "
+                                    "удалён."
+                                )
+
+                                st.rerun()
+
+                            else:
+
+                                st.warning(
+                                    "Матч уже отсутствует."
+                                )
+
+                        except Exception as exc:
+
+                            st.error(
+                                f"❌ Ошибка удаления: "
+                                f"{exc}"
+                            )
+
+                with cancel_col:
+
+                    if st.button(
+                        "Отмена",
+                        key=(
+                            f"cancel_locked_delete_"
+                            f"{match_id}"
+                        ),
+                    ):
+
+                        st.session_state[
+                            f"confirm_delete_locked_{match_id}"
+                        ] = False
+
+                        st.rerun()
 
             st.divider()
 
     # ========================================================
-    # 11. SAVE ROUND
+    # 12. SAVE ROUND
     # ========================================================
 
     if matches:
 
-        st.subheader("💾 Сохранение тура")
+        st.subheader(
+            "💾 Сохранение тура"
+        )
 
         if st.button(
             "💾 Сохранить тур",
@@ -814,10 +1047,14 @@ def main() -> None:
 
                 for match in matches:
 
-                    match_data = dict(match)
+                    match_data = dict(
+                        match
+                    )
 
-                    match_id = match_mgr.save_match(
-                        match_data
+                    match_id = (
+                        match_mgr.save_match(
+                            match_data
+                        )
                     )
 
                     if match_id:
@@ -825,194 +1062,207 @@ def main() -> None:
                         saved_count += 1
 
                 st.success(
-                    f"✅ Проверено/сохранено матчей: "
-                    f"{saved_count}"
+                    "✅ Проверено/сохранено "
+                    f"матчей: {saved_count}"
                 )
 
             except Exception as exc:
 
                 st.error(
-                    f"❌ Ошибка сохранения тура: {exc}"
+                    f"❌ Ошибка сохранения тура: "
+                    f"{exc}"
                 )
 
     # ========================================================
-    # 12. ADD MATCH
+    # 13. ADD MATCH
     # ========================================================
 
-    st.subheader("➕ Добавить матч")
+    st.subheader(
+        "➕ Добавить матч"
+    )
 
-    if locked_round:
+    # --------------------------------------------------------
+    # ВАЖНО:
+    # LOCKED-матчи НЕ запрещают добавление.
+    #
+    # Это позволяет исправить тур:
+    # например, если один матч был удалён ошибочно
+    # и его нужно создать заново.
+    # --------------------------------------------------------
 
-        st.warning(
-            "🔒 В туре уже есть заблокированные "
-            "исторические матчи. Добавление новых "
-            "матчей в такой тур запрещено."
+    used_team_ids = set()
+
+    for match in matches:
+
+        home_id = row_value(
+            match,
+            "home_team_id",
+        )
+
+        away_id = row_value(
+            match,
+            "away_team_id",
+        )
+
+        if home_id is not None:
+
+            used_team_ids.add(
+                int(home_id)
+            )
+
+        if away_id is not None:
+
+            used_team_ids.add(
+                int(away_id)
+            )
+
+    available_team_names = [
+        name
+        for name, tid
+        in name_to_id.items()
+        if tid not in used_team_ids
+    ]
+
+    if not available_team_names:
+
+        st.success(
+            "✅ Все команды уже распределены "
+            "по матчам этого тура."
         )
 
     else:
 
-        used_team_ids = set()
+        col1, col2 = st.columns(2)
 
-        for match in matches:
+        with col1:
 
-            home_id = row_value(
-                match,
-                "home_team_id",
+            home_name = st.selectbox(
+                "Хозяева",
+                [
+                    "— выберите команду —"
+                ] + available_team_names,
+                key="home_team",
             )
 
-            away_id = row_value(
-                match,
-                "away_team_id",
+        with col2:
+
+            away_options = [
+                name
+                for name in available_team_names
+                if name != home_name
+            ]
+
+            away_name = st.selectbox(
+                "Гости",
+                [
+                    "— выберите команду —"
+                ] + away_options,
+                key="away_team",
             )
 
-            if home_id is not None:
-                used_team_ids.add(
-                    int(home_id)
-                )
+        match_date = st.date_input(
+            "Дата матча",
+            key="match_date",
+        )
 
-            if away_id is not None:
-                used_team_ids.add(
-                    int(away_id)
-                )
+        if (
+            home_name
+            != "— выберите команду —"
+            and away_name
+            != "— выберите команду —"
+        ):
 
-        available_team_names = [
-            name
-            for name, tid
-            in name_to_id.items()
-            if tid not in used_team_ids
-        ]
-
-        if not available_team_names:
-
-            st.success(
-                "✅ Все команды уже распределены "
-                "по матчам этого тура."
+            home_id = name_to_id.get(
+                home_name
             )
 
-        else:
-
-            col1, col2 = st.columns(2)
-
-            with col1:
-
-                home_name = st.selectbox(
-                    "Хозяева",
-                    [
-                        "— выберите команду —"
-                    ] + available_team_names,
-                    key="home_team",
-                )
-
-            with col2:
-
-                away_options = [
-                    name
-                    for name in available_team_names
-                    if name != home_name
-                ]
-
-                away_name = st.selectbox(
-                    "Гости",
-                    [
-                        "— выберите команду —"
-                    ] + away_options,
-                    key="away_team",
-                )
-
-            match_date = st.date_input(
-                "Дата матча",
-                key="match_date",
+            away_id = name_to_id.get(
+                away_name
             )
 
             if (
-                home_name
-                != "— выберите команду —"
-                and away_name
-                != "— выберите команду —"
+                home_id is None
+                or away_id is None
             ):
 
-                home_id = name_to_id.get(
-                    home_name
+                st.error(
+                    "❌ Не удалось определить "
+                    "ID команды."
                 )
 
-                away_id = name_to_id.get(
-                    away_name
+            elif home_id == away_id:
+
+                st.error(
+                    "❌ Команда не может играть "
+                    "сама с собой."
                 )
 
-                if home_id is None or away_id is None:
+            else:
 
-                    st.error(
-                        "❌ Не удалось определить "
-                        "ID команды."
-                    )
+                if st.button(
+                    "➕ Добавить матч",
+                    type="primary",
+                    use_container_width=True,
+                    key="add_match",
+                ):
 
-                elif home_id == away_id:
+                    duplicate = False
 
-                    st.error(
-                        "❌ Команда не может играть "
-                        "сама с собой."
-                    )
+                    for existing_match in matches:
 
-                else:
-
-                    if st.button(
-                        "➕ Добавить матч",
-                        type="primary",
-                        use_container_width=True,
-                        key="add_match",
-                    ):
-
-                        duplicate = False
-
-                        for existing_match in matches:
-
-                            existing_home = row_value(
+                        existing_home = (
+                            row_value(
                                 existing_match,
                                 "home_team_id",
                             )
+                        )
 
-                            existing_away = row_value(
+                        existing_away = (
+                            row_value(
                                 existing_match,
                                 "away_team_id",
                             )
+                        )
 
-                            existing_date = str(
-                                row_value(
-                                    existing_match,
-                                    "date",
-                                    "",
-                                )
+                        existing_date = str(
+                            row_value(
+                                existing_match,
+                                "date",
+                                "",
                             )
+                        )
 
-                            if (
-                                existing_home is not None
-                                and existing_away is not None
-                                and int(existing_home)
-                                == home_id
-                                and int(existing_away)
-                                == away_id
-                                and existing_date.startswith(
-                                    str(match_date)
-                                )
-                            ):
-
-                                duplicate = True
-                                break
-
-                        if duplicate:
-
-                            st.error(
-                                f"❌ Матч "
-                                f"{home_name} — "
-                                f"{away_name} "
-                                f"уже существует."
+                        if (
+                            existing_home is not None
+                            and existing_away is not None
+                            and int(existing_home)
+                            == home_id
+                            and int(existing_away)
+                            == away_id
+                            and existing_date.startswith(
+                                str(match_date)
                             )
+                        ):
 
-                        else:
+                            duplicate = True
 
-                            try:
+                            break
 
-                                match_id = match_mgr.save_match(
+                    if duplicate:
+
+                        st.error(
+                            f"❌ Матч "
+                            f"{home_name} — "
+                            f"{away_name} "
+                            f"уже существует."
+                        )
+
+                    else:
+
+                        try:
+
+                            match_id = (
+                                match_mgr.save_match(
                                     {
                                         "round_id": round_id,
                                         "home_team_id": home_id,
@@ -1023,52 +1273,76 @@ def main() -> None:
                                         "fact_status": "scheduled",
                                     }
                                 )
+                            )
 
-                                st.success(
-                                    f"✅ Матч создан. "
-                                    f"ID: {match_id}"
-                                )
+                            st.success(
+                                f"✅ Матч создан. "
+                                f"ID: {match_id}"
+                            )
 
-                                st.rerun()
+                            st.rerun()
 
-                            except Exception as exc:
+                        except Exception as exc:
 
-                                st.error(
-                                    f"❌ Ошибка сохранения "
-                                    f"матча: {exc}"
-                                )
+                            st.error(
+                                "❌ Ошибка сохранения "
+                                f"матча: {exc}"
+                            )
 
     # ========================================================
-    # 13. DELETE ROUND
+    # 14. DELETE ROUND
     # ========================================================
 
     st.divider()
 
-    st.subheader("⚠️ Управление туром")
+    st.subheader(
+        "⚠️ Управление туром"
+    )
 
     if locked_round:
 
         st.warning(
-            "🔒 Тур содержит исторические "
-            "заблокированные матчи. Удаление тура "
-            "запрещено."
+            "⚠️ В туре есть заблокированные "
+            "исторические матчи."
         )
 
-    else:
+        st.info(
+            "Удаление всё равно разрешено, "
+            "поскольку Tour Manager должен "
+            "позволять исправлять ошибочно "
+            "созданный или импортированный тур."
+        )
 
-        if st.button(
-            "🗑️ Удалить тур",
-            key="delete_round",
-        ):
+    if st.button(
+        "🗑️ Удалить тур",
+        key="delete_round",
+        use_container_width=True,
+    ):
 
-            st.session_state[
-                "confirm_delete_round"
-            ] = True
+        st.session_state[
+            "confirm_delete_round"
+        ] = True
 
-        if st.session_state.get(
-            "confirm_delete_round",
-            False,
-        ):
+    if st.session_state.get(
+        "confirm_delete_round",
+        False,
+    ):
+
+        if locked_round:
+
+            st.error(
+                "⚠️ ВНИМАНИЕ: этот тур содержит "
+                "заблокированные исторические факты."
+            )
+
+            st.warning(
+                "Удаление тура удалит его матчи "
+                "через database.py. "
+                "Продолжайте только если тур "
+                "создан ошибочно."
+            )
+
+        else:
 
             st.warning(
                 f"⚠️ Вы собираетесь удалить "
@@ -1076,71 +1350,83 @@ def main() -> None:
                 f"и его матчи."
             )
 
-            col_confirm, col_cancel = st.columns(2)
+        col_confirm, col_cancel = (
+            st.columns(2)
+        )
 
-            with col_confirm:
+        with col_confirm:
 
-                if st.button(
-                    "Да, удалить тур",
-                    type="primary",
-                    key="confirm_delete_round_button",
-                ):
+            button_text = (
+                "⚠️ Да, удалить ошибочный тур"
+                if locked_round
+                else "Да, удалить тур"
+            )
 
-                    try:
+            if st.button(
+                button_text,
+                type="primary",
+                key="confirm_delete_round_button",
+                use_container_width=True,
+            ):
 
-                        deleted = db.delete_round(
-                            round_id
-                        )
+                try:
 
-                        st.session_state[
-                            "confirm_delete_round"
-                        ] = False
-
-                        if deleted:
-
-                            st.success(
-                                f"✅ "
-                                f"{get_round_label(competition, round_number)} "
-                                f"удалён."
-                            )
-
-                            st.rerun()
-
-                        else:
-
-                            st.warning(
-                                "Тур уже отсутствует."
-                            )
-
-                    except Exception as exc:
-
-                        st.error(
-                            f"❌ Ошибка удаления тура: "
-                            f"{exc}"
-                        )
-
-            with col_cancel:
-
-                if st.button(
-                    "Отмена",
-                    key="cancel_delete_round",
-                ):
+                    deleted = db.delete_round(
+                        round_id
+                    )
 
                     st.session_state[
                         "confirm_delete_round"
                     ] = False
 
-                    st.rerun()
+                    if deleted:
+
+                        st.success(
+                            f"✅ "
+                            f"{get_round_label(competition, round_number)} "
+                            f"удалён."
+                        )
+
+                        st.rerun()
+
+                    else:
+
+                        st.warning(
+                            "Тур уже отсутствует."
+                        )
+
+                except Exception as exc:
+
+                    st.error(
+                        "❌ Ошибка удаления тура: "
+                        f"{exc}"
+                    )
+
+        with col_cancel:
+
+            if st.button(
+                "Отмена",
+                key="cancel_delete_round",
+                use_container_width=True,
+            ):
+
+                st.session_state[
+                    "confirm_delete_round"
+                ] = False
+
+                st.rerun()
 
     # ========================================================
-    # 14. NAVIGATION
+    # 15. NAVIGATION
     # ========================================================
 
     if matches:
 
         st.divider()
 
-        st.subheader("➡️ Следующий этап")
+        st.subheader(
+            "➡️ Следующий этап"
+        )
 
         col1, col2 = st.columns(2)
 
