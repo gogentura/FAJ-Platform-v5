@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-IMPORT FACTS v4.0
+IMPORT FACTS v4.1
 ============================================================
 
 НАЗНАЧЕНИЕ:
@@ -18,11 +18,8 @@ IMPORT FACTS v4.0
     ⚽ Счёт:
         ручной ввод
 
-    📊 Статистика:
-        Bombardir
-
-    🎯 xG:
-        Soccer365
+    📊 Статистика + 🎯 xG:
+        Soccer365 (полный сборщик)
 
 АПЛ / ЛА ЛИГА / ЛИГА ЧЕМПИОНОВ:
     🤖 Data Football API:
@@ -30,7 +27,7 @@ IMPORT FACTS v4.0
 
     При отсутствии отдельных данных API:
         ⚽ Счёт       → ручной ввод
-        📊 Статистика → Bombardir
+        📊 Статистика → Soccer365
         🎯 xG         → Soccer365
 
 ВАЖНО:
@@ -54,7 +51,7 @@ IMPORT FACTS v4.0
         API → STATS
         Soccer365 → XG
 
-    или полностью вручную/парсерами.
+    или полностью вручную/Soccer365.
 
 ============================================================
 АРХИТЕКТУРНЫЙ ПРИНЦИП
@@ -66,7 +63,6 @@ import_facts.py
     ↓
 SOURCE LAYER
     ├── Data Football API
-    ├── Bombardir
     └── Soccer365
     ↓
 FACT NORMALIZER
@@ -103,7 +99,32 @@ None != 0.
 
 API может заполнить только реально полученные данные.
 
-Если API не дал данные — ручной/парсерный источник остаётся доступным.
+Если API не дал данные — Soccer365 остаётся доступным.
+
+============================================================
+ИЗМЕНЕНИЯ V4.1
+============================================================
+
+1. normalize_source_stats() расширен:
+   - добавлены fouls
+   - добавлены yellow_cards
+   - добавлены red_cards
+
+2. parse_soccer365() теперь использует parse_match():
+   - Soccer365 становится полноценным источником статистики
+   - больше не только xG
+
+3. build_hybrid_fact():
+   - приоритет: API → Soccer365 (поле за полем)
+   - Bombardir исключён из основного конвейера
+
+4. stats_source теперь указывает soccer365
+
+5. save_match_fact() расширен новыми полями
+
+6. fact_status() расширен новыми полями
+
+7. Таблица на экране показывает новые поля
 
 ============================================================
 """
@@ -120,8 +141,11 @@ import streamlit as st
 
 from app.database import FAJDatabase
 
-from app.parsers.bombardir_parser import BombardirParser
 from app.parsers.soccer365_parser import Soccer365Parser
+
+# Bombardir оставлен для обратной совместимости,
+# но больше не используется в основном конвейере
+from app.parsers.bombardir_parser import BombardirParser
 
 from app.parsers.rpl_normalizer import normalize_team_names
 
@@ -134,7 +158,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 APP_VERSION = "12.1"
-IMPORT_FACTS_VERSION = "4.0"
+IMPORT_FACTS_VERSION = "4.1"
 MODEL_VERSION = "v12.1"
 
 DEFAULT_DB_PATH = "data/faj.db"
@@ -157,28 +181,28 @@ SOURCE_CONFIG = {
     "РПЛ": {
         "api": False,
         "score": "manual",
-        "stats": "bombardir",
+        "stats": "soccer365",
         "xg": "soccer365",
     },
 
     "АПЛ": {
         "api": True,
         "score": "api_or_manual",
-        "stats": "api_or_bombardir",
+        "stats": "api_or_soccer365",
         "xg": "api_or_soccer365",
     },
 
     "Ла Лига": {
         "api": True,
         "score": "api_or_manual",
-        "stats": "api_or_bombardir",
+        "stats": "api_or_soccer365",
         "xg": "api_or_soccer365",
     },
 
     "Лига чемпионов": {
         "api": True,
         "score": "api_or_manual",
-        "stats": "api_or_bombardir",
+        "stats": "api_or_soccer365",
         "xg": "api_or_soccer365",
     },
 }
@@ -645,42 +669,68 @@ def get_match_date(
 def normalize_source_stats(
     stats: Any,
 ) -> Dict[str, Any]:
-
+    """
+    Нормализует статистику из любого источника.
+    ВАЖНО: None и 0 — разные вещи.
+    """
     if not isinstance(stats, dict):
         return {}
-
+    
     allowed = [
-        "home_possession",
-        "away_possession",
-
-        "home_corners",
-        "away_corners",
-
-        "home_shots",
-        "away_shots",
-
-        "home_shots_on_target",
-        "away_shots_on_target",
-
-        "home_total_passes",
-        "away_total_passes",
-
-        "home_pass_accuracy",
-        "away_pass_accuracy",
-
-        "home_accurate_passes",
-        "away_accurate_passes",
-
-        "home_tackles",
-        "away_tackles",
-
+        # ----------------------------------------------------
+        # XG
+        # ----------------------------------------------------
         "home_xg",
         "away_xg",
+        # ----------------------------------------------------
+        # POSSESSION
+        # ----------------------------------------------------
+        "home_possession",
+        "away_possession",
+        # ----------------------------------------------------
+        # SHOTS
+        # ----------------------------------------------------
+        "home_shots",
+        "away_shots",
+        "home_shots_on_target",
+        "away_shots_on_target",
+        # ----------------------------------------------------
+        # CORNERS
+        # ----------------------------------------------------
+        "home_corners",
+        "away_corners",
+        # ----------------------------------------------------
+        # PASSES
+        # ----------------------------------------------------
+        "home_total_passes",
+        "away_total_passes",
+        "home_pass_accuracy",
+        "away_pass_accuracy",
+        "home_accurate_passes",
+        "away_accurate_passes",
+        # ----------------------------------------------------
+        # DEFENCE
+        # ----------------------------------------------------
+        "home_tackles",
+        "away_tackles",
+        # ----------------------------------------------------
+        # FOULS
+        # ----------------------------------------------------
+        "home_fouls",
+        "away_fouls",
+        # ----------------------------------------------------
+        # CARDS
+        # ----------------------------------------------------
+        "home_yellow_cards",
+        "away_yellow_cards",
+        "home_red_cards",
+        "away_red_cards",
     ]
-
+    
     return {
         key: stats.get(key)
         for key in allowed
+        if stats.get(key) is not None
     }
 
 
@@ -698,7 +748,7 @@ def get_api_provider() -> Optional[Any]:
     если API-модуль пока отсутствует.
 
     Это позволяет сначала работать
-    полностью через ручной/парсерный режим.
+    полностью через ручной/Soccer365 режим.
     """
 
     candidates = [
@@ -921,7 +971,7 @@ def parse_api_fact(
 
 
 # ============================================================
-# BOMBARDIR
+# BOMBARDIR (резервный, сохранён для обратной совместимости)
 # ============================================================
 
 def parse_bombardir(
@@ -982,70 +1032,200 @@ def parse_bombardir(
 
 
 # ============================================================
-# SOCCER365
+# SOCCER365 — ПОЛНЫЙ СБОРЩИК
 # ============================================================
 
 def parse_soccer365(
     url: str,
 ) -> Dict[str, Any]:
-
+    """
+    Полный сборщик фактов Soccer365.
+    
+    Soccer365 теперь является источником:
+        SCORE       — НЕ берём (остаётся ручным вводом)
+        STATISTICS  — берём
+        XG          — берём
+    
+    Счёт остаётся отдельным фактом,
+    который вводит директор.
+    
+    Parser должен вернуть нормализованные поля:
+        home_xg, away_xg
+        home_possession, away_possession
+        home_shots, away_shots
+        home_shots_on_target, away_shots_on_target
+        home_corners, away_corners
+        home_total_passes, away_total_passes
+        home_pass_accuracy, away_pass_accuracy
+        home_accurate_passes, away_accurate_passes
+        home_tackles, away_tackles
+        home_fouls, away_fouls
+        home_yellow_cards, away_yellow_cards
+        home_red_cards, away_red_cards
+    """
     result = {
         "stats": {},
         "source": "soccer365",
         "source_url": url,
         "quality": 0.0,
         "error": None,
+        "parser": "Soccer365Parser",
+        "parser_version": IMPORT_FACTS_VERSION,
     }
 
     if not url or not url.strip():
         return result
 
     try:
-
         parser = Soccer365Parser()
 
-        parsed = parser.parse_xg(
-            url.strip()
+        # ----------------------------------------------------
+        # НОВЫЙ ПОЛНЫЙ PARSER
+        # ----------------------------------------------------
+        parsed = None
+        parse_match = getattr(
+            parser,
+            "parse_match",
+            None,
         )
 
-        data = object_to_dict(parsed)
+        if callable(parse_match):
+            parsed = parse_match(
+                url.strip()
+            )
+        else:
+            # ------------------------------------------------
+            # ВРЕМЕННАЯ ОБРАТНАЯ СОВМЕСТИМОСТЬ
+            # ------------------------------------------------
+            #
+            # Пока новый parser ещё не установлен,
+            # старый parse_xg не ломает приложение.
+            #
+            parse_xg = getattr(
+                parser,
+                "parse_xg",
+                None,
+            )
+            if callable(parse_xg):
+                parsed = parse_xg(
+                    url.strip()
+                )
 
-        stats = data.get(
+        if parsed is None:
+            result["error"] = (
+                "Soccer365Parser "
+                "не вернул данные."
+            )
+            return result
+
+        data = object_to_dict(
+            parsed
+        )
+
+        # ----------------------------------------------------
+        # ПОЛУЧАЕМ STATS
+        # ----------------------------------------------------
+        raw_stats = data.get(
             "stats",
             data,
         )
 
-        home_xg = (
-            stats.get("home_xg")
-            or data.get("home_xg")
-            or data.get("xg_home")
+        stats = normalize_source_stats(
+            raw_stats
         )
 
-        away_xg = (
-            stats.get("away_xg")
-            or data.get("away_xg")
-            or data.get("xg_away")
+        # ----------------------------------------------------
+        # ДОПОЛНИТЕЛЬНО ПОДДЕРЖИВАЕМ
+        # ПЛОСКИЙ ФОРМАТ PARSER
+        # ----------------------------------------------------
+        if not stats:
+            stats = normalize_source_stats(
+                data
+            )
+
+        # ----------------------------------------------------
+        # XG (если не пришли через stats)
+        # ----------------------------------------------------
+        if stats.get(
+            "home_xg"
+        ) is None:
+            home_xg = (
+                data.get("home_xg")
+                or data.get("xg_home")
+            )
+            if home_xg is not None:
+                stats["home_xg"] = safe_float(
+                    home_xg
+                )
+
+        if stats.get(
+            "away_xg"
+        ) is None:
+            away_xg = (
+                data.get("away_xg")
+                or data.get("xg_away")
+            )
+            if away_xg is not None:
+                stats["away_xg"] = safe_float(
+                    away_xg
+                )
+
+        # ----------------------------------------------------
+        # QUALITY
+        # ----------------------------------------------------
+        quality = safe_float(
+            data.get(
+                "data_quality"
+            )
         )
 
-        if home_xg is not None:
-            result["stats"]["home_xg"] = safe_float(
-                home_xg
+        if quality is None:
+            available = sum(
+                value is not None
+                for value in stats.values()
             )
-
-        if away_xg is not None:
-            result["stats"]["away_xg"] = safe_float(
-                away_xg
-            )
-
-        result["quality"] = (
-            safe_float(
-                data.get(
-                    "data_quality",
-                    0.0,
+            
+            total = len(
+                normalize_source_stats(
+                    {
+                        key: 1
+                        for key in (
+                            "home_xg",
+                            "away_xg",
+                            "home_possession",
+                            "away_possession",
+                            "home_shots",
+                            "away_shots",
+                            "home_shots_on_target",
+                            "away_shots_on_target",
+                            "home_corners",
+                            "away_corners",
+                            "home_total_passes",
+                            "away_total_passes",
+                            "home_pass_accuracy",
+                            "away_pass_accuracy",
+                            "home_accurate_passes",
+                            "away_accurate_passes",
+                            "home_tackles",
+                            "away_tackles",
+                            "home_fouls",
+                            "away_fouls",
+                            "home_yellow_cards",
+                            "away_yellow_cards",
+                            "home_red_cards",
+                            "away_red_cards",
+                        )
+                    }
                 )
             )
-            or 0.0
-        )
+            quality = (
+                available / total
+                if total
+                else 0.0
+            )
+
+        result["stats"] = stats
+        result["quality"] = quality
 
         return result
 
@@ -1083,8 +1263,8 @@ def build_hybrid_fact(
         SCORE:
             API → manual
 
-        STATS:
-            API → Bombardir
+        STATS (каждое поле отдельно):
+            API → Soccer365
 
         XG:
             API → Soccer365
@@ -1158,43 +1338,54 @@ def build_hybrid_fact(
             score_source = "manual"
 
     # --------------------------------------------------------
-    # STATS
+    # STATS — API → Soccer365 (поле за полем)
     # --------------------------------------------------------
 
     stats = {}
 
     for key in [
+        # possession
         "home_possession",
         "away_possession",
-        "home_corners",
-        "away_corners",
+        # shots
         "home_shots",
         "away_shots",
         "home_shots_on_target",
         "away_shots_on_target",
+        # corners
+        "home_corners",
+        "away_corners",
+        # passes
         "home_total_passes",
         "away_total_passes",
         "home_pass_accuracy",
         "away_pass_accuracy",
         "home_accurate_passes",
         "away_accurate_passes",
+        # defence
         "home_tackles",
         "away_tackles",
+        # fouls
+        "home_fouls",
+        "away_fouls",
+        # cards
+        "home_yellow_cards",
+        "away_yellow_cards",
+        "home_red_cards",
+        "away_red_cards",
     ]:
 
         value = api_stats.get(key)
-
         if value is not None:
             stats[key] = value
             continue
 
-        value = bombardir_stats.get(key)
-
+        value = soccer365_stats.get(key)
         if value is not None:
             stats[key] = value
 
     # --------------------------------------------------------
-    # XG
+    # XG — API → Soccer365
     # --------------------------------------------------------
 
     home_xg = api_stats.get(
@@ -1279,16 +1470,16 @@ def build_hybrid_fact(
                 for key in api_stats
             )
             else (
-                "bombardir"
-                if bombardir_stats
+                "soccer365"
+                if soccer365_stats
                 else None
             )
         ),
         "xg_source": xg_source,
 
         "source_url": (
-            bombardir_fact.get("source_url")
-            or soccer365_fact.get("source_url")
+            soccer365_fact.get("source_url")
+            or bombardir_fact.get("source_url")
         ),
 
         "parser_source": (
@@ -1338,6 +1529,20 @@ def fact_status(
             "away_shots",
             "home_shots_on_target",
             "away_shots_on_target",
+            "home_total_passes",
+            "away_total_passes",
+            "home_pass_accuracy",
+            "away_pass_accuracy",
+            "home_accurate_passes",
+            "away_accurate_passes",
+            "home_tackles",
+            "away_tackles",
+            "home_fouls",
+            "away_fouls",
+            "home_yellow_cards",
+            "away_yellow_cards",
+            "home_red_cards",
+            "away_red_cards",
         )
     )
 
@@ -1421,24 +1626,38 @@ def save_match_fact(
     stats = {
         key: source_stats.get(key)
         for key in (
+            # xG
             "home_xg",
             "away_xg",
+            # possession
             "home_possession",
             "away_possession",
-            "home_corners",
-            "away_corners",
+            # shots
             "home_shots",
             "away_shots",
             "home_shots_on_target",
             "away_shots_on_target",
+            # corners
+            "home_corners",
+            "away_corners",
+            # passes
             "home_total_passes",
             "away_total_passes",
             "home_pass_accuracy",
             "away_pass_accuracy",
             "home_accurate_passes",
             "away_accurate_passes",
+            # defence
             "home_tackles",
             "away_tackles",
+            # fouls
+            "home_fouls",
+            "away_fouls",
+            # cards
+            "home_yellow_cards",
+            "away_yellow_cards",
+            "home_red_cards",
+            "away_red_cards",
         )
     }
 
@@ -2365,7 +2584,7 @@ def render_match_card(
             st.info(
                 "🤖 Data Football API "
                 "не предоставил данные. "
-                "Доступен резервный режим."
+                "Доступен резервный режим через Soccer365."
             )
 
     # ========================================================
@@ -2488,13 +2707,18 @@ def render_match_card(
                     )
 
     # ========================================================
-    # STATISTICS
+    # STATISTICS — SOCCER365
     # ========================================================
 
     st.markdown(
-        "#### 📊 Статистика матча"
+        "#### 📊 Статистика матча + xG"
     )
 
+    st.caption(
+        "Источник: Soccer365"
+    )
+
+    # Если API дал статистику, используем её
     stats_from_api = normalize_source_stats(
         api_fact.get(
             "stats",
@@ -2511,87 +2735,20 @@ def render_match_card(
         )
     )
 
-    bombardir_url = st.text_input(
-        "🔗 Bombardir",
-        key=f"{key_prefix}_bombardir_url",
-        placeholder="https://bombardir.ru/online/...",
-        disabled=score_locked or has_api_stats,
-    )
-
-    if has_api_stats:
-
-        st.success(
-            "🟢 Статистика получена через API"
-        )
-
-    else:
-
-        st.warning(
-            "⚪ Статистика API отсутствует — "
-            "используйте Bombardir."
-        )
-
-    if st.button(
-        "📥 Загрузить статистику Bombardir",
-        key=f"{key_prefix}_bombardir_fetch",
-        disabled=(
-            score_locked
-            or has_api_stats
-            or not bombardir_url.strip()
-        ),
-        use_container_width=True,
-    ):
-
-        with st.spinner(
-            "Загружаем статистику Bombardir..."
-        ):
-
-            parsed = parse_bombardir(
-                bombardir_url
-            )
-
-            st.session_state[
-                f"{key_prefix}_bombardir_fact"
-            ] = parsed
-
-            if parsed.get(
-                "stats"
-            ):
-
-                st.success(
-                    "🟢 Статистика Bombardir "
-                    "получена."
-                )
-
-            else:
-
-                st.warning(
-                    "Статистика Bombardir "
-                    "не получена."
-                )
-
-            st.rerun()
-
-    # ========================================================
-    # SOCCER365 XG
-    # ========================================================
-
-    st.markdown(
-        "#### 🎯 xG"
-    )
-
-    api_home_xg = stats_from_api.get(
-        "home_xg"
-    )
-
-    api_away_xg = stats_from_api.get(
-        "away_xg"
-    )
-
+    # Если API дал xG
     has_api_xg = (
-        api_home_xg is not None
-        or api_away_xg is not None
+        stats_from_api.get("home_xg") is not None
+        or stats_from_api.get("away_xg") is not None
     )
+
+    if has_api_stats or has_api_xg:
+        st.success(
+            "🟢 Статистика и/или xG получены через API"
+        )
+
+    # ========================================================
+    # SOCCER365 URL
+    # ========================================================
 
     soccer365_url = st.text_input(
         "🔗 Soccer365",
@@ -2599,36 +2756,27 @@ def render_match_card(
         placeholder="https://soccer365.ru/games/...",
         disabled=(
             score_locked
-            or has_api_xg
+            or (has_api_stats and has_api_xg)
         ),
     )
 
-    if has_api_xg:
-
-        st.success(
-            "🟢 xG получен через API"
-        )
-
-    else:
-
-        st.warning(
-            "⚪ xG API отсутствует — "
-            "используйте Soccer365."
-        )
+    # ========================================================
+    # SOCCER365 FETCH
+    # ========================================================
 
     if st.button(
-        "🎯 Загрузить xG Soccer365",
+        "📥 Загрузить статистику Soccer365",
         key=f"{key_prefix}_soccer365_fetch",
         disabled=(
             score_locked
-            or has_api_xg
+            or (has_api_stats and has_api_xg)
             or not soccer365_url.strip()
         ),
         use_container_width=True,
     ):
 
         with st.spinner(
-            "Загружаем xG Soccer365..."
+            "Загружаем статистику Soccer365..."
         ):
 
             parsed = parse_soccer365(
@@ -2644,13 +2792,13 @@ def render_match_card(
             ):
 
                 st.success(
-                    "🟢 xG Soccer365 получен."
+                    "🟢 Статистика Soccer365 получена."
                 )
 
             else:
 
                 st.warning(
-                    "xG Soccer365 не получен."
+                    "Статистика Soccer365 не получена."
                 )
 
             st.rerun()
@@ -2658,11 +2806,6 @@ def render_match_card(
     # ========================================================
     # BUILD HYBRID FACT
     # ========================================================
-
-    bombardir_fact = st.session_state.get(
-        f"{key_prefix}_bombardir_fact",
-        {},
-    )
 
     soccer365_fact = st.session_state.get(
         f"{key_prefix}_soccer365_fact",
@@ -2677,7 +2820,7 @@ def render_match_card(
         league=league,
         match=match,
         api_fact=api_fact,
-        bombardir_fact=bombardir_fact,
+        bombardir_fact={},  # больше не используется
         soccer365_fact=soccer365_fact,
         manual_home_goals=manual_home,
         manual_away_goals=manual_away,
@@ -2807,6 +2950,21 @@ def render_match_card(
             "Отборы",
             stats.get("home_tackles"),
             stats.get("away_tackles"),
+        ),
+        (
+            "Фолы",
+            stats.get("home_fouls"),
+            stats.get("away_fouls"),
+        ),
+        (
+            "Жёлтые карточки",
+            stats.get("home_yellow_cards"),
+            stats.get("away_yellow_cards"),
+        ),
+        (
+            "Красные карточки",
+            stats.get("home_red_cards"),
+            stats.get("away_red_cards"),
         ),
     ]
 
@@ -3125,8 +3283,7 @@ def main() -> None:
         st.info(
             "🇷🇺 РПЛ: "
             "счёт — вручную | "
-            "статистика — Bombardir | "
-            "xG — Soccer365"
+            "статистика + xG — Soccer365"
         )
 
     else:
@@ -3136,7 +3293,7 @@ def main() -> None:
             "Data Football API используется "
             "автоматически при наличии данных. "
             "Если API не отдаёт отдельный факт, "
-            "используется ручной/парсерный источник."
+            "используется Soccer365."
         )
 
     # ========================================================
