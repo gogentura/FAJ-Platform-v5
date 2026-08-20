@@ -21,6 +21,7 @@ MAIN APPLICATION
     └── round_complete              ├── etc
                                      ├── system
                                      ├── diagnostic
+                                     ├── parser_diagnostic  ← НОВОЕ
                                      └── reset_data
 
 СИСТЕМА:
@@ -497,6 +498,16 @@ with st.sidebar:
         use_container_width=True,
     ):
         navigate("diagnostic")
+
+    # ========================================================
+    # PARSER DIAGNOSTIC — НОВАЯ КНОПКА
+    # ========================================================
+
+    if st.button(
+        "🔬 Диагностика парсеров",
+        use_container_width=True,
+    ):
+        navigate("parser_diagnostic")
 
     st.divider()
 
@@ -996,7 +1007,7 @@ elif st.session_state.page == "reset_data":
 
 
 # ============================================================
-# DIAGNOSTIC
+# DIAGNOSTIC (БД)
 # ============================================================
 
 elif st.session_state.page == "diagnostic":
@@ -1094,6 +1105,28 @@ elif st.session_state.page == "diagnostic":
         st.error(
             f"❌ Ошибка: {exc}"
         )
+
+
+# ============================================================
+# PARSER DIAGNOSTIC — НОВЫЙ БЛОК
+# ============================================================
+
+elif st.session_state.page == "parser_diagnostic":
+
+    try:
+
+        from app.pages.parser_diagnostic import main
+
+        main()
+
+    except Exception as exc:
+
+        st.error(
+            f"❌ Ошибка загрузки диагностики парсеров: {exc}"
+        )
+
+        with st.expander("Техническая ошибка"):
+            st.exception(exc)
 
 
 # ============================================================
