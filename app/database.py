@@ -2163,6 +2163,53 @@ class FAJDatabase:
             conn.close()
     
     # ============================================================
+    # GET ROUND MATCHES BY NUMBER — НОВЫЙ МЕТОД
+    # ============================================================
+    
+    def get_round_matches_by_number(
+        self,
+        round_number: int,
+        league: str,
+    ) -> List[Dict[str, Any]]:
+        """
+        Получает матчи тура по номеру и лиге.
+        
+        ВАЖНО:
+            round_number не уникален между лигами.
+            Этот метод всегда фильтрует по league.
+        
+        Args:
+            round_number: номер тура
+            league: название лиги (РПЛ, АПЛ, Ла Лига, Лига чемпионов)
+        
+        Returns:
+            Список матчей с названиями команд
+        """
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT
+                    m.*,
+                    th.name AS home_team_name,
+                    ta.name AS away_team_name,
+                    s.league AS league
+                FROM matches m
+                JOIN rounds r ON r.id = m.round_id
+                JOIN seasons s ON s.id = r.season_id
+                LEFT JOIN teams th ON th.id = m.home_team_id
+                LEFT JOIN teams ta ON ta.id = m.away_team_id
+                WHERE r.round_number = ?
+                  AND s.league = ?
+                ORDER BY m.id
+            """, (round_number, league))
+            
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+    
+    # ============================================================
     # MATCH PREDICTIONS — APPEND-ONLY ВЕРСИЯ
     # ============================================================
     
@@ -2880,7 +2927,7 @@ class FAJDatabase:
                 SELECT * FROM prediction_validation
                 WHERE prediction_id = ?
                 ORDER BY created_at DESC
-            """, (prediction_id,))
+            """, (match_id,))
             return cursor.fetchall()
         finally:
             conn.close()
