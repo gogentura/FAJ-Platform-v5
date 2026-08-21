@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-ROUND COMPLETE v1.2
+ROUND COMPLETE v1.3
 ============================================================
 
 Назначение:
@@ -47,12 +47,13 @@ ROUND COMPLETE v1.2
     ⚪ Нет прогноза
 
 ============================================================
-ИЗМЕНЕНИЯ V1.2
+ИЗМЕНЕНИЯ V1.3
 ============================================================
 
-1. Добавлен диагностический блок для поиска прогнозов FAJ
-2. Показывает количество прогнозов в predictions и match_predictions
-3. Помогает определить, где хранятся прогнозы FAJ
+1. extract_prediction_score() теперь проверяет prediction_scores
+2. Если точного счёта нет — возвращает None, но исход определяется по вероятностям
+3. Исправлена ошибка 'sqlite3.Row' object does not support item assignment
+   в learning_engine.py (преобразование Row в dict)
 ============================================================
 """
 
@@ -74,7 +75,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 APP_VERSION = "12.1"
-ROUND_COMPLETE_VERSION = "1.2"
+ROUND_COMPLETE_VERSION = "1.3"
 
 DEFAULT_DB_PATH = "data/faj.db"
 
@@ -302,6 +303,10 @@ def extract_prediction_score(
     if not prediction:
         return None
 
+    # --------------------------------------------------------
+    # 1. ПРЯМЫЕ ПОЛЯ СО СЧЁТОМ
+    # --------------------------------------------------------
+
     fields = (
         "predicted_score",
         "score",
@@ -313,14 +318,46 @@ def extract_prediction_score(
 
     for field in fields:
         value = prediction.get(field)
+        if value is not None:
+            score = clean_score(value)
+            if score:
+                return score
 
-        if value is None:
-            continue
+    # --------------------------------------------------------
+    # 2. ПОЛУЧАЕМ ИЗ prediction_scores
+    # --------------------------------------------------------
 
-        score = clean_score(value)
+    prediction_id = prediction.get("id")
+    if prediction_id:
+        try:
+            db = get_database()
+            scores = db.get_prediction_scores(prediction_id)
+            if scores:
+                for row in scores:
+                    row_dict = object_to_dict(row)
+                    if row_dict.get("rank") == 1:
+                        score = clean_score(row_dict.get("score"))
+                        if score:
+                            return score
+                # Если rank=1 нет, берём первый
+                first = object_to_dict(scores[0])
+                score = clean_score(first.get("score"))
+                if score:
+                    return score
+        except Exception as exc:
+            logger.debug("prediction_scores error: %s", exc)
 
-        if score:
-            return score
+    # --------------------------------------------------------
+    # 3. ОПРЕДЕЛЯЕМ ИСХОД ПО ВЕРОЯТНОСТЯМ (без счёта)
+    # --------------------------------------------------------
+
+    home_win = prediction.get("home_win")
+    draw = prediction.get("draw")
+    away_win = prediction.get("away_win")
+
+    if home_win is not None or draw is not None or away_win is not None:
+        # Не возвращаем счёт, но исход будет определён отдельно
+        return None
 
     return None
 
@@ -352,11 +389,33 @@ def get_expert_score(
 
 def prediction_winner(
     prediction_score: Optional[str],
+    prediction: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
 
-    home, away = score_to_tuple(prediction_score)
+    # Если есть счёт — используем его
+    if prediction_score:
+        home, away = score_to_tuple(prediction_score)
+        return winner_from_score(home, away)
 
-    return winner_from_score(home, away)
+    # Если счёта нет, но есть вероятности — определяем по максимуму
+    if prediction:
+        home_win = safe_float(prediction.get("home_win"))
+        draw = safe_float(prediction.get("draw"))
+        away_win = safe_float(prediction.get("away_win"))
+
+        if home_win is not None or draw is not None or away_win is not None:
+            home_win = home_win or 0.0
+            draw = draw or 0.0
+            away_win = away_win or 0.0
+
+            if home_win >= draw and home_win >= away_win:
+                return "home"
+            elif away_win >= home_win and away_win >= draw:
+                return "away"
+            else:
+                return "draw"
+
+    return None
 
 
 # ============================================================
@@ -687,7 +746,7 @@ def build_match_report(
         actual_away,
     )
 
-    faj_winner = prediction_winner(faj_score)
+    faj_winner = prediction_winner(faj_score, prediction)
     expert_winner = prediction_winner(expert_score)
 
     faj_accuracy = score_accuracy(
