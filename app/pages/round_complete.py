@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-ROUND COMPLETE
+ROUND COMPLETE v1.1
 ============================================================
 
 Назначение:
@@ -59,6 +59,18 @@ ROUND COMPLETE
 При этом точный счёт имеет более высокий приоритет.
 
 ============================================================
+ИЗМЕНЕНИЯ V1.1
+============================================================
+
+1. get_latest_prediction() теперь ищет в двух таблицах:
+   - predictions (полные прогнозы с вероятностями)
+   - match_predictions (xG/lambda слой)
+
+2. Если прогноз найден в match_predictions, преобразует его
+   в формат, ожидаемый round_complete
+
+3. Добавлена поддержка xG из match_predictions
+============================================================
 """
 
 from __future__ import annotations
@@ -79,7 +91,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 APP_VERSION = "12.1"
-ROUND_COMPLETE_VERSION = "1.0"
+ROUND_COMPLETE_VERSION = "1.1"
 
 DEFAULT_DB_PATH = "data/faj.db"
 
@@ -443,25 +455,93 @@ def get_match_result(
     return object_to_dict(result)
 
 
+# ============================================================
+# get_latest_prediction — ИСПРАВЛЕНА ВЕРСИЯ
+# ============================================================
+
 def get_latest_prediction(
     db: FAJDatabase,
     match_id: int,
 ) -> Optional[Dict[str, Any]]:
 
+    """
+    Получает последний прогноз FAJ для матча.
+
+    ПОРЯДОК ПОИСКА:
+        1. predictions (полные прогнозы с вероятностями)
+        2. match_predictions (xG/lambda слой)
+
+    ВАЖНО:
+        prediction_manager.save_prediction() сохраняет в predictions
+        match_manager.save_match_prediction() сохраняет в match_predictions
+
+    ОБА ИСТОЧНИКА МОГУТ СОДЕРЖАТЬ ПРОГНОЗЫ.
+    """
+
+    # --------------------------------------------------------
+    # 1. ПЫТАЕМСЯ ПОЛУЧИТЬ ИЗ predictions
+    # --------------------------------------------------------
+
     try:
         prediction = db.get_latest_prediction(match_id)
+        if prediction:
+            data = object_to_dict(prediction)
+            if data:
+                logger.debug(
+                    "FAJ prediction found in predictions for match_id=%s",
+                    match_id
+                )
+                return data
     except Exception as exc:
-        logger.warning(
-            "Ошибка получения прогноза %s: %s",
+        logger.debug(
+            "get_latest_prediction from predictions failed for match_id=%s: %s",
             match_id,
-            exc,
+            exc
         )
-        return None
 
-    if not prediction:
-        return None
+    # --------------------------------------------------------
+    # 2. ПЫТАЕМСЯ ПОЛУЧИТЬ ИЗ match_predictions
+    # --------------------------------------------------------
 
-    return object_to_dict(prediction)
+    try:
+        match_pred = db.get_match_prediction(match_id)
+        if match_pred:
+            data = object_to_dict(match_pred)
+            if data:
+                logger.debug(
+                    "FAJ prediction found in match_predictions for match_id=%s",
+                    match_id
+                )
+
+                # Преобразуем в формат, ожидаемый round_complete
+                # match_predictions содержит xG, но НЕ содержит счёт
+                # Поэтому predicted_score остаётся None
+                return {
+                    "id": data.get("id"),
+                    "match_id": data.get("match_id"),
+                    "home_xg": data.get("xg_home"),
+                    "away_xg": data.get("xg_away"),
+                    "predicted_score": None,   # Нет счёта в match_predictions
+                    "score": None,
+                    "faj_xg_home": data.get("xg_home"),
+                    "faj_xg_away": data.get("xg_away"),
+                    "model_version": data.get("model_version", "v12.1"),
+                    "source": "match_predictions",
+                    "prediction_status": "active",
+                }
+    except Exception as exc:
+        logger.debug(
+            "get_match_prediction from match_predictions failed for match_id=%s: %s",
+            match_id,
+            exc
+        )
+
+    logger.debug(
+        "No FAJ prediction found for match_id=%s in predictions or match_predictions",
+        match_id
+    )
+
+    return None
 
 
 def get_latest_expert(
@@ -1125,10 +1205,8 @@ def run_learning() -> Any:
 
     from app.learning_engine import run_learning
 
-    return run_learning(
-        db_path=DEFAULT_DB_PATH,
-        force=False,
-    )
+    # Исправлено: убран db_path
+    return run_learning(force=False)
 
 
 # ============================================================
