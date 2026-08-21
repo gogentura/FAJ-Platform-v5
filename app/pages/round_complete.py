@@ -1497,4 +1497,171 @@ def main() -> None:
 
     # ========================================================
     # SUMMARY
-    #
+    # ========================================================
+
+    if all_filled:
+
+        render_summary(reports)
+
+        st.markdown("---")
+
+        # ====================================================
+        # STANDINGS
+        # ====================================================
+
+        render_standings(
+            db,
+            matches,
+        )
+
+        # ====================================================
+        # LEARNING
+        # ====================================================
+
+        st.markdown("---")
+
+        st.subheader("🧠 Обучение")
+
+        st.caption(
+            "Обучение запускается после просмотра "
+            "и проверки итогов тура."
+        )
+
+        if st.button(
+            "🧠 Запустить обучение",
+            type="primary",
+            use_container_width=True,
+            key="round_complete_learning",
+        ):
+
+            with st.spinner(
+                "FAJ Learning Engine обучается..."
+            ):
+
+                try:
+
+                    learning_result = run_learning()
+
+                    if isinstance(
+                        learning_result,
+                        dict,
+                    ):
+
+                        if learning_result.get(
+                            "success"
+                        ):
+
+                            st.success(
+                                "✅ Обучение завершено."
+                            )
+
+                            if learning_result.get(
+                                "skipped"
+                            ):
+
+                                st.info(
+                                    "ℹ️ Обучение пропущено: "
+                                    "нет новых данных."
+                                )
+
+                            else:
+
+                                st.info(
+                                    f"Матчей: "
+                                    f"{learning_result.get('matches_analyzed', 0)} | "
+                                    f"Закономерностей: "
+                                    f"{learning_result.get('patterns_found', 0)} | "
+                                    f"Параметров изменено: "
+                                    f"{learning_result.get('parameters_changed', 0)}"
+                                )
+
+                        else:
+
+                            errors = (
+                                learning_result.get(
+                                    "errors",
+                                    [],
+                                )
+                            )
+
+                            error_text = (
+                                errors[0]
+                                if errors
+                                else "Неизвестная ошибка"
+                            )
+
+                            st.error(
+                                f"❌ Ошибка обучения: "
+                                f"{error_text}"
+                            )
+
+                    else:
+
+                        st.success(
+                            "✅ Learning Engine завершил работу."
+                        )
+
+                        if learning_result is not None:
+                            st.write(
+                                learning_result
+                            )
+
+                except Exception as exc:
+
+                    logger.exception(
+                        "Ошибка Learning Engine"
+                    )
+
+                    st.error(
+                        f"❌ Ошибка обучения: {exc}"
+                    )
+
+        # ====================================================
+        # NEXT ROUND
+        # ====================================================
+
+        st.markdown("---")
+
+        if st.button(
+            "➡️ Перейти к следующему туру",
+            use_container_width=True,
+            key="round_complete_next",
+        ):
+
+            st.session_state["page"] = "tour_manager"
+
+            st.rerun()
+
+    # ========================================================
+    # BACK
+    # ========================================================
+
+    st.markdown("---")
+
+    if st.button(
+        "⬅️ Назад к фактам тура",
+        use_container_width=True,
+        key="round_complete_back",
+    ):
+
+        st.session_state["page"] = "import_facts"
+
+        st.rerun()
+
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
+
+if __name__ == "__main__":
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format=(
+            "%(asctime)s | "
+            "%(levelname)s | "
+            "%(message)s"
+        ),
+    )
+
+    main()
