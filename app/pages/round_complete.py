@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-ROUND COMPLETE v1.4
+ROUND COMPLETE v1.5
 ============================================================
 
 Назначение:
@@ -22,7 +22,7 @@ ROUND COMPLETE v1.4
           ↓
     ТУРНИРНАЯ ТАБЛИЦА
           ↓
-    LEARNING ENGINE
+    ETC (переход на страницу)
           ↓
     NEXT ROUND
 
@@ -36,7 +36,7 @@ ROUND COMPLETE v1.4
     Не изменяет результаты
     Не создаёт календарь
     Не пересчитывает прогнозы
-    Обучение запускается отдельно
+    Обучение запускается через ETC страницу
 
 ОЦЕНКА ПРОГНОЗА:
 
@@ -77,7 +77,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 APP_VERSION = "12.1"
-ROUND_COMPLETE_VERSION = "1.4"
+ROUND_COMPLETE_VERSION = "1.5"
 
 DEFAULT_DB_PATH = "data/faj.db"
 
@@ -2027,21 +2027,6 @@ def render_match_report(
 
 
 # ============================================================
-# LEARNING
-# ============================================================
-
-def run_learning() -> Any:
-
-    from app.learning_engine import (
-        run_learning
-    )
-
-    return run_learning(
-        force=False
-    )
-
-
-# ============================================================
 # MAIN
 # ============================================================
 
@@ -2351,7 +2336,7 @@ def main() -> None:
         )
 
         # ====================================================
-        # LEARNING
+        # ETC — НОВАЯ КНОПКА (ведёт на страницу ETC)
         # ====================================================
 
         st.markdown(
@@ -2359,109 +2344,28 @@ def main() -> None:
         )
 
         st.subheader(
-            "🧠 Обучение"
+            "🧠 ETC — Evolution Training Center"
         )
 
         st.caption(
-            "Обучение запускается после "
-            "просмотра и проверки итогов тура."
+            "Запуск ETC после просмотра и проверки итогов тура.\n\n"
+            "ETC анализирует 8+ завершённых матчей, находит паттерны, "
+            "оптимизирует параметры модели и обновляет рейтинг команд."
         )
 
         if st.button(
-            "🧠 Запустить обучение",
+            "🧠 ЗАПУСТИТЬ ETC",
             type="primary",
             use_container_width=True,
-            key="round_complete_learning",
+            key="round_complete_etc",
         ):
 
-            with st.spinner(
-                "FAJ Learning Engine обучается..."
-            ):
+            # Переход на страницу ETC
+            st.session_state[
+                "page"
+            ] = "etc"
 
-                try:
-
-                    learning_result = (
-                        run_learning()
-                    )
-
-                    if isinstance(
-                        learning_result,
-                        dict,
-                    ):
-
-                        if learning_result.get(
-                            "success"
-                        ):
-
-                            st.success(
-                                "✅ Обучение завершено."
-                            )
-
-                            if learning_result.get(
-                                "skipped"
-                            ):
-
-                                st.info(
-                                    "ℹ️ Обучение пропущено: "
-                                    "нет новых данных."
-                                )
-
-                            else:
-
-                                st.info(
-                                    f"Матчей: "
-                                    f"{learning_result.get('matches_analyzed', 0)} | "
-                                    f"Закономерностей: "
-                                    f"{learning_result.get('patterns_found', 0)} | "
-                                    f"Параметров изменено: "
-                                    f"{learning_result.get('parameters_changed', 0)}"
-                                )
-
-                        else:
-
-                            errors = (
-                                learning_result.get(
-                                    "errors",
-                                    [],
-                                )
-                            )
-
-                            error_text = (
-                                errors[0]
-                                if errors
-                                else "Неизвестная ошибка"
-                            )
-
-                            st.error(
-                                f"❌ Ошибка обучения: "
-                                f"{error_text}"
-                            )
-
-                    else:
-
-                        st.success(
-                            "✅ Learning Engine "
-                            "завершил работу."
-                        )
-
-                        if (
-                            learning_result
-                            is not None
-                        ):
-
-                            st.write(
-                                learning_result
-                            )
-
-                except Exception as exc:
-
-                    logger.exception(
-                        "Ошибка Learning Engine"
-                    )
-
-                    st.error(
-                        f"❌ Ошибка обучения: {exc}"
-                    )
+            st.rerun()
 
         # ====================================================
         # NEXT ROUND
