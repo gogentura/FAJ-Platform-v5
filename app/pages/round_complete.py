@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-ROUND COMPLETE v1.1
+ROUND COMPLETE v1.2
 ============================================================
 
 Назначение:
@@ -46,30 +46,13 @@ ROUND COMPLETE v1.1
     🔴 Не угадан
     ⚪ Нет прогноза
 
-"ПОЧТИ":
-
-    Абсолютная ошибка по голам хозяев <= 1
-    И абсолютная ошибка по голам гостей <= 1
-
-    Пример:
-        2:1 → 2:0
-        1:1 → 2:1
-        0:2 → 1:2
-
-При этом точный счёт имеет более высокий приоритет.
-
 ============================================================
-ИЗМЕНЕНИЯ V1.1
+ИЗМЕНЕНИЯ V1.2
 ============================================================
 
-1. get_latest_prediction() теперь ищет в двух таблицах:
-   - predictions (полные прогнозы с вероятностями)
-   - match_predictions (xG/lambda слой)
-
-2. Если прогноз найден в match_predictions, преобразует его
-   в формат, ожидаемый round_complete
-
-3. Добавлена поддержка xG из match_predictions
+1. Добавлен диагностический блок для поиска прогнозов FAJ
+2. Показывает количество прогнозов в predictions и match_predictions
+3. Помогает определить, где хранятся прогнозы FAJ
 ============================================================
 """
 
@@ -91,7 +74,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 APP_VERSION = "12.1"
-ROUND_COMPLETE_VERSION = "1.1"
+ROUND_COMPLETE_VERSION = "1.2"
 
 DEFAULT_DB_PATH = "data/faj.db"
 
@@ -1427,10 +1410,69 @@ def main() -> None:
             st.error("🔴 Тур не завершён")
 
     # ========================================================
-    # MATCH REPORTS
+    # ДИАГНОСТИКА: ГДЕ ПРОГНОЗЫ?
     # ========================================================
 
     st.markdown("---")
+    st.subheader("🔍 Диагностика прогнозов")
+
+    for match in matches:
+        match_id = safe_int(match.get("id"))
+        if match_id is None:
+            continue
+        
+        # Проверяем predictions
+        try:
+            preds = db.get_predictions_by_match(match_id)
+            preds_count = len(preds) if preds else 0
+        except Exception:
+            preds_count = 0
+        
+        # Проверяем match_predictions
+        try:
+            match_preds = db.get_match_predictions(match_id)
+            match_preds_count = len(match_preds) if match_preds else 0
+        except Exception:
+            match_preds_count = 0
+        
+        home = match.get("home_name", "?")
+        away = match.get("away_name", "?")
+        
+        st.write(
+            f"**{home} — {away}** | "
+            f"predictions: {preds_count} | "
+            f"match_predictions: {match_preds_count}"
+        )
+        
+        # Если есть прогнозы в predictions — покажем первый
+        if preds_count > 0:
+            try:
+                first = object_to_dict(preds[0])
+                st.write(
+                    f"  → predictions[0]: "
+                    f"П1={first.get('home_win', '—')} | "
+                    f"X={first.get('draw', '—')} | "
+                    f"П2={first.get('away_win', '—')}"
+                )
+            except Exception:
+                pass
+        
+        # Если есть прогнозы в match_predictions — покажем первый
+        if match_preds_count > 0:
+            try:
+                first = object_to_dict(match_preds[0])
+                st.write(
+                    f"  → match_predictions[0]: "
+                    f"xG {first.get('xg_home', '—')} — {first.get('xg_away', '—')}"
+                )
+            except Exception:
+                pass
+
+    st.markdown("---")
+
+    # ========================================================
+    # MATCH REPORTS
+    # ========================================================
 
     if not all_filled:
 
@@ -1455,171 +1497,4 @@ def main() -> None:
 
     # ========================================================
     # SUMMARY
-    # ========================================================
-
-    if all_filled:
-
-        render_summary(reports)
-
-        st.markdown("---")
-
-        # ====================================================
-        # STANDINGS
-        # ====================================================
-
-        render_standings(
-            db,
-            matches,
-        )
-
-        # ====================================================
-        # LEARNING
-        # ====================================================
-
-        st.markdown("---")
-
-        st.subheader("🧠 Обучение")
-
-        st.caption(
-            "Обучение запускается после просмотра "
-            "и проверки итогов тура."
-        )
-
-        if st.button(
-            "🧠 Запустить обучение",
-            type="primary",
-            use_container_width=True,
-            key="round_complete_learning",
-        ):
-
-            with st.spinner(
-                "FAJ Learning Engine обучается..."
-            ):
-
-                try:
-
-                    learning_result = run_learning()
-
-                    if isinstance(
-                        learning_result,
-                        dict,
-                    ):
-
-                        if learning_result.get(
-                            "success"
-                        ):
-
-                            st.success(
-                                "✅ Обучение завершено."
-                            )
-
-                            if learning_result.get(
-                                "skipped"
-                            ):
-
-                                st.info(
-                                    "ℹ️ Обучение пропущено: "
-                                    "нет новых данных."
-                                )
-
-                            else:
-
-                                st.info(
-                                    f"Матчей: "
-                                    f"{learning_result.get('matches_analyzed', 0)} | "
-                                    f"Закономерностей: "
-                                    f"{learning_result.get('patterns_found', 0)} | "
-                                    f"Параметров изменено: "
-                                    f"{learning_result.get('parameters_changed', 0)}"
-                                )
-
-                        else:
-
-                            errors = (
-                                learning_result.get(
-                                    "errors",
-                                    [],
-                                )
-                            )
-
-                            error_text = (
-                                errors[0]
-                                if errors
-                                else "Неизвестная ошибка"
-                            )
-
-                            st.error(
-                                f"❌ Ошибка обучения: "
-                                f"{error_text}"
-                            )
-
-                    else:
-
-                        st.success(
-                            "✅ Learning Engine завершил работу."
-                        )
-
-                        if learning_result is not None:
-                            st.write(
-                                learning_result
-                            )
-
-                except Exception as exc:
-
-                    logger.exception(
-                        "Ошибка Learning Engine"
-                    )
-
-                    st.error(
-                        f"❌ Ошибка обучения: {exc}"
-                    )
-
-        # ====================================================
-        # NEXT ROUND
-        # ====================================================
-
-        st.markdown("---")
-
-        if st.button(
-            "➡️ Перейти к следующему туру",
-            use_container_width=True,
-            key="round_complete_next",
-        ):
-
-            st.session_state["page"] = "tour_manager"
-
-            st.rerun()
-
-    # ========================================================
-    # BACK
-    # ========================================================
-
-    st.markdown("---")
-
-    if st.button(
-        "⬅️ Назад к фактам тура",
-        use_container_width=True,
-        key="round_complete_back",
-    ):
-
-        st.session_state["page"] = "import_facts"
-
-        st.rerun()
-
-
-# ============================================================
-# ENTRY POINT
-# ============================================================
-
-if __name__ == "__main__":
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format=(
-            "%(asctime)s | "
-            "%(levelname)s | "
-            "%(message)s"
-        ),
-    )
-
-    main()
+    #
