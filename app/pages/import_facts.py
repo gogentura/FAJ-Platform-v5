@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-IMPORT FACTS v4.2
+IMPORT FACTS v4.3
 ============================================================
 
 НАЗНАЧЕНИЕ:
@@ -30,29 +30,6 @@ IMPORT FACTS v4.2
         📊 Статистика → Soccer365
         🎯 xG         → Soccer365
 
-ВАЖНО:
-    API не является обязательным источником.
-
-    Каждый факт независим:
-
-        SCORE
-        STATS
-        XG
-
-    Поэтому возможны состояния:
-
-        API → SCORE
-        ручной → STATS
-        Soccer365 → XG
-
-    или:
-
-        API → SCORE
-        API → STATS
-        Soccer365 → XG
-
-    или полностью вручную/Soccer365.
-
 ============================================================
 АРХИТЕКТУРНЫЙ ПРИНЦИП
 ============================================================
@@ -69,69 +46,23 @@ FACT NORMALIZER
     ↓
 SQLite
     ↓
+GITHUB SYNC (автоматически после сохранения)
+    ↓
 VALIDATION
     ↓
 GOLD
     ↓
 LOCK
     ↓
-LEARNING
+LEARNING (на странице "Тур сыгран" или ETC)
 
 ============================================================
-ПРИНЦИПЫ
+ИЗМЕНЕНИЯ V4.3
 ============================================================
 
-SQLite only
-database.py — единственный источник записи в БД
-
-Никаких DELETE
-Никаких DROP
-
-Старые прогнозы не изменяются.
-
-Факт отделён от прогноза.
-
-Expert отделён от FAJ.
-
-None != 0.
-
-Каждый источник отвечает только за свой тип факта.
-
-API может заполнить только реально полученные данные.
-
-Если API не дал данные — Soccer365 остаётся доступным.
-
-============================================================
-ИЗМЕНЕНИЯ V4.2
-============================================================
-
-1. Bombardir полностью удалён:
-   - удалён импорт BombardirParser
-   - удалена функция parse_bombardir()
-   - удалён параметр bombardir_fact из build_hybrid_fact()
-   - удалён вызов bombardir_fact из render_match_card()
-
-2. normalize_source_stats() расширен:
-   - добавлены fouls
-   - добавлены yellow_cards
-   - добавлены red_cards
-
-3. parse_soccer365() теперь использует parse_match():
-   - Soccer365 становится полноценным источником статистики
-   - больше не только xG
-
-4. build_hybrid_fact():
-   - приоритет: API → Soccer365 (поле за полем)
-   - Bombardir полностью исключён
-
-5. stats_source теперь указывает soccer365
-
-6. save_match_fact() расширен новыми полями
-
-7. fact_status() расширен новыми полями
-
-8. Таблица на экране показывает новые поля
-
+1. Автоматическая синхронизация с GitHub после сохранения фактов
+2. Убрана кнопка "Обучение" (перенесена в round_complete)
+3. Информационное сообщение о месте запуска обучения
 ============================================================
 """
 
@@ -158,7 +89,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 APP_VERSION = "12.1"
-IMPORT_FACTS_VERSION = "4.2"
+IMPORT_FACTS_VERSION = "4.3"
 MODEL_VERSION = "v12.1"
 
 DEFAULT_DB_PATH = "data/faj.db"
@@ -215,6 +146,25 @@ SOURCE_CONFIG = {
 @st.cache_resource
 def get_database() -> FAJDatabase:
     return FAJDatabase()
+
+
+# ============================================================
+# GITHUB SYNC
+# ============================================================
+
+def sync_to_github() -> Dict[str, Any]:
+    """Синхронизирует текущую БД с GitHub."""
+    try:
+        from app.github_db_sync import save_database_to_github
+        result = save_database_to_github()
+        logger.info(
+            "GITHUB SYNC | size=%s bytes",
+            result.get('size', 0)
+        )
+        return result
+    except Exception as exc:
+        logger.exception("GitHub sync failed")
+        return {"error": str(exc), "size": 0}
 
 
 # ============================================================
@@ -3097,6 +3047,25 @@ def render_match_card(
                 f"{result['gold_id']}"
             )
 
+            # ========================================================
+            # АВТОМАТИЧЕСКАЯ СИНХРОНИЗАЦИЯ С GITHUB
+            # ========================================================
+
+            with st.spinner("Синхронизация с GitHub..."):
+                sync_result = sync_to_github()
+
+                if sync_result.get("error"):
+                    st.warning(
+                        f"⚠️ Факты сохранены в БД, "
+                        f"но синхронизация с GitHub не удалась: "
+                        f"{sync_result['error']}"
+                    )
+                else:
+                    st.success(
+                        f"✅ База синхронизирована с GitHub. "
+                        f"Размер: {sync_result.get('size', 0):,} байт."
+                    )
+
             st.rerun()
 
         except Exception as exc:
@@ -3110,22 +3079,6 @@ def render_match_card(
             )
 
     st.divider()
-
-
-# ============================================================
-# LEARNING
-# ============================================================
-
-def run_learning() -> Any:
-
-    from app.learning_engine import (
-        run_learning,
-    )
-
-    return run_learning(
-        db_path=DEFAULT_DB_PATH,
-        force=False,
-    )
 
 
 # ============================================================
@@ -3254,49 +3207,27 @@ def main() -> None:
         )
 
     # ========================================================
-    # LEARNING
+    # ОБУЧЕНИЕ — ВРЕМЕННО ОТКЛЮЧЕНО
     # ========================================================
 
     st.markdown(
         "## 🧠 Обучение"
     )
 
-    st.caption(
-        "Обучение запускается после "
-        "сохранения фактов тура."
+    st.info(
+        "ℹ️ Обучение запускается на странице **'Тур сыгран'** "
+        "после завершения тура.\n\n"
+        "Перейдите в меню → **🏁 Тур сыгран** → "
+        "**🧠 ЗАПУСТИТЬ ОБУЧЕНИЕ ТУРА**."
     )
 
-    if st.button(
-        "🧠 Обучение",
-        type="primary",
-        use_container_width=True,
-    ):
-
-        try:
-
-            with st.spinner(
-                "FAJ Learning Engine обучается..."
-            ):
-
-                result = run_learning()
-
-            st.success(
-                "Обучение завершено."
-            )
-
-            if result is not None:
-                st.write(result)
-
-        except Exception as exc:
-
-            logger.exception(
-                "Ошибка Learning Engine"
-            )
-
-            st.error(
-                f"Ошибка Learning Engine: "
-                f"{exc}"
-            )
+    # Кнопка "Обучение" временно отключена
+    # if st.button(
+    #     "🧠 Обучение",
+    #     type="primary",
+    #     use_container_width=True,
+    # ):
+    #     ...
 
 
 # ============================================================
