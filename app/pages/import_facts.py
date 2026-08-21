@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-IMPORT FACTS v4.3
+IMPORT FACTS v4.4
 ============================================================
 
 НАЗНАЧЕНИЕ:
@@ -57,12 +57,13 @@ LOCK
 LEARNING (на странице "Тур сыгран" или ETC)
 
 ============================================================
-ИЗМЕНЕНИЯ V4.3
+ИЗМЕНЕНИЯ V4.4
 ============================================================
 
-1. Автоматическая синхронизация с GitHub после сохранения фактов
-2. Убрана кнопка "Обучение" (перенесена в round_complete)
-3. Информационное сообщение о месте запуска обучения
+1. Использование db.get_round_matches_by_number() вместо прямого SQL
+2. Удалён FALLBACK SQL блок
+3. Удалён _call_first() для поиска несуществующих методов
+4. Архитектурная чистота: database.py — единственный источник работы с БД
 ============================================================
 """
 
@@ -89,7 +90,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 APP_VERSION = "12.1"
-IMPORT_FACTS_VERSION = "4.3"
+IMPORT_FACTS_VERSION = "4.4"
 MODEL_VERSION = "v12.1"
 
 DEFAULT_DB_PATH = "data/faj.db"
@@ -327,47 +328,7 @@ def object_to_dict(value: Any) -> Dict[str, Any]:
 
 
 # ============================================================
-# DATABASE METHOD COMPATIBILITY
-# ============================================================
-
-def _call_first(
-    obj: Any,
-    method_names: List[str],
-    *args,
-    **kwargs,
-) -> Any:
-
-    for name in method_names:
-
-        method = getattr(obj, name, None)
-
-        if not callable(method):
-            continue
-
-        try:
-            return method(
-                *args,
-                **kwargs,
-            )
-
-        except TypeError:
-            continue
-
-        except Exception as exc:
-
-            logger.warning(
-                "database method %s failed: %s",
-                name,
-                exc,
-            )
-
-            continue
-
-    return None
-
-
-# ============================================================
-# MATCH ACCESS
+# MATCH ACCESS — ЧЕРЕЗ DATABASE.PY
 # ============================================================
 
 def get_round_matches(
@@ -377,162 +338,17 @@ def get_round_matches(
 ) -> List[Dict[str, Any]]:
 
     """
-    Получает тур строго в рамках выбранной лиги.
+    Получает матчи тура через database.py.
 
     ВАЖНО:
-
-        round_number сам по себе НЕ является уникальным.
-
-        Тур 1 существует одновременно в:
-            РПЛ
-            АПЛ
-            Ла Лиге
-            ЛЧ
-
-    Поэтому fallback обязательно связывается
-    с seasons.league.
+        round_number не уникален между лигами.
+        database.get_round_matches_by_number() фильтрует по league.
     """
 
-    # --------------------------------------------------------
-    # СНАЧАЛА ПЫТАЕМСЯ ИСПОЛЬЗОВАТЬ DATABASE API
-    # --------------------------------------------------------
-
-    result = _call_first(
-        db,
-        [
-            "get_matches_by_round",
-            "get_round_matches",
-            "get_matches_for_round",
-            "get_matches_by_round_number",
-        ],
+    return db.get_round_matches_by_number(
         round_number,
+        league,
     )
-
-    if result is not None:
-
-        matches = []
-
-        for item in result:
-
-            data = object_to_dict(item)
-
-            if not data:
-                continue
-
-            matches.append(data)
-
-        # Если database method вернул данные,
-        # дополнительно фильтруем по лиге,
-        # если league доступна в результате.
-
-        filtered = []
-
-        for match in matches:
-
-            match_league = (
-                match.get("league")
-                or match.get("competition")
-                or match.get("league_name")
-            )
-
-            if match_league is None:
-                filtered.append(match)
-                continue
-
-            if str(match_league).strip() == league:
-                filtered.append(match)
-
-        return filtered
-
-    # --------------------------------------------------------
-    # FALLBACK SQL
-    # --------------------------------------------------------
-
-    conn = None
-
-    try:
-
-        conn = db.get_connection()
-
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
-            SELECT r.*
-            FROM rounds r
-            JOIN seasons s
-                ON s.id = r.season_id
-            WHERE r.round_number = ?
-              AND s.league = ?
-            ORDER BY r.id DESC
-            LIMIT 1
-            """,
-            (
-                round_number,
-                league,
-            ),
-        )
-
-        round_row = cursor.fetchone()
-
-        if not round_row:
-            return []
-
-        round_data = object_to_dict(
-            round_row
-        )
-
-        round_id = (
-            round_data.get("id")
-            or round_data.get("round_id")
-        )
-
-        if round_id is None:
-            return []
-
-        cursor.execute(
-            """
-            SELECT
-                m.*,
-                th.name AS home_team_name,
-                ta.name AS away_team_name
-            FROM matches m
-            LEFT JOIN teams th
-                ON th.id = m.home_team_id
-            LEFT JOIN teams ta
-                ON ta.id = m.away_team_id
-            WHERE m.round_id = ?
-            ORDER BY m.id
-            """,
-            (round_id,),
-        )
-
-        rows = cursor.fetchall()
-
-        return [
-            object_to_dict(row)
-            for row in rows
-        ]
-
-    except Exception:
-
-        logger.exception(
-            "Ошибка получения матчей "
-            "тура %s лиги %s",
-            round_number,
-            league,
-        )
-
-        return []
-
-    finally:
-
-        if conn is not None:
-
-            try:
-                conn.close()
-            except Exception:
-                pass
 
 
 # ============================================================
@@ -795,17 +611,22 @@ def parse_api_fact(
         match_id = get_match_id(match)
 
         # Универсальный поиск метода.
-        result = _call_first(
-            provider,
-            [
-                "get_match_facts",
-                "get_match",
-                "fetch_match",
-                "get_fixture",
-                "fetch_fixture",
-            ],
-            match_id,
-        )
+        result = None
+        for method_name in [
+            "get_match_facts",
+            "get_match",
+            "fetch_match",
+            "get_fixture",
+            "fetch_fixture",
+        ]:
+            method = getattr(provider, method_name, None)
+            if callable(method):
+                try:
+                    result = method(match_id)
+                    if result is not None:
+                        break
+                except Exception:
+                    continue
 
         if result is None:
             return empty
@@ -1815,27 +1636,14 @@ def get_latest_expert(
     match_id: Any,
 ) -> Optional[Dict[str, Any]]:
 
-    result = _call_first(
-        db,
-        [
-            "get_expert_predictions",
-        ],
-        match_id,
-    )
-
-    if not result:
-        return None
-
     try:
+        result = db.get_expert_predictions(match_id)
+        if not result:
+            return None
         first = result[0]
+        return object_to_dict(first) if first else None
     except Exception:
         return None
-
-    data = object_to_dict(
-        first
-    )
-
-    return data or None
 
 
 # ============================================================
@@ -3163,7 +2971,7 @@ def main() -> None:
         )
 
     # ========================================================
-    # MATCHES
+    # MATCHES — ЧЕРЕЗ DATABASE.PY
     # ========================================================
 
     matches = get_round_matches(
@@ -3220,14 +3028,6 @@ def main() -> None:
         "Перейдите в меню → **🏁 Тур сыгран** → "
         "**🧠 ЗАПУСТИТЬ ОБУЧЕНИЕ ТУРА**."
     )
-
-    # Кнопка "Обучение" временно отключена
-    # if st.button(
-    #     "🧠 Обучение",
-    #     type="primary",
-    #     use_container_width=True,
-    # ):
-    #     ...
 
 
 # ============================================================
