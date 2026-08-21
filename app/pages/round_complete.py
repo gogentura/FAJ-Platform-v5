@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-ROUND COMPLETE v1.3
+ROUND COMPLETE v1.4
 ============================================================
 
 Назначение:
@@ -46,15 +46,17 @@ ROUND COMPLETE v1.3
     🔴 Не угадан
     ⚪ Нет прогноза
 
-============================================================
-ИЗМЕНЕНИЯ V1.3
-============================================================
+FAJ SCORE:
 
-1. extract_prediction_score() теперь проверяет prediction_scores
-2. Если точного счёта нет — возвращает None, но исход определяется по вероятностям
-3. Исправлена ошибка 'sqlite3.Row' object does not support item assignment
-   в learning_engine.py (преобразование Row в dict)
-============================================================
+    predictions
+          ↓
+    prediction_id
+          ↓
+    prediction_scores
+          ↓
+    rank=1 / максимальная вероятность
+          ↓
+    точный счёт FAJ
 """
 
 from __future__ import annotations
@@ -75,7 +77,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 APP_VERSION = "12.1"
-ROUND_COMPLETE_VERSION = "1.3"
+ROUND_COMPLETE_VERSION = "1.4"
 
 DEFAULT_DB_PATH = "data/faj.db"
 
@@ -101,6 +103,11 @@ def get_database() -> FAJDatabase:
 # ============================================================
 
 def object_to_dict(value: Any) -> Dict[str, Any]:
+    """
+    Безопасно преобразует объект / sqlite3.Row / dict
+    в обычный dict.
+    """
+
     if value is None:
         return {}
 
@@ -139,12 +146,26 @@ def safe_float(value: Any) -> Optional[float]:
         return None
 
     try:
-        return float(str(value).strip().replace(",", "."))
+        return float(
+            str(value)
+            .strip()
+            .replace(",", ".")
+        )
     except (TypeError, ValueError):
         return None
 
 
 def clean_score(value: Any) -> Optional[str]:
+    """
+    Приводит значение счёта к формату H:A.
+
+    Поддерживает:
+        1:0
+        2:1
+        "1 : 0"
+        " 2:1 "
+    """
+
     if value is None:
         return None
 
@@ -170,7 +191,10 @@ def clean_score(value: Any) -> Optional[str]:
     return f"{home}:{away}"
 
 
-def score_to_tuple(value: Any) -> Tuple[Optional[int], Optional[int]]:
+def score_to_tuple(
+    value: Any,
+) -> Tuple[Optional[int], Optional[int]]:
+
     score = clean_score(value)
 
     if score is None:
@@ -178,7 +202,10 @@ def score_to_tuple(value: Any) -> Tuple[Optional[int], Optional[int]]:
 
     home, away = score.split(":")
 
-    return safe_int(home), safe_int(away)
+    return (
+        safe_int(home),
+        safe_int(away),
+    )
 
 
 def winner_from_score(
@@ -198,7 +225,10 @@ def winner_from_score(
     return "draw"
 
 
-def winner_label(value: Optional[str]) -> str:
+def winner_label(
+    value: Optional[str],
+) -> str:
+
     return {
         "home": "П1",
         "draw": "X",
@@ -214,9 +244,23 @@ def score_accuracy(
     predicted_score: Optional[str],
     actual_score: Optional[str],
 ) -> str:
+    """
+    Оценка точности прогноза.
 
-    predicted_home, predicted_away = score_to_tuple(predicted_score)
-    actual_home, actual_away = score_to_tuple(actual_score)
+    🎯 Точный счёт
+    🟢 Почти угадал
+    🟡 Угадан исход
+    🔴 Не угадан
+    ⚪ Нет прогноза
+    """
+
+    predicted_home, predicted_away = score_to_tuple(
+        predicted_score
+    )
+
+    actual_home, actual_away = score_to_tuple(
+        actual_score
+    )
 
     if (
         predicted_home is None
@@ -240,10 +284,18 @@ def score_accuracy(
     # NEAR
     # --------------------------------------------------------
 
-    home_error = abs(predicted_home - actual_home)
-    away_error = abs(predicted_away - actual_away)
+    home_error = abs(
+        predicted_home - actual_home
+    )
 
-    if home_error <= 1 and away_error <= 1:
+    away_error = abs(
+        predicted_away - actual_away
+    )
+
+    if (
+        home_error <= 1
+        and away_error <= 1
+    ):
         return "🟢 Почти угадал"
 
     # --------------------------------------------------------
@@ -266,7 +318,9 @@ def score_accuracy(
     return "🔴 Не угадан"
 
 
-def score_accuracy_rank(status: str) -> int:
+def score_accuracy_rank(
+    status: str,
+) -> int:
     """
     Используется для итоговой статистики.
 
@@ -299,65 +353,267 @@ def score_accuracy_rank(status: str) -> int:
 def extract_prediction_score(
     prediction: Dict[str, Any],
 ) -> Optional[str]:
+    """
+    Возвращает наиболее вероятный точный счёт FAJ.
+
+    Источники:
+
+        1. Прямые поля prediction
+        2. prediction_scores по prediction_id
+
+    Приоритет:
+
+        rank=1
+        ↓
+        максимальная probability
+        ↓
+        первая доступная запись
+
+    Функция только читает данные.
+    """
 
     if not prediction:
         return None
 
-    # --------------------------------------------------------
-    # 1. ПРЯМЫЕ ПОЛЯ СО СЧЁТОМ
-    # --------------------------------------------------------
+    # ========================================================
+    # 1. ПРЯМОЙ СЧЁТ В predictions
+    # ========================================================
 
-    fields = (
+    direct_score_fields = (
         "predicted_score",
         "score",
         "faj_score",
         "most_likely_score",
         "prediction_score",
         "exact_score",
+        "predicted_result",
     )
 
-    for field in fields:
+    for field in direct_score_fields:
+
         value = prediction.get(field)
-        if value is not None:
-            score = clean_score(value)
+
+        score = clean_score(value)
+
+        if score:
+            return score
+
+    # ========================================================
+    # 2. ПРЯМЫЕ ПОЛЯ ГОЛОВ
+    # ========================================================
+
+    goal_pairs = (
+        (
+            "home_goals",
+            "away_goals",
+        ),
+        (
+            "predicted_home_goals",
+            "predicted_away_goals",
+        ),
+        (
+            "home_score",
+            "away_score",
+        ),
+        (
+            "predicted_home_score",
+            "predicted_away_score",
+        ),
+    )
+
+    for home_field, away_field in goal_pairs:
+
+        home = safe_int(
+            prediction.get(home_field)
+        )
+
+        away = safe_int(
+            prediction.get(away_field)
+        )
+
+        if (
+            home is not None
+            and away is not None
+        ):
+            return f"{home}:{away}"
+
+    # ========================================================
+    # 3. PREDICTION ID
+    # ========================================================
+
+    prediction_id = (
+        prediction.get("id")
+        or prediction.get("prediction_id")
+    )
+
+    if prediction_id is None:
+        return None
+
+    prediction_id = safe_int(
+        prediction_id
+    )
+
+    if prediction_id is None:
+        return None
+
+    # ========================================================
+    # 4. prediction_scores
+    # ========================================================
+
+    try:
+
+        db = get_database()
+
+        scores = db.get_prediction_scores(
+            prediction_id
+        )
+
+    except Exception as exc:
+
+        logger.warning(
+            "Не удалось получить prediction_scores "
+            "для prediction_id=%s: %s",
+            prediction_id,
+            exc,
+        )
+
+        return None
+
+    if not scores:
+        return None
+
+    # ========================================================
+    # 5. НОРМАЛИЗАЦИЯ СТРОК
+    # ========================================================
+
+    rows: List[Dict[str, Any]] = []
+
+    for row in scores:
+
+        data = object_to_dict(row)
+
+        if data:
+            rows.append(data)
+
+    if not rows:
+        return None
+
+    # ========================================================
+    # 6. СНАЧАЛА rank=1
+    # ========================================================
+
+    ranked_rows = []
+
+    for row in rows:
+
+        rank = safe_int(
+            row.get("rank")
+        )
+
+        if rank == 1:
+            ranked_rows.append(row)
+
+    if ranked_rows:
+
+        ranked_rows.sort(
+            key=lambda x: -(
+                safe_float(
+                    x.get("probability")
+                )
+                or safe_float(
+                    x.get("prob")
+                )
+                or safe_float(
+                    x.get("score_probability")
+                )
+                or 0.0
+            )
+        )
+
+        rows_to_check = ranked_rows
+
+    else:
+
+        # ====================================================
+        # 7. ЕСЛИ rank НЕТ — ПО ВЕРОЯТНОСТИ
+        # ====================================================
+
+        rows_to_check = sorted(
+            rows,
+            key=lambda x: -(
+                safe_float(
+                    x.get("probability")
+                )
+                or safe_float(
+                    x.get("prob")
+                )
+                or safe_float(
+                    x.get("score_probability")
+                )
+                or 0.0
+            ),
+        )
+
+    # ========================================================
+    # 8. ИЗВЛЕКАЕМ СЧЁТ
+    # ========================================================
+
+    for row in rows_to_check:
+
+        # ----------------------------------------------------
+        # score-поля
+        # ----------------------------------------------------
+
+        for field in (
+            "score",
+            "predicted_score",
+            "exact_score",
+            "result",
+        ):
+
+            score = clean_score(
+                row.get(field)
+            )
+
             if score:
                 return score
 
-    # --------------------------------------------------------
-    # 2. ПОЛУЧАЕМ ИЗ prediction_scores
-    # --------------------------------------------------------
+        # ----------------------------------------------------
+        # home / away goals
+        # ----------------------------------------------------
 
-    prediction_id = prediction.get("id")
-    if prediction_id:
-        try:
-            db = get_database()
-            scores = db.get_prediction_scores(prediction_id)
-            if scores:
-                for row in scores:
-                    row_dict = object_to_dict(row)
-                    if row_dict.get("rank") == 1:
-                        score = clean_score(row_dict.get("score"))
-                        if score:
-                            return score
-                # Если rank=1 нет, берём первый
-                first = object_to_dict(scores[0])
-                score = clean_score(first.get("score"))
-                if score:
-                    return score
-        except Exception as exc:
-            logger.debug("prediction_scores error: %s", exc)
+        for home_field, away_field in (
+            (
+                "home_goals",
+                "away_goals",
+            ),
+            (
+                "predicted_home_goals",
+                "predicted_away_goals",
+            ),
+            (
+                "home_score",
+                "away_score",
+            ),
+            (
+                "predicted_home_score",
+                "predicted_away_score",
+            ),
+        ):
 
-    # --------------------------------------------------------
-    # 3. ОПРЕДЕЛЯЕМ ИСХОД ПО ВЕРОЯТНОСТЯМ (без счёта)
-    # --------------------------------------------------------
+            home = safe_int(
+                row.get(home_field)
+            )
 
-    home_win = prediction.get("home_win")
-    draw = prediction.get("draw")
-    away_win = prediction.get("away_win")
+            away = safe_int(
+                row.get(away_field)
+            )
 
-    if home_win is not None or draw is not None or away_win is not None:
-        # Не возвращаем счёт, но исход будет определён отдельно
-        return None
+            if (
+                home is not None
+                and away is not None
+            ):
+                return f"{home}:{away}"
 
     return None
 
@@ -374,6 +630,7 @@ def get_expert_score(
         "expert_score",
         "predicted_score",
     ):
+
         value = expert.get(field)
 
         if value is None:
@@ -391,29 +648,85 @@ def prediction_winner(
     prediction_score: Optional[str],
     prediction: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
+    """
+    Определяет исход прогноза.
 
-    # Если есть счёт — используем его
+    Приоритет:
+
+        1. точный счёт
+        2. вероятности П1/X/П2
+    """
+
+    # ========================================================
+    # 1. ИЗ ТОЧНОГО СЧЁТА
+    # ========================================================
+
     if prediction_score:
-        home, away = score_to_tuple(prediction_score)
-        return winner_from_score(home, away)
 
-    # Если счёта нет, но есть вероятности — определяем по максимуму
+        home, away = score_to_tuple(
+            prediction_score
+        )
+
+        return winner_from_score(
+            home,
+            away,
+        )
+
+    # ========================================================
+    # 2. ИЗ ВЕРОЯТНОСТЕЙ
+    # ========================================================
+
     if prediction:
-        home_win = safe_float(prediction.get("home_win"))
-        draw = safe_float(prediction.get("draw"))
-        away_win = safe_float(prediction.get("away_win"))
 
-        if home_win is not None or draw is not None or away_win is not None:
-            home_win = home_win or 0.0
-            draw = draw or 0.0
-            away_win = away_win or 0.0
+        home_win = safe_float(
+            prediction.get("home_win")
+        )
 
-            if home_win >= draw and home_win >= away_win:
+        draw = safe_float(
+            prediction.get("draw")
+        )
+
+        away_win = safe_float(
+            prediction.get("away_win")
+        )
+
+        if (
+            home_win is not None
+            or draw is not None
+            or away_win is not None
+        ):
+
+            home_win = (
+                home_win
+                if home_win is not None
+                else 0.0
+            )
+
+            draw = (
+                draw
+                if draw is not None
+                else 0.0
+            )
+
+            away_win = (
+                away_win
+                if away_win is not None
+                else 0.0
+            )
+
+            if (
+                home_win >= draw
+                and home_win >= away_win
+            ):
                 return "home"
-            elif away_win >= home_win and away_win >= draw:
+
+            if (
+                away_win >= home_win
+                and away_win >= draw
+            ):
                 return "away"
-            else:
-                return "draw"
+
+            return "draw"
 
     return None
 
@@ -428,50 +741,83 @@ def get_round_matches(
 ) -> List[Dict[str, Any]]:
 
     try:
-        matches = db.get_matches(round_id)
+
+        matches = db.get_matches(
+            round_id
+        )
+
     except Exception as exc:
-        logger.exception("Ошибка получения матчей тура")
-        st.error(f"Ошибка получения матчей: {exc}")
+
+        logger.exception(
+            "Ошибка получения матчей тура"
+        )
+
+        st.error(
+            f"Ошибка получения матчей: {exc}"
+        )
+
         return []
 
     result = []
 
     for match in matches or []:
 
-        match_data = object_to_dict(match)
+        match_data = object_to_dict(
+            match
+        )
 
         if not match_data:
             continue
 
-        home_id = match_data.get("home_team_id")
-        away_id = match_data.get("away_team_id")
+        home_id = match_data.get(
+            "home_team_id"
+        )
+
+        away_id = match_data.get(
+            "away_team_id"
+        )
 
         try:
-            home = db.get_team(home_id)
+            home = db.get_team(
+                home_id
+            )
         except Exception:
             home = None
 
         try:
-            away = db.get_team(away_id)
+            away = db.get_team(
+                away_id
+            )
         except Exception:
             away = None
 
-        home_data = object_to_dict(home)
-        away_data = object_to_dict(away)
+        home_data = object_to_dict(
+            home
+        )
+
+        away_data = object_to_dict(
+            away
+        )
 
         match_data["home_name"] = (
             home_data.get("name")
-            or match_data.get("home_team_name")
+            or match_data.get(
+                "home_team_name"
+            )
             or "?"
         )
 
         match_data["away_name"] = (
             away_data.get("name")
-            or match_data.get("away_team_name")
+            or match_data.get(
+                "away_team_name"
+            )
             or "?"
         )
 
-        result.append(match_data)
+        result.append(
+            match_data
+        )
 
     return result
 
@@ -482,105 +828,174 @@ def get_match_result(
 ) -> Optional[Dict[str, Any]]:
 
     try:
-        result = db.get_match_result(match_id)
+
+        result = db.get_match_result(
+            match_id
+        )
+
     except Exception as exc:
+
         logger.warning(
             "Ошибка получения результата %s: %s",
             match_id,
             exc,
         )
+
         return None
 
     if not result:
         return None
 
-    return object_to_dict(result)
+    return object_to_dict(
+        result
+    )
 
 
 # ============================================================
-# get_latest_prediction — ИСПРАВЛЕНА ВЕРСИЯ
+# LATEST FAJ PREDICTION
 # ============================================================
 
 def get_latest_prediction(
     db: FAJDatabase,
     match_id: int,
 ) -> Optional[Dict[str, Any]]:
-
     """
-    Получает последний прогноз FAJ для матча.
+    Получает последний прогноз FAJ.
 
-    ПОРЯДОК ПОИСКА:
-        1. predictions (полные прогнозы с вероятностями)
-        2. match_predictions (xG/lambda слой)
+    Основной источник:
+        predictions
+
+    Fallback:
+        match_predictions
 
     ВАЖНО:
-        prediction_manager.save_prediction() сохраняет в predictions
-        match_manager.save_match_prediction() сохраняет в match_predictions
 
-    ОБА ИСТОЧНИКА МОГУТ СОДЕРЖАТЬ ПРОГНОЗЫ.
+        predictions
+            содержит вероятности и prediction_id.
+
+        prediction_scores
+            содержит точные счета.
+
+        match_predictions
+            используется как дополнительный источник xG.
     """
 
-    # --------------------------------------------------------
-    # 1. ПЫТАЕМСЯ ПОЛУЧИТЬ ИЗ predictions
-    # --------------------------------------------------------
+    # ========================================================
+    # 1. ОСНОВНОЙ ИСТОЧНИК — predictions
+    # ========================================================
 
     try:
-        prediction = db.get_latest_prediction(match_id)
-        if prediction:
-            data = object_to_dict(prediction)
-            if data:
-                logger.debug(
-                    "FAJ prediction found in predictions for match_id=%s",
-                    match_id
-                )
-                return data
-    except Exception as exc:
-        logger.debug(
-            "get_latest_prediction from predictions failed for match_id=%s: %s",
-            match_id,
-            exc
+
+        prediction = db.get_latest_prediction(
+            match_id
         )
 
-    # --------------------------------------------------------
-    # 2. ПЫТАЕМСЯ ПОЛУЧИТЬ ИЗ match_predictions
-    # --------------------------------------------------------
+        if prediction:
 
-    try:
-        match_pred = db.get_match_prediction(match_id)
-        if match_pred:
-            data = object_to_dict(match_pred)
+            data = object_to_dict(
+                prediction
+            )
+
             if data:
+
                 logger.debug(
-                    "FAJ prediction found in match_predictions for match_id=%s",
-                    match_id
+                    "FAJ prediction found in predictions "
+                    "for match_id=%s",
+                    match_id,
                 )
 
-                # Преобразуем в формат, ожидаемый round_complete
-                # match_predictions содержит xG, но НЕ содержит счёт
-                # Поэтому predicted_score остаётся None
+                return data
+
+    except Exception as exc:
+
+        logger.debug(
+            "get_latest_prediction failed "
+            "for match_id=%s: %s",
+            match_id,
+            exc,
+        )
+
+    # ========================================================
+    # 2. FALLBACK — match_predictions
+    # ========================================================
+
+    try:
+
+        match_pred = db.get_match_prediction(
+            match_id
+        )
+
+        if match_pred:
+
+            data = object_to_dict(
+                match_pred
+            )
+
+            if data:
+
+                logger.debug(
+                    "FAJ prediction found in "
+                    "match_predictions "
+                    "for match_id=%s",
+                    match_id,
+                )
+
                 return {
                     "id": data.get("id"),
-                    "match_id": data.get("match_id"),
-                    "home_xg": data.get("xg_home"),
-                    "away_xg": data.get("xg_away"),
-                    "predicted_score": None,   # Нет счёта в match_predictions
+
+                    "match_id": data.get(
+                        "match_id"
+                    ),
+
+                    "home_xg": (
+                        data.get("xg_home")
+                    ),
+
+                    "away_xg": (
+                        data.get("xg_away")
+                    ),
+
+                    "predicted_score": None,
+
                     "score": None,
-                    "faj_xg_home": data.get("xg_home"),
-                    "faj_xg_away": data.get("xg_away"),
-                    "model_version": data.get("model_version", "v12.1"),
-                    "source": "match_predictions",
-                    "prediction_status": "active",
+
+                    "faj_xg_home": (
+                        data.get("xg_home")
+                    ),
+
+                    "faj_xg_away": (
+                        data.get("xg_away")
+                    ),
+
+                    "model_version": (
+                        data.get(
+                            "model_version"
+                        )
+                        or "v12.1"
+                    ),
+
+                    "source": (
+                        "match_predictions"
+                    ),
+
+                    "prediction_status": (
+                        "active"
+                    ),
                 }
+
     except Exception as exc:
+
         logger.debug(
-            "get_match_prediction from match_predictions failed for match_id=%s: %s",
+            "get_match_prediction failed "
+            "for match_id=%s: %s",
             match_id,
-            exc
+            exc,
         )
 
     logger.debug(
-        "No FAJ prediction found for match_id=%s in predictions or match_predictions",
-        match_id
+        "No FAJ prediction found "
+        "for match_id=%s",
+        match_id,
     )
 
     return None
@@ -592,19 +1007,30 @@ def get_latest_expert(
 ) -> Optional[Dict[str, Any]]:
 
     try:
-        predictions = db.get_expert_predictions(match_id)
+
+        predictions = (
+            db.get_expert_predictions(
+                match_id
+            )
+        )
+
     except Exception as exc:
+
         logger.warning(
-            "Ошибка получения экспертного прогноза %s: %s",
+            "Ошибка получения "
+            "экспертного прогноза %s: %s",
             match_id,
             exc,
         )
+
         return None
 
     if not predictions:
         return None
 
-    return object_to_dict(predictions[0])
+    return object_to_dict(
+        predictions[0]
+    )
 
 
 def is_result_locked(
@@ -613,14 +1039,29 @@ def is_result_locked(
 ) -> bool:
 
     try:
-        return bool(db.is_result_locked(match_id))
+
+        return bool(
+            db.is_result_locked(
+                match_id
+            )
+        )
+
     except Exception:
-        result = get_match_result(db, match_id)
+
+        result = get_match_result(
+            db,
+            match_id,
+        )
 
         if not result:
             return False
 
-        return result.get("fact_status") == "locked"
+        return (
+            result.get(
+                "fact_status"
+            )
+            == "locked"
+        )
 
 
 # ============================================================
@@ -633,31 +1074,48 @@ def get_seasons_for_league(
 ) -> List[Dict[str, Any]]:
 
     try:
+
         seasons = db.get_seasons()
+
     except Exception as exc:
-        st.error(f"Ошибка получения сезонов: {exc}")
+
+        st.error(
+            f"Ошибка получения сезонов: {exc}"
+        )
+
         return []
 
     result = []
 
     for season in seasons or []:
 
-        data = object_to_dict(season)
+        data = object_to_dict(
+            season
+        )
 
         if data.get("league") == league:
-            result.append(data)
+
+            result.append(
+                data
+            )
 
     return result
 
 
-def season_label(season: Dict[str, Any]) -> str:
+def season_label(
+    season: Dict[str, Any],
+) -> str:
 
-    name = season.get("name")
+    name = season.get(
+        "name"
+    )
 
     if name:
         return str(name)
 
-    season_id = season.get("id")
+    season_id = season.get(
+        "id"
+    )
 
     return f"Сезон {season_id}"
 
@@ -672,27 +1130,46 @@ def get_rounds_for_season(
 ) -> List[Dict[str, Any]]:
 
     try:
-        rounds = db.get_rounds(season_id)
+
+        rounds = db.get_rounds(
+            season_id
+        )
+
     except Exception as exc:
-        st.error(f"Ошибка получения туров: {exc}")
+
+        st.error(
+            f"Ошибка получения туров: {exc}"
+        )
+
         return []
 
     result = []
 
     for round_item in rounds or []:
 
-        data = object_to_dict(round_item)
+        data = object_to_dict(
+            round_item
+        )
 
         if data.get("id") is None:
             continue
 
-        if data.get("round_number") is None:
+        if data.get(
+            "round_number"
+        ) is None:
             continue
 
-        result.append(data)
+        result.append(
+            data
+        )
 
     result.sort(
-        key=lambda x: safe_int(x.get("round_number")) or 0
+        key=lambda x: (
+            safe_int(
+                x.get("round_number")
+            )
+            or 0
+        )
     )
 
     return result
@@ -707,22 +1184,45 @@ def build_match_report(
     match: Dict[str, Any],
 ) -> Dict[str, Any]:
 
-    match_id = safe_int(match.get("id"))
+    match_id = safe_int(
+        match.get("id")
+    )
+
+    # ========================================================
+    # FACT
+    # ========================================================
 
     result = (
-        get_match_result(db, match_id)
+        get_match_result(
+            db,
+            match_id,
+        )
         if match_id is not None
         else None
     )
+
+    # ========================================================
+    # FAJ
+    # ========================================================
 
     prediction = (
-        get_latest_prediction(db, match_id)
+        get_latest_prediction(
+            db,
+            match_id,
+        )
         if match_id is not None
         else None
     )
 
+    # ========================================================
+    # DIRECTOR
+    # ========================================================
+
     expert = (
-        get_latest_expert(db, match_id)
+        get_latest_expert(
+            db,
+            match_id,
+        )
         if match_id is not None
         else None
     )
@@ -730,24 +1230,65 @@ def build_match_report(
     result = result or {}
     prediction = prediction or {}
 
-    actual_home = safe_int(result.get("home_goals"))
-    actual_away = safe_int(result.get("away_goals"))
+    # ========================================================
+    # FACT SCORE
+    # ========================================================
+
+    actual_home = safe_int(
+        result.get("home_goals")
+    )
+
+    actual_away = safe_int(
+        result.get("away_goals")
+    )
 
     actual_score = None
 
-    if actual_home is not None and actual_away is not None:
-        actual_score = f"{actual_home}:{actual_away}"
+    if (
+        actual_home is not None
+        and actual_away is not None
+    ):
+        actual_score = (
+            f"{actual_home}:{actual_away}"
+        )
 
-    faj_score = extract_prediction_score(prediction)
-    expert_score = get_expert_score(expert)
+    # ========================================================
+    # FAJ SCORE
+    # ========================================================
+
+    faj_score = extract_prediction_score(
+        prediction
+    )
+
+    # ========================================================
+    # DIRECTOR SCORE
+    # ========================================================
+
+    expert_score = get_expert_score(
+        expert
+    )
+
+    # ========================================================
+    # WINNERS
+    # ========================================================
 
     actual_winner = winner_from_score(
         actual_home,
         actual_away,
     )
 
-    faj_winner = prediction_winner(faj_score, prediction)
-    expert_winner = prediction_winner(expert_score)
+    faj_winner = prediction_winner(
+        faj_score,
+        prediction,
+    )
+
+    expert_winner = prediction_winner(
+        expert_score
+    )
+
+    # ========================================================
+    # ACCURACY
+    # ========================================================
 
     faj_accuracy = score_accuracy(
         faj_score,
@@ -759,28 +1300,50 @@ def build_match_report(
         actual_score,
     )
 
+    # ========================================================
+    # REPORT
+    # ========================================================
+
     return {
         "match_id": match_id,
-        "home": match.get("home_name", "?"),
-        "away": match.get("away_name", "?"),
+
+        "home": match.get(
+            "home_name",
+            "?"
+        ),
+
+        "away": match.get(
+            "away_name",
+            "?"
+        ),
 
         "actual_score": actual_score,
+
         "actual_winner": actual_winner,
 
         "faj_score": faj_score,
+
         "faj_winner": faj_winner,
+
         "faj_accuracy": faj_accuracy,
 
         "expert_score": expert_score,
+
         "expert_winner": expert_winner,
+
         "expert_accuracy": expert_accuracy,
 
         "prediction": prediction,
+
         "expert": expert,
+
         "result": result,
 
         "locked": (
-            is_result_locked(db, match_id)
+            is_result_locked(
+                db,
+                match_id,
+            )
             if match_id is not None
             else False
         ),
@@ -814,21 +1377,31 @@ def update_standing(
             "points": 0,
         }
 
-    row = standings[team_id]
+    row = standings[
+        team_id
+    ]
 
     row["played"] += 1
+
     row["gf"] += goals_for
+
     row["ga"] += goals_against
-    row["gd"] = row["gf"] - row["ga"]
+
+    row["gd"] = (
+        row["gf"]
+        - row["ga"]
+    )
 
     if goals_for > goals_against:
 
         row["wins"] += 1
+
         row["points"] += 3
 
     elif goals_for == goals_against:
 
         row["draws"] += 1
+
         row["points"] += 1
 
     else:
@@ -841,34 +1414,69 @@ def build_standings(
     matches: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
 
-    standings: Dict[int, Dict[str, Any]] = {}
+    standings: Dict[
+        int,
+        Dict[str, Any]
+    ] = {}
 
     for match in matches:
 
-        match_id = safe_int(match.get("id"))
+        match_id = safe_int(
+            match.get("id")
+        )
 
         if match_id is None:
             continue
 
-        result = get_match_result(db, match_id)
+        result = get_match_result(
+            db,
+            match_id,
+        )
 
         if not result:
             continue
 
-        home_goals = safe_int(result.get("home_goals"))
-        away_goals = safe_int(result.get("away_goals"))
+        home_goals = safe_int(
+            result.get("home_goals")
+        )
 
-        if home_goals is None or away_goals is None:
+        away_goals = safe_int(
+            result.get("away_goals")
+        )
+
+        if (
+            home_goals is None
+            or away_goals is None
+        ):
             continue
 
-        home_id = safe_int(match.get("home_team_id"))
-        away_id = safe_int(match.get("away_team_id"))
+        home_id = safe_int(
+            match.get(
+                "home_team_id"
+            )
+        )
 
-        if home_id is None or away_id is None:
+        away_id = safe_int(
+            match.get(
+                "away_team_id"
+            )
+        )
+
+        if (
+            home_id is None
+            or away_id is None
+        ):
             continue
 
-        home_name = match.get("home_name", "?")
-        away_name = match.get("away_name", "?")
+        home_name = match.get(
+            "home_name",
+            "?"
+        )
+
+        away_name = match.get(
+            "away_name",
+            "?"
+        )
 
         update_standing(
             standings,
@@ -886,7 +1494,9 @@ def build_standings(
             home_goals,
         )
 
-    rows = list(standings.values())
+    rows = list(
+        standings.values()
+    )
 
     rows.sort(
         key=lambda x: (
@@ -897,7 +1507,10 @@ def build_standings(
         )
     )
 
-    for index, row in enumerate(rows, start=1):
+    for index, row in enumerate(
+        rows,
+        start=1,
+    ):
         row["position"] = index
 
     return rows
@@ -908,15 +1521,20 @@ def render_standings(
     matches: List[Dict[str, Any]],
 ) -> None:
 
-    st.subheader("🏆 Турнирная таблица")
+    st.subheader(
+        "🏆 Турнирная таблица"
+    )
 
-    standings = build_standings(db, matches)
+    standings = build_standings(
+        db,
+        matches,
+    )
 
     if not standings:
 
         st.info(
-            "Недостаточно фактических результатов "
-            "для построения таблицы."
+            "Недостаточно фактических "
+            "результатов для построения таблицы."
         )
 
         return
@@ -973,38 +1591,81 @@ def calculate_summary(
 
     for report in reports:
 
-        faj = report["faj_accuracy"]
-        expert = report["expert_accuracy"]
+        faj = report[
+            "faj_accuracy"
+        ]
+
+        expert = report[
+            "expert_accuracy"
+        ]
+
+        # ====================================================
+        # FAJ
+        # ====================================================
 
         if faj == "🎯 Точный счёт":
-            summary["faj_exact"] += 1
+
+            summary[
+                "faj_exact"
+            ] += 1
 
         elif faj == "🟢 Почти угадал":
-            summary["faj_near"] += 1
+
+            summary[
+                "faj_near"
+            ] += 1
 
         elif faj == "🟡 Угадан исход":
-            summary["faj_result"] += 1
+
+            summary[
+                "faj_result"
+            ] += 1
 
         elif faj == "🔴 Не угадан":
-            summary["faj_wrong"] += 1
+
+            summary[
+                "faj_wrong"
+            ] += 1
 
         else:
-            summary["faj_missing"] += 1
+
+            summary[
+                "faj_missing"
+            ] += 1
+
+        # ====================================================
+        # DIRECTOR
+        # ====================================================
 
         if expert == "🎯 Точный счёт":
-            summary["expert_exact"] += 1
+
+            summary[
+                "expert_exact"
+            ] += 1
 
         elif expert == "🟢 Почти угадал":
-            summary["expert_near"] += 1
+
+            summary[
+                "expert_near"
+            ] += 1
 
         elif expert == "🟡 Угадан исход":
-            summary["expert_result"] += 1
+
+            summary[
+                "expert_result"
+            ] += 1
 
         elif expert == "🔴 Не угадан":
-            summary["expert_wrong"] += 1
+
+            summary[
+                "expert_wrong"
+            ] += 1
 
         else:
-            summary["expert_missing"] += 1
+
+            summary[
+                "expert_missing"
+            ] += 1
 
     return summary
 
@@ -1013,15 +1674,25 @@ def render_summary(
     reports: List[Dict[str, Any]],
 ) -> None:
 
-    summary = calculate_summary(reports)
+    summary = calculate_summary(
+        reports
+    )
 
-    st.subheader("📊 Итоги тура")
+    st.subheader(
+        "📊 Итоги тура"
+    )
 
     col1, col2 = st.columns(2)
 
+    # ========================================================
+    # FAJ
+    # ========================================================
+
     with col1:
 
-        st.markdown("### 🤖 FAJ")
+        st.markdown(
+            "### 🤖 FAJ"
+        )
 
         st.metric(
             "🎯 Точный счёт",
@@ -1043,9 +1714,15 @@ def render_summary(
             summary["faj_wrong"],
         )
 
+    # ========================================================
+    # DIRECTOR
+    # ========================================================
+
     with col2:
 
-        st.markdown("### 🧠 Директор")
+        st.markdown(
+            "### 🧠 Директор"
+        )
 
         st.metric(
             "🎯 Точный счёт",
@@ -1077,8 +1754,13 @@ def render_match_report(
     index: int,
 ) -> None:
 
-    home = report["home"]
-    away = report["away"]
+    home = report[
+        "home"
+    ]
+
+    away = report[
+        "away"
+    ]
 
     st.markdown(
         f"### ⚽ {home} — {away}"
@@ -1086,73 +1768,132 @@ def render_match_report(
 
     col1, col2, col3 = st.columns(3)
 
+    # ========================================================
+    # FAJ
+    # ========================================================
+
     with col1:
 
-        st.markdown("**🤖 FAJ**")
-
-        st.write(
-            f"Прогноз: **{report['faj_score'] or '—'}**"
+        st.markdown(
+            "**🤖 FAJ**"
         )
 
         st.write(
-            f"Исход: **{winner_label(report['faj_winner'])}**"
+            f"Прогноз: "
+            f"**{report['faj_score'] or '—'}**"
         )
 
-        st.write(report["faj_accuracy"])
+        st.write(
+            f"Исход: "
+            f"**{winner_label(report['faj_winner'])}**"
+        )
+
+        st.write(
+            report["faj_accuracy"]
+        )
+
+    # ========================================================
+    # DIRECTOR
+    # ========================================================
 
     with col2:
 
-        st.markdown("**🧠 Директор**")
-
-        st.write(
-            f"Прогноз: **{report['expert_score'] or '—'}**"
+        st.markdown(
+            "**🧠 Директор**"
         )
 
         st.write(
-            f"Исход: **{winner_label(report['expert_winner'])}**"
+            f"Прогноз: "
+            f"**{report['expert_score'] or '—'}**"
         )
 
-        st.write(report["expert_accuracy"])
+        st.write(
+            f"Исход: "
+            f"**{winner_label(report['expert_winner'])}**"
+        )
+
+        st.write(
+            report["expert_accuracy"]
+        )
+
+    # ========================================================
+    # FACT
+    # ========================================================
 
     with col3:
 
-        st.markdown("**🏁 ФАКТ**")
+        st.markdown(
+            "**🏁 ФАКТ**"
+        )
 
         st.metric(
             "Счёт",
-            report["actual_score"] or "—",
+            report["actual_score"]
+            or "—",
         )
 
         st.write(
-            f"Исход: **{winner_label(report['actual_winner'])}**"
+            f"Исход: "
+            f"**{winner_label(report['actual_winner'])}**"
         )
 
         if report["locked"]:
-            st.success("🔒 LOCKED")
+
+            st.success(
+                "🔒 LOCKED"
+            )
+
         else:
-            st.warning("🔓 Не заблокирован")
 
-    prediction = report.get("prediction") or {}
-    result = report.get("result") or {}
+            st.warning(
+                "🔓 Не заблокирован"
+            )
 
-    # --------------------------------------------------------
+    # ========================================================
     # XG
-    # --------------------------------------------------------
+    # ========================================================
+
+    prediction = (
+        report.get("prediction")
+        or {}
+    )
+
+    result = (
+        report.get("result")
+        or {}
+    )
 
     faj_home_xg = (
-        prediction.get("home_xg")
-        if prediction.get("home_xg") is not None
-        else prediction.get("faj_xg_home")
+        prediction.get(
+            "home_xg"
+        )
+        if prediction.get(
+            "home_xg"
+        ) is not None
+        else prediction.get(
+            "faj_xg_home"
+        )
     )
 
     faj_away_xg = (
-        prediction.get("away_xg")
-        if prediction.get("away_xg") is not None
-        else prediction.get("faj_xg_away")
+        prediction.get(
+            "away_xg"
+        )
+        if prediction.get(
+            "away_xg"
+        ) is not None
+        else prediction.get(
+            "faj_xg_away"
+        )
     )
 
-    actual_home_xg = result.get("home_xg")
-    actual_away_xg = result.get("away_xg")
+    actual_home_xg = result.get(
+        "home_xg"
+    )
+
+    actual_away_xg = result.get(
+        "away_xg"
+    )
 
     if (
         faj_home_xg is not None
@@ -1161,11 +1902,14 @@ def render_match_report(
         or actual_away_xg is not None
     ):
 
-        st.markdown("**🎯 xG**")
+        st.markdown(
+            "**🎯 xG**"
+        )
 
         xg_col1, xg_col2 = st.columns(2)
 
         with xg_col1:
+
             st.write(
                 f"FAJ: "
                 f"{faj_home_xg if faj_home_xg is not None else '—'}"
@@ -1174,6 +1918,7 @@ def render_match_report(
             )
 
         with xg_col2:
+
             st.write(
                 f"Факт: "
                 f"{actual_home_xg if actual_home_xg is not None else '—'}"
@@ -1181,20 +1926,36 @@ def render_match_report(
                 f"{actual_away_xg if actual_away_xg is not None else '—'}"
             )
 
-    # --------------------------------------------------------
+    # ========================================================
     # MATCH STATISTICS
-    # --------------------------------------------------------
+    # ========================================================
 
     statistic_fields = [
-        ("Владение", "home_possession", "away_possession"),
-        ("Удары", "home_shots", "away_shots"),
+        (
+            "Владение",
+            "home_possession",
+            "away_possession",
+        ),
+        (
+            "Удары",
+            "home_shots",
+            "away_shots",
+        ),
         (
             "Удары в створ",
             "home_shots_on_target",
             "away_shots_on_target",
         ),
-        ("Угловые", "home_corners", "away_corners"),
-        ("Передачи", "home_total_passes", "away_total_passes"),
+        (
+            "Угловые",
+            "home_corners",
+            "away_corners",
+        ),
+        (
+            "Передачи",
+            "home_total_passes",
+            "away_total_passes",
+        ),
         (
             "Точность передач",
             "home_pass_accuracy",
@@ -1205,30 +1966,56 @@ def render_match_report(
             "home_accurate_passes",
             "away_accurate_passes",
         ),
-        ("Отборы", "home_tackles", "away_tackles"),
+        (
+            "Отборы",
+            "home_tackles",
+            "away_tackles",
+        ),
     ]
 
     rows = []
 
-    for name, home_key, away_key in statistic_fields:
+    for (
+        name,
+        home_key,
+        away_key,
+    ) in statistic_fields:
 
-        home_value = result.get(home_key)
-        away_value = result.get(away_key)
+        home_value = result.get(
+            home_key
+        )
 
-        if home_value is None and away_value is None:
+        away_value = result.get(
+            away_key
+        )
+
+        if (
+            home_value is None
+            and away_value is None
+        ):
             continue
 
         rows.append(
             {
                 "Показатель": name,
-                home: home_value if home_value is not None else "—",
-                away: away_value if away_value is not None else "—",
+                home: (
+                    home_value
+                    if home_value is not None
+                    else "—"
+                ),
+                away: (
+                    away_value
+                    if away_value is not None
+                    else "—"
+                ),
             }
         )
 
     if rows:
 
-        with st.expander("📊 Статистика матча"):
+        with st.expander(
+            "📊 Статистика матча"
+        ):
 
             st.dataframe(
                 rows,
@@ -1245,10 +2032,13 @@ def render_match_report(
 
 def run_learning() -> Any:
 
-    from app.learning_engine import run_learning
+    from app.learning_engine import (
+        run_learning
+    )
 
-    # Исправлено: убран db_path
-    return run_learning(force=False)
+    return run_learning(
+        force=False
+    )
 
 
 # ============================================================
@@ -1263,7 +2053,9 @@ def main() -> None:
         layout="wide",
     )
 
-    st.title("🏁 Тур завершён")
+    st.title(
+        "🏁 Тур завершён"
+    )
 
     st.caption(
         f"FAJ Platform {APP_VERSION} | "
@@ -1294,7 +2086,8 @@ def main() -> None:
     if not seasons:
 
         st.warning(
-            f"Для лиги «{league}» сезоны не найдены."
+            f"Для лиги «{league}» "
+            f"сезоны не найдены."
         )
 
         return
@@ -1306,7 +2099,9 @@ def main() -> None:
 
     selected_season_label = st.selectbox(
         "📅 Сезон",
-        list(season_map.keys()),
+        list(
+            season_map.keys()
+        ),
         key="round_complete_season",
     )
 
@@ -1320,7 +2115,9 @@ def main() -> None:
 
     if season_id is None:
 
-        st.error("Не удалось определить ID сезона.")
+        st.error(
+            "Не удалось определить ID сезона."
+        )
 
         return
 
@@ -1336,7 +2133,8 @@ def main() -> None:
     if not rounds:
 
         st.info(
-            "В выбранном сезоне пока нет туров."
+            "В выбранном сезоне "
+            "пока нет туров."
         )
 
         return
@@ -1346,7 +2144,9 @@ def main() -> None:
     for round_item in rounds:
 
         round_number = safe_int(
-            round_item.get("round_number")
+            round_item.get(
+                "round_number"
+            )
         )
 
         if round_number is None:
@@ -1365,13 +2165,17 @@ def main() -> None:
 
     if not round_map:
 
-        st.info("Туры не найдены.")
+        st.info(
+            "Туры не найдены."
+        )
 
         return
 
     selected_round_label = st.selectbox(
         "🔢 Тур",
-        list(round_map.keys()),
+        list(
+            round_map.keys()
+        ),
         key="round_complete_round",
     )
 
@@ -1383,10 +2187,13 @@ def main() -> None:
     # HEADER
     # ========================================================
 
-    st.markdown("---")
+    st.markdown(
+        "---"
+    )
 
     st.markdown(
-        f"## {league} — {selected_round_label}"
+        f"## {league} — "
+        f"{selected_round_label}"
     )
 
     # ========================================================
@@ -1401,7 +2208,8 @@ def main() -> None:
     if not matches:
 
         st.warning(
-            "В выбранном туре матчи не найдены."
+            "В выбранном туре "
+            "матчи не найдены."
         )
 
         return
@@ -1422,18 +2230,29 @@ def main() -> None:
             match,
         )
 
-        reports.append(report)
+        reports.append(
+            report
+        )
 
-        if report["actual_score"] is not None:
+        if report[
+            "actual_score"
+        ] is not None:
+
             filled_count += 1
 
-        if report["locked"]:
+        if report[
+            "locked"
+        ]:
+
             locked_count += 1
 
-    total_matches = len(matches)
+    total_matches = len(
+        matches
+    )
 
     all_filled = (
-        filled_count == total_matches
+        filled_count
+        == total_matches
         and total_matches > 0
     )
 
@@ -1444,18 +2263,21 @@ def main() -> None:
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
+
         st.metric(
             "Матчей",
             total_matches,
         )
 
     with col2:
+
         st.metric(
             "Факты",
             f"{filled_count}/{total_matches}",
         )
 
     with col3:
+
         st.metric(
             "LOCK",
             f"{locked_count}/{total_matches}",
@@ -1464,70 +2286,16 @@ def main() -> None:
     with col4:
 
         if all_filled:
-            st.success("🟢 Тур готов")
+
+            st.success(
+                "🟢 Тур готов"
+            )
+
         else:
-            st.error("🔴 Тур не завершён")
 
-    # ========================================================
-    # ДИАГНОСТИКА: ГДЕ ПРОГНОЗЫ?
-    # ========================================================
-
-    st.markdown("---")
-    st.subheader("🔍 Диагностика прогнозов")
-
-    for match in matches:
-        match_id = safe_int(match.get("id"))
-        if match_id is None:
-            continue
-        
-        # Проверяем predictions
-        try:
-            preds = db.get_predictions_by_match(match_id)
-            preds_count = len(preds) if preds else 0
-        except Exception:
-            preds_count = 0
-        
-        # Проверяем match_predictions
-        try:
-            match_preds = db.get_match_predictions(match_id)
-            match_preds_count = len(match_preds) if match_preds else 0
-        except Exception:
-            match_preds_count = 0
-        
-        home = match.get("home_name", "?")
-        away = match.get("away_name", "?")
-        
-        st.write(
-            f"**{home} — {away}** | "
-            f"predictions: {preds_count} | "
-            f"match_predictions: {match_preds_count}"
-        )
-        
-        # Если есть прогнозы в predictions — покажем первый
-        if preds_count > 0:
-            try:
-                first = object_to_dict(preds[0])
-                st.write(
-                    f"  → predictions[0]: "
-                    f"П1={first.get('home_win', '—')} | "
-                    f"X={first.get('draw', '—')} | "
-                    f"П2={first.get('away_win', '—')}"
-                )
-            except Exception:
-                pass
-        
-        # Если есть прогнозы в match_predictions — покажем первый
-        if match_preds_count > 0:
-            try:
-                first = object_to_dict(match_preds[0])
-                st.write(
-                    f"  → match_predictions[0]: "
-                    f"xG {first.get('xg_home', '—')} — {first.get('xg_away', '—')}"
-                )
-            except Exception:
-                pass
-
-    st.markdown("---")
+            st.error(
+                "🔴 Тур не завершён"
+            )
 
     # ========================================================
     # MATCH REPORTS
@@ -1536,18 +2304,23 @@ def main() -> None:
     if not all_filled:
 
         st.warning(
-            f"⚠️ Не все фактические результаты внесены: "
+            f"⚠️ Не все фактические "
+            f"результаты внесены: "
             f"{filled_count}/{total_matches}."
         )
 
         st.info(
-            "Сначала завершите ввод фактов на странице "
-            "«Импорт фактов»."
+            "Сначала завершите ввод фактов "
+            "на странице «Импорт фактов»."
         )
 
-    st.subheader("📋 Матчи тура")
+    st.subheader(
+        "📋 Матчи тура"
+    )
 
-    for index, report in enumerate(reports):
+    for index, report in enumerate(
+        reports
+    ):
 
         render_match_report(
             report,
@@ -1560,9 +2333,13 @@ def main() -> None:
 
     if all_filled:
 
-        render_summary(reports)
+        render_summary(
+            reports
+        )
 
-        st.markdown("---")
+        st.markdown(
+            "---"
+        )
 
         # ====================================================
         # STANDINGS
@@ -1577,13 +2354,17 @@ def main() -> None:
         # LEARNING
         # ====================================================
 
-        st.markdown("---")
+        st.markdown(
+            "---"
+        )
 
-        st.subheader("🧠 Обучение")
+        st.subheader(
+            "🧠 Обучение"
+        )
 
         st.caption(
-            "Обучение запускается после просмотра "
-            "и проверки итогов тура."
+            "Обучение запускается после "
+            "просмотра и проверки итогов тура."
         )
 
         if st.button(
@@ -1599,7 +2380,9 @@ def main() -> None:
 
                 try:
 
-                    learning_result = run_learning()
+                    learning_result = (
+                        run_learning()
+                    )
 
                     if isinstance(
                         learning_result,
@@ -1657,10 +2440,15 @@ def main() -> None:
                     else:
 
                         st.success(
-                            "✅ Learning Engine завершил работу."
+                            "✅ Learning Engine "
+                            "завершил работу."
                         )
 
-                        if learning_result is not None:
+                        if (
+                            learning_result
+                            is not None
+                        ):
+
                             st.write(
                                 learning_result
                             )
@@ -1679,7 +2467,9 @@ def main() -> None:
         # NEXT ROUND
         # ====================================================
 
-        st.markdown("---")
+        st.markdown(
+            "---"
+        )
 
         if st.button(
             "➡️ Перейти к следующему туру",
@@ -1687,7 +2477,9 @@ def main() -> None:
             key="round_complete_next",
         ):
 
-            st.session_state["page"] = "tour_manager"
+            st.session_state[
+                "page"
+            ] = "tour_manager"
 
             st.rerun()
 
@@ -1695,7 +2487,9 @@ def main() -> None:
     # BACK
     # ========================================================
 
-    st.markdown("---")
+    st.markdown(
+        "---"
+    )
 
     if st.button(
         "⬅️ Назад к фактам тура",
@@ -1703,7 +2497,9 @@ def main() -> None:
         key="round_complete_back",
     ):
 
-        st.session_state["page"] = "import_facts"
+        st.session_state[
+            "page"
+        ] = "import_facts"
 
         st.rerun()
 
