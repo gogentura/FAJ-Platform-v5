@@ -9,76 +9,59 @@ IMPORT FACTS v4.7.0
 
 НАЗНАЧЕНИЕ
 ------------------------------------------------------------
-Импорт и восстановление фактических данных сыгранного матча.
-
-КОНТРАКТ FAJ
-------------------------------------------------------------
-
-CALENDAR
-    ↓
-PREDICTION
-    ↓
-MATCH
-    ↓
-FACT
-    ↓
-VALIDATION
-    ↓
-GOLD
-    ↓
-LOCK
-    ↓
-LEARNING
+Импорт фактических данных сыгранного матча / тура.
 
 ИСТОЧНИКИ
 ------------------------------------------------------------
 
 РПЛ:
-    Счёт        -> manual
+    Счёт        -> ручной ввод
     Статистика  -> Soccer365
     xG          -> Soccer365
 
 АПЛ / ЛА ЛИГА / ЛИГА ЧЕМПИОНОВ:
     Data Football API -> основной источник
-    Soccer365         -> резервный источник
+    Soccer365          -> дополнительный / резервный источник
+
+ГЛАВНЫЙ ПРИНЦИП
+------------------------------------------------------------
+
+SQLite является источником сохранённого факта.
+
+Session State НЕ является источником истины.
+
+Наличие факта определяется реальными данными БД.
+
+До LOCK пользователь может:
+    - проверить данные;
+    - изменить счёт;
+    - вставить другую ссылку Soccer365;
+    - повторно загрузить статистику;
+    - исправить ошибочные данные;
+    - снова сохранить факт.
+
+После LOCK:
+    - данные защищены;
+    - автоматического UNLOCK нет;
+    - UI становится только для чтения.
 
 ВАЖНО
 ------------------------------------------------------------
 
 1. database.py — единственный источник доступа к БД.
 
-2. SQLite faj.db — источник истины.
+2. Никаких DELETE.
 
-3. Никаких DELETE.
+3. Никаких DROP.
 
-4. Никаких DROP.
+4. Никакого автоматического UNLOCK.
 
-5. Никакого удаления faj.db.
+5. Наличие API-данных НЕ блокирует Soccer365.
 
-6. Календарь не изменяется.
+6. Наличие сохранённых данных НЕ блокирует Soccer365.
 
-7. Прогнозы не изменяются.
-
-8. Уже сохранённые факты не переписываются,
-   если факт полный и LOCKED.
-
-9. Если LOCKED существует, но факт неполный,
-   разрешается штатное восстановление недостающих
-   фактических данных.
-
-10. session_state используется только как временный
-    UI-кэш и НЕ является источником истины.
-
-11. После полного факта:
-       score
-       + statistics
-       + xG
-       ↓
-       validation
-       ↓
-       GOLD
-       ↓
-       LOCK
+7. LOCK — единственная защита окончательно
+   зафиксированного факта.
 
 ============================================================
 """
@@ -252,13 +235,8 @@ def clean_score(
     if not match:
         return None
 
-    home = safe_int(
-        match.group(1)
-    )
-
-    away = safe_int(
-        match.group(2)
-    )
+    home = safe_int(match.group(1))
+    away = safe_int(match.group(2))
 
     if home is None or away is None:
         return None
@@ -279,9 +257,7 @@ def score_to_tuple(
     Optional[int],
 ]:
 
-    normalized = clean_score(
-        score
-    )
+    normalized = clean_score(score)
 
     if normalized is None:
         return None, None
@@ -528,51 +504,13 @@ def normalize_source_stats(
         value = stats.get(key)
 
         if value is not None:
-
             result[key] = value
 
     return result
 
 
-STAT_KEYS = [
-
-    "home_possession",
-    "away_possession",
-
-    "home_shots",
-    "away_shots",
-
-    "home_shots_on_target",
-    "away_shots_on_target",
-
-    "home_corners",
-    "away_corners",
-
-    "home_total_passes",
-    "away_total_passes",
-
-    "home_pass_accuracy",
-    "away_pass_accuracy",
-
-    "home_accurate_passes",
-    "away_accurate_passes",
-
-    "home_tackles",
-    "away_tackles",
-
-    "home_fouls",
-    "away_fouls",
-
-    "home_yellow_cards",
-    "away_yellow_cards",
-
-    "home_red_cards",
-    "away_red_cards",
-]
-
-
 # ============================================================
-# SAVED FACTS
+# SAVED FACTS FROM SQLITE
 # ============================================================
 
 def get_saved_match_stats(
@@ -589,9 +527,7 @@ def get_saved_match_stats(
         if not result:
             return {}
 
-        return object_to_dict(
-            result
-        )
+        return object_to_dict(result)
 
     except Exception as exc:
 
@@ -619,9 +555,7 @@ def get_saved_result(
         if not result:
             return {}
 
-        return object_to_dict(
-            result
-        )
+        return object_to_dict(result)
 
     except Exception as exc:
 
@@ -663,9 +597,45 @@ def saved_fact_status(
         and away_goals is not None
     )
 
+    stats_keys = (
+
+        "home_possession",
+        "away_possession",
+
+        "home_shots",
+        "away_shots",
+
+        "home_shots_on_target",
+        "away_shots_on_target",
+
+        "home_corners",
+        "away_corners",
+
+        "home_total_passes",
+        "away_total_passes",
+
+        "home_pass_accuracy",
+        "away_pass_accuracy",
+
+        "home_accurate_passes",
+        "away_accurate_passes",
+
+        "home_tackles",
+        "away_tackles",
+
+        "home_fouls",
+        "away_fouls",
+
+        "home_yellow_cards",
+        "away_yellow_cards",
+
+        "home_red_cards",
+        "away_red_cards",
+    )
+
     has_stats = any(
         stats.get(key) is not None
-        for key in STAT_KEYS
+        for key in stats_keys
     )
 
     has_xg = (
@@ -675,10 +645,8 @@ def saved_fact_status(
 
     try:
 
-        locked = bool(
-            db.is_result_locked(
-                match_id
-            )
+        locked = db.is_result_locked(
+            match_id
         )
 
     except Exception:
@@ -701,96 +669,6 @@ def saved_fact_status(
 
         "locked": locked,
     }
-
-
-# ============================================================
-# LOCK / RECOVERY
-# ============================================================
-
-def recover_incomplete_locked_match(
-    db: FAJDatabase,
-    match_id: Any,
-) -> Tuple[bool, str]:
-
-    """
-    Контрактный recovery.
-
-    Разрешается только если:
-        LOCKED == True
-        FACT == incomplete
-
-    Цель:
-        не удалить факт,
-        не изменить score,
-        не изменить calendar,
-        а вернуть матч в состояние,
-        позволяющее дозаполнить отсутствующие факты.
-
-    Используется только штатный метод database.py,
-    если он существует.
-    """
-
-    try:
-
-        status = saved_fact_status(
-            db,
-            match_id,
-        )
-
-        if not status["locked"]:
-            return True, "Матч уже не LOCKED."
-
-        if status["complete"]:
-
-            return (
-                False,
-                "Полный факт уже LOCKED. "
-                "Recovery не требуется."
-            )
-
-        unlock_method = getattr(
-            db,
-            "unlock_match_result",
-            None,
-        )
-
-        if not callable(unlock_method):
-
-            return (
-                False,
-                "В database.py отсутствует "
-                "штатный unlock_match_result(). "
-                "Автоматический обход LOCK запрещён."
-            )
-
-        try:
-
-            unlock_method(
-                match_id
-            )
-
-        except TypeError:
-
-            unlock_method(
-                match_id=match_id
-            )
-
-        return (
-            True,
-            "Матч переведён в режим восстановления."
-        )
-
-    except Exception as exc:
-
-        logger.exception(
-            "FACT RECOVERY ERROR | match_id=%s",
-            match_id,
-        )
-
-        return (
-            False,
-            str(exc),
-        )
 
 
 # ============================================================
@@ -880,20 +758,16 @@ def parse_api_fact(
     }
 
     if league == "РПЛ":
-
         return empty
 
     provider = get_api_provider()
 
     if provider is None:
-
         return empty
 
     try:
 
-        match_id = get_match_id(
-            match
-        )
+        match_id = get_match_id(match)
 
         result = None
 
@@ -918,24 +792,18 @@ def parse_api_fact(
 
             try:
 
-                result = method(
-                    match_id
-                )
+                result = method(match_id)
 
                 if result is not None:
                     break
 
             except Exception:
-
                 continue
 
         if result is None:
-
             return empty
 
-        data = object_to_dict(
-            result
-        )
+        data = object_to_dict(result)
 
         empty["api_available"] = True
 
@@ -951,9 +819,7 @@ def parse_api_fact(
 
         if score:
 
-            home, away = score_to_tuple(
-                score
-            )
+            home, away = score_to_tuple(score)
 
             empty["home_goals"] = home
             empty["away_goals"] = away
@@ -1002,7 +868,30 @@ def parse_api_fact(
 
             empty["api_stats"] = any(
                 api_stats.get(key) is not None
-                for key in STAT_KEYS
+                for key in (
+                    "home_possession",
+                    "away_possession",
+                    "home_shots",
+                    "away_shots",
+                    "home_shots_on_target",
+                    "away_shots_on_target",
+                    "home_corners",
+                    "away_corners",
+                    "home_total_passes",
+                    "away_total_passes",
+                    "home_pass_accuracy",
+                    "away_pass_accuracy",
+                    "home_accurate_passes",
+                    "away_accurate_passes",
+                    "home_tackles",
+                    "away_tackles",
+                    "home_fouls",
+                    "away_fouls",
+                    "home_yellow_cards",
+                    "away_yellow_cards",
+                    "home_red_cards",
+                    "away_red_cards",
+                )
             )
 
         # ----------------------------------------------------
@@ -1077,7 +966,6 @@ def parse_soccer365(
     }
 
     if not url or not url.strip():
-
         return result
 
     try:
@@ -1121,9 +1009,7 @@ def parse_soccer365(
 
             return result
 
-        data = object_to_dict(
-            parsed
-        )
+        data = object_to_dict(parsed)
 
         raw_stats = data.get(
             "stats",
@@ -1139,10 +1025,6 @@ def parse_soccer365(
             stats = normalize_source_stats(
                 data
             )
-
-        # ----------------------------------------------------
-        # XG
-        # ----------------------------------------------------
 
         if stats.get("home_xg") is None:
 
@@ -1217,8 +1099,6 @@ def build_hybrid_fact(
     api_fact: Optional[Dict[str, Any]] = None,
     soccer365_fact: Optional[Dict[str, Any]] = None,
     saved_stats: Optional[Dict[str, Any]] = None,
-    saved_home_goals: Optional[int] = None,
-    saved_away_goals: Optional[int] = None,
     manual_home_goals: Optional[int] = None,
     manual_away_goals: Optional[int] = None,
 ) -> Dict[str, Any]:
@@ -1241,7 +1121,7 @@ def build_hybrid_fact(
         )
     )
 
-    database_stats = normalize_source_stats(
+    saved_stats_normalized = normalize_source_stats(
         saved_stats
     )
 
@@ -1278,51 +1158,77 @@ def build_hybrid_fact(
 
             score_source = "manual"
 
-        else:
-
-            home_goals = saved_home_goals
-            away_goals = saved_away_goals
-
-            if (
-                home_goals is not None
-                and away_goals is not None
-            ):
-
-                score_source = (
-                    saved_stats.get(
-                        "score_source"
-                    )
-                    or "database"
-                )
-
     # ========================================================
     # STATS
     # ========================================================
 
     stats = {}
 
-    for key in STAT_KEYS:
+    stat_keys = [
 
-        # API имеет приоритет
-        value = api_stats.get(key)
+        "home_possession",
+        "away_possession",
 
-        if value is not None:
+        "home_shots",
+        "away_shots",
 
-            stats[key] = value
+        "home_shots_on_target",
+        "away_shots_on_target",
 
-            continue
+        "home_corners",
+        "away_corners",
 
-        # Soccer365
+        "home_total_passes",
+        "away_total_passes",
+
+        "home_pass_accuracy",
+        "away_pass_accuracy",
+
+        "home_accurate_passes",
+        "away_accurate_passes",
+
+        "home_tackles",
+        "away_tackles",
+
+        "home_fouls",
+        "away_fouls",
+
+        "home_yellow_cards",
+        "away_yellow_cards",
+
+        "home_red_cards",
+        "away_red_cards",
+    ]
+
+    # --------------------------------------------------------
+    # PRIORITY:
+    #
+    # 1. newly loaded Soccer365
+    # 2. API
+    # 3. saved SQLite
+    #
+    # This is deliberate:
+    # before LOCK the user must be able to correct
+    # previously saved data.
+    # --------------------------------------------------------
+
+    for key in stat_keys:
+
         value = soccer365_stats.get(key)
 
         if value is not None:
 
             stats[key] = value
-
             continue
 
-        # SQLite
-        value = database_stats.get(key)
+        value = api_stats.get(key)
+
+        if value is not None:
+
+            stats[key] = value
+            continue
+
+        value = saved_stats_normalized.get(key)
 
         if value is not None:
 
@@ -1332,11 +1238,11 @@ def build_hybrid_fact(
     # XG
     # ========================================================
 
-    home_xg = api_stats.get(
+    home_xg = soccer365_stats.get(
         "home_xg"
     )
 
-    away_xg = api_stats.get(
+    away_xg = soccer365_stats.get(
         "away_xg"
     )
 
@@ -1347,15 +1253,15 @@ def build_hybrid_fact(
         or away_xg is not None
     ):
 
-        xg_source = "data-football"
+        xg_source = "soccer365"
 
     else:
 
-        home_xg = soccer365_stats.get(
+        home_xg = api_stats.get(
             "home_xg"
         )
 
-        away_xg = soccer365_stats.get(
+        away_xg = api_stats.get(
             "away_xg"
         )
 
@@ -1364,15 +1270,15 @@ def build_hybrid_fact(
             or away_xg is not None
         ):
 
-            xg_source = "soccer365"
+            xg_source = "data-football"
 
         else:
 
-            home_xg = database_stats.get(
+            home_xg = saved_stats_normalized.get(
                 "home_xg"
             )
 
-            away_xg = database_stats.get(
+            away_xg = saved_stats_normalized.get(
                 "away_xg"
             )
 
@@ -1405,8 +1311,12 @@ def build_hybrid_fact(
         available += 1
 
     if any(
-        stats.get(key) is not None
-        for key in STAT_KEYS
+        value is not None
+        for key, value in stats.items()
+        if key not in (
+            "home_xg",
+            "away_xg",
+        )
     ):
 
         available += 1
@@ -1424,30 +1334,30 @@ def build_hybrid_fact(
     # STATS SOURCE
     # ========================================================
 
-    api_stat_fields = any(
-        api_stats.get(key) is not None
-        for key in STAT_KEYS
-    )
-
     soccer365_stat_fields = any(
         soccer365_stats.get(key) is not None
-        for key in STAT_KEYS
+        for key in stat_keys
     )
 
-    database_stat_fields = any(
-        database_stats.get(key) is not None
-        for key in STAT_KEYS
+    api_stat_fields = any(
+        api_stats.get(key) is not None
+        for key in stat_keys
     )
 
-    if api_stat_fields:
+    saved_stat_fields = any(
+        saved_stats_normalized.get(key) is not None
+        for key in stat_keys
+    )
 
-        stats_source = "data-football"
-
-    elif soccer365_stat_fields:
+    if soccer365_stat_fields:
 
         stats_source = "soccer365"
 
-    elif database_stat_fields:
+    elif api_stat_fields:
+
+        stats_source = "data-football"
+
+    elif saved_stat_fields:
 
         stats_source = (
             saved_stats.get(
@@ -1460,15 +1370,6 @@ def build_hybrid_fact(
 
         stats_source = None
 
-    source_url = (
-        soccer365_fact.get(
-            "source_url"
-        )
-        or saved_stats.get(
-            "source_url"
-        )
-    )
-
     return {
 
         "home_goals": home_goals,
@@ -1477,24 +1378,25 @@ def build_hybrid_fact(
         "stats": stats,
 
         "score_source": score_source,
-
         "stats_source": stats_source,
-
         "xg_source": xg_source,
 
-        "source_url": source_url,
-
-        "parser_source": (
-            "hybrid"
+        "source_url": (
+            soccer365_fact.get(
+                "source_url"
+            )
+            or saved_stats.get(
+                "source_url"
+            )
         ),
 
-        "parser_version":
-            IMPORT_FACTS_VERSION,
+        "parser_source": "hybrid",
+
+        "parser_version": IMPORT_FACTS_VERSION,
 
         "data_quality": quality,
 
-        "parsed_at":
-            datetime.now().isoformat(),
+        "parsed_at": datetime.now().isoformat(),
     }
 
 
@@ -1520,7 +1422,6 @@ def fact_status(
     )
 
     if not isinstance(stats, dict):
-
         stats = {}
 
     has_score = (
@@ -1530,7 +1431,41 @@ def fact_status(
 
     has_stats = any(
         stats.get(key) is not None
-        for key in STAT_KEYS
+        for key in (
+
+            "home_possession",
+            "away_possession",
+
+            "home_corners",
+            "away_corners",
+
+            "home_shots",
+            "away_shots",
+
+            "home_shots_on_target",
+            "away_shots_on_target",
+
+            "home_total_passes",
+            "away_total_passes",
+
+            "home_pass_accuracy",
+            "away_pass_accuracy",
+
+            "home_accurate_passes",
+            "away_accurate_passes",
+
+            "home_tackles",
+            "away_tackles",
+
+            "home_fouls",
+            "away_fouls",
+
+            "home_yellow_cards",
+            "away_yellow_cards",
+
+            "home_red_cards",
+            "away_red_cards",
+        )
     )
 
     has_xg = (
@@ -1567,9 +1502,7 @@ def save_match_fact(
     expert_confidence: int,
 ) -> Dict[str, Any]:
 
-    match_id = get_match_id(
-        match
-    )
+    match_id = get_match_id(match)
 
     if match_id is None:
 
@@ -1581,22 +1514,18 @@ def save_match_fact(
     # LOCK CHECK
     # --------------------------------------------------------
 
-    if db.is_result_locked(
-        match_id
-    ):
+    if db.is_result_locked(match_id):
 
         raise ValueError(
-            "Факты этого матча уже полностью "
-            "сохранены и заблокированы."
+            "Факты этого матча уже сохранены "
+            "и заблокированы."
         )
 
     # --------------------------------------------------------
     # FACT CHECK
     # --------------------------------------------------------
 
-    status = fact_status(
-        fact
-    )
+    status = fact_status(fact)
 
     if not status["score"]:
 
@@ -1845,22 +1774,16 @@ def extract_prediction_score(
         "exact_score",
     ):
 
-        value = prediction.get(
-            key
-        )
+        value = prediction.get(key)
 
         if value is not None:
 
-            score = clean_score(
-                value
-            )
+            score = clean_score(value)
 
             if score:
                 return score
 
-    prediction_id = prediction.get(
-        "id"
-    )
+    prediction_id = prediction.get("id")
 
     if prediction_id:
 
@@ -1876,9 +1799,7 @@ def extract_prediction_score(
 
                 for row in scores:
 
-                    row_dict = object_to_dict(
-                        row
-                    )
+                    row_dict = object_to_dict(row)
 
                     if (
                         row_dict.get("rank")
@@ -1943,16 +1864,12 @@ def prediction_probability(
         [],
     ):
 
-        value = prediction.get(
-            key
-        )
+        value = prediction.get(key)
 
         if value is None:
             continue
 
-        value = safe_float(
-            value
-        )
+        value = safe_float(value)
 
         if value is None:
             continue
@@ -2051,7 +1968,6 @@ def build_validation_data(
     )
 
     if not isinstance(stats, dict):
-
         stats = {}
 
     predicted_winner = None
@@ -2226,9 +2142,7 @@ def build_gold_data(
     fact: Dict[str, Any],
 ) -> Dict[str, Any]:
 
-    match_id = get_match_id(
-        match
-    )
+    match_id = get_match_id(match)
 
     actual_home = fact.get(
         "home_goals"
@@ -2244,7 +2158,6 @@ def build_gold_data(
     )
 
     if not isinstance(stats, dict):
-
         stats = {}
 
     faj_score = extract_prediction_score(
@@ -2414,7 +2327,7 @@ def build_gold_data(
 
 
 # ============================================================
-# UI
+# UI — MATCH CARD
 # ============================================================
 
 def render_match_card(
@@ -2424,9 +2337,7 @@ def render_match_card(
     league: str,
 ) -> None:
 
-    match_id = get_match_id(
-        match
-    )
+    match_id = get_match_id(match)
 
     if match_id is None:
 
@@ -2436,13 +2347,8 @@ def render_match_card(
 
         return
 
-    raw_home = get_home_team(
-        match
-    )
-
-    raw_away = get_away_team(
-        match
-    )
+    raw_home = get_home_team(match)
+    raw_away = get_away_team(match)
 
     home_team, away_team = normalize_team_names(
         raw_home,
@@ -2469,16 +2375,6 @@ def render_match_card(
         match_id,
     )
 
-    saved_result = get_saved_result(
-        db,
-        match_id,
-    )
-
-    saved_stats = get_saved_match_stats(
-        db,
-        match_id,
-    )
-
     # ========================================================
     # PREDICTION
     # ========================================================
@@ -2497,77 +2393,69 @@ def render_match_card(
     )
 
     # ========================================================
-    # STATUS
+    # LOCK STATUS
     # ========================================================
 
-    if saved["locked"] and saved["complete"]:
+    if saved["locked"]:
 
-        st.success(
-            "🔒 ФАКТЫ УЖЕ СОХРАНЕНЫ И ЗАЩИЩЕНЫ"
-        )
+        if saved["complete"]:
 
-        st.caption(
-            "Счёт + статистика + xG находятся "
-            "в базе данных. Повторное сохранение "
-            "не требуется."
-        )
-
-    elif saved["locked"] and not saved["complete"]:
-
-        st.warning(
-            "⚠️ ФАКТ НЕПОЛНЫЙ, НО MATCH LOCKED"
-        )
-
-        missing = []
-
-        if not saved["score"]:
-            missing.append("счёт")
-
-        if not saved["stats"]:
-            missing.append("статистика")
-
-        if not saved["xg"]:
-            missing.append("xG")
-
-        st.caption(
-            "Отсутствуют: "
-            + ", ".join(missing)
-        )
-
-        st.info(
-            "Это режим восстановления. "
-            "Существующие данные не удаляются. "
-            "Можно дозагрузить только недостающие "
-            "фактические данные."
-        )
-
-        if st.button(
-            "🔓 Перевести матч в режим восстановления",
-            key=f"{key_prefix}_recovery",
-            use_container_width=True,
-        ):
-
-            ok, message = (
-                recover_incomplete_locked_match(
-                    db,
-                    match_id,
-                )
+            st.success(
+                "🔒 ФАКТЫ УЖЕ СОХРАНЕНЫ И ЗАЩИЩЕНЫ"
             )
 
-            if ok:
+            st.caption(
+                "Счёт + статистика + xG "
+                "находятся в базе данных. "
+                "Матч LOCKED."
+            )
 
-                st.success(
-                    f"✅ {message}"
-                )
+        else:
 
-                st.rerun()
+            st.error(
+                "⚠️ НЕСООТВЕТСТВИЕ БАЗЫ"
+            )
 
-            else:
+            missing = []
 
-                st.error(
-                    f"❌ Recovery не выполнен: "
-                    f"{message}"
-                )
+            if not saved["score"]:
+                missing.append("счёт")
+
+            if not saved["stats"]:
+                missing.append("статистика")
+
+            if not saved["xg"]:
+                missing.append("xG")
+
+            st.caption(
+                "Матч LOCKED, но отсутствуют: "
+                + ", ".join(missing)
+                + ". "
+                "Автоматический UNLOCK запрещён."
+            )
+
+    else:
+
+        if saved["complete"]:
+
+            st.info(
+                "ℹ️ Факты уже есть в SQLite, "
+                "но матч ещё НЕ LOCKED. "
+                "При необходимости данные можно "
+                "проверить и исправить."
+            )
+
+        elif (
+            saved["score"]
+            or saved["stats"]
+            or saved["xg"]
+        ):
+
+            st.warning(
+                "⚠️ В SQLite уже есть часть фактов. "
+                "Недостающие данные можно получить "
+                "или исправить до LOCK."
+            )
 
     # ========================================================
     # METRICS
@@ -2604,17 +2492,13 @@ def render_match_card(
 
     with col3:
 
-        if saved["locked"] and saved["complete"]:
+        if saved["locked"]:
 
             status_text = "🔒 LOCKED"
 
         elif saved["complete"]:
 
-            status_text = "✅ Готов"
-
-        elif saved["locked"]:
-
-            status_text = "⚠️ RECOVERY"
+            status_text = "🟢 Есть / можно проверить"
 
         else:
 
@@ -2629,14 +2513,19 @@ def render_match_card(
     # EXISTING RESULT
     # ========================================================
 
+    existing_result = get_saved_result(
+        db,
+        match_id,
+    )
+
     db_home_goals = safe_int(
-        saved_result.get(
+        existing_result.get(
             "home_goals"
         )
     )
 
     db_away_goals = safe_int(
-        saved_result.get(
+        existing_result.get(
             "away_goals"
         )
     )
@@ -2727,16 +2616,11 @@ def render_match_card(
                 f"{api_home}:{api_away}"
             )
 
-    score_disabled = (
-        saved["locked"]
-        and saved["complete"]
-    )
-
     score_input = st.text_input(
         "Счёт (X:Y)",
         value=initial_score,
         key=f"{key_prefix}_score_input",
-        disabled=score_disabled,
+        disabled=saved["locked"],
         placeholder="Например: 2:1",
     )
 
@@ -2769,7 +2653,7 @@ def render_match_card(
             "💾 Сохранить счёт",
             key=f"{key_prefix}_fix_score",
             disabled=(
-                score_disabled
+                saved["locked"]
                 or current_home is None
                 or current_away is None
             ),
@@ -2808,9 +2692,86 @@ def render_match_card(
     )
 
     st.caption(
-        "Источники: SQLite → Data Football API "
-        "→ Soccer365."
+        "Источник: SQLite / Data Football API / Soccer365. "
+        "До LOCK данные можно перепроверить."
     )
+
+    # --------------------------------------------------------
+    # SAVED STATS
+    # --------------------------------------------------------
+
+    saved_stats = get_saved_match_stats(
+        db,
+        match_id,
+    )
+
+    saved_stats_normalized = normalize_source_stats(
+        saved_stats
+    )
+
+    saved_has_stats = any(
+        saved_stats_normalized.get(key) is not None
+        for key in (
+
+            "home_possession",
+            "away_possession",
+
+            "home_shots",
+            "away_shots",
+
+            "home_shots_on_target",
+            "away_shots_on_target",
+
+            "home_corners",
+            "away_corners",
+
+            "home_total_passes",
+            "away_total_passes",
+
+            "home_pass_accuracy",
+            "away_pass_accuracy",
+
+            "home_accurate_passes",
+            "away_accurate_passes",
+
+            "home_tackles",
+            "away_tackles",
+
+            "home_fouls",
+            "away_fouls",
+
+            "home_yellow_cards",
+            "away_yellow_cards",
+
+            "home_red_cards",
+            "away_red_cards",
+        )
+    )
+
+    saved_has_xg = (
+        saved_stats_normalized.get(
+            "home_xg"
+        ) is not None
+        or saved_stats_normalized.get(
+            "away_xg"
+        ) is not None
+    )
+
+    if saved_has_stats:
+
+        st.success(
+            "💾 Статистика уже сохранена в SQLite"
+        )
+
+    if saved_has_xg:
+
+        st.success(
+            "💾 xG уже сохранён в SQLite"
+        )
+
+    # --------------------------------------------------------
+    # API STATS
+    # --------------------------------------------------------
 
     stats_from_api = normalize_source_stats(
         api_fact.get(
@@ -2821,7 +2782,41 @@ def render_match_card(
 
     has_api_stats = any(
         stats_from_api.get(key) is not None
-        for key in STAT_KEYS
+        for key in (
+
+            "home_possession",
+            "away_possession",
+
+            "home_shots",
+            "away_shots",
+
+            "home_shots_on_target",
+            "away_shots_on_target",
+
+            "home_corners",
+            "away_corners",
+
+            "home_total_passes",
+            "away_total_passes",
+
+            "home_pass_accuracy",
+            "away_pass_accuracy",
+
+            "home_accurate_passes",
+            "away_accurate_passes",
+
+            "home_tackles",
+            "away_tackles",
+
+            "home_fouls",
+            "away_fouls",
+
+            "home_yellow_cards",
+            "away_yellow_cards",
+
+            "home_red_cards",
+            "away_red_cards",
+        )
     )
 
     has_api_xg = (
@@ -2833,84 +2828,64 @@ def render_match_card(
         ) is not None
     )
 
-    if saved["stats"]:
-
-        st.success(
-            "🟢 Статистика уже есть в SQLite"
-        )
-
-    if saved["xg"]:
-
-        st.success(
-            "🟢 xG уже есть в SQLite"
-        )
-
     if has_api_stats:
 
         st.success(
-            "🟢 Статистика получена через API"
+            "🤖 Статистика получена через API"
         )
 
     if has_api_xg:
 
         st.success(
-            "🟢 xG получен через API"
+            "🤖 xG получен через API"
         )
 
     # ========================================================
     # SOCCER365 URL
     # ========================================================
 
-    # ВАЖНО:
-    # Полный LOCKED матч закрывает поле.
-    # Неполный LOCKED матч остаётся доступным
-    # для recovery.
-
-    source_locked = (
-        saved["locked"]
-        and saved["complete"]
+    saved_source_url = (
+        saved_stats.get(
+            "source_url"
+        )
+        or saved_stats.get(
+            "soccer365_url"
+        )
+        or ""
     )
+
+    current_url = st.session_state.get(
+        f"{key_prefix}_soccer365_url_value"
+    )
+
+    if current_url is None:
+
+        current_url = saved_source_url
 
     soccer365_url = st.text_input(
-        "🔗 Ссылка Soccer365",
+        "🔗 Soccer365",
+        value=current_url,
         key=f"{key_prefix}_soccer365_url",
         placeholder="https://soccer365.ru/games/...",
-        disabled=(
-            source_locked
-            or (
-                has_api_stats
-                and has_api_xg
-            )
-        ),
+        disabled=saved["locked"],
     )
 
-    # Если URL уже был сохранён ранее,
-    # показываем его пользователю.
-
-    saved_source_url = saved_stats.get(
-        "source_url"
+    st.caption(
+        "Поле доступно до LOCK даже если "
+        "статистика и xG уже есть. "
+        "Это позволяет перепроверить источник "
+        "или заменить ошибочные данные."
     )
-
-    if saved_source_url:
-
-        st.caption(
-            f"Источник ранее сохранённых данных: "
-            f"{saved_source_url}"
-        )
 
     # ========================================================
     # FETCH
     # ========================================================
 
     if st.button(
-        "📥 Загрузить статистику Soccer365",
+        "📥 Загрузить / перепроверить статистику Soccer365",
         key=f"{key_prefix}_soccer365_fetch",
         disabled=(
-            source_locked
-            or (
-                has_api_stats
-                and has_api_xg
-            )
+            saved["locked"]
             or not soccer365_url.strip()
         ),
         use_container_width=True,
@@ -2921,7 +2896,7 @@ def render_match_card(
         ):
 
             parsed = parse_soccer365(
-                soccer365_url
+                soccer365_url.strip()
             )
 
         if parsed.get("error"):
@@ -2936,6 +2911,10 @@ def render_match_card(
             st.session_state[
                 f"{key_prefix}_soccer365_fact"
             ] = parsed
+
+            st.session_state[
+                f"{key_prefix}_soccer365_url_value"
+            ] = soccer365_url.strip()
 
             st.success(
                 "🟢 Статистика Soccer365 получена."
@@ -2976,21 +2955,11 @@ def render_match_card(
 
     fact = build_hybrid_fact(
         league=league,
-
         match=match,
-
         api_fact=api_fact,
-
         soccer365_fact=soccer365_fact,
-
         saved_stats=saved_stats,
-
-        saved_home_goals=db_home_goals,
-
-        saved_away_goals=db_away_goals,
-
         manual_home_goals=manual_home,
-
         manual_away_goals=manual_away,
     )
 
@@ -3018,7 +2987,7 @@ def render_match_card(
 
             st.caption(
                 f"Источник: "
-                f"{fact.get('score_source') or 'database'}"
+                f"{fact.get('score_source') or 'database/manual'}"
             )
 
         else:
@@ -3064,19 +3033,6 @@ def render_match_card(
             st.error(
                 "❌ xG отсутствует"
             )
-
-    # ========================================================
-    # RECOVERY STATUS
-    # ========================================================
-
-    if saved["locked"] and not saved["complete"]:
-
-        st.warning(
-            "🔧 РЕЖИМ ВОССТАНОВЛЕНИЯ: "
-            "матч ранее получил LOCK, но факт "
-            "неполный. Недостающие данные можно "
-            "дозагрузить без удаления существующего счёта."
-        )
 
     # ========================================================
     # DISPLAY STATS
@@ -3242,7 +3198,7 @@ def render_match_card(
         value=existing_expert_score,
         key=f"{key_prefix}_expert_score",
         placeholder="Например: 2:1",
-        disabled=source_locked,
+        disabled=saved["locked"],
     )
 
     expert_comment = st.text_area(
@@ -3256,7 +3212,7 @@ def render_match_card(
             else ""
         ),
         key=f"{key_prefix}_expert_comment",
-        disabled=source_locked,
+        disabled=saved["locked"],
     )
 
     existing_confidence = 50
@@ -3285,7 +3241,7 @@ def render_match_card(
         max_value=100,
         value=existing_confidence,
         key=f"{key_prefix}_expert_confidence",
-        disabled=source_locked,
+        disabled=saved["locked"],
     )
 
     # ========================================================
@@ -3360,7 +3316,7 @@ def render_match_card(
     # SAVE BUTTON
     # ========================================================
 
-    if saved["locked"] and saved["complete"]:
+    if saved["locked"]:
 
         st.info(
             "🔒 Сохранение не требуется: "
@@ -3390,10 +3346,20 @@ def render_match_card(
 
     else:
 
-        st.success(
-            "🟢 Все необходимые факты получены. "
-            "Кнопка сохранения активна."
-        )
+        if saved["complete"]:
+
+            st.success(
+                "🟢 Все факты уже есть. "
+                "Можно сохранить повторно после "
+                "проверки или исправления."
+            )
+
+        else:
+
+            st.success(
+                "🟢 Все необходимые факты получены. "
+                "Кнопка сохранения активна."
+            )
 
     if st.button(
         "✅ Сохранить факты",
@@ -3427,8 +3393,8 @@ def render_match_card(
             )
 
             st.success(
-                "✅ Факты сохранены, "
-                "прошли validation и защищены LOCK."
+                "✅ Факты сохранены "
+                "и защищены."
             )
 
             st.caption(
@@ -3463,6 +3429,20 @@ def render_match_card(
                 st.success(
                     "✅ База синхронизирована с GitHub."
                 )
+
+            # ------------------------------------------------
+            # CLEAR ONLY TEMPORARY SESSION SOURCE
+            # ------------------------------------------------
+
+            st.session_state.pop(
+                f"{key_prefix}_soccer365_fact",
+                None,
+            )
+
+            st.session_state.pop(
+                f"{key_prefix}_soccer365_url_value",
+                None,
+            )
 
             st.rerun()
 
@@ -3552,7 +3532,8 @@ def main() -> None:
             f"🌍 {league}: "
             "Data Football API используется "
             "при наличии данных. "
-            "Soccer365 остаётся резервным источником."
+            "Soccer365 остаётся доступным "
+            "для проверки и замены данных до LOCK."
         )
 
     # ========================================================
@@ -3586,9 +3567,7 @@ def main() -> None:
     # MATCH CARDS
     # ========================================================
 
-    for index, match in enumerate(
-        matches
-    ):
+    for index, match in enumerate(matches):
 
         render_match_card(
             db=db,
