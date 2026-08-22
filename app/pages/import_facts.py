@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-IMPORT FACTS v4.5
+IMPORT FACTS v4.5.1
 ============================================================
 
 НАЗНАЧЕНИЕ:
@@ -57,27 +57,15 @@ LOCK
 LEARNING
 
 ============================================================
-ИЗМЕНЕНИЯ V4.5
+ИЗМЕНЕНИЯ V4.5.1
 ============================================================
 
-1. Добавлен FACT RECOVERY.
-
-2. Если матч уже LOCKED, но статистика/xG отсутствуют,
-   FAJ автоматически снимает LOCK.
-
-3. Счёт при этом НЕ удаляется и НЕ изменяется.
-
-4. Soccer365 снова становится доступен для загрузки.
-
-5. После повторного сохранения:
+1. FACT RECOVERY теперь снимает LOCK с GOLD.
+2. Добавлен вызов db.unlock_gold_for_match().
+3. После снятия LOCK с match_result и GOLD,
+   статистика может быть перезагружена.
+4. После повторного сохранения:
        VALIDATION → GOLD → LOCK
-
-6. Если статистика и xG уже полностью существуют,
-   LOCK автоматически НЕ снимается.
-
-7. database.py остаётся единственным источником
-   работы с SQLite.
-
 ============================================================
 """
 
@@ -104,7 +92,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 APP_VERSION = "12.1"
-IMPORT_FACTS_VERSION = "4.5"
+IMPORT_FACTS_VERSION = "4.5.1"
 MODEL_VERSION = "v12.1"
 
 DEFAULT_DB_PATH = "data/faj.db"
@@ -534,7 +522,7 @@ def normalize_source_stats(
 
 
 # ============================================================
-# FACT RECOVERY
+# FACT RECOVERY — С UNLOCK GOLD
 # ============================================================
 
 def get_saved_match_stats(
@@ -649,9 +637,10 @@ def recover_locked_match(
     Если матч LOCKED, но в БД отсутствуют
     статистика или xG:
 
-        LOCKED
+        LOCKED (match_result + GOLD)
            ↓
-        UNLOCK
+        UNLOCK match_result
+        UNLOCK GOLD
            ↓
         Soccer365
            ↓
@@ -677,6 +666,7 @@ def recover_locked_match(
         "xg_present": saved_status["xg"],
         "complete": saved_status["complete"],
         "unlocked": False,
+        "gold_unlocked": False,
         "error": None,
     }
 
@@ -705,6 +695,7 @@ def recover_locked_match(
 
     try:
 
+        # 1. Снимаем LOCK с match_result
         unlocked = db.unlock_match_result(
             int(match_id)
         )
@@ -712,16 +703,33 @@ def recover_locked_match(
         if not unlocked:
 
             result["error"] = (
-                "database.py не смог снять LOCK."
+                "database.py не смог снять LOCK "
+                "с match_result."
             )
 
             return result
 
         result["unlocked"] = True
 
+        # 2. Снимаем LOCK с GOLD
+        gold_unlocked = db.unlock_gold_for_match(
+            int(match_id)
+        )
+
+        if not gold_unlocked:
+
+            result["error"] = (
+                "database.py не смог снять LOCK "
+                "с GOLD."
+            )
+
+            return result
+
+        result["gold_unlocked"] = True
+
         logger.warning(
             "FACT RECOVERY | "
-            "LOCKED match unlocked because "
+            "LOCKED match and GOLD unlocked because "
             "statistics/xG are incomplete | "
             "match_id=%s",
             match_id,
