@@ -4,40 +4,88 @@
 """
 ============================================================
 FAJ Platform v12.1
-ETC — Statistical Analyzer v1.0
+ETC — Statistical Analyzer v1.1
 ============================================================
 
-НАЗНАЧЕНИЕ:
+app/etc/statistical_analyzer.py
 
-    Статистический анализ завершённых матчей
-    для Evolution Training Center.
+НАЗНАЧЕНИЕ
+-----------
 
-Роль модуля:
+Statistical Analyzer является чистым аналитическим слоем ETC.
+
+Он получает УЖЕ ВЫБРАННЫЕ BatchController матчи и превращает
+фактические данные в объективные статистические наблюдения.
+
+АРХИТЕКТУРА:
+
+    match_results
+          +
+    match_statistics
+          ↓
+    StatisticalAnalyzer
+          ↓
+    objective observations
+          ↓
+    ETCLearningEngine
+          ↓
+    LearningMemory
+          ↓
+    ETC
+
+ВАЖНО
+-----
+
+МОДУЛЬ НЕ:
+
+    - обучает модель;
+    - изменяет FAJ Rating;
+    - изменяет model_parameters;
+    - изменяет match_results;
+    - изменяет match_statistics;
+    - изменяет календарь;
+    - удаляет данные;
+    - записывает learning_memory;
+    - запускает prediction pipeline;
+    - самостоятельно принимает решения об изменении модели.
+
+МОДУЛЬ ТОЛЬКО:
+
+    - читает факты;
+    - рассчитывает производные статистические показатели;
+    - сравнивает голы и observed xG;
+    - агрегирует показатели команд;
+    - агрегирует показатели batch;
+    - возвращает результат ETC.
+
+ИСТОЧНИКИ:
+
+    Счёт:
+        match_results
+
+    Фактическая статистика:
+        match_statistics
+
+    Календарь:
+        matches
+
+ЕДИНЫЙ ИСТОЧНИК СХЕМЫ:
+
+    app.database.FAJDatabase
+
+============================================================
+
+ETC PRINCIPLE:
 
     FACTS
       ↓
-    MATCH STATISTICS
+    ANALYZER
       ↓
-    STATISTICAL ANALYZER
+    OBSERVATIONS
       ↓
-    объективные показатели
+    LEARNING ENGINE
       ↓
-    ETC
-      ↓
-    LEARNING
-
-ВАЖНЫЕ ПРИНЦИПЫ:
-
-    1. Только анализ фактов.
-    2. Никакого изменения исторических данных.
-    3. Никакого изменения FAJ Rating.
-    4. Никакого изменения model_parameters.
-    5. Никакого обучения внутри этого модуля.
-    6. Никакого DELETE.
-    7. database.py не изменяется.
-    8. Все результаты возвращаются вызывающему ETC.
-    9. Observed xG берётся из match_statistics.xg.
-   10. Счёт берётся из match_results.
+    MEMORY
 
 ============================================================
 """
@@ -54,8 +102,8 @@ from app.database import FAJDatabase
 logger = logging.getLogger(__name__)
 
 
-ANALYZER_VERSION = "1.0"
-ANALYZER_NAME = "FAJ ETC Statistical Analyzer v1.0"
+ANALYZER_VERSION = "1.1"
+ANALYZER_NAME = "FAJ ETC Statistical Analyzer"
 
 
 # ============================================================
@@ -66,11 +114,19 @@ def _safe_float(
     value: Any,
     default: Optional[float] = None,
 ) -> Optional[float]:
+    """
+    Безопасное преобразование в float.
+    """
+
     try:
+
         if value is None:
             return default
+
         return float(value)
+
     except (TypeError, ValueError):
+
         return default
 
 
@@ -78,15 +134,29 @@ def _safe_int(
     value: Any,
     default: int = 0,
 ) -> int:
+    """
+    Безопасное преобразование в int.
+    """
+
     try:
+
         if value is None:
             return default
+
         return int(value)
+
     except (TypeError, ValueError):
+
         return default
 
 
-def _average(values: List[float]) -> Optional[float]:
+def _average(
+    values: List[float],
+) -> Optional[float]:
+    """
+    Среднее значение.
+    """
+
     if not values:
         return None
 
@@ -97,6 +167,10 @@ def _round(
     value: Optional[float],
     digits: int = 4,
 ) -> Optional[float]:
+    """
+    Безопасное округление.
+    """
+
     if value is None:
         return None
 
@@ -109,10 +183,11 @@ def _round(
 
 class StatisticalAnalyzer:
     """
-    Статистический анализатор ETC.
+    Чистый статистический анализатор ETC.
 
-    Отвечает за преобразование сырых фактов матчей
-    в агрегированные статистические показатели.
+    Получает факты и возвращает объективные наблюдения.
+
+    Никаких изменений модели здесь не производится.
     """
 
     def __init__(
@@ -123,7 +198,7 @@ class StatisticalAnalyzer:
         self.db = db or FAJDatabase()
 
     # ========================================================
-    # PUBLIC
+    # PUBLIC — BATCH
     # ========================================================
 
     def analyze_matches(
@@ -131,75 +206,173 @@ class StatisticalAnalyzer:
         matches: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
         """
-        Анализирует переданный набор завершённых матчей.
+        Анализирует конкретный batch матчей.
+
+        ВАЖНО:
+
+        Список matches должен приходить от BatchController
+        либо быть явно передан ETC.
+
+        Метод НЕ выбирает самостоятельно новые матчи.
         """
 
-        result = {
+        result: Dict[str, Any] = {
             "success": False,
+
             "version": ANALYZER_VERSION,
             "engine": ANALYZER_NAME,
 
+            "matches_requested": len(matches or []),
             "matches_analyzed": 0,
+
             "teams_analyzed": 0,
 
             "league_statistics": {},
+
             "team_statistics": [],
+
+            "match_statistics": [],
+
+            "observations": [],
 
             "errors": [],
         }
 
-        try:
+        if not matches:
 
-            if not matches:
-                result["errors"].append(
-                    "Нет матчей для статистического анализа."
-                )
-                return result
+            result["errors"].append(
+                "Нет матчей для статистического анализа."
+            )
+
+            return result
+
+        try:
 
             team_data: Dict[int, Dict[str, Any]] = {}
 
-            valid_matches = 0
+            analyzed_matches: List[Dict[str, Any]] = []
+
+            # ------------------------------------------------
+            # ANALYZE EACH MATCH
+            # ------------------------------------------------
 
             for match in matches:
 
-                analyzed = self._analyze_match(match)
+                if not isinstance(match, dict):
 
-                if analyzed is None:
+                    result["errors"].append(
+                        "Пропущена некорректная запись матча."
+                    )
+
                     continue
 
-                valid_matches += 1
+                analyzed = self._analyze_match(
+                    match
+                )
+
+                if analyzed is None:
+
+                    match_id = _safe_int(
+                        match.get("id")
+                    )
+
+                    result["errors"].append(
+                        f"Матч {match_id}: "
+                        f"недостаточно фактических данных."
+                    )
+
+                    continue
+
+                analyzed_matches.append(
+                    analyzed
+                )
 
                 self._add_match_to_team_statistics(
-                    team_data,
-                    analyzed,
+                    team_data=team_data,
+                    analyzed=analyzed,
                     home=True,
                 )
 
                 self._add_match_to_team_statistics(
-                    team_data,
-                    analyzed,
+                    team_data=team_data,
+                    analyzed=analyzed,
                     home=False,
                 )
 
-            result["matches_analyzed"] = valid_matches
+            # ------------------------------------------------
+            # MATCH COUNT
+            # ------------------------------------------------
 
-            result["league_statistics"] = (
-                self._build_league_statistics(matches)
+            result["matches_analyzed"] = len(
+                analyzed_matches
             )
 
+            result["match_statistics"] = (
+                analyzed_matches
+            )
+
+            # ------------------------------------------------
+            # LEAGUE STATISTICS
+            # ------------------------------------------------
+
+            result["league_statistics"] = (
+                self._build_league_statistics(
+                    analyzed_matches
+                )
+            )
+
+            # ------------------------------------------------
+            # TEAM STATISTICS
+            # ------------------------------------------------
+
             result["team_statistics"] = (
-                self._finalize_team_statistics(team_data)
+                self._finalize_team_statistics(
+                    team_data
+                )
             )
 
             result["teams_analyzed"] = len(
                 result["team_statistics"]
             )
 
-            result["success"] = True
+            # ------------------------------------------------
+            # OBJECTIVE OBSERVATIONS
+            # ------------------------------------------------
+
+            result["observations"] = (
+                self._build_observations(
+                    analyzed_matches=analyzed_matches,
+                    team_statistics=result[
+                        "team_statistics"
+                    ],
+                    league_statistics=result[
+                        "league_statistics"
+                    ],
+                )
+            )
+
+            # ------------------------------------------------
+            # SUCCESS
+            # ------------------------------------------------
+
+            if analyzed_matches:
+
+                result["success"] = True
+
+            else:
+
+                result["success"] = False
+
+                if not result["errors"]:
+
+                    result["errors"].append(
+                        "Не удалось проанализировать ни одного матча."
+                    )
 
             logger.info(
-                "Statistical analysis completed: "
-                "matches=%s teams=%s",
+                "ETC Statistical Analyzer: "
+                "requested=%s analyzed=%s teams=%s",
+                len(matches),
                 result["matches_analyzed"],
                 result["teams_analyzed"],
             )
@@ -209,15 +382,17 @@ class StatisticalAnalyzer:
         except Exception as exc:
 
             logger.exception(
-                "Statistical Analyzer error"
+                "ETC Statistical Analyzer failed"
             )
 
-            result["errors"].append(str(exc))
+            result["errors"].append(
+                str(exc)
+            )
 
             return result
 
     # ========================================================
-    # SINGLE MATCH
+    # PUBLIC — SINGLE MATCH
     # ========================================================
 
     def analyze_match(
@@ -225,15 +400,33 @@ class StatisticalAnalyzer:
         match_id: int,
     ) -> Dict[str, Any]:
         """
-        Анализ одного завершённого матча.
+        Анализирует один конкретный матч.
+
+        Используется ETC Learning Engine для диагностики
+        или точечной обработки.
+
+        Источник календаря:
+            FAJDatabase.get_matches()
+
+        Источник результата:
+            match_results
+
+        Источник статистики:
+            match_statistics
         """
 
-        result = {
+        result: Dict[str, Any] = {
             "success": False,
+
             "version": ANALYZER_VERSION,
             "engine": ANALYZER_NAME,
+
             "match_id": match_id,
+
             "statistics": None,
+
+            "observations": [],
+
             "errors": [],
         }
 
@@ -245,26 +438,42 @@ class StatisticalAnalyzer:
                 (
                     item
                     for item in matches
-                    if _safe_int(item.get("id")) == match_id
+                    if _safe_int(
+                        item.get("id")
+                    ) == _safe_int(match_id)
                 ),
                 None,
             )
 
             if not match:
+
                 result["errors"].append(
                     f"Матч {match_id} не найден."
                 )
+
                 return result
 
-            analyzed = self._analyze_match(match)
+            analyzed = self._analyze_match(
+                match
+            )
 
             if analyzed is None:
+
                 result["errors"].append(
-                    f"Недостаточно статистики для матча {match_id}."
+                    f"Матч {match_id}: "
+                    f"недостаточно фактической статистики."
                 )
+
                 return result
 
             result["statistics"] = analyzed
+
+            result["observations"] = (
+                self._build_match_observations(
+                    analyzed
+                )
+            )
+
             result["success"] = True
 
             return result
@@ -272,11 +481,13 @@ class StatisticalAnalyzer:
         except Exception as exc:
 
             logger.exception(
-                "Statistical analysis failed for match %s",
+                "ETC analysis failed for match=%s",
                 match_id,
             )
 
-            result["errors"].append(str(exc))
+            result["errors"].append(
+                str(exc)
+            )
 
             return result
 
@@ -289,18 +500,15 @@ class StatisticalAnalyzer:
         match: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
         """
-        Собирает статистику одного матча.
-
-        Основной источник:
-
-            match_statistics
-
-        Результат:
-
-            match_results
+        Собирает объективные факты одного матча.
         """
 
-        match_id = _safe_int(match.get("id"))
+        match_id = _safe_int(
+            match.get("id")
+        )
+
+        if match_id <= 0:
+            return None
 
         home_team_id = _safe_int(
             match.get("home_team_id")
@@ -310,21 +518,15 @@ class StatisticalAnalyzer:
             match.get("away_team_id")
         )
 
-        if not match_id:
+        if home_team_id <= 0:
             return None
 
-        home_stats = self._get_team_match_statistics(
-            match_id,
-            home_team_id,
-        )
-
-        away_stats = self._get_team_match_statistics(
-            match_id,
-            away_team_id,
-        )
-
-        if not home_stats and not away_stats:
+        if away_team_id <= 0:
             return None
+
+        # ----------------------------------------------------
+        # FACT RESULT
+        # ----------------------------------------------------
 
         match_result = self.db.get_match_result(
             match_id
@@ -333,16 +535,87 @@ class StatisticalAnalyzer:
         if not match_result:
             return None
 
+        home_goals_raw = match_result.get(
+            "home_goals"
+        )
+
+        away_goals_raw = match_result.get(
+            "away_goals"
+        )
+
+        if home_goals_raw is None:
+            return None
+
+        if away_goals_raw is None:
+            return None
+
         home_goals = _safe_int(
-            match_result.get("home_goals")
+            home_goals_raw
         )
 
         away_goals = _safe_int(
-            match_result.get("away_goals")
+            away_goals_raw
+        )
+
+        # ----------------------------------------------------
+        # FACT STATISTICS
+        # ----------------------------------------------------
+
+        home_stats = (
+            self._get_team_match_statistics(
+                match_id=match_id,
+                team_id=home_team_id,
+            )
+        )
+
+        away_stats = (
+            self._get_team_match_statistics(
+                match_id=match_id,
+                team_id=away_team_id,
+            )
+        )
+
+        # Для ETC статистический анализ должен иметь
+        # хотя бы одну фактическую статистическую запись.
+
+        if not home_stats and not away_stats:
+            return None
+
+        home_metrics = (
+            self._calculate_team_match_metrics(
+                stats=home_stats,
+                goals=home_goals,
+            )
+        )
+
+        away_metrics = (
+            self._calculate_team_match_metrics(
+                stats=away_stats,
+                goals=away_goals,
+            )
         )
 
         return {
             "match_id": match_id,
+
+            "season_id": match.get(
+                "season_id"
+            ),
+
+            "round_id": match.get(
+                "round_id"
+            ),
+
+            "match_date": match.get(
+                "match_date"
+            ),
+
+            "league": (
+                match.get("league")
+                or match.get("competition")
+                or match.get("competition_name")
+                or match.get("league_name")
+            ),
 
             "home_team_id": home_team_id,
             "away_team_id": away_team_id,
@@ -360,15 +633,26 @@ class StatisticalAnalyzer:
                 home_goals,
             ),
 
-            "home": self._calculate_team_match_metrics(
-                home_stats,
-                home_goals,
+            "total_goals": (
+                home_goals + away_goals
             ),
 
-            "away": self._calculate_team_match_metrics(
-                away_stats,
-                away_goals,
+            "btts": (
+                home_goals > 0
+                and away_goals > 0
             ),
+
+            "over_25": (
+                home_goals + away_goals > 2
+            ),
+
+            "over_35": (
+                home_goals + away_goals > 3
+            ),
+
+            "home": home_metrics,
+
+            "away": away_metrics,
         }
 
     # ========================================================
@@ -382,11 +666,11 @@ class StatisticalAnalyzer:
     ) -> Optional[Dict[str, Any]]:
         """
         Получает фактическую статистику команды
-        в конкретном матче.
+        конкретного матча.
 
-        Источник:
+        Только SELECT.
 
-            match_statistics
+        Никаких изменений БД.
         """
 
         conn = self.db.get_connection()
@@ -417,6 +701,7 @@ class StatisticalAnalyzer:
             return dict(row)
 
         finally:
+
             conn.close()
 
     # ========================================================
@@ -429,13 +714,45 @@ class StatisticalAnalyzer:
         goals: int,
     ) -> Dict[str, Any]:
         """
-        Рассчитывает производные показатели команды
-        в одном матче.
+        Производные показатели команды в одном матче.
+
+        ВАЖНО:
+
+        Это не модель и не обучение.
+
+        Это только математическое описание факта.
         """
 
         if not stats:
+
             return {
                 "available": False,
+
+                "xg": None,
+                "goals": goals,
+
+                "possession": None,
+
+                "shots": None,
+                "shots_on_target": None,
+
+                "corners": None,
+
+                "fouls": None,
+                "yellow_cards": None,
+                "red_cards": None,
+
+                "big_chances": None,
+                "saves": None,
+
+                "passes": None,
+                "pass_accuracy": None,
+
+                "xg_conversion": None,
+                "shot_conversion": None,
+                "shot_on_target_conversion": None,
+
+                "finishing_overperformance": None,
             }
 
         xg = _safe_float(
@@ -458,6 +775,26 @@ class StatisticalAnalyzer:
             stats.get("corners")
         )
 
+        fouls = _safe_int(
+            stats.get("fouls")
+        )
+
+        yellow_cards = _safe_int(
+            stats.get("yellow_cards")
+        )
+
+        red_cards = _safe_int(
+            stats.get("red_cards")
+        )
+
+        big_chances = _safe_int(
+            stats.get("big_chances")
+        )
+
+        saves = _safe_int(
+            stats.get("saves")
+        )
+
         passes = _safe_int(
             stats.get("passes")
         )
@@ -467,53 +804,67 @@ class StatisticalAnalyzer:
         )
 
         # ----------------------------------------------------
-        # Реализация
+        # xG conversion
         # ----------------------------------------------------
 
         if xg is not None and xg > 0:
-            xg_conversion = goals / xg
+
+            xg_conversion = (
+                goals / xg
+            )
+
         else:
+
             xg_conversion = None
 
         # ----------------------------------------------------
-        # Удары → голы
+        # Shot conversion
         # ----------------------------------------------------
 
         if shots > 0:
-            shot_conversion = goals / shots
+
+            shot_conversion = (
+                goals / shots
+            )
+
         else:
+
             shot_conversion = None
 
         # ----------------------------------------------------
-        # Удары в створ → голы
+        # Shot on target conversion
         # ----------------------------------------------------
 
         if shots_on_target > 0:
+
             shot_on_target_conversion = (
                 goals / shots_on_target
             )
+
         else:
+
             shot_on_target_conversion = None
 
         # ----------------------------------------------------
-        # xG → голы
-        #
-        # Положительное значение:
-        # забили больше ожидаемого.
-        #
-        # Отрицательное:
-        # забили меньше ожидаемого.
+        # Finishing overperformance
         # ----------------------------------------------------
 
         if xg is not None:
-            finishing_overperformance = goals - xg
+
+            finishing_overperformance = (
+                goals - xg
+            )
+
         else:
+
             finishing_overperformance = None
 
         return {
             "available": True,
 
-            "xg": _round(xg),
+            "xg": _round(
+                xg
+            ),
 
             "goals": goals,
 
@@ -528,25 +879,15 @@ class StatisticalAnalyzer:
 
             "corners": corners,
 
-            "fouls": _safe_int(
-                stats.get("fouls")
-            ),
+            "fouls": fouls,
 
-            "yellow_cards": _safe_int(
-                stats.get("yellow_cards")
-            ),
+            "yellow_cards": yellow_cards,
 
-            "red_cards": _safe_int(
-                stats.get("red_cards")
-            ),
+            "red_cards": red_cards,
 
-            "big_chances": _safe_int(
-                stats.get("big_chances")
-            ),
+            "big_chances": big_chances,
 
-            "saves": _safe_int(
-                stats.get("saves")
-            ),
+            "saves": saves,
 
             "passes": passes,
 
@@ -556,19 +897,19 @@ class StatisticalAnalyzer:
             ),
 
             "xg_conversion": _round(
-                xg_conversion,
+                xg_conversion
             ),
 
             "shot_conversion": _round(
-                shot_conversion,
+                shot_conversion
             ),
 
             "shot_on_target_conversion": _round(
-                shot_on_target_conversion,
+                shot_on_target_conversion
             ),
 
             "finishing_overperformance": _round(
-                finishing_overperformance,
+                finishing_overperformance
             ),
         }
 
@@ -583,24 +924,42 @@ class StatisticalAnalyzer:
         home: bool,
     ) -> None:
         """
-        Добавляет один матч в накопительную статистику команды.
+        Добавляет факт одного матча в агрегированную
+        статистику команды.
         """
 
         if home:
 
-            team_id = analyzed["home_team_id"]
-            metrics = analyzed["home"]
+            team_id = analyzed[
+                "home_team_id"
+            ]
 
-            opponent_goals = analyzed["away_goals"]
+            metrics = analyzed[
+                "home"
+            ]
+
+            opponent_goals = analyzed[
+                "away_goals"
+            ]
 
         else:
 
-            team_id = analyzed["away_team_id"]
-            metrics = analyzed["away"]
+            team_id = analyzed[
+                "away_team_id"
+            ]
 
-            opponent_goals = analyzed["home_goals"]
+            metrics = analyzed[
+                "away"
+            ]
 
-        if not metrics.get("available"):
+            opponent_goals = analyzed[
+                "home_goals"
+            ]
+
+        if not metrics.get(
+            "available",
+            False,
+        ):
             return
 
         if team_id not in team_data:
@@ -619,12 +978,20 @@ class StatisticalAnalyzer:
 
                 "xg": [],
                 "possession": [],
+
                 "shots": [],
                 "shots_on_target": [],
+
                 "corners": [],
+
                 "fouls": [],
+
                 "yellow_cards": [],
                 "red_cards": [],
+
+                "big_chances": [],
+                "saves": [],
+
                 "passes": [],
                 "pass_accuracy": [],
 
@@ -635,7 +1002,9 @@ class StatisticalAnalyzer:
                 "finishing_overperformance": [],
             }
 
-        data = team_data[team_id]
+        data = team_data[
+            team_id
+        ]
 
         data["matches"] += 1
 
@@ -652,98 +1021,63 @@ class StatisticalAnalyzer:
         )
 
         if goals > opponent_goals:
+
             data["wins"] += 1
 
         elif goals < opponent_goals:
+
             data["losses"] += 1
 
         else:
+
             data["draws"] += 1
 
-        self._append_if_number(
-            data["xg"],
-            metrics.get("xg"),
-        )
+        # ----------------------------------------------------
+        # STATISTICS
+        # ----------------------------------------------------
 
-        self._append_if_number(
-            data["possession"],
-            metrics.get("possession"),
-        )
+        for field in (
+            "xg",
+            "possession",
+            "shots",
+            "shots_on_target",
+            "corners",
+            "fouls",
+            "yellow_cards",
+            "red_cards",
+            "big_chances",
+            "saves",
+            "passes",
+            "pass_accuracy",
+            "xg_conversion",
+            "shot_conversion",
+            "shot_on_target_conversion",
+            "finishing_overperformance",
+        ):
 
-        self._append_if_number(
-            data["shots"],
-            metrics.get("shots"),
-        )
-
-        self._append_if_number(
-            data["shots_on_target"],
-            metrics.get("shots_on_target"),
-        )
-
-        self._append_if_number(
-            data["corners"],
-            metrics.get("corners"),
-        )
-
-        self._append_if_number(
-            data["fouls"],
-            metrics.get("fouls"),
-        )
-
-        self._append_if_number(
-            data["yellow_cards"],
-            metrics.get("yellow_cards"),
-        )
-
-        self._append_if_number(
-            data["red_cards"],
-            metrics.get("red_cards"),
-        )
-
-        self._append_if_number(
-            data["passes"],
-            metrics.get("passes"),
-        )
-
-        self._append_if_number(
-            data["pass_accuracy"],
-            metrics.get("pass_accuracy"),
-        )
-
-        self._append_if_number(
-            data["xg_conversion"],
-            metrics.get("xg_conversion"),
-        )
-
-        self._append_if_number(
-            data["shot_conversion"],
-            metrics.get("shot_conversion"),
-        )
-
-        self._append_if_number(
-            data["shot_on_target_conversion"],
-            metrics.get(
-                "shot_on_target_conversion"
-            ),
-        )
-
-        self._append_if_number(
-            data["finishing_overperformance"],
-            metrics.get(
-                "finishing_overperformance"
-            ),
-        )
+            self._append_if_number(
+                data[field],
+                metrics.get(field),
+            )
 
     @staticmethod
     def _append_if_number(
         target: List[float],
         value: Any,
     ) -> None:
+        """
+        Добавляет только корректное числовое значение.
+        """
 
-        numeric = _safe_float(value)
+        numeric = _safe_float(
+            value
+        )
 
         if numeric is not None:
-            target.append(numeric)
+
+            target.append(
+                numeric
+            )
 
     # ========================================================
     # FINAL TEAM STATISTICS
@@ -753,24 +1087,17 @@ class StatisticalAnalyzer:
         self,
         team_data: Dict[int, Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
+        """
+        Формирует итоговую статистику команд batch.
+        """
 
-        result = []
+        result: List[Dict[str, Any]] = []
 
         for team_id, data in team_data.items():
 
             matches = max(
                 1,
                 data["matches"],
-            )
-
-            goals_for_avg = (
-                sum(data["goals_for"])
-                / matches
-            )
-
-            goals_against_avg = (
-                sum(data["goals_against"])
-                / matches
             )
 
             points = (
@@ -782,11 +1109,21 @@ class StatisticalAnalyzer:
                 {
                     "team_id": team_id,
 
-                    "matches": data["matches"],
+                    "matches": data[
+                        "matches"
+                    ],
 
-                    "wins": data["wins"],
-                    "draws": data["draws"],
-                    "losses": data["losses"],
+                    "wins": data[
+                        "wins"
+                    ],
+
+                    "draws": data[
+                        "draws"
+                    ],
+
+                    "losses": data[
+                        "losses"
+                    ],
 
                     "points": points,
 
@@ -811,26 +1148,50 @@ class StatisticalAnalyzer:
                     ),
 
                     "goals_for_avg": round(
-                        goals_for_avg,
+                        sum(
+                            data["goals_for"]
+                        ) / matches,
                         4,
                     ),
 
                     "goals_against_avg": round(
-                        goals_against_avg,
+                        sum(
+                            data["goals_against"]
+                        ) / matches,
+                        4,
+                    ),
+
+                    "goal_difference_avg": round(
+                        (
+                            sum(
+                                data["goals_for"]
+                            )
+                            -
+                            sum(
+                                data["goals_against"]
+                            )
+                        )
+                        / matches,
                         4,
                     ),
 
                     "xg_avg": _round(
-                        _average(data["xg"])
+                        _average(
+                            data["xg"]
+                        )
                     ),
 
                     "possession_avg": _round(
-                        _average(data["possession"]),
+                        _average(
+                            data["possession"]
+                        ),
                         2,
                     ),
 
                     "shots_avg": _round(
-                        _average(data["shots"])
+                        _average(
+                            data["shots"]
+                        )
                     ),
 
                     "shots_on_target_avg": _round(
@@ -840,11 +1201,15 @@ class StatisticalAnalyzer:
                     ),
 
                     "corners_avg": _round(
-                        _average(data["corners"])
+                        _average(
+                            data["corners"]
+                        )
                     ),
 
                     "fouls_avg": _round(
-                        _average(data["fouls"])
+                        _average(
+                            data["fouls"]
+                        )
                     ),
 
                     "yellow_cards_avg": _round(
@@ -859,8 +1224,22 @@ class StatisticalAnalyzer:
                         )
                     ),
 
+                    "big_chances_avg": _round(
+                        _average(
+                            data["big_chances"]
+                        )
+                    ),
+
+                    "saves_avg": _round(
+                        _average(
+                            data["saves"]
+                        )
+                    ),
+
                     "passes_avg": _round(
-                        _average(data["passes"])
+                        _average(
+                            data["passes"]
+                        )
                     ),
 
                     "pass_accuracy_avg": _round(
@@ -901,7 +1280,11 @@ class StatisticalAnalyzer:
             )
 
         result.sort(
-            key=lambda item: item["points"],
+            key=lambda item: (
+                item["points"],
+                item["goal_difference_avg"],
+                item["goals_for_avg"],
+            ),
             reverse=True,
         )
 
@@ -913,162 +1296,130 @@ class StatisticalAnalyzer:
 
     def _build_league_statistics(
         self,
-        matches: List[Dict[str, Any]],
+        analyzed_matches: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
         """
-        Рассчитывает общие показатели по батчу матчей.
+        Агрегированная статистика конкретного batch.
+
+        В отличие от старой версии метод больше не делает
+        повторные запросы к match_results и statistics.
+
+        Он работает уже с проверенными фактами.
         """
 
-        total_matches = 0
+        if not analyzed_matches:
 
-        total_goals = 0
+            return {}
 
-        home_wins = 0
-        draws = 0
-        away_wins = 0
+        total_matches = len(
+            analyzed_matches
+        )
+
+        total_goals = sum(
+            _safe_int(
+                match.get("total_goals")
+            )
+            for match in analyzed_matches
+        )
+
+        home_wins = sum(
+            1
+            for match in analyzed_matches
+            if match.get("home_result") == "W"
+        )
+
+        draws = sum(
+            1
+            for match in analyzed_matches
+            if match.get("home_result") == "D"
+        )
+
+        away_wins = sum(
+            1
+            for match in analyzed_matches
+            if match.get("away_result") == "W"
+        )
+
+        btts_count = sum(
+            1
+            for match in analyzed_matches
+            if match.get("btts")
+        )
+
+        over25_count = sum(
+            1
+            for match in analyzed_matches
+            if match.get("over_25")
+        )
+
+        over35_count = sum(
+            1
+            for match in analyzed_matches
+            if match.get("over_35")
+        )
+
+        # ----------------------------------------------------
+        # TEAM-LEVEL OBSERVATIONS
+        # ----------------------------------------------------
 
         xg_values: List[float] = []
 
         shots_values: List[float] = []
+
         shots_on_target_values: List[float] = []
 
         possession_values: List[float] = []
 
         corners_values: List[float] = []
 
-        btts_count = 0
+        for match in analyzed_matches:
 
-        over25_count = 0
-
-        over35_count = 0
-
-        for match in matches:
-
-            match_id = _safe_int(
-                match.get("id")
-            )
-
-            result = self.db.get_match_result(
-                match_id
-            )
-
-            if not result:
-                continue
-
-            home_goals = _safe_int(
-                result.get("home_goals")
-            )
-
-            away_goals = _safe_int(
-                result.get("away_goals")
-            )
-
-            total_matches += 1
-
-            total_goals += (
-                home_goals
-                + away_goals
-            )
-
-            if home_goals > away_goals:
-                home_wins += 1
-
-            elif home_goals < away_goals:
-                away_wins += 1
-
-            else:
-                draws += 1
-
-            if (
-                home_goals > 0
-                and away_goals > 0
-            ):
-                btts_count += 1
-
-            total = (
-                home_goals
-                + away_goals
-            )
-
-            if total > 2:
-                over25_count += 1
-
-            if total > 3:
-                over35_count += 1
-
-            home_team_id = _safe_int(
-                match.get("home_team_id")
-            )
-
-            away_team_id = _safe_int(
-                match.get("away_team_id")
-            )
-
-            home_stats = (
-                self._get_team_match_statistics(
-                    match_id,
-                    home_team_id,
-                )
-            )
-
-            away_stats = (
-                self._get_team_match_statistics(
-                    match_id,
-                    away_team_id,
-                )
-            )
-
-            for stats in (
-                home_stats,
-                away_stats,
+            for side in (
+                "home",
+                "away",
             ):
 
-                if not stats:
+                stats = match.get(
+                    side,
+                    {},
+                )
+
+                if not stats.get(
+                    "available",
+                    False,
+                ):
                     continue
 
-                xg = _safe_float(
-                    stats.get("xg")
+                self._append_if_number(
+                    xg_values,
+                    stats.get("xg"),
                 )
 
-                shots = _safe_float(
-                    stats.get("shots")
+                self._append_if_number(
+                    shots_values,
+                    stats.get("shots"),
                 )
 
-                shots_on_target = _safe_float(
-                    stats.get("shots_on_target")
+                self._append_if_number(
+                    shots_on_target_values,
+                    stats.get(
+                        "shots_on_target"
+                    ),
                 )
 
-                possession = _safe_float(
-                    stats.get("possession")
+                self._append_if_number(
+                    possession_values,
+                    stats.get(
+                        "possession"
+                    ),
                 )
 
-                corners = _safe_float(
-                    stats.get("corners")
+                self._append_if_number(
+                    corners_values,
+                    stats.get(
+                        "corners"
+                    ),
                 )
-
-                if xg is not None:
-                    xg_values.append(xg)
-
-                if shots is not None:
-                    shots_values.append(shots)
-
-                if shots_on_target is not None:
-                    shots_on_target_values.append(
-                        shots_on_target
-                    )
-
-                if possession is not None:
-                    possession_values.append(
-                        possession
-                    )
-
-                if corners is not None:
-                    corners_values.append(
-                        corners
-                    )
-
-        if total_matches == 0:
-            return {}
 
         return {
             "matches": total_matches,
@@ -1076,46 +1427,60 @@ class StatisticalAnalyzer:
             "goals_total": total_goals,
 
             "goals_per_match": round(
-                total_goals / total_matches,
+                total_goals
+                / total_matches,
                 4,
             ),
 
             "home_win_rate": round(
-                home_wins / total_matches,
+                home_wins
+                / total_matches,
                 4,
             ),
 
             "draw_rate": round(
-                draws / total_matches,
+                draws
+                / total_matches,
                 4,
             ),
 
             "away_win_rate": round(
-                away_wins / total_matches,
+                away_wins
+                / total_matches,
                 4,
             ),
 
             "btts_rate": round(
-                btts_count / total_matches,
+                btts_count
+                / total_matches,
                 4,
             ),
 
             "over25_rate": round(
-                over25_count / total_matches,
+                over25_count
+                / total_matches,
                 4,
             ),
 
             "over35_rate": round(
-                over35_count / total_matches,
+                over35_count
+                / total_matches,
                 4,
             ),
 
+            # Важно:
+            # xG здесь считается на команду,
+            # поскольку xG_values содержит обе команды.
             "observed_xg_per_team_avg": _round(
-                _average(xg_values)
+                _average(
+                    xg_values
+                )
             ),
 
             "shots_per_team_avg": _round(
-                _average(shots_values)
+                _average(
+                    shots_values
+                )
             ),
 
             "shots_on_target_per_team_avg": _round(
@@ -1132,9 +1497,298 @@ class StatisticalAnalyzer:
             ),
 
             "corners_per_team_avg": _round(
-                _average(corners_values)
+                _average(
+                    corners_values
+                )
             ),
         }
+
+    # ========================================================
+    # OBSERVATIONS
+    # ========================================================
+
+    def _build_observations(
+        self,
+        analyzed_matches: List[Dict[str, Any]],
+        team_statistics: List[Dict[str, Any]],
+        league_statistics: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """
+        Формирует объективные наблюдения для ETC.
+
+        ВАЖНО:
+
+        Это НЕ learning_memory.
+
+        Это только аналитические сигналы.
+
+        ETCLearningEngine сам решает, какие из них
+        превращать в записи памяти.
+        """
+
+        observations: List[
+            Dict[str, Any]
+        ] = []
+
+        # ----------------------------------------------------
+        # LEAGUE OBSERVATION
+        # ----------------------------------------------------
+
+        if league_statistics:
+
+            observations.append(
+                {
+                    "type": "league_batch_observation",
+
+                    "feature": "goals_per_match",
+
+                    "value": league_statistics.get(
+                        "goals_per_match"
+                    ),
+
+                    "sample_size": league_statistics.get(
+                        "matches",
+                        0,
+                    ),
+                }
+            )
+
+            observations.append(
+                {
+                    "type": "league_batch_observation",
+
+                    "feature": "observed_xg_per_team",
+
+                    "value": league_statistics.get(
+                        "observed_xg_per_team_avg"
+                    ),
+
+                    "sample_size": league_statistics.get(
+                        "matches",
+                        0,
+                    ),
+                }
+            )
+
+            observations.append(
+                {
+                    "type": "league_batch_observation",
+
+                    "feature": "btts_rate",
+
+                    "value": league_statistics.get(
+                        "btts_rate"
+                    ),
+
+                    "sample_size": league_statistics.get(
+                        "matches",
+                        0,
+                    ),
+                }
+            )
+
+            observations.append(
+                {
+                    "type": "league_batch_observation",
+
+                    "feature": "over25_rate",
+
+                    "value": league_statistics.get(
+                        "over25_rate"
+                    ),
+
+                    "sample_size": league_statistics.get(
+                        "matches",
+                        0,
+                    ),
+                }
+            )
+
+        # ----------------------------------------------------
+        # TEAM OBSERVATIONS
+        # ----------------------------------------------------
+
+        for team in team_statistics:
+
+            team_id = team.get(
+                "team_id"
+            )
+
+            observations.append(
+                {
+                    "type": "team_batch_observation",
+
+                    "team_id": team_id,
+
+                    "feature": "goals_for_avg",
+
+                    "value": team.get(
+                        "goals_for_avg"
+                    ),
+
+                    "sample_size": team.get(
+                        "matches",
+                        0,
+                    ),
+                }
+            )
+
+            observations.append(
+                {
+                    "type": "team_batch_observation",
+
+                    "team_id": team_id,
+
+                    "feature": "goals_against_avg",
+
+                    "value": team.get(
+                        "goals_against_avg"
+                    ),
+
+                    "sample_size": team.get(
+                        "matches",
+                        0,
+                    ),
+                }
+            )
+
+            observations.append(
+                {
+                    "type": "team_batch_observation",
+
+                    "team_id": team_id,
+
+                    "feature": "xg_avg",
+
+                    "value": team.get(
+                        "xg_avg"
+                    ),
+
+                    "sample_size": team.get(
+                        "matches",
+                        0,
+                    ),
+                }
+            )
+
+            observations.append(
+                {
+                    "type": "team_batch_observation",
+
+                    "team_id": team_id,
+
+                    "feature": "finishing_overperformance_avg",
+
+                    "value": team.get(
+                        "finishing_overperformance_avg"
+                    ),
+
+                    "sample_size": team.get(
+                        "matches",
+                        0,
+                    ),
+                }
+            )
+
+        return observations
+
+    # ========================================================
+    # SINGLE MATCH OBSERVATIONS
+    # ========================================================
+
+    def _build_match_observations(
+        self,
+        analyzed: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """
+        Объективные наблюдения одного матча.
+
+        Не записываются в memory напрямую.
+        """
+
+        observations: List[
+            Dict[str, Any]
+        ] = []
+
+        match_id = analyzed.get(
+            "match_id"
+        )
+
+        for side in (
+            "home",
+            "away",
+        ):
+
+            stats = analyzed.get(
+                side,
+                {},
+            )
+
+            if not stats.get(
+                "available",
+                False,
+            ):
+                continue
+
+            team_id = analyzed.get(
+                f"{side}_team_id"
+            )
+
+            observations.append(
+                {
+                    "type": "match_observation",
+
+                    "match_id": match_id,
+
+                    "team_id": team_id,
+
+                    "side": side,
+
+                    "feature": "finishing_overperformance",
+
+                    "value": stats.get(
+                        "finishing_overperformance"
+                    ),
+                }
+            )
+
+            observations.append(
+                {
+                    "type": "match_observation",
+
+                    "match_id": match_id,
+
+                    "team_id": team_id,
+
+                    "side": side,
+
+                    "feature": "xg",
+
+                    "value": stats.get(
+                        "xg"
+                    ),
+                }
+            )
+
+            observations.append(
+                {
+                    "type": "match_observation",
+
+                    "match_id": match_id,
+
+                    "team_id": team_id,
+
+                    "side": side,
+
+                    "feature": "goals",
+
+                    "value": stats.get(
+                        "goals"
+                    ),
+                }
+            )
+
+        return observations
 
     # ========================================================
     # RESULT
@@ -1145,11 +1799,16 @@ class StatisticalAnalyzer:
         goals_for: int,
         goals_against: int,
     ) -> str:
+        """
+        W / D / L.
+        """
 
         if goals_for > goals_against:
+
             return "W"
 
         if goals_for < goals_against:
+
             return "L"
 
         return "D"
@@ -1164,7 +1823,7 @@ def analyze_statistics(
     db: Optional[FAJDatabase] = None,
 ) -> Dict[str, Any]:
     """
-    Публичный API статистического анализатора.
+    Публичный API пакетного анализа.
     """
 
     analyzer = StatisticalAnalyzer(
@@ -1181,7 +1840,7 @@ def analyze_match_statistics(
     db: Optional[FAJDatabase] = None,
 ) -> Dict[str, Any]:
     """
-    Анализ одного матча.
+    Публичный API анализа одного матча.
     """
 
     analyzer = StatisticalAnalyzer(
@@ -1191,6 +1850,41 @@ def analyze_match_statistics(
     return analyzer.analyze_match(
         match_id
     )
+
+
+# ============================================================
+# STATUS
+# ============================================================
+
+def get_analyzer_status() -> Dict[str, Any]:
+    """
+    Технический статус анализатора.
+    """
+
+    return {
+        "module": ANALYZER_NAME,
+        "version": ANALYZER_VERSION,
+
+        "role": "FACT_ANALYSIS",
+
+        "writes_database": False,
+
+        "writes_learning_memory": False,
+
+        "changes_model": False,
+
+        "changes_rating": False,
+
+        "changes_parameters": False,
+
+        "deletes_data": False,
+
+        "source_results": "match_results",
+
+        "source_statistics": "match_statistics",
+
+        "database_layer": "FAJDatabase",
+    }
 
 
 # ============================================================
@@ -1208,91 +1902,39 @@ if __name__ == "__main__":
         ),
     )
 
-    db = FAJDatabase()
-
-    matches = db.get_matches()
-
-    analyzer = StatisticalAnalyzer(
-        db=db
-    )
-
-    result = analyzer.analyze_matches(
-        matches
-    )
-
-    print("=" * 70)
-    print("FAJ ETC — STATISTICAL ANALYZER v1.0")
     print("=" * 70)
 
     print(
-        f"Успех: {result['success']}"
+        "FAJ ETC — STATISTICAL ANALYZER"
     )
 
     print(
-        f"Матчей: {result['matches_analyzed']}"
+        f"Version: {ANALYZER_VERSION}"
+    )
+
+    print("=" * 70)
+
+    status = get_analyzer_status()
+
+    for key, value in status.items():
+
+        print(
+            f"{key}: {value}"
+        )
+
+    print("=" * 70)
+
+    print(
+        "Statistical Analyzer готов."
     )
 
     print(
-        f"Команд: {result['teams_analyzed']}"
+        "Модуль только читает FACTS "
+        "и формирует objective observations."
     )
 
-    print()
-
-    league = result["league_statistics"]
-
-    if league:
-
-        print("LEAGUE STATISTICS")
-        print("-" * 70)
-
-        print(
-            f"Голов/матч: "
-            f"{league.get('goals_per_match')}"
-        )
-
-        print(
-            f"BTTS: "
-            f"{league.get('btts_rate')}"
-        )
-
-        print(
-            f"Over 2.5: "
-            f"{league.get('over25_rate')}"
-        )
-
-        print(
-            f"Over 3.5: "
-            f"{league.get('over35_rate')}"
-        )
-
-        print(
-            f"Observed xG: "
-            f"{league.get('observed_xg_per_team_avg')}"
-        )
-
-        print()
-
-    print("TEAM STATISTICS")
-    print("-" * 70)
-
-    for team in result["team_statistics"]:
-
-        print(
-            f"Team {team['team_id']} | "
-            f"MP={team['matches']} | "
-            f"PPM={team['points_per_match']:.3f} | "
-            f"xG={team['xg_avg']} | "
-            f"GF={team['goals_for_avg']:.3f} | "
-            f"GA={team['goals_against_avg']:.3f}"
-        )
-
-    if result["errors"]:
-
-        print()
-
-        for error in result["errors"]:
-            print(
-                f"❌ {error}"
-            )
+    print(
+        "LearningMemory здесь НЕ вызывается."
+    )
 
     print("=" * 70)
