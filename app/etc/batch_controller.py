@@ -13,46 +13,88 @@ app/etc/batch_controller.py
 -----------
 Контроллер пакетного обучения ETC.
 
-МОДУЛЬ НЕ:
+ОТВЕТСТВЕННОСТЬ
+---------------
+BatchController отвечает только за:
+
+    1. определение размера batch;
+    2. поиск завершённых матчей;
+    3. определение уже обработанных матчей;
+    4. выбор следующего batch;
+    5. создание fingerprint текущего batch;
+    6. решение READY / WAIT / ALREADY_PROCESSED.
+
+BatchController НЕ:
+
     - обучает модель;
-    - изменяет параметры модели;
     - изменяет FAJ Rating;
+    - изменяет model_parameters;
     - рассчитывает xG;
     - изменяет фактические результаты;
-    - удаляет данные.
+    - изменяет match_results;
+    - изменяет match_statistics;
+    - изменяет matches;
+    - удаляет данные;
+    - записывает learning_memory.
 
-МОДУЛЬ:
-    - определяет минимальный размер батча;
-    - определяет, готов ли турнир к обучению;
-    - считает новые завершённые матчи;
-    - предотвращает повторный запуск одного и того же батча;
-    - возвращает решение READY / WAIT / ALREADY_PROCESSED.
+ПРАВИЛА BATCH v12.1
+-------------------
 
-ПРАВИЛА v12.1:
+    РПЛ       → 5 новых завершённых матчей
+    АПЛ       → 3 новых завершённых матча
+    Ла Лига   → 3 новых завершённых матча
+    ЛЧ        → 2 новых завершённых матча
 
-    РПЛ       → после 5 новых матчей
-    АПЛ       → после 3 новых матчей
-    Ла Лига   → после 3 новых матчей
-    ЛЧ        → после 2 новых матчей
-
-ВАЖНО:
-    BatchController ничего не обучает.
-
-    Он только отвечает на вопрос:
-
-        "Можно ли сейчас запускать LEARNING?"
-
-Архитектура:
+ОСНОВНОЙ КОНТРАКТ
+-----------------
 
     FACTS
       ↓
     BatchController
       ↓
-    READY / WAIT
+    WAIT / READY / ALREADY_PROCESSED
       ↓
-    ETC
+    get_learning_batch()
       ↓
-    LEARNING
+    ETC Learning Engine
+
+ВАЖНО
+------
+
+BatchController не считает матч обученным просто потому,
+что он завершён.
+
+Матч считается обработанным только если в learning_memory
+существует ETC event:
+
+    event_type = 'batch_learning'
+
+с соответствующим:
+
+    reference_id = match_id
+
+Таким образом:
+
+    match_results
+        ≠
+    learning_memory
+
+Завершённый матч становится "processed" только после
+успешного завершения ETC Learning Engine.
+
+DATABASE CONTRACT
+-----------------
+
+database.py v12.1 остаётся единственным источником схемы.
+
+Используются существующие:
+
+    matches
+    match_results
+    learning_memory
+
+Никаких изменений схемы здесь нет.
+
 ============================================================
 """
 
@@ -62,14 +104,15 @@ import hashlib
 import json
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from app.database import FAJDatabase
 
 
 logger = logging.getLogger(__name__)
 
-MODULE_VERSION = "1.0"
+
+MODULE_VERSION = "1.1"
 MODULE_NAME = "ETC Batch Controller"
 
 
@@ -85,29 +128,67 @@ BATCH_RULES: Dict[str, int] = {
 }
 
 
-# Дополнительные варианты названий турниров.
-# Они только нормализуют входное значение.
+# ============================================================
+# LEAGUE ALIASES
+# ============================================================
+
 LEAGUE_ALIASES: Dict[str, str] = {
+    # RPL
     "rpl": "РПЛ",
     "russia premier league": "РПЛ",
+    "russian premier league": "РПЛ",
     "россия": "РПЛ",
     "российская премьер-лига": "РПЛ",
+    "российская премьер лига": "РПЛ",
 
+    # EPL
     "epl": "АПЛ",
     "premier league": "АПЛ",
+    "english premier league": "АПЛ",
     "england premier league": "АПЛ",
     "англия": "АПЛ",
+    "английская премьер-лига": "АПЛ",
+    "английская премьер лига": "АПЛ",
 
+    # La Liga
     "la liga": "Ла Лига",
     "laliga": "Ла Лига",
     "spain la liga": "Ла Лига",
+    "spanish la liga": "Ла Лига",
     "испания": "Ла Лига",
+    "ла лига": "Ла Лига",
 
+    # Champions League
     "ucl": "ЛЧ",
     "champions league": "ЛЧ",
     "uefa champions league": "ЛЧ",
+    "uefa champions league": "ЛЧ",
     "лига чемпионов": "ЛЧ",
+    "лига чемпионов уефа": "ЛЧ",
 }
+
+
+# ============================================================
+# STATUS CONSTANTS
+# ============================================================
+
+STATUS_READY = "READY"
+STATUS_WAIT = "WAIT"
+STATUS_UNKNOWN_LEAGUE = "UNKNOWN_LEAGUE"
+STATUS_ALREADY_PROCESSED = "ALREADY_PROCESSED"
+
+
+# ============================================================
+# ETC MEMORY CONTRACT
+# ============================================================
+
+# Этот event создаётся НЕ BatchController.
+#
+# Его создаёт ETCLearningEngine после успешной обработки
+# конкретного матча.
+#
+# BatchController только читает эти события.
+PROCESSED_EVENT_TYPE = "batch_learning"
 
 
 # ============================================================
@@ -115,36 +196,77 @@ LEAGUE_ALIASES: Dict[str, str] = {
 # ============================================================
 
 def _now() -> str:
+    """
+    Возвращает текущее локальное время в ISO формате.
+    """
     return datetime.now().isoformat()
 
 
 def _normalize_league(league: str) -> str:
     """
     Нормализует название турнира.
+
+    Примеры:
+
+        rpl
+        Russia Premier League
+        РПЛ
+
+    становятся:
+
+        РПЛ
     """
 
-    if not league:
+    if league is None:
         return ""
 
     value = str(league).strip()
 
+    if not value:
+        return ""
+
     if value in BATCH_RULES:
         return value
 
-    alias = LEAGUE_ALIASES.get(value.lower())
+    normalized = value.lower()
 
-    return alias or value
+    return LEAGUE_ALIASES.get(
+        normalized,
+        value,
+    )
 
 
-def _safe_int(value: Any, default: int = 0) -> int:
+def _safe_int(
+    value: Any,
+    default: int = 0,
+) -> int:
+    """
+    Безопасное преобразование в int.
+    """
+
     try:
+
         if value is None:
             return default
 
         return int(value)
 
     except (TypeError, ValueError):
+
         return default
+
+
+def _safe_string(
+    value: Any,
+) -> str:
+    """
+    Безопасное строковое представление.
+    """
+
+    if value is None:
+        return ""
+
+    return str(value).strip()
 
 
 # ============================================================
@@ -155,9 +277,14 @@ class BatchController:
     """
     Контроллер пакетного обучения ETC.
 
-    Не выполняет обучение.
+    Только определяет:
 
-    Только определяет готовность батча.
+        можно ли запускать обучение;
+
+        какие именно матчи входят
+        в следующий batch.
+
+    Никакого обучения внутри класса нет.
     """
 
     def __init__(
@@ -168,18 +295,33 @@ class BatchController:
         self.db = db or FAJDatabase()
 
     # ========================================================
-    # PUBLIC
+    # PUBLIC — BATCH SIZE
     # ========================================================
 
-    def get_batch_size(self, league: str) -> int:
+    def get_batch_size(
+        self,
+        league: str,
+    ) -> int:
         """
-        Возвращает минимальный размер батча для турнира.
+        Возвращает минимальный размер batch
+        для указанного турнира.
+
+        Неизвестный турнир:
+
+            0
         """
 
-        normalized = _normalize_league(league)
+        normalized = _normalize_league(
+            league
+        )
 
-        return BATCH_RULES.get(normalized, 0)
+        return BATCH_RULES.get(
+            normalized,
+            0,
+        )
 
+    # ========================================================
+    # PUBLIC — CHECK
     # ========================================================
 
     def check(
@@ -188,39 +330,58 @@ class BatchController:
         season_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
-        Проверяет готовность турнира к обучению.
+        Проверяет готовность турнира к ETC learning.
 
-        Возвращает:
+        Возможные статусы:
 
-            status:
-                READY
-                WAIT
-                UNKNOWN_LEAGUE
-                ALREADY_PROCESSED
+            READY
+            WAIT
+            UNKNOWN_LEAGUE
+            ALREADY_PROCESSED
+
+        Возвращает также:
 
             completed_matches
-            required_matches
+            processed_matches
             new_matches
+            required_matches
+            remaining_matches
+            match_ids
             batch_fingerprint
         """
 
-        normalized_league = _normalize_league(league)
+        normalized_league = _normalize_league(
+            league
+        )
 
-        required = self.get_batch_size(normalized_league)
+        required = self.get_batch_size(
+            normalized_league
+        )
 
         result: Dict[str, Any] = {
             "success": True,
+
+            "module": MODULE_NAME,
+            "version": MODULE_VERSION,
+
             "league": normalized_league,
             "season_id": season_id,
-            "status": "WAIT",
+
+            "status": STATUS_WAIT,
+
             "completed_matches": 0,
             "processed_matches": 0,
             "new_matches": 0,
+
             "required_matches": required,
             "remaining_matches": required,
-            "batch_fingerprint": None,
+
             "match_ids": [],
+
+            "batch_fingerprint": None,
+
             "checked_at": _now(),
+
             "reason": "",
         }
 
@@ -231,109 +392,301 @@ class BatchController:
         if required <= 0:
 
             result["success"] = False
-            result["status"] = "UNKNOWN_LEAGUE"
+
+            result["status"] = STATUS_UNKNOWN_LEAGUE
+
             result["reason"] = (
-                f"Для турнира '{league}' не задано правило батча."
+                f"Для турнира '{league}' "
+                f"не задано правило ETC batch."
             )
 
             return result
 
         # ----------------------------------------------------
-        # GET FINISHED MATCHES
+        # GET COMPLETED MATCHES
         # ----------------------------------------------------
 
-        matches = self._get_finished_matches(
+        completed = self._get_finished_matches(
             league=normalized_league,
             season_id=season_id,
         )
 
-        result["completed_matches"] = len(matches)
+        result["completed_matches"] = len(
+            completed
+        )
 
-        if not matches:
+        if not completed:
 
-            result["status"] = "WAIT"
+            result["status"] = STATUS_WAIT
+
             result["remaining_matches"] = required
+
             result["reason"] = (
-                "Нет завершённых матчей для обучения."
+                "Нет завершённых матчей "
+                "с доступным фактическим результатом."
             )
 
             return result
 
         # ----------------------------------------------------
-        # FINGERPRINT
+        # GET PROCESSED MATCHES
         # ----------------------------------------------------
 
-        fingerprint = self._build_fingerprint(matches)
-
-        result["batch_fingerprint"] = fingerprint
-
-        # ----------------------------------------------------
-        # ALREADY PROCESSED
-        # ----------------------------------------------------
-
-        processed = self._get_processed_match_ids(
+        processed_ids = self._get_processed_match_ids(
             league=normalized_league,
             season_id=season_id,
         )
 
-        result["processed_matches"] = len(processed)
-
-        new_matches = [
-            match
-            for match in matches
-            if _safe_int(match.get("id")) not in processed
-        ]
-
-        result["new_matches"] = len(new_matches)
-
-        new_ids = [
-            _safe_int(match.get("id"))
-            for match in new_matches
-            if match.get("id") is not None
-        ]
-
-        result["match_ids"] = new_ids
+        result["processed_matches"] = len(
+            processed_ids
+        )
 
         # ----------------------------------------------------
-        # CHECK BATCH
+        # FIND NEW MATCHES
+        # ----------------------------------------------------
+
+        new_matches: List[Dict[str, Any]] = []
+
+        for match in completed:
+
+            match_id = _safe_int(
+                match.get("id")
+            )
+
+            if match_id <= 0:
+                continue
+
+            if match_id in processed_ids:
+                continue
+
+            new_matches.append(
+                match
+            )
+
+        result["new_matches"] = len(
+            new_matches
+        )
+
+        # ----------------------------------------------------
+        # NO NEW MATCHES
+        # ----------------------------------------------------
+
+        if not new_matches:
+
+            result["status"] = (
+                STATUS_ALREADY_PROCESSED
+            )
+
+            result["remaining_matches"] = required
+
+            result["reason"] = (
+                "Все доступные завершённые матчи "
+                "уже обработаны ETC."
+            )
+
+            return result
+
+        # ----------------------------------------------------
+        # NOT ENOUGH FOR BATCH
         # ----------------------------------------------------
 
         if len(new_matches) < required:
 
-            result["status"] = "WAIT"
+            result["status"] = STATUS_WAIT
 
-            result["remaining_matches"] = max(
-                0,
-                required - len(new_matches),
+            result["remaining_matches"] = (
+                required - len(new_matches)
             )
 
             result["reason"] = (
-                f"Недостаточно новых завершённых матчей: "
+                "Недостаточно новых завершённых "
+                "матчей для запуска ETC: "
                 f"{len(new_matches)}/{required}."
             )
 
             return result
 
         # ----------------------------------------------------
-        # READY
+        # CURRENT BATCH
         # ----------------------------------------------------
 
-        result["status"] = "READY"
+        current_batch = new_matches[
+            :required
+        ]
+
+        match_ids = [
+            _safe_int(
+                match.get("id")
+            )
+            for match in current_batch
+        ]
+
+        fingerprint = self._build_fingerprint(
+            current_batch
+        )
+
+        result["status"] = STATUS_READY
+
+        result["match_ids"] = match_ids
+
+        result["batch_fingerprint"] = (
+            fingerprint
+        )
+
         result["remaining_matches"] = 0
 
         result["reason"] = (
-            f"Батч готов: {len(new_matches)} новых матчей "
-            f"при минимуме {required}."
+            f"Батч готов: выбрано "
+            f"{len(current_batch)} новых матчей "
+            f"из требуемых {required}."
         )
 
         logger.info(
-            "ETC batch READY: league=%s new=%s required=%s",
+            "ETC batch READY | "
+            "league=%s | "
+            "season=%s | "
+            "matches=%s | "
+            "required=%s | "
+            "fingerprint=%s",
             normalized_league,
-            len(new_matches),
+            season_id,
+            match_ids,
             required,
+            fingerprint[:12],
         )
 
         return result
+
+    # ========================================================
+    # PUBLIC — OFFICIAL ETC CONTRACT
+    # ========================================================
+
+    def get_learning_batch(
+        self,
+        league: str,
+        season_id: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Официальный контракт BatchController
+        для ETCLearningEngine.
+
+        Возвращает текущий готовый batch.
+
+        Если batch ещё не готов:
+
+            []
+
+        ВАЖНО:
+
+        Метод ничего не записывает в БД.
+
+        Он только:
+
+            FACTS
+              ↓
+            CHECK
+              ↓
+            SELECT
+        """
+
+        check = self.check(
+            league=league,
+            season_id=season_id,
+        )
+
+        if check["status"] != STATUS_READY:
+
+            return []
+
+        required = _safe_int(
+            check.get(
+                "required_matches"
+            )
+        )
+
+        if required <= 0:
+            return []
+
+        if limit is not None:
+
+            safe_limit = _safe_int(
+                limit
+            )
+
+            if safe_limit <= 0:
+                return []
+
+            required = min(
+                required,
+                safe_limit,
+            )
+
+        match_ids = check.get(
+            "match_ids",
+            [],
+        )
+
+        if not match_ids:
+            return []
+
+        matches = self._get_finished_matches(
+            league=_normalize_league(
+                league
+            ),
+            season_id=season_id,
+        )
+
+        selected: List[
+            Dict[str, Any]
+        ] = []
+
+        selected_ids = set(
+            _safe_int(match_id)
+            for match_id in match_ids
+        )
+
+        for match in matches:
+
+            match_id = _safe_int(
+                match.get("id")
+            )
+
+            if match_id not in selected_ids:
+                continue
+
+            selected.append(
+                match
+            )
+
+            if len(selected) >= required:
+                break
+
+        return selected
+
+    # ========================================================
+    # PUBLIC — SELECT BATCH
+    # ========================================================
+
+    def select_batch(
+        self,
+        league: str,
+        season_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Возвращает текущий готовый batch.
+
+        Это публичный метод совместимости.
+
+        Для ETC Learning Engine рекомендуется:
+
+            get_learning_batch()
+        """
+
+        return self.get_learning_batch(
+            league=league,
+            season_id=season_id,
+        )
 
     # ========================================================
     # FINISHED MATCHES
@@ -347,58 +700,134 @@ class BatchController:
         """
         Возвращает завершённые матчи конкретного турнира.
 
-        Фактический результат берётся только через FAJDatabase.
+        Источники:
 
-        Никакие данные матчей не изменяются.
+            matches
+            match_results
+
+        Фактический счёт берётся ТОЛЬКО
+        через FAJDatabase.get_match_result().
+
+        Метод ничего не изменяет.
         """
 
-        matches = self.db.get_matches()
+        try:
 
-        finished: List[Dict[str, Any]] = []
+            matches = self.db.get_matches()
+
+        except Exception as exc:
+
+            logger.exception(
+                "Unable to read matches: %s",
+                exc,
+            )
+
+            return []
+
+        finished: List[
+            Dict[str, Any]
+        ] = []
+
+        normalized_league = _normalize_league(
+            league
+        )
 
         for match in matches:
 
+            if not isinstance(match, dict):
+                continue
+
             if not self._match_belongs_to_league(
-                match,
-                league,
-                season_id,
+                match=match,
+                league=normalized_league,
+                season_id=season_id,
             ):
                 continue
 
-            match_id = match.get("id")
+            match_id = _safe_int(
+                match.get("id")
+            )
 
-            if match_id is None:
+            if match_id <= 0:
                 continue
 
-            fact = self.db.get_match_result(match_id)
+            try:
+
+                fact = self.db.get_match_result(
+                    match_id
+                )
+
+            except Exception as exc:
+
+                logger.warning(
+                    "Unable to read result "
+                    "for match_id=%s: %s",
+                    match_id,
+                    exc,
+                )
+
+                continue
 
             if not fact:
                 continue
 
-            home_goals = fact.get("home_goals")
-            away_goals = fact.get("away_goals")
+            home_goals = fact.get(
+                "home_goals"
+            )
 
-            if home_goals is None or away_goals is None:
+            away_goals = fact.get(
+                "away_goals"
+            )
+
+            # ------------------------------------------------
+            # Результат обязан содержать оба значения.
+            # 0 — валидное значение.
+            # None — отсутствие результата.
+            # ------------------------------------------------
+
+            if (
+                home_goals is None
+                or away_goals is None
+            ):
                 continue
 
             enriched = dict(match)
 
-            enriched["result_home_goals"] = home_goals
-            enriched["result_away_goals"] = away_goals
+            enriched[
+                "result_home_goals"
+            ] = home_goals
 
-            finished.append(enriched)
+            enriched[
+                "result_away_goals"
+            ] = away_goals
+
+            finished.append(
+                enriched
+            )
+
+        # ----------------------------------------------------
+        # Хронологический порядок.
+        #
+        # Старые необученные матчи идут первыми.
+        # Это обеспечивает детерминированное
+        # формирование последовательных batch.
+        # ----------------------------------------------------
 
         finished.sort(
             key=lambda item: (
-                str(item.get("match_date") or ""),
-                _safe_int(item.get("id")),
+                _safe_string(
+                    item.get("match_date")
+                ),
+                _safe_int(
+                    item.get("id")
+                ),
             )
         )
 
         return finished
 
     # ========================================================
-    # LEAGUE FILTER
+    # LEAGUE / SEASON FILTER
     # ========================================================
 
     def _match_belongs_to_league(
@@ -408,14 +837,25 @@ class BatchController:
         season_id: Optional[int],
     ) -> bool:
         """
-        Проверяет принадлежность матча турниру.
+        Проверяет принадлежность матча:
 
-        database.py остаётся единственным источником данных.
+            турниру
+            сезону
 
-        Метод специально терпим к разным названиям колонок,
-        поскольку календарные поля могут различаться между
-        версиями FAJ.
+        ВАЖНО:
+
+        Если season_id передан, матч обязан содержать
+        соответствующий season_id.
+
+        Если поле отсутствует — матч НЕ считается
+        принадлежащим указанному сезону.
+
+        Это предотвращает смешивание сезонов.
         """
+
+        normalized_league = _normalize_league(
+            league
+        )
 
         # ----------------------------------------------------
         # SEASON
@@ -423,18 +863,29 @@ class BatchController:
 
         if season_id is not None:
 
-            match_season = (
+            possible_season = (
                 match.get("season_id")
-                or match.get("season")
             )
 
-            if match_season is not None:
+            if possible_season is None:
 
-                if _safe_int(match_season, -1) != _safe_int(
-                    season_id,
-                    -2,
-                ):
-                    return False
+                possible_season = (
+                    match.get("season")
+                )
+
+            if possible_season is None:
+
+                return False
+
+            if _safe_int(
+                possible_season,
+                -1,
+            ) != _safe_int(
+                season_id,
+                -2,
+            ):
+
+                return False
 
         # ----------------------------------------------------
         # LEAGUE
@@ -448,18 +899,35 @@ class BatchController:
             match.get("league_name"),
         ]
 
-        values = [
-            _normalize_league(str(value))
-            for value in possible_values
-            if value is not None
-        ]
+        normalized_values: Set[str] = set()
 
-        # Если в записи нет поля турнира, не делаем ложного
-        # утверждения о принадлежности.
-        if not values:
+        for value in possible_values:
+
+            if value is None:
+                continue
+
+            normalized_value = (
+                _normalize_league(
+                    str(value)
+                )
+            )
+
+            if normalized_value:
+
+                normalized_values.add(
+                    normalized_value
+                )
+
+        # Нет информации о турнире —
+        # нельзя делать предположение.
+        if not normalized_values:
+
             return False
 
-        return league in values
+        return (
+            normalized_league
+            in normalized_values
+        )
 
     # ========================================================
     # PROCESSED MATCHES
@@ -469,17 +937,30 @@ class BatchController:
         self,
         league: str,
         season_id: Optional[int],
-    ) -> set[int]:
+    ) -> Set[int]:
         """
-        Возвращает ID матчей, которые уже были использованы
-        в ETC batch learning.
+        Возвращает ID матчей, которые уже были
+        успешно проведены через ETC batch.
 
-        В текущей версии источник — learning_memory.
+        Источник:
 
-        Старые записи не изменяются.
+            learning_memory
+
+        Контракт:
+
+            event_type = 'batch_learning'
+            reference_id = match_id
+
+        Дополнительно допускается object:
+
+            match:<match_id>
+
+        для большей надёжности.
+
+        НИКАКИХ изменений БД здесь нет.
         """
 
-        processed: set[int] = set()
+        processed: Set[int] = set()
 
         try:
 
@@ -492,34 +973,98 @@ class BatchController:
                 cursor.execute(
                     """
                     SELECT
+                        event_type,
                         object,
                         reference_id
                     FROM learning_memory
-                    WHERE event_type = 'batch_learning'
+                    WHERE event_type = ?
                     ORDER BY id ASC
-                    """
+                    """,
+                    (
+                        PROCESSED_EVENT_TYPE,
+                    ),
                 )
 
                 rows = cursor.fetchall()
 
-                for row in rows:
-
-                    reference_id = row["reference_id"]
-
-                    if reference_id is not None:
-                        processed.add(
-                            _safe_int(reference_id)
-                        )
-
             finally:
+
                 conn.close()
 
         except Exception as exc:
 
             logger.warning(
-                "Unable to read processed ETC batches: %s",
+                "Unable to read ETC processed "
+                "matches from learning_memory: %s",
                 exc,
             )
+
+            return processed
+
+        # ----------------------------------------------------
+        # Из memory берём только те записи,
+        # которые однозначно указывают на match.
+        # ----------------------------------------------------
+
+        for row in rows:
+
+            try:
+
+                reference_id = row[
+                    "reference_id"
+                ]
+
+            except (KeyError, TypeError):
+
+                reference_id = None
+
+            match_id = _safe_int(
+                reference_id
+            )
+
+            if match_id > 0:
+
+                processed.add(
+                    match_id
+                )
+
+                continue
+
+            # ------------------------------------------------
+            # Fallback:
+            #
+            # object = match:<id>
+            # ------------------------------------------------
+
+            try:
+
+                object_value = row[
+                    "object"
+                ]
+
+            except (KeyError, TypeError):
+
+                object_value = None
+
+            object_value = _safe_string(
+                object_value
+            )
+
+            if object_value.startswith(
+                "match:"
+            ):
+
+                match_id = _safe_int(
+                    object_value[
+                        len("match:"):
+                    ]
+                )
+
+                if match_id > 0:
+
+                    processed.add(
+                        match_id
+                    )
 
         return processed
 
@@ -529,30 +1074,64 @@ class BatchController:
 
     @staticmethod
     def _build_fingerprint(
-        matches: List[Dict[str, Any]],
+        matches: List[
+            Dict[str, Any]
+        ],
     ) -> str:
         """
-        Создаёт стабильный fingerprint набора матчей.
+        Создаёт стабильный fingerprint
+        КОНКРЕТНОГО текущего batch.
 
-        Используется только для идентификации батча.
+        В fingerprint входят:
+
+            match_id
+            home_team_id
+            away_team_id
+            result_home_goals
+            result_away_goals
+
+        Fingerprint НЕ строится по всем
+        завершённым матчам турнира.
+
+        Это важно:
+
+            Batch #1
+                M1 M2 M3 M4 M5
+
+            Batch #2
+                M6 M7 M8 M9 M10
+
+        имеют разные fingerprints.
         """
 
-        rows = []
+        rows: List[
+            Dict[str, Any]
+        ] = []
 
         for match in matches:
 
             rows.append(
                 {
-                    "id": match.get("id"),
-                    "home_team_id": match.get(
-                        "home_team_id"
+                    "id": _safe_int(
+                        match.get("id")
                     ),
-                    "away_team_id": match.get(
-                        "away_team_id"
+
+                    "home_team_id": _safe_int(
+                        match.get(
+                            "home_team_id"
+                        )
                     ),
+
+                    "away_team_id": _safe_int(
+                        match.get(
+                            "away_team_id"
+                        )
+                    ),
+
                     "home_goals": match.get(
                         "result_home_goals"
                     ),
+
                     "away_goals": match.get(
                         "result_away_goals"
                     ),
@@ -560,13 +1139,19 @@ class BatchController:
             )
 
         rows.sort(
-            key=lambda row: _safe_int(row.get("id"))
+            key=lambda row: _safe_int(
+                row.get("id")
+            )
         )
 
         encoded = json.dumps(
             rows,
             ensure_ascii=False,
             sort_keys=True,
+            separators=(
+                ",",
+                ":",
+            ),
         )
 
         return hashlib.sha256(
@@ -574,22 +1159,21 @@ class BatchController:
         ).hexdigest()
 
     # ========================================================
-    # BATCH SELECTION
+    # PUBLIC — BATCH INFO
     # ========================================================
 
-    def select_batch(
+    def get_batch_info(
         self,
         league: str,
         season_id: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """
-        Возвращает только матчи текущего готового батча.
+        Удобный диагностический метод.
 
-        Если батч не готов — возвращает [].
+        Возвращает полную информацию о текущем
+        состоянии batch.
 
-        Важно:
-        здесь выбираются первые N новых матчей,
-        где N = правило конкретного турнира.
+        Сам batch не запускает.
         """
 
         check = self.check(
@@ -597,34 +1181,35 @@ class BatchController:
             season_id=season_id,
         )
 
-        if check["status"] != "READY":
-            return []
+        if check["status"] != STATUS_READY:
 
-        required = check["required_matches"]
-        match_ids = check["match_ids"]
+            return check
 
-        if not match_ids:
-            return []
-
-        matches = self._get_finished_matches(
-            league=_normalize_league(league),
+        batch = self.get_learning_batch(
+            league=league,
             season_id=season_id,
         )
 
-        selected = []
+        result = dict(check)
 
-        for match in matches:
+        result["selected_matches"] = len(
+            batch
+        )
 
-            match_id = _safe_int(match.get("id"))
+        result["selected_match_ids"] = [
+            _safe_int(
+                match.get("id")
+            )
+            for match in batch
+        ]
 
-            if match_id in match_ids:
+        result[
+            "selected_batch_fingerprint"
+        ] = self._build_fingerprint(
+            batch
+        ) if batch else None
 
-                selected.append(match)
-
-            if len(selected) >= required:
-                break
-
-        return selected
+        return result
 
 
 # ============================================================
@@ -637,10 +1222,12 @@ def check_batch(
     db: Optional[FAJDatabase] = None,
 ) -> Dict[str, Any]:
     """
-    Удобная функция проверки батча.
+    Удобная функция проверки batch.
     """
 
-    controller = BatchController(db=db)
+    controller = BatchController(
+        db=db
+    )
 
     return controller.check(
         league=league,
@@ -648,14 +1235,43 @@ def check_batch(
     )
 
 
-def get_batch_size(league: str) -> int:
+def get_batch_size(
+    league: str,
+) -> int:
     """
-    Возвращает размер батча для турнира.
+    Возвращает размер batch для турнира.
     """
 
     return BATCH_RULES.get(
         _normalize_league(league),
         0,
+    )
+
+
+def get_learning_batch(
+    league: str,
+    season_id: Optional[int] = None,
+    limit: Optional[int] = None,
+    db: Optional[FAJDatabase] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Официальный module-level API ETC.
+
+    Возвращает текущий готовый batch.
+
+    Если batch не готов:
+
+        []
+    """
+
+    controller = BatchController(
+        db=db
+    )
+
+    return controller.get_learning_batch(
+        league=league,
+        season_id=season_id,
+        limit=limit,
     )
 
 
@@ -665,14 +1281,16 @@ def select_batch(
     db: Optional[FAJDatabase] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Возвращает текущий готовый батч матчей.
+    Совместимый module-level API.
+
+    Использует тот же официальный механизм,
+    что и get_learning_batch().
     """
 
-    controller = BatchController(db=db)
-
-    return controller.select_batch(
+    return get_learning_batch(
         league=league,
         season_id=season_id,
+        db=db,
     )
 
 
@@ -696,7 +1314,44 @@ if __name__ == "__main__":
     print(f"Version: {MODULE_VERSION}")
     print("=" * 70)
 
-    for league, size in BATCH_RULES.items():
-        print(f"{league}: {size} матчей")
+    print()
+    print("BATCH RULES")
+    print("-" * 70)
 
+    for league, size in BATCH_RULES.items():
+
+        print(
+            f"{league}: {size} матчей"
+        )
+
+    print()
+    print("STATUS CONTRACT")
+    print("-" * 70)
+
+    print(
+        f"READY              = {STATUS_READY}"
+    )
+
+    print(
+        f"WAIT               = {STATUS_WAIT}"
+    )
+
+    print(
+        f"UNKNOWN_LEAGUE     = {STATUS_UNKNOWN_LEAGUE}"
+    )
+
+    print(
+        f"ALREADY_PROCESSED  = {STATUS_ALREADY_PROCESSED}"
+    )
+
+    print()
+    print("PROCESSED EVENT")
+    print("-" * 70)
+
+    print(
+        f"event_type = {PROCESSED_EVENT_TYPE}"
+    )
+
+    print()
+    print("ETC Batch Controller готов.")
     print("=" * 70)
