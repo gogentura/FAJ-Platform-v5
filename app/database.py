@@ -4069,6 +4069,39 @@ class FAJDatabase:
             }
         finally:
             conn.close()
+    
+    # ============================================================
+    # LEARNING MEMORY — ЧТЕНИЕ (НОВЫЙ МЕТОД)
+    # ============================================================
+    
+    def get_learning_memory(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        Возвращает последние записи из learning_memory.
+        
+        Args:
+            limit: количество записей (по умолчанию 50)
+        
+        Returns:
+            Список словарей с полями:
+                id, event_type, object, feature,
+                before_value, after_value, delta,
+                reason, confidence, impact,
+                algorithm, model_version,
+                reference_id, created_at
+        """
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT *
+                FROM learning_memory
+                ORDER BY id DESC
+                LIMIT ?
+            """, (limit,))
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":
