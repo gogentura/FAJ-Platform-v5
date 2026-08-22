@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-IMPORT FACTS v4.5.1
+IMPORT FACTS v4.5.2
 ============================================================
 
 НАЗНАЧЕНИЕ:
@@ -57,15 +57,21 @@ LOCK
 LEARNING
 
 ============================================================
-ИЗМЕНЕНИЯ V4.5.1
+ИЗМЕНЕНИЯ V4.5.2
 ============================================================
 
-1. FACT RECOVERY теперь снимает LOCK с GOLD.
-2. Добавлен вызов db.unlock_gold_for_match().
-3. После снятия LOCK с match_result и GOLD,
-   статистика может быть перезагружена.
-4. После повторного сохранения:
-       VALIDATION → GOLD → LOCK
+1. РУЧНОЙ РЕЖИМ ДЛЯ ЧЕКБОКСОВ:
+   - Чекбоксы "Счёт", "Статистика", "xG" теперь ручные
+   - Больше не зависят от автоматического определения
+   - Кнопка "Сохранить факты" активируется только когда все 3 чекбокса отмечены
+
+2. ИСПРАВЛЕНА ПРОБЛЕМА С НЕАКТИВНОЙ КНОПКОЙ:
+   - Теперь ты сам контролируешь состояние фактов
+   - Даже если парсер не сохранил данные в session_state, ты можешь отметить галочки вручную
+
+3. УЛУЧШЕНА ОБРАТНАЯ СВЯЗЬ:
+   - Показывается источник данных для каждого факта
+   - Чекбоксы блокируются только если матч LOCKED
 ============================================================
 """
 
@@ -92,7 +98,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 APP_VERSION = "12.1"
-IMPORT_FACTS_VERSION = "4.5.1"
+IMPORT_FACTS_VERSION = "4.5.2"
 MODEL_VERSION = "v12.1"
 
 DEFAULT_DB_PATH = "data/faj.db"
@@ -2772,68 +2778,65 @@ def render_match_card(
     )
 
     # ========================================================
-    # FACT SUMMARY
+    # FACT SUMMARY — РУЧНОЙ РЕЖИМ (ИСПРАВЛЕНО v4.5.2)
     # ========================================================
 
     st.markdown(
         "#### 📋 Состояние фактов"
     )
 
+    # Проверяем, есть ли данные в сессии
+    soccer365_fact = st.session_state.get(f"{key_prefix}_soccer365_fact", {})
+    soccer365_stats = soccer365_fact.get("stats", {})
+
+    # Если в сессии есть данные, но статусы показывают False — исправляем
+    if soccer365_stats:
+        if any(v is not None for v in soccer365_stats.values()):
+            statuses["stats"] = True
+        if soccer365_stats.get("home_xg") is not None or soccer365_stats.get("away_xg") is not None:
+            statuses["xg"] = True
+        if statuses["stats"] and statuses["xg"] and statuses["score"]:
+            statuses["complete"] = True
+
     c1, c2, c3 = st.columns(3)
 
     with c1:
-
-        st.metric(
-            "Счёт",
-            "🟢"
-            if statuses["score"]
-            else "🔴",
+        score_checked = st.checkbox(
+            "✅ Счёт",
+            value=statuses["score"],
+            key=f"{key_prefix}_manual_score",
+            disabled=score_locked,
         )
-
-        if fact.get(
-            "score_source"
-        ):
-
-            st.caption(
-                f"Источник: "
-                f"{fact['score_source']}"
-            )
+        if score_checked:
+            statuses["score"] = True
+            st.caption("Источник: manual")
 
     with c2:
-
-        st.metric(
-            "Статистика",
-            "🟢"
-            if statuses["stats"]
-            else "⚪",
+        stats_checked = st.checkbox(
+            "✅ Статистика",
+            value=statuses["stats"],
+            key=f"{key_prefix}_manual_stats",
+            disabled=score_locked,
         )
-
-        if fact.get(
-            "stats_source"
-        ):
-
-            st.caption(
-                f"Источник: "
-                f"{fact['stats_source']}"
-            )
+        if stats_checked:
+            statuses["stats"] = True
+            if soccer365_stats:
+                st.caption("Источник: soccer365")
 
     with c3:
-
-        st.metric(
-            "xG",
-            "🟢"
-            if statuses["xg"]
-            else "⚪",
+        xg_checked = st.checkbox(
+            "✅ xG",
+            value=statuses["xg"],
+            key=f"{key_prefix}_manual_xg",
+            disabled=score_locked,
         )
+        if xg_checked:
+            statuses["xg"] = True
+            if soccer365_stats:
+                st.caption("Источник: soccer365")
 
-        if fact.get(
-            "xg_source"
-        ):
-
-            st.caption(
-                f"Источник: "
-                f"{fact['xg_source']}"
-            )
+    # Пересчитываем complete
+    statuses["complete"] = statuses["score"] and statuses["stats"] and statuses["xg"]
 
     # ========================================================
     # DISPLAY STATS
@@ -3094,7 +3097,7 @@ def render_match_card(
     )
 
     # ========================================================
-    # SAVE
+    # SAVE — КНОПКА ТЕПЕРЬ АКТИВНА КОГДА ВСЕ 3 ЧЕКБОКСА ОТМЕЧЕНЫ
     # ========================================================
 
     if st.button(
@@ -3104,7 +3107,7 @@ def render_match_card(
         use_container_width=True,
         disabled=(
             score_locked
-            or not statuses["complete"]
+            or not statuses["complete"]   # ← Теперь это ручные чекбоксы
         ),
     ):
 
