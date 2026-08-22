@@ -1858,6 +1858,66 @@ class FAJDatabase:
             conn.close()
     
     # ============================================================
+    # GET ROUND MATCHES BY NUMBER — НОВЫЙ МЕТОД
+    # ============================================================
+    
+    def get_round_matches_by_number(
+        self,
+        round_number: int,
+        league: str,
+    ) -> List[Dict[str, Any]]:
+        """
+        Возвращает матчи указанного тура и лиги.
+        
+        ВАЖНО:
+            round_number сам по себе не уникален между лигами.
+            Поиск выполняется через matches + rounds с фильтрацией по competition.
+        
+        Args:
+            round_number: номер тура
+            league: название лиги (РПЛ, АПЛ, Ла Лига, Лига чемпионов)
+        
+        Returns:
+            Список матчей с названиями команд
+        """
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT
+                    m.*,
+                    ht.name AS home_team_name,
+                    at.name AS away_team_name,
+                    r.round_number,
+                    r.season_id
+                FROM matches m
+                LEFT JOIN teams ht
+                    ON ht.id = m.home_team_id
+                LEFT JOIN teams at
+                    ON at.id = m.away_team_id
+                INNER JOIN rounds r
+                    ON r.id = m.round_id
+                WHERE r.round_number = ?
+                  AND m.competition = ?
+                ORDER BY
+                    m.date ASC,
+                    m.id ASC
+                """,
+                (
+                    int(round_number),
+                    league,
+                ),
+            )
+            rows = cursor.fetchall()
+            return [
+                dict(row)
+                for row in rows
+            ]
+        finally:
+            conn.close()
+    
+    # ============================================================
     # MATCHES — с защитой фактических данных
     # ============================================================
     
