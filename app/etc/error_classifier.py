@@ -11,40 +11,100 @@ app/etc/error_classifier.py
 
 НАЗНАЧЕНИЕ
 -----------
-Классификация ошибок прогноза FAJ.
 
-ЦЕПОЧКА:
+Классификация ошибок FAJ Prediction после получения
+фактического результата матча.
 
-    FAJ Prediction
-          +
-    Match Result
-          +
-    Observed xG
-          ↓
+АРХИТЕКТУРА:
+
+    PREDICTION
+         +
+    MATCH RESULT
+         +
+    OBSERVED xG
+         ↓
     ErrorClassifier
-          ↓
-    error_type
-    cause_type
-    severity
-    error_score
-    error_xg
-    recommendation
-          ↓
-    learning_records / learning_events
+         ↓
+    ERROR ANALYSIS
+         │
+         ├── error_type
+         ├── cause_type
+         ├── severity
+         ├── score_error
+         ├── xg_error
+         ├── result_error
+         ├── recommendation
+         └── diagnostic flags
+                ↓
+          ETC CONTROLLER
+                ↓
+        другие ETC-модули
+                ↓
+          Learning Memory
 
-МОДУЛЬ НЕ:
-    - не изменяет database.py;
-    - не изменяет predictions;
-    - не изменяет gold_dataset;
-    - не меняет FAJ Rating;
-    - не меняет model_parameters;
-    - не обучает модель.
+============================================================
 
-МОДУЛЬ:
-    - сравнивает прогноз с фактом;
-    - классифицирует ошибку;
-    - рассчитывает величину ошибки;
-    - формирует рекомендацию для ETC.
+ВАЖНЫЙ ПРИНЦИП
+
+Этот модуль НЕ:
+
+    - изменяет database.py;
+    - изменяет match_results;
+    - изменяет predictions;
+    - изменяет passports;
+    - изменяет FAJ Rating;
+    - изменяет model_parameters;
+    - пишет в learning_memory;
+    - выполняет обучение;
+    - выполняет калибровку;
+    - принимает решение об изменении модели.
+
+Он только отвечает на вопрос:
+
+    "Насколько и каким образом FAJ ошибся?"
+
+Решение о дальнейшей реакции принимает ETC.
+
+============================================================
+
+КОНТРАКТ
+
+INPUT:
+
+prediction = {
+    predicted_score,
+    predicted_home_xg,
+    predicted_away_xg,
+    predicted_winner,
+    predicted_btts,
+    predicted_over25,
+    predicted_over35,
+}
+
+fact = {
+    actual_score,
+    actual_home_goals,
+    actual_away_goals,
+    actual_home_xg,
+    actual_away_xg,
+}
+
+OUTPUT:
+
+{
+    success,
+    error_type,
+    cause_type,
+    severity,
+    error_score,
+    error_xg,
+    winner_correct,
+    btts_correct,
+    over25_correct,
+    over35_correct,
+    recommendation,
+    errors,
+}
 
 ============================================================
 """
@@ -52,55 +112,114 @@ app/etc/error_classifier.py
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 
 logger = logging.getLogger(__name__)
 
-MODULE_VERSION = "1.0"
-MODULE_NAME = "ETC Error Classifier"
+
+MODULE_VERSION = "2.0"
+MODULE_NAME = "FAJ ETC Error Classifier v2.0"
 
 
 # ============================================================
 # HELPERS
 # ============================================================
 
-def _safe_float(value: Any) -> Optional[float]:
+def _safe_float(
+    value: Any,
+    default: Optional[float] = None,
+) -> Optional[float]:
+
     try:
+
         if value is None:
-            return None
+            return default
+
         return float(value)
+
     except (TypeError, ValueError):
-        return None
+
+        return default
 
 
-def _safe_int(value: Any) -> Optional[int]:
+def _safe_int(
+    value: Any,
+    default: Optional[int] = None,
+) -> Optional[int]:
+
     try:
+
         if value is None:
-            return None
+            return default
+
         return int(value)
+
     except (TypeError, ValueError):
-        return None
+
+        return default
 
 
-def _winner(home_goals: int, away_goals: int) -> str:
+def _winner(
+    home_goals: int,
+    away_goals: int,
+) -> str:
+
     if home_goals > away_goals:
         return "home"
+
     if away_goals > home_goals:
         return "away"
+
     return "draw"
 
 
-def _btts(home_goals: int, away_goals: int) -> int:
-    return int(home_goals > 0 and away_goals > 0)
+def _btts(
+    home_goals: int,
+    away_goals: int,
+) -> int:
+
+    return int(
+        home_goals > 0
+        and away_goals > 0
+    )
 
 
-def _over25(home_goals: int, away_goals: int) -> int:
-    return int((home_goals + away_goals) > 2)
+def _over25(
+    home_goals: int,
+    away_goals: int,
+) -> int:
+
+    return int(
+        home_goals + away_goals > 2
+    )
 
 
-def _over35(home_goals: int, away_goals: int) -> int:
-    return int((home_goals + away_goals) > 3)
+def _over35(
+    home_goals: int,
+    away_goals: int,
+) -> int:
+
+    return int(
+        home_goals + away_goals > 3
+    )
+
+
+def _normalize_bool(
+    value: Any,
+) -> Optional[int]:
+
+    if value is None:
+        return None
+
+    if isinstance(value, bool):
+        return int(value)
+
+    try:
+        return int(value)
+
+    except (TypeError, ValueError):
+        return None
 
 
 # ============================================================
@@ -109,9 +228,9 @@ def _over35(home_goals: int, away_goals: int) -> int:
 
 class ErrorClassifier:
     """
-    Классификатор ошибок ETC.
+    Чистый диагностический классификатор ETC.
 
-    Работает только с переданными данными.
+    Не имеет побочных эффектов.
     """
 
     # ========================================================
@@ -124,8 +243,8 @@ class ErrorClassifier:
         actual_score: Optional[str],
     ) -> int:
         """
-        0 — точный счёт угадан.
-        1 — точный счёт не угадан.
+        0 = точный счёт угадан.
+        1 = точный счёт не угадан.
         """
 
         if not predicted_score or not actual_score:
@@ -149,63 +268,121 @@ class ErrorClassifier:
     ) -> float:
         """
         Суммарная абсолютная ошибка xG.
+
+        Формула:
+
+            |Pred Home xG - Observed Home xG|
+          + |Pred Away xG - Observed Away xG|
         """
 
         ph = _safe_float(predicted_home_xg)
         pa = _safe_float(predicted_away_xg)
+
         ah = _safe_float(actual_home_xg)
         aa = _safe_float(actual_away_xg)
 
-        if None in (ph, pa, ah, aa):
+        if None in (
+            ph,
+            pa,
+            ah,
+            aa,
+        ):
             return 0.0
 
         return round(
-            abs(ph - ah) + abs(pa - aa),
+            abs(ph - ah)
+            + abs(pa - aa),
             4,
         )
 
     # ========================================================
-    # CLASSIFICATION
+    # RESULT ERROR
+    # ========================================================
+
+    @staticmethod
+    def result_error(
+        predicted_winner: Any,
+        actual_winner: str,
+    ) -> int:
+
+        if predicted_winner is None:
+            return 1
+
+        return int(
+            str(predicted_winner).lower()
+            != actual_winner
+        )
+
+    # ========================================================
+    # MAIN CLASSIFICATION
     # ========================================================
 
     def classify(
         self,
         prediction: Dict[str, Any],
-        result: Dict[str, Any],
+        fact: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
-        Полностью классифицирует прогноз относительно факта.
-
-        Ожидает максимально простой словарь.
-
-        prediction:
-            predicted_score
-            predicted_home_xg
-            predicted_away_xg
-            predicted_winner
-            predicted_btts
-            predicted_over25
-            predicted_over35
-
-        result:
-            actual_score
-            actual_home_goals
-            actual_away_goals
-            actual_home_xg
-            actual_away_xg
+        Полная классификация прогноза относительно факта.
         """
 
+        result: Dict[str, Any] = {
+            "success": False,
+            "version": MODULE_VERSION,
+            "classifier": MODULE_NAME,
+
+            "error_type": None,
+            "cause_type": None,
+
+            "severity": 0,
+
+            "error_score": 0,
+            "error_xg": 0.0,
+
+            "winner_correct": None,
+            "btts_correct": None,
+            "over25_correct": None,
+            "over35_correct": None,
+
+            "actual_winner": None,
+            "actual_btts": None,
+            "actual_over25": None,
+            "actual_over35": None,
+
+            "errors": [],
+
+            "recommendation": "",
+
+        }
+
+        # ----------------------------------------------------
+        # FACT VALIDATION
+        # ----------------------------------------------------
+
         actual_home = _safe_int(
-            result.get("actual_home_goals")
-        )
-        actual_away = _safe_int(
-            result.get("actual_away_goals")
+            fact.get("actual_home_goals")
         )
 
-        if actual_home is None or actual_away is None:
-            raise ValueError(
-                "Фактические голы обязательны"
+        actual_away = _safe_int(
+            fact.get("actual_away_goals")
+        )
+
+        if actual_home is None:
+            result["errors"].append(
+                "actual_home_goals отсутствует."
             )
+
+        if actual_away is None:
+            result["errors"].append(
+                "actual_away_goals отсутствует."
+            )
+
+        if result["errors"]:
+            return result
+
+        # ----------------------------------------------------
+        # ACTUAL FACTS
+        # ----------------------------------------------------
 
         actual_winner = _winner(
             actual_home,
@@ -227,152 +404,274 @@ class ErrorClassifier:
             actual_away,
         )
 
-        predicted_winner = (
-            prediction.get("predicted_winner")
+        result["actual_winner"] = actual_winner
+        result["actual_btts"] = actual_btts
+        result["actual_over25"] = actual_over25
+        result["actual_over35"] = actual_over35
+
+        # ----------------------------------------------------
+        # PREDICTION
+        # ----------------------------------------------------
+
+        predicted_winner = prediction.get(
+            "predicted_winner"
         )
 
-        predicted_btts = prediction.get(
-            "predicted_btts"
+        predicted_btts = _normalize_bool(
+            prediction.get("predicted_btts")
         )
 
-        predicted_over25 = prediction.get(
-            "predicted_over25"
+        predicted_over25 = _normalize_bool(
+            prediction.get("predicted_over25")
         )
 
-        predicted_over35 = prediction.get(
-            "predicted_over35"
+        predicted_over35 = _normalize_bool(
+            prediction.get("predicted_over35")
         )
 
         predicted_score = prediction.get(
             "predicted_score"
         )
 
-        actual_score = result.get(
+        actual_score = fact.get(
             "actual_score"
         )
-
-        score_error = self.score_error(
-            predicted_score,
-            actual_score,
-        )
-
-        error_xg = self.xg_error(
-            prediction.get("predicted_home_xg"),
-            prediction.get("predicted_away_xg"),
-            result.get("actual_home_xg"),
-            result.get("actual_away_xg"),
-        )
-
-        errors = []
 
         # ----------------------------------------------------
         # WINNER
         # ----------------------------------------------------
 
         if predicted_winner is not None:
-            if str(predicted_winner) != actual_winner:
-                errors.append("winner_miss")
+
+            winner_correct = int(
+                str(predicted_winner).lower()
+                == actual_winner
+            )
+
+            result["winner_correct"] = winner_correct
+
+            if not winner_correct:
+
+                result["errors"].append(
+                    "winner_miss"
+                )
 
         # ----------------------------------------------------
-        # SCORE
+        # EXACT SCORE
         # ----------------------------------------------------
+
+        score_error = self.score_error(
+            predicted_score,
+            actual_score,
+        )
+
+        result["error_score"] = score_error
 
         if score_error:
-            errors.append("score_miss")
+
+            result["errors"].append(
+                "score_miss"
+            )
 
         # ----------------------------------------------------
         # BTTS
         # ----------------------------------------------------
 
         if predicted_btts is not None:
-            if int(predicted_btts) != actual_btts:
-                errors.append("btts_miss")
+
+            btts_correct = int(
+                predicted_btts
+                == actual_btts
+            )
+
+            result["btts_correct"] = (
+                btts_correct
+            )
+
+            if not btts_correct:
+
+                result["errors"].append(
+                    "btts_miss"
+                )
 
         # ----------------------------------------------------
-        # TOTAL 2.5
+        # OVER 2.5
         # ----------------------------------------------------
 
         if predicted_over25 is not None:
-            if int(predicted_over25) != actual_over25:
-                errors.append("over25_miss")
+
+            over25_correct = int(
+                predicted_over25
+                == actual_over25
+            )
+
+            result["over25_correct"] = (
+                over25_correct
+            )
+
+            if not over25_correct:
+
+                result["errors"].append(
+                    "over25_miss"
+                )
 
         # ----------------------------------------------------
-        # TOTAL 3.5
+        # OVER 3.5
         # ----------------------------------------------------
 
         if predicted_over35 is not None:
-            if int(predicted_over35) != actual_over35:
-                errors.append("over35_miss")
+
+            over35_correct = int(
+                predicted_over35
+                == actual_over35
+            )
+
+            result["over35_correct"] = (
+                over35_correct
+            )
+
+            if not over35_correct:
+
+                result["errors"].append(
+                    "over35_miss"
+                )
+
+        # ----------------------------------------------------
+        # xG ERROR
+        # ----------------------------------------------------
+
+        error_xg = self.xg_error(
+            prediction.get(
+                "predicted_home_xg"
+            ),
+            prediction.get(
+                "predicted_away_xg"
+            ),
+            fact.get(
+                "actual_home_xg"
+            ),
+            fact.get(
+                "actual_away_xg"
+            ),
+        )
+
+        result["error_xg"] = error_xg
+
+        if error_xg > 0.25:
+
+            result["errors"].append(
+                "xg_miss"
+            )
 
         # ----------------------------------------------------
         # ERROR TYPE
         # ----------------------------------------------------
 
-        if not errors and error_xg <= 0.25:
-            error_type = "correct"
-
-        elif "score_miss" in errors:
-            error_type = "score_miss"
-
-        elif "winner_miss" in errors:
-            error_type = "winner_miss"
-
-        elif "btts_miss" in errors:
-            error_type = "btts_miss"
-
-        elif "over25_miss" in errors:
-            error_type = "over25_miss"
-
-        elif "over35_miss" in errors:
-            error_type = "over35_miss"
-
-        else:
-            error_type = "xg_miss"
+        result["error_type"] = (
+            self._classify_error_type(
+                result
+            )
+        )
 
         # ----------------------------------------------------
         # CAUSE
         # ----------------------------------------------------
 
-        cause_type = self._classify_cause(
-            prediction,
-            result,
-            actual_winner,
+        result["cause_type"] = (
+            self._classify_cause(
+                prediction,
+                fact,
+                actual_winner,
+            )
         )
 
         # ----------------------------------------------------
         # SEVERITY
         # ----------------------------------------------------
 
-        severity = self._severity(
-            error_type=error_type,
-            score_error=score_error,
-            error_xg=error_xg,
-            errors_count=len(errors),
+        result["severity"] = (
+            self._severity(
+                error_type=result["error_type"],
+                score_error=score_error,
+                error_xg=error_xg,
+                errors_count=len(
+                    result["errors"]
+                ),
+            )
         )
 
         # ----------------------------------------------------
         # RECOMMENDATION
         # ----------------------------------------------------
 
-        recommendation = self._recommendation(
-            error_type,
-            cause_type,
-            severity,
+        result["recommendation"] = (
+            self._recommendation(
+                result["error_type"],
+                result["cause_type"],
+                result["severity"],
+            )
         )
 
-        return {
-            "error_type": error_type,
-            "cause_type": cause_type,
-            "error_severity": severity,
-            "error_score": score_error,
-            "error_xg": error_xg,
-            "actual_winner": actual_winner,
-            "actual_btts": actual_btts,
-            "actual_over25": actual_over25,
-            "actual_over35": actual_over35,
-            "errors": errors,
-            "recommendation": recommendation,
-        }
+        result["success"] = True
+
+        return result
+
+    # ========================================================
+    # ERROR TYPE
+    # ========================================================
+
+    @staticmethod
+    def _classify_error_type(
+        analysis: Dict[str, Any],
+    ) -> str:
+
+        errors = analysis.get(
+            "errors",
+            [],
+        )
+
+        error_xg = _safe_float(
+            analysis.get(
+                "error_xg"
+            ),
+            0.0,
+        )
+
+        if not errors and error_xg <= 0.25:
+
+            return "correct"
+
+        # Приоритет результата:
+        # сначала направление матча,
+        # затем счёт,
+        # затем рынки,
+        # затем xG.
+
+        if "winner_miss" in errors:
+
+            return "winner_miss"
+
+        if "score_miss" in errors:
+
+            return "score_miss"
+
+        if "btts_miss" in errors:
+
+            return "btts_miss"
+
+        if "over25_miss" in errors:
+
+            return "over25_miss"
+
+        if "over35_miss" in errors:
+
+            return "over35_miss"
+
+        if "xg_miss" in errors:
+
+            return "xg_miss"
+
+        return "model_miss"
 
     # ========================================================
     # CAUSE
@@ -381,50 +680,95 @@ class ErrorClassifier:
     @staticmethod
     def _classify_cause(
         prediction: Dict[str, Any],
-        result: Dict[str, Any],
+        fact: Dict[str, Any],
         actual_winner: str,
     ) -> str:
         """
-        Определяет предварительную причину ошибки.
+        Определяет предварительную причину.
 
-        Это НЕ окончательный вывод ETC.
+        Это диагностическая гипотеза,
+        а не решение об изменении модели.
         """
 
         predicted_home_xg = _safe_float(
-            prediction.get("predicted_home_xg")
+            prediction.get(
+                "predicted_home_xg"
+            )
         )
 
         predicted_away_xg = _safe_float(
-            prediction.get("predicted_away_xg")
+            prediction.get(
+                "predicted_away_xg"
+            )
         )
 
         actual_home_xg = _safe_float(
-            result.get("actual_home_xg")
+            fact.get(
+                "actual_home_xg"
+            )
         )
 
         actual_away_xg = _safe_float(
-            result.get("actual_away_xg")
+            fact.get(
+                "actual_away_xg"
+            )
         )
+
+        # ----------------------------------------------------
+        # HOME xG
+        # ----------------------------------------------------
 
         if None not in (
             predicted_home_xg,
             actual_home_xg,
         ):
-            if predicted_home_xg - actual_home_xg > 0.50:
-                return "home_attack_overestimated"
 
-            if actual_home_xg - predicted_home_xg > 0.50:
-                return "home_attack_underestimated"
+            difference = (
+                predicted_home_xg
+                - actual_home_xg
+            )
+
+            if difference > 0.50:
+
+                return (
+                    "home_attack_overestimated"
+                )
+
+            if difference < -0.50:
+
+                return (
+                    "home_attack_underestimated"
+                )
+
+        # ----------------------------------------------------
+        # AWAY xG
+        # ----------------------------------------------------
 
         if None not in (
             predicted_away_xg,
             actual_away_xg,
         ):
-            if predicted_away_xg - actual_away_xg > 0.50:
-                return "away_attack_overestimated"
 
-            if actual_away_xg - predicted_away_xg > 0.50:
-                return "away_attack_underestimated"
+            difference = (
+                predicted_away_xg
+                - actual_away_xg
+            )
+
+            if difference > 0.50:
+
+                return (
+                    "away_attack_overestimated"
+                )
+
+            if difference < -0.50:
+
+                return (
+                    "away_attack_underestimated"
+                )
+
+        # ----------------------------------------------------
+        # WINNER
+        # ----------------------------------------------------
 
         predicted_winner = prediction.get(
             "predicted_winner"
@@ -432,8 +776,12 @@ class ErrorClassifier:
 
         if (
             predicted_winner is not None
-            and str(predicted_winner) != actual_winner
+            and str(
+                predicted_winner
+            ).lower()
+            != actual_winner
         ):
+
             return "match_balance_misread"
 
         return "model_uncertainty"
@@ -450,46 +798,68 @@ class ErrorClassifier:
         errors_count: int,
     ) -> int:
         """
-        Severity:
+        Шкала:
 
-        0 — correct
-        1 — minor
-        2 — moderate
-        3 — serious
-        4 — critical
-        5 — catastrophic
+            0 = correct
+            1 = minor
+            2 = moderate
+            3 = serious
+            4 = critical
+            5 = catastrophic
         """
 
         if error_type == "correct":
+
             return 0
 
         score = 0
 
+        # Точный счёт сам по себе
+        # не должен автоматически делать
+        # ошибку критической.
+
         if score_error:
-            score += 2
+
+            score += 1
 
         if error_xg >= 1.50:
+
             score += 3
+
         elif error_xg >= 1.00:
+
             score += 2
+
         elif error_xg >= 0.50:
+
             score += 1
 
-        if errors_count >= 3:
+        if errors_count >= 4:
+
             score += 2
+
         elif errors_count >= 2:
+
             score += 1
 
-        if score >= 5:
+        if error_type == "winner_miss":
+
+            score += 1
+
+        if score >= 6:
+
             return 5
 
-        if score >= 4:
+        if score >= 5:
+
             return 4
 
         if score >= 3:
+
             return 3
 
         if score >= 2:
+
             return 2
 
         return 1
@@ -504,76 +874,94 @@ class ErrorClassifier:
         cause_type: str,
         severity: int,
     ) -> str:
-        """
-        Формирует текстовую рекомендацию.
-
-        Важно:
-        это только рекомендация.
-        Автоматического изменения параметров здесь нет.
-        """
 
         if error_type == "correct":
-            return "Изменение параметров не требуется."
 
-        if cause_type == "home_attack_overestimated":
             return (
-                "Проверить завышение атакующего фактора "
-                "хозяев и xG-калибровку."
+                "Прогноз соответствует факту. "
+                "Изменение модели не требуется."
             )
 
-        if cause_type == "home_attack_underestimated":
+        if (
+            cause_type
+            == "home_attack_overestimated"
+        ):
+
             return (
-                "Проверить занижение атакующего фактора "
-                "хозяев и xG-калибровку."
+                "Проверить завышение атакующего "
+                "фактора хозяев и xG-калибровку."
             )
 
-        if cause_type == "away_attack_overestimated":
+        if (
+            cause_type
+            == "home_attack_underestimated"
+        ):
+
             return (
-                "Проверить завышение атакующего фактора "
-                "гостей и xG-калибровку."
+                "Проверить занижение атакующего "
+                "фактора хозяев и xG-калибровку."
             )
 
-        if cause_type == "away_attack_underestimated":
+        if (
+            cause_type
+            == "away_attack_overestimated"
+        ):
+
             return (
-                "Проверить занижение атакующего фактора "
-                "гостей и xG-калибровку."
+                "Проверить завышение атакующего "
+                "фактора гостей и xG-калибровку."
             )
 
-        if cause_type == "match_balance_misread":
+        if (
+            cause_type
+            == "away_attack_underestimated"
+        ):
+
+            return (
+                "Проверить занижение атакующего "
+                "фактора гостей и xG-калибровку."
+            )
+
+        if (
+            cause_type
+            == "match_balance_misread"
+        ):
+
             return (
                 "Проверить баланс силы команд, "
                 "FAJ Rating и home advantage."
             )
 
         if severity >= 4:
+
             return (
-                "Критическая ошибка. Требуется дополнительный "
-                "анализ перед изменением параметров."
+                "Серьёзная ошибка. Не изменять параметры "
+                "по одному матчу. Требуется накопительный анализ."
             )
 
         return (
-            "Провести накопительный анализ аналогичных "
-            "ошибок перед изменением модели."
+            "Накопить аналогичные ошибки и проверить "
+            "систематический характер отклонения."
         )
 
 
 # ============================================================
-# MODULE-LEVEL HELPER
+# PUBLIC API
 # ============================================================
 
 def classify_prediction_error(
     prediction: Dict[str, Any],
-    result: Dict[str, Any],
+    fact: Dict[str, Any],
 ) -> Dict[str, Any]:
     """
-    Удобная функция для ETC.
+    Публичный API ETC.
     """
 
     classifier = ErrorClassifier()
 
     return classifier.classify(
         prediction=prediction,
-        result=result,
+        fact=fact,
     )
 
 
@@ -585,7 +973,11 @@ if __name__ == "__main__":
 
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(message)s",
+        format=(
+            "%(asctime)s | "
+            "%(levelname)s | "
+            "%(message)s"
+        ),
     )
 
     print("=" * 70)
@@ -603,7 +995,7 @@ if __name__ == "__main__":
         "predicted_over35": 0,
     }
 
-    result = {
+    fact = {
         "actual_score": "1:2",
         "actual_home_goals": 1,
         "actual_away_goals": 2,
@@ -613,12 +1005,15 @@ if __name__ == "__main__":
 
     classifier = ErrorClassifier()
 
-    result_data = classifier.classify(
-        prediction,
-        result,
+    analysis = classifier.classify(
+        prediction=prediction,
+        fact=fact,
     )
 
-    for key, value in result_data.items():
-        print(f"{key}: {value}")
+    for key, value in analysis.items():
+
+        print(
+            f"{key}: {value}"
+        )
 
     print("=" * 70)
