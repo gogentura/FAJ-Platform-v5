@@ -2,28 +2,158 @@
 # -*- coding: utf-8 -*-
 
 """
+============================================================
 FAJ Platform v12.1
-Evolution Training Center (ETC)
+ETC — Evolution Training Center
+============================================================
 
-ETC package.
+ПАКЕТ:
+    app.etc
 
-Назначение:
-    Пакет Evolution Training Center.
+НАЗНАЧЕНИЕ:
+    Evolution Training Center — слой эволюции FAJ.
 
-Основные модули:
-    observed_xg.py
-    xg_calibration.py
-    statistical_analyzer.py
-    prediction_error_analyzer.py
-    club_rating_updater.py
-    learning_memory.py
-    batch_controller.py
-    evolution_training_center.py
+ETC отвечает за:
 
-Принцип:
-    __init__.py не выполняет обучение,
-    не изменяет БД и не запускает ETC автоматически.
+    1. накопление результатов завершённых матчей;
+    2. анализ фактов и ошибок прогнозов;
+    3. анализ observed xG;
+    4. статистический анализ;
+    5. классификацию ошибок;
+    6. накопление learning memory;
+    7. анализ повторяющихся ошибок;
+    8. калибровку xG;
+    9. обновление Club Rating;
+   10. оптимизацию параметров;
+   11. пакетное обучение;
+   12. управление полным ETC pipeline.
+
+============================================================
+АРХИТЕКТУРА
+============================================================
+
+                    MATCH RESULT
+                         │
+                         ▼
+                  BATCH CONTROLLER
+                         │
+                         ▼
+                  OBSERVED XG
+                         │
+                         ▼
+              STATISTICAL ANALYZER
+                         │
+                         ▼
+              ERROR CLASSIFIER /
+            PREDICTION ERROR ANALYZER
+                         │
+                         ▼
+                LEARNING ANALYZER
+                         │
+             ┌───────────┴───────────┐
+             ▼                       ▼
+       XG CALIBRATION         CLUB RATING
+             │                 UPDATER
+             └───────────┬───────────┘
+                         ▼
+                PARAMETER OPTIMIZER
+                         │
+                         ▼
+                  LEARNING MEMORY
+                         │
+                         ▼
+                     SQLite
+                         │
+                         ▼
+                    NEXT CYCLE
+
+============================================================
+ОСНОВНЫЕ МОДУЛИ
+============================================================
+
+batch_controller.py
+    Формирование и контроль batch завершённых матчей.
+
+observed_xg.py
+    Работа с фактическим observed xG.
+
+statistical_analyzer.py
+    Статистический анализ матчей и накопленных фактов.
+
+error_classifier.py
+    Классификация ошибок прогнозов.
+
+prediction_error_analyzer.py
+    Детальный анализ ошибок прогнозирования.
+
+learning_analyzer.py
+    Поиск повторяющихся ошибок и аналитических сигналов.
+
+xg_calibration.py
+    Анализ и калибровка xG.
+
+club_rating_updater.py
+    Динамическое изменение FAJ Club Rating.
+
+parameter_optimizer.py
+    Подготовка и применение эволюционных изменений
+    параметров согласно ETC policy.
+
+learning_memory.py
+    Append-only память эволюции модели.
+
+learning_batch.py
+    Пакетная обработка обучения.
+
+learning_engine.py
+    ETC learning engine.
+
+etc_controller.py
+    Главный оркестратор ETC.
+
+============================================================
+АРХИТЕКТУРНЫЕ ПРАВИЛА
+============================================================
+
+ETC:
+
+    - НЕ изменяет database.py;
+    - НЕ удаляет исторические факты;
+    - НЕ удаляет learning_memory;
+    - НЕ переписывает старую память;
+    - НЕ изменяет match_results задним числом;
+    - НЕ изменяет старые predictions;
+    - НЕ управляет календарём;
+    - НЕ создаёт календарь;
+    - НЕ запускает прогнозирование;
+    - работает только с завершёнными матчами;
+    - сохраняет историю эволюции;
+    - использует SQLite через FAJDatabase.
+
+database.py остаётся единым источником схемы БД.
+
+learning_memory является append-only памятью ETC.
+
+============================================================
+ВАЖНО
+============================================================
+
+__init__.py:
+
+    - НЕ создаёт FAJDatabase;
+    - НЕ запускает ETC;
+    - НЕ запускает обучение;
+    - НЕ выполняет SQL;
+    - НЕ импортирует внутренние ETC-классы;
+    - НЕ содержит бизнес-логику.
+
+Он существует только как описание и граница Python-пакета.
+
+============================================================
 """
 
-__version__ = "1.0"
-__name__ = "FAJ ETC"
+__version__ = "12.1"
+__package_name__ = "FAJ ETC"
+__module_name__ = "Evolution Training Center"
+
+__all__ = []
