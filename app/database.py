@@ -873,6 +873,9 @@ def init_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_match_results_match ON match_results(match_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_match_results_status ON match_results(fact_status)")
     
+    # ============================================================
+    # MATCH STATISTICS — РАСШИРЕНА
+    # ============================================================
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS match_statistics (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -889,7 +892,9 @@ def init_database():
             big_chances INTEGER,
             saves INTEGER,
             passes INTEGER,
+            accurate_passes INTEGER,
             pass_accuracy REAL,
+            tackles INTEGER,
             FOREIGN KEY (match_id) REFERENCES matches(id),
             FOREIGN KEY (team_id) REFERENCES teams(id),
             UNIQUE(match_id, team_id)
@@ -1371,6 +1376,29 @@ def init_database():
     conn.close()
     
     run_migrations()
+    
+    # ============================================================
+    # ДОПОЛНИТЕЛЬНЫЕ МИГРАЦИИ ДЛЯ match_statistics
+    # ============================================================
+    
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    # Проверяем, существует ли таблица match_statistics
+    cursor.execute("""
+        SELECT name FROM sqlite_master
+        WHERE type = 'table' AND name = 'match_statistics'
+    """)
+    if cursor.fetchone():
+        # Добавляем колонки если их нет
+        ensure_column("match_statistics", "accurate_passes", "INTEGER")
+        ensure_column("match_statistics", "tackles", "INTEGER")
+        logger.info("✅ Проверены/добавлены колонки match_statistics: accurate_passes, tackles")
+    else:
+        logger.info("⏳ Таблица match_statistics будет создана при init_database()")
+    
+    conn.commit()
+    conn.close()
     
     # ============================================================
     # ИНДЕКСЫ ПОСЛЕ МИГРАЦИЙ (гарантированно с существующей колонкой)
@@ -2091,39 +2119,164 @@ class FAJDatabase:
         finally:
             conn.close()
     
+    # ============================================================
+    # UPDATE MATCH STATS — ПОЛНОСТЬЮ ПЕРЕРАБОТАН
+    # ============================================================
+    
     def update_match_stats(self, match_id: int, stats: Dict[str, Any]) -> bool:
+        """
+        Сохраняет фактическую статистику матча.
+        
+        Архитектура:
+            matches
+                └── основные агрегаты/xG
+            match_statistics
+                ├── домашняя команда
+                └── гостевая команда
+        
+        ВАЖНО:
+            Не удаляет существующие данные.
+            Использует INSERT ... ON CONFLICT DO UPDATE.
+        """
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE matches SET
-                    home_xg = ?, away_xg = ?,
-                    home_possession = ?, away_possession = ?,
-                    home_shots = ?, away_shots = ?,
-                    home_shots_on_target = ?, away_shots_on_target = ?,
-                    parser_source = ?, parser_version = ?,
-                    data_quality = ?, updated_at = ?
+            
+            # ====================================================
+            # 1. ПОЛУЧАЕМ КОМАНДЫ МАТЧА
+            # ====================================================
+            cursor.execute(
+                """
+                SELECT
+                    home_team_id,
+                    away_team_id
+                FROM matches
                 WHERE id = ?
-            """, (
-                stats.get("home_xg"),
-                stats.get("away_xg"),
-                stats.get("home_possession"),
-                stats.get("away_possession"),
-                stats.get("home_shots"),
-                stats.get("away_shots"),
-                stats.get("home_shots_on_target"),
-                stats.get("away_shots_on_target"),
-                stats.get("parser_source"),
-                stats.get("parser_version"),
-                stats.get("data_quality", 1.0),
-                datetime.now().isoformat(),
-                match_id
-            ))
+                """,
+                (match_id,)
+            )
+            match_row = cursor.fetchone()
+            if not match_row:
+                conn.rollback()
+                logger.error(f"Match {match_id} not found")
+                return False
+            
+            home_team_id = match_row["home_team_id"]
+            away_team_id = match_row["away_team_id"]
+            
+            if home_team_id is None or away_team_id is None:
+                conn.rollback()
+                logger.error(f"Match {match_id} has no team IDs")
+                return False
+            
+            # ====================================================
+            # 2. ОБНОВЛЯЕМ ОСНОВНЫЕ ПОЛЯ В matches
+            # ====================================================
+            cursor.execute(
+                """
+                UPDATE matches SET
+                    home_xg = ?,
+                    away_xg = ?,
+                    home_possession = ?,
+                    away_possession = ?,
+                    home_shots = ?,
+                    away_shots = ?,
+                    home_shots_on_target = ?,
+                    away_shots_on_target = ?,
+                    parser_source = ?,
+                    parser_version = ?,
+                    data_quality = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    stats.get("home_xg"),
+                    stats.get("away_xg"),
+                    stats.get("home_possession"),
+                    stats.get("away_possession"),
+                    stats.get("home_shots"),
+                    stats.get("away_shots"),
+                    stats.get("home_shots_on_target"),
+                    stats.get("away_shots_on_target"),
+                    stats.get("parser_source"),
+                    stats.get("parser_version"),
+                    stats.get("data_quality", 1.0),
+                    datetime.now().isoformat(),
+                    match_id
+                )
+            )
+            
             if cursor.rowcount == 0:
                 conn.rollback()
+                logger.error(f"Match {match_id} not found in matches table")
                 return False
+            
+            # ====================================================
+            # 3. СОХРАНЯЕМ ПОДРОБНУЮ СТАТИСТИКУ
+            # ====================================================
+            def upsert_team_stats(team_id, prefix):
+                cursor.execute(
+                    """
+                    INSERT INTO match_statistics (
+                        match_id,
+                        team_id,
+                        possession,
+                        shots,
+                        shots_on_target,
+                        corners,
+                        fouls,
+                        yellow_cards,
+                        red_cards,
+                        xg,
+                        passes,
+                        accurate_passes,
+                        pass_accuracy,
+                        tackles
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(match_id, team_id)
+                    DO UPDATE SET
+                        possession = excluded.possession,
+                        shots = excluded.shots,
+                        shots_on_target = excluded.shots_on_target,
+                        corners = excluded.corners,
+                        fouls = excluded.fouls,
+                        yellow_cards = excluded.yellow_cards,
+                        red_cards = excluded.red_cards,
+                        xg = excluded.xg,
+                        passes = excluded.passes,
+                        accurate_passes = excluded.accurate_passes,
+                        pass_accuracy = excluded.pass_accuracy,
+                        tackles = excluded.tackles
+                    """,
+                    (
+                        match_id,
+                        team_id,
+                        stats.get(f"{prefix}_possession"),
+                        stats.get(f"{prefix}_shots"),
+                        stats.get(f"{prefix}_shots_on_target"),
+                        stats.get(f"{prefix}_corners"),
+                        stats.get(f"{prefix}_fouls"),
+                        stats.get(f"{prefix}_yellow_cards"),
+                        stats.get(f"{prefix}_red_cards"),
+                        stats.get(f"{prefix}_xg"),
+                        stats.get(f"{prefix}_total_passes"),
+                        stats.get(f"{prefix}_accurate_passes"),
+                        stats.get(f"{prefix}_pass_accuracy"),
+                        stats.get(f"{prefix}_tackles"),
+                    )
+                )
+            
+            # Домашняя команда
+            upsert_team_stats(home_team_id, "home")
+            
+            # Гостевая команда
+            upsert_team_stats(away_team_id, "away")
+            
             conn.commit()
+            logger.debug(f"Match stats saved for match_id={match_id}")
             return True
+            
         except Exception as e:
             conn.rollback()
             logger.error(f"Update match stats error: {e}")
@@ -2131,81 +2284,85 @@ class FAJDatabase:
         finally:
             conn.close()
     
-    def get_matches(self, round_id=None):
-        conn = self.get_connection()
-        try:
-            cursor = conn.cursor()
-            if round_id is not None:
-                cursor.execute("""
-                    SELECT * FROM matches
-                    WHERE round_id = ?
-                    ORDER BY datetime(date) ASC, id ASC
-                """, (round_id,))
-            else:
-                cursor.execute("""
-                    SELECT * FROM matches
-                    ORDER BY datetime(date) DESC, id DESC
-                """)
-            return cursor.fetchall()
-        finally:
-            conn.close()
-    
-    def get_match_by_uuid(self, match_uuid: str) -> Optional[Dict[str, Any]]:
-        conn = self.get_connection()
-        try:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM matches WHERE match_uuid = ? LIMIT 1
-            """, (match_uuid,))
-            row = cursor.fetchone()
-            return dict(row) if row else None
-        finally:
-            conn.close()
-    
     # ============================================================
-    # GET ROUND MATCHES BY NUMBER — НОВЫЙ МЕТОД
+    # GET MATCH STATS — НОВЫЙ МЕТОД
     # ============================================================
     
-    def get_round_matches_by_number(
-        self,
-        round_number: int,
-        league: str,
-    ) -> List[Dict[str, Any]]:
+    def get_match_stats(self, match_id: int) -> Optional[Dict[str, Any]]:
         """
-        Получает матчи тура по номеру и лиге.
+        Возвращает полную статистику матча.
         
-        ВАЖНО:
-            round_number не уникален между лигами.
-            Этот метод всегда фильтрует по league.
+        Источник:
+            match_statistics (две строки: home + away)
         
-        Args:
-            round_number: номер тура
-            league: название лиги (РПЛ, АПЛ, Ла Лига, Лига чемпионов)
+        Возвращает единый словарь,
+        совместимый с import_facts.py.
         
         Returns:
-            Список матчей с названиями команд
+            Словарь с полями:
+                home_xg, away_xg,
+                home_possession, away_possession,
+                home_shots, away_shots,
+                home_shots_on_target, away_shots_on_target,
+                home_corners, away_corners,
+                home_fouls, away_fouls,
+                home_yellow_cards, away_yellow_cards,
+                home_red_cards, away_red_cards,
+                home_total_passes, away_total_passes,
+                home_accurate_passes, away_accurate_passes,
+                home_pass_accuracy, away_pass_accuracy,
+                home_tackles, away_tackles
         """
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT
-                    m.*,
-                    th.name AS home_team_name,
-                    ta.name AS away_team_name,
-                    s.league AS league
+                    m.home_team_id,
+                    m.away_team_id,
+                    hs.xg AS home_xg,
+                    aws.xg AS away_xg,
+                    hs.possession AS home_possession,
+                    aws.possession AS away_possession,
+                    hs.shots AS home_shots,
+                    aws.shots AS away_shots,
+                    hs.shots_on_target AS home_shots_on_target,
+                    aws.shots_on_target AS away_shots_on_target,
+                    hs.corners AS home_corners,
+                    aws.corners AS away_corners,
+                    hs.fouls AS home_fouls,
+                    aws.fouls AS away_fouls,
+                    hs.yellow_cards AS home_yellow_cards,
+                    aws.yellow_cards AS away_yellow_cards,
+                    hs.red_cards AS home_red_cards,
+                    aws.red_cards AS away_red_cards,
+                    hs.passes AS home_total_passes,
+                    aws.passes AS away_total_passes,
+                    hs.accurate_passes AS home_accurate_passes,
+                    aws.accurate_passes AS away_accurate_passes,
+                    hs.pass_accuracy AS home_pass_accuracy,
+                    aws.pass_accuracy AS away_pass_accuracy,
+                    hs.tackles AS home_tackles,
+                    aws.tackles AS away_tackles
                 FROM matches m
-                JOIN rounds r ON r.id = m.round_id
-                JOIN seasons s ON s.id = r.season_id
-                LEFT JOIN teams th ON th.id = m.home_team_id
-                LEFT JOIN teams ta ON ta.id = m.away_team_id
-                WHERE r.round_number = ?
-                  AND s.league = ?
-                ORDER BY m.id
-            """, (round_number, league))
-            
-            rows = cursor.fetchall()
-            return [dict(row) for row in rows]
+                LEFT JOIN match_statistics hs
+                    ON hs.match_id = m.id
+                    AND hs.team_id = m.home_team_id
+                LEFT JOIN match_statistics aws
+                    ON aws.match_id = m.id
+                    AND aws.team_id = m.away_team_id
+                WHERE m.id = ?
+                """,
+                (match_id,)
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return dict(row)
+        except Exception as e:
+            logger.error(f"Get match stats error: {e}")
+            return None
         finally:
             conn.close()
     
