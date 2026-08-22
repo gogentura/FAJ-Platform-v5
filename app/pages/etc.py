@@ -21,40 +21,52 @@ ETC — Evolution Training Center
     ETCController
           │
           ├── BatchController
+          ├── PredictionErrorAnalyzer
+          ├── ObservedXG
+          ├── XGCalibration
           ├── StatisticalAnalyzer
           ├── ETC LearningEngine
+          ├── ParameterOptimizer
           └── LearningMemory
                   │
                   ▼
-            FAJDatabase
+              FAJDatabase
                   │
                   ▼
-             SQLite
+                 SQLite
 
 ВАЖНО:
 
-    - страница НЕ изменяет database.py;
-    - страница НЕ выполняет SQL напрямую;
-    - страница НЕ управляет календарём;
-    - страница НЕ создаёт прогнозы;
-    - вся логика ETC находится в:
-          app/etc/etc_controller.py
+    Страница НЕ:
+
+        - изменяет database.py;
+        - выполняет SQL напрямую;
+        - управляет календарём;
+        - создаёт прогнозы;
+        - применяет параметры;
+        - изменяет model_parameters;
+        - изменяет team_passports;
+        - изменяет predictions;
+        - изменяет historical facts.
+
+    Вся ETC-логика должна находиться
+    внутри ETCController и его внутренних модулей.
 
 ENTRY POINT:
 
     main()
 
-Это обязательно, потому что основной загрузчик FAJ
-импортирует:
+Основной загрузчик FAJ импортирует:
 
     from app.pages.etc import main
+
 ============================================================
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import streamlit as st
 
@@ -67,7 +79,7 @@ from app.etc.etc_controller import ETCController
 # ============================================================
 
 APP_VERSION = "12.1"
-ETC_PAGE_VERSION = "1.0"
+ETC_PAGE_VERSION = "1.1"
 
 PAGE_TITLE = "FAJ ETC"
 PAGE_ICON = "🧠"
@@ -80,10 +92,14 @@ PAGE_ICON = "🧠"
 @st.cache_resource
 def get_etc_controller() -> ETCController:
     """
-    Создаёт единый ETCController для Streamlit session.
+    Создаёт ETCController.
 
-    Вся работа с БД выполняется через FAJDatabase,
-    а ETC-логика — через ETCController.
+    ВАЖНО:
+
+        UI не управляет БД самостоятельно.
+
+    FAJDatabase передаётся в ETCController,
+    после чего вся ETC-логика работает через controller.
     """
 
     db = FAJDatabase()
@@ -94,30 +110,149 @@ def get_etc_controller() -> ETCController:
 
 
 # ============================================================
-# MAIN
+# SAFE HELPERS
 # ============================================================
 
-def main() -> None:
+def _safe_dict(value: Any) -> Dict[str, Any]:
     """
-    Главная функция страницы ETC.
-
-    Именно эту функцию импортирует основной
-    Streamlit-роутер FAJ.
+    Безопасно приводит значение к dict.
     """
 
-    # ========================================================
-    # PAGE CONFIG
-    # ========================================================
+    if isinstance(value, dict):
+        return value
 
-    st.set_page_config(
-        page_title=PAGE_TITLE,
-        page_icon=PAGE_ICON,
-        layout="wide",
+    return {}
+
+
+def _safe_list(value: Any) -> List[Any]:
+    """
+    Безопасно приводит значение к list.
+    """
+
+    if isinstance(value, list):
+        return value
+
+    return []
+
+
+def _get_status_value(
+    status: Dict[str, Any],
+    key: str,
+    default: Any = None,
+) -> Any:
+    """
+    Безопасно получает значение статуса.
+    """
+
+    value = status.get(key)
+
+    if value is None:
+        return default
+
+    return value
+
+
+# ============================================================
+# MEMORY ACCESS
+# ============================================================
+
+def _get_learning_memory(
+    controller: ETCController,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """
+    Получает Learning Memory через ETCController.
+
+    ВАЖНО:
+
+        Страница НЕ вызывает FAJDatabase напрямую
+        для чтения Learning Memory.
+
+    Поддерживаются возможные имена controller API,
+    чтобы UI не был жёстко связан с одной внутренней
+    реализацией ETCController.
+
+    Приоритет:
+
+        1. controller.get_learning_memory()
+        2. controller.learning_memory()
+        3. controller.memory()
+
+    Если API пока отсутствует — возвращается [].
+    """
+
+    methods = (
+        "get_learning_memory",
+        "learning_memory",
+        "memory",
     )
 
-    # ========================================================
-    # HEADER
-    # ========================================================
+    for method_name in methods:
+
+        method = getattr(
+            controller,
+            method_name,
+            None,
+        )
+
+        if not callable(method):
+            continue
+
+        try:
+
+            result = method(
+                limit=limit
+            )
+
+        except TypeError:
+
+            try:
+                result = method()
+
+            except Exception:
+                continue
+
+        except Exception:
+            continue
+
+        if isinstance(result, list):
+            return [
+                row
+                for row in result
+                if isinstance(row, dict)
+            ]
+
+        if isinstance(result, dict):
+
+            rows = result.get(
+                "rows",
+                result.get(
+                    "memory",
+                    result.get(
+                        "data",
+                        [],
+                    ),
+                ),
+            )
+
+            if isinstance(rows, list):
+                return [
+                    row
+                    for row in rows
+                    if isinstance(row, dict)
+                ]
+
+    return []
+
+
+# ============================================================
+# HEADER
+# ============================================================
+
+def _render_header() -> None:
+    """
+    Рендерит заголовок ETC.
+    """
 
     st.title("🧠 FAJ ETC")
 
@@ -126,30 +261,23 @@ def main() -> None:
     )
 
     st.caption(
-        "Постматчевое обучение и эволюция модели FAJ"
+        "Постматчевый анализ, обучение и "
+        "контролируемая эволюция модели FAJ"
     )
 
     st.divider()
 
-    # ========================================================
-    # INITIALIZE
-    # ========================================================
 
-    try:
+# ============================================================
+# STATUS
+# ============================================================
 
-        controller = get_etc_controller()
-
-    except Exception as exc:
-
-        st.error(
-            f"❌ Не удалось инициализировать ETC: {exc}"
-        )
-
-        return
-
-    # ========================================================
-    # STATUS
-    # ========================================================
+def _render_status(
+    controller: ETCController,
+) -> None:
+    """
+    Отображает текущее состояние ETC.
+    """
 
     st.markdown(
         "### 📡 Состояние ETC"
@@ -159,19 +287,16 @@ def main() -> None:
 
         status = controller.status()
 
-        if not isinstance(
-            status,
-            dict,
-        ):
-            status = {}
+        status = _safe_dict(status)
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
 
         with col1:
 
             st.metric(
                 "Статус",
-                status.get(
+                _get_status_value(
+                    status,
                     "status",
                     "unknown",
                 ),
@@ -179,12 +304,13 @@ def main() -> None:
 
         with col2:
 
-            pending = status.get(
-                "pending_matches"
+            pending = _get_status_value(
+                status,
+                "pending_matches",
             )
 
             st.metric(
-                "Матчей ожидает обучения",
+                "Ожидает обучения",
                 (
                     "—"
                     if pending is None
@@ -194,25 +320,53 @@ def main() -> None:
 
         with col3:
 
+            version = _get_status_value(
+                status,
+                "version",
+                ETC_PAGE_VERSION,
+            )
+
             st.metric(
                 "Версия ETC",
-                status.get(
-                    "version",
-                    ETC_PAGE_VERSION,
+                version,
+            )
+
+        with col4:
+
+            processed = _get_status_value(
+                status,
+                "processed_matches",
+            )
+
+            st.metric(
+                "Обработано",
+                (
+                    "—"
+                    if processed is None
+                    else processed
                 ),
             )
 
     except Exception as exc:
 
         st.warning(
-            f"⚠️ Не удалось получить статус ETC: {exc}"
+            "⚠️ Не удалось получить статус ETC: "
+            f"{exc}"
         )
 
     st.divider()
 
-    # ========================================================
-    # CONTROL PANEL
-    # ========================================================
+
+# ============================================================
+# CONTROL PANEL
+# ============================================================
+
+def _render_control_panel(
+    controller: ETCController,
+) -> None:
+    """
+    Панель управления ETC.
+    """
 
     st.markdown(
         "### ⚙️ Управление ETC"
@@ -228,6 +382,7 @@ def main() -> None:
             max_value=1000,
             value=50,
             step=1,
+            key="etc_batch_limit",
         )
 
     with col2:
@@ -235,15 +390,14 @@ def main() -> None:
         force = st.checkbox(
             "Force mode",
             value=False,
+            key="etc_force_mode",
             help=(
                 "Позволяет ETC продолжать обработку "
                 "после ошибки отдельного матча."
             ),
         )
 
-    # ========================================================
-    # RUN
-    # ========================================================
+    st.markdown("")
 
     if st.button(
         "🧠 Запустить ETC",
@@ -268,24 +422,21 @@ def main() -> None:
             except Exception as exc:
 
                 st.error(
-                    f"❌ Критическая ошибка ETC: {exc}"
+                    "❌ Критическая ошибка ETC:\n\n"
+                    f"{exc}"
                 )
 
                 return
 
         finished = datetime.now()
 
-        st.session_state[
-            "etc_last_result"
-        ] = result
-
-        # ----------------------------------------------------
-        # OPTIONAL TIMING
-        # ----------------------------------------------------
-
         elapsed = (
             finished - started
         ).total_seconds()
+
+        st.session_state[
+            "etc_last_result"
+        ] = _safe_dict(result)
 
         st.session_state[
             "etc_last_elapsed"
@@ -293,151 +444,244 @@ def main() -> None:
 
         st.rerun()
 
-    # ========================================================
-    # LAST RESULT
-    # ========================================================
 
-    result: Optional[
-        Dict[str, Any]
-    ] = st.session_state.get(
+# ============================================================
+# RESULT
+# ============================================================
+
+def _render_last_result() -> None:
+    """
+    Отображает результат последнего ETC-run.
+    """
+
+    result = st.session_state.get(
         "etc_last_result"
     )
 
-    if result is not None:
+    if not isinstance(result, dict):
+        return
 
-        st.divider()
+    st.divider()
+
+    st.markdown(
+        "### 📊 Последний ETC-run"
+    )
+
+    status_value = result.get(
+        "status",
+        "unknown",
+    )
+
+    # --------------------------------------------------------
+    # STATUS MESSAGE
+    # --------------------------------------------------------
+
+    if status_value == "completed":
+
+        st.success(
+            "✅ ETC успешно завершён"
+        )
+
+    elif status_value == "nothing_to_process":
+
+        st.info(
+            "⏭️ Нет новых завершённых "
+            "матчей для обучения"
+        )
+
+    elif status_value == "completed_with_errors":
+
+        st.warning(
+            "⚠️ ETC завершён с ошибками"
+        )
+
+    else:
+
+        st.error(
+            f"❌ ETC: {status_value}"
+        )
+
+    # --------------------------------------------------------
+    # METRICS
+    # --------------------------------------------------------
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+
+        st.metric(
+            "Batch",
+            result.get(
+                "batch_size",
+                0,
+            ),
+        )
+
+    with col2:
+
+        st.metric(
+            "Обработано",
+            result.get(
+                "processed",
+                0,
+            ),
+        )
+
+    with col3:
+
+        st.metric(
+            "Learning events",
+            result.get(
+                "learning_events",
+                0,
+            ),
+        )
+
+    with col4:
+
+        st.metric(
+            "Memory events",
+            result.get(
+                "memory_events",
+                0,
+            ),
+        )
+
+    # --------------------------------------------------------
+    # OPTIONAL ETC METRICS
+    # --------------------------------------------------------
+
+    optional_metrics = (
+        (
+            "Ошибки",
+            "errors",
+        ),
+        (
+            "xG calibration",
+            "xg_calibrations",
+        ),
+        (
+            "Proposals",
+            "proposals_created",
+        ),
+    )
+
+    available_metrics = []
+
+    for label, key in optional_metrics:
+
+        if key in result:
+
+            available_metrics.append(
+                (
+                    label,
+                    key,
+                    result.get(key, 0),
+                )
+            )
+
+    if available_metrics:
 
         st.markdown(
-            "### 📊 Последний ETC-run"
+            "#### Дополнительные показатели"
         )
 
-        status_value = result.get(
-            "status",
-            "unknown",
+        columns = st.columns(
+            len(available_metrics)
         )
 
-        # ----------------------------------------------------
-        # STATUS MESSAGE
-        # ----------------------------------------------------
+        for column, (
+            label,
+            _key,
+            value,
+        ) in zip(
+            columns,
+            available_metrics,
+        ):
 
-        if status_value == "completed":
+            with column:
 
-            st.success(
-                "✅ ETC успешно завершён"
-            )
+                st.metric(
+                    label,
+                    value,
+                )
 
-        elif status_value == "nothing_to_process":
+    # --------------------------------------------------------
+    # ERRORS
+    # --------------------------------------------------------
 
-            st.info(
-                "⏭️ Нет новых завершённых "
-                "матчей для обучения"
-            )
+    errors = result.get(
+        "errors",
+        0,
+    )
 
-        elif status_value == "completed_with_errors":
-
-            st.warning(
-                "⚠️ ETC завершён с ошибками"
-            )
-
-        else:
-
-            st.error(
-                f"❌ ETC: {status_value}"
-            )
-
-        # ----------------------------------------------------
-        # METRICS
-        # ----------------------------------------------------
-
-        col1, col2, col3, col4 = st.columns(4)
-
-        with col1:
-
-            st.metric(
-                "Batch",
-                result.get(
-                    "batch_size",
-                    0,
-                ),
-            )
-
-        with col2:
-
-            st.metric(
-                "Обработано",
-                result.get(
-                    "processed",
-                    0,
-                ),
-            )
-
-        with col3:
-
-            st.metric(
-                "Learning events",
-                result.get(
-                    "learning_events",
-                    0,
-                ),
-            )
-
-        with col4:
-
-            st.metric(
-                "Memory events",
-                result.get(
-                    "memory_events",
-                    0,
-                ),
-            )
-
-        # ----------------------------------------------------
-        # ERRORS
-        # ----------------------------------------------------
-
-        errors = result.get(
-            "errors",
-            0,
-        )
+    if isinstance(errors, list):
 
         if errors:
 
             st.warning(
-                f"⚠️ Ошибок: {errors}"
+                f"⚠️ Ошибок: {len(errors)}"
             )
 
-        # ----------------------------------------------------
-        # MESSAGE
-        # ----------------------------------------------------
+            with st.expander(
+                "Показать ошибки",
+                expanded=False,
+            ):
 
-        message = result.get(
-            "message"
+                for error in errors:
+
+                    st.error(
+                        str(error)
+                    )
+
+    elif errors:
+
+        st.warning(
+            f"⚠️ Ошибок: {errors}"
         )
 
-        if message:
+    # --------------------------------------------------------
+    # MESSAGE
+    # --------------------------------------------------------
 
-            st.caption(
-                str(message)
-            )
+    message = result.get(
+        "message"
+    )
 
-        # ----------------------------------------------------
-        # EXECUTION TIME
-        # ----------------------------------------------------
+    if message:
 
-        elapsed = st.session_state.get(
-            "etc_last_elapsed"
+        st.caption(
+            str(message)
         )
 
-        if elapsed is not None:
+    # --------------------------------------------------------
+    # EXECUTION TIME
+    # --------------------------------------------------------
 
-            st.caption(
-                f"⏱ Время выполнения: "
-                f"{elapsed:.2f} сек."
-            )
+    elapsed = st.session_state.get(
+        "etc_last_elapsed"
+    )
 
-    # ========================================================
-    # MEMORY
-    # ========================================================
+    if elapsed is not None:
+
+        st.caption(
+            f"⏱ Время выполнения: "
+            f"{float(elapsed):.2f} сек."
+        )
+
+
+# ============================================================
+# LEARNING MEMORY
+# ============================================================
+
+def _render_learning_memory(
+    controller: ETCController,
+) -> None:
+    """
+    Отображает Learning Memory.
+
+    Страница получает данные только через ETCController.
+    """
 
     st.divider()
 
@@ -445,38 +689,36 @@ def main() -> None:
         "### 🧠 Learning Memory"
     )
 
-    try:
+    rows = _get_learning_memory(
+        controller=controller,
+        limit=50,
+    )
 
-        db = FAJDatabase()
+    if rows:
 
-        rows = db.get_learning_memory(
-            limit=50
+        st.dataframe(
+            rows,
+            use_container_width=True,
+            hide_index=True,
         )
 
-        if rows:
+    else:
 
-            st.dataframe(
-                rows,
-                use_container_width=True,
-                hide_index=True,
-            )
-
-        else:
-
-            st.info(
-                "Learning Memory пока пуста."
-            )
-
-    except Exception as exc:
-
-        st.warning(
-            "⚠️ Не удалось прочитать "
-            f"Learning Memory: {exc}"
+        st.info(
+            "Learning Memory пока пуста "
+            "или API памяти ещё не подключён "
+            "к ETCController."
         )
 
-    # ========================================================
-    # ETC ARCHITECTURE
-    # ========================================================
+
+# ============================================================
+# ARCHITECTURE
+# ============================================================
+
+def _render_architecture() -> None:
+    """
+    Показывает архитектуру ETC.
+    """
 
     st.divider()
 
@@ -487,49 +729,275 @@ def main() -> None:
 
         st.code(
             """
-Streamlit ETC Page
-        │
-        ▼
-      main()
-        │
-        ▼
-ETCController
-        │
-        ├── BatchController
-        │       │
-        │       ▼
-        │   завершённые матчи
-        │
-        ├── StatisticalAnalyzer
-        │       │
-        │       ▼
-        │   статистический анализ
-        │
-        ├── ETC LearningEngine
-        │       │
-        │       ▼
-        │   learning events
-        │
-        └── LearningMemory
-                │
-                ▼
-        FAJDatabase
-                │
-                ▼
-        SQLite / database.py
+                    FAJ Platform
+                         │
+                         ▼
+                 Streamlit ETC Page
+                         │
+                         ▼
+                  ETCController
+                         │
+          ┌──────────────┼──────────────┐
+          │              │              │
+          ▼              ▼              ▼
+    BatchController  Error Analyzer  Observed xG
+          │              │              │
+          │              ▼              ▼
+          │         Error Patterns  XG Calibration
+          │              │              │
+          └──────────────┼──────────────┘
+                         ▼
+                  Statistical Analysis
+                         │
+                         ▼
+                  Learning Analyzer
+                         │
+                         ▼
+                 Parameter Optimizer
+                         │
+                         ▼
+                  Proposal ONLY
+                         │
+                         ▼
+                  Evolution Engine
+                         │
+                         ▼
+                 model_parameters
+
+                         ▲
+                         │
+                  Learning Memory
+                         │
+                         ▼
+                    FAJDatabase
+                         │
+                         ▼
+                       SQLite
             """,
             language="text",
         )
 
-    # ========================================================
-    # FOOTER
-    # ========================================================
+        st.caption(
+            "ETC анализирует факты и формирует "
+            "сигналы/предложения. Изменение параметров "
+            "не выполняется автоматически этим UI."
+        )
+
+
+# ============================================================
+# DIAGNOSTICS
+# ============================================================
+
+def _render_diagnostics(
+    controller: ETCController,
+) -> None:
+    """
+    Неблокирующая диагностическая информация.
+
+    Помогает увидеть, какие ETC-компоненты реально
+    доступны в текущей сборке проекта.
+    """
+
+    st.divider()
+
+    with st.expander(
+        "🔎 ETC Diagnostics",
+        expanded=False,
+    ):
+
+        components = (
+            "BatchController",
+            "PredictionErrorAnalyzer",
+            "ObservedXG",
+            "XGCalibration",
+            "StatisticalAnalyzer",
+            "LearningEngine",
+            "ParameterOptimizer",
+            "LearningMemory",
+        )
+
+        rows = []
+
+        for component in components:
+
+            available = False
+
+            controller_name = component
+
+            if component == "LearningEngine":
+
+                available = any(
+                    hasattr(
+                        controller,
+                        name,
+                    )
+                    for name in (
+                        "run_learning",
+                        "learning_engine",
+                        "learn",
+                    )
+                )
+
+            elif component == "LearningMemory":
+
+                available = any(
+                    callable(
+                        getattr(
+                            controller,
+                            name,
+                            None,
+                        )
+                    )
+                    for name in (
+                        "get_learning_memory",
+                        "learning_memory",
+                        "memory",
+                    )
+                )
+
+            else:
+
+                available = any(
+                    hasattr(
+                        controller,
+                        name,
+                    )
+                    for name in (
+                        component.lower(),
+                        f"_{component.lower()}",
+                    )
+                )
+
+            rows.append(
+                {
+                    "Component": controller_name,
+                    "Controller API": (
+                        "available"
+                        if available
+                        else "not exposed"
+                    ),
+                }
+            )
+
+        st.dataframe(
+            rows,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+# ============================================================
+# FOOTER
+# ============================================================
+
+def _render_footer() -> None:
+    """
+    Footer страницы.
+    """
 
     st.caption(
         f"FAJ Platform v{APP_VERSION} • "
-        f"ETC • Evolution Training Center • "
-        f"Append-only learning architecture"
+        f"ETC Page v{ETC_PAGE_VERSION} • "
+        f"Evolution Training Center • "
+        f"SQLite • Append-only learning architecture"
     )
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main() -> None:
+    """
+    Главная функция страницы ETC.
+
+    Именно её импортирует основной Streamlit-роутер:
+
+        from app.pages.etc import main
+    """
+
+    # --------------------------------------------------------
+    # PAGE CONFIG
+    # --------------------------------------------------------
+
+    st.set_page_config(
+        page_title=PAGE_TITLE,
+        page_icon=PAGE_ICON,
+        layout="wide",
+    )
+
+    # --------------------------------------------------------
+    # HEADER
+    # --------------------------------------------------------
+
+    _render_header()
+
+    # --------------------------------------------------------
+    # INITIALIZE CONTROLLER
+    # --------------------------------------------------------
+
+    try:
+
+        controller = get_etc_controller()
+
+    except Exception as exc:
+
+        st.error(
+            "❌ Не удалось инициализировать ETC.\n\n"
+            f"{exc}"
+        )
+
+        st.stop()
+
+    # --------------------------------------------------------
+    # STATUS
+    # --------------------------------------------------------
+
+    _render_status(
+        controller
+    )
+
+    # --------------------------------------------------------
+    # CONTROL PANEL
+    # --------------------------------------------------------
+
+    _render_control_panel(
+        controller
+    )
+
+    # --------------------------------------------------------
+    # LAST RESULT
+    # --------------------------------------------------------
+
+    _render_last_result()
+
+    # --------------------------------------------------------
+    # MEMORY
+    # --------------------------------------------------------
+
+    _render_learning_memory(
+        controller
+    )
+
+    # --------------------------------------------------------
+    # ARCHITECTURE
+    # --------------------------------------------------------
+
+    _render_architecture()
+
+    # --------------------------------------------------------
+    # DIAGNOSTICS
+    # --------------------------------------------------------
+
+    _render_diagnostics(
+        controller
+    )
+
+    # --------------------------------------------------------
+    # FOOTER
+    # --------------------------------------------------------
+
+    _render_footer()
 
 
 # ============================================================
