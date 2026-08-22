@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1 — MEMORY HARDENED
-MATCH MANAGER v3.0
+MATCH MANAGER v3.1
 ============================================================
 
 НАЗНАЧЕНИЕ:
@@ -14,6 +14,7 @@ MATCH MANAGER v3.0
     - создание матча;
     - получение матчей;
     - получение матча по ID;
+    - получение матча по UUID;
     - получение матчей тура;
     - проверка дублей;
     - удаление отдельного матча;
@@ -52,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 
 class MatchManager:
-    """Менеджер матчей FAJ v3.0."""
+    """Менеджер матчей FAJ v3.1."""
 
     def __init__(self, db: Optional[FAJDatabase] = None):
         self.db = db or FAJDatabase()
@@ -132,12 +133,8 @@ class MatchManager:
 
     def get_match(self, match_id: int) -> Optional[Dict[str, Any]]:
         """
-        Получает один матч.
-
-        Прямой READ-only SQL оставлен здесь только потому,
-        что database.py пока не содержит get_match_by_id().
+        Получает один матч по ID.
         """
-
         if match_id is None:
             return None
 
@@ -148,9 +145,16 @@ class MatchManager:
 
             cursor.execute(
                 """
-                SELECT *
-                FROM matches
-                WHERE id = ?
+                SELECT
+                    m.*,
+                    ht.name AS home_team_name,
+                    at.name AS away_team_name,
+                    r.round_number
+                FROM matches m
+                LEFT JOIN teams ht ON ht.id = m.home_team_id
+                LEFT JOIN teams at ON at.id = m.away_team_id
+                LEFT JOIN rounds r ON r.id = m.round_id
+                WHERE m.id = ?
                 LIMIT 1
                 """,
                 (match_id,),
@@ -171,6 +175,9 @@ class MatchManager:
         self,
         match_uuid: str,
     ) -> Optional[Dict[str, Any]]:
+        """
+        Получает матч по UUID через FAJDatabase.
+        """
         if not match_uuid:
             return None
 
@@ -186,7 +193,9 @@ class MatchManager:
         self,
         round_id: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-
+        """
+        Получает матчи. Если round_id указан — только матчи этого тура.
+        """
         rows = self.db.get_matches(round_id=round_id)
 
         return [dict(row) for row in rows]
@@ -199,7 +208,9 @@ class MatchManager:
         self,
         round_id: Optional[int],
     ) -> List[Dict[str, Any]]:
-
+        """
+        Получает матчи конкретного тура.
+        """
         if round_id is None:
             return []
 
@@ -214,7 +225,9 @@ class MatchManager:
         match_id: Optional[int] = None,
         match_uuid: Optional[str] = None,
     ) -> bool:
-
+        """
+        Проверяет существование матча по ID или UUID.
+        """
         if match_id is not None:
             return self.get_match(match_id) is not None
 
@@ -311,6 +324,9 @@ class MatchManager:
         self,
         round_id: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
+        """
+        Возвращает предстоящие матчи.
+        """
 
         matches = self.get_matches(round_id)
 
@@ -329,6 +345,9 @@ class MatchManager:
         self,
         round_id: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
+        """
+        Возвращает завершённые матчи.
+        """
 
         matches = self.get_matches(round_id)
 
@@ -350,6 +369,9 @@ class MatchManager:
         self,
         data: Dict[str, Any],
     ) -> Dict[str, Any]:
+        """
+        Валидирует данные матча перед сохранением.
+        """
 
         errors: List[str] = []
         warnings: List[str] = []
@@ -401,6 +423,9 @@ class MatchManager:
         self,
         matches: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
+        """
+        Импортирует список матчей в календарь.
+        """
 
         if not isinstance(matches, list):
             raise TypeError("matches must be a list")
@@ -461,6 +486,9 @@ class MatchManager:
     # ========================================================
 
     def get_calendar_status(self) -> Dict[str, Any]:
+        """
+        Возвращает статус календаря.
+        """
 
         matches = self.get_matches()
 
@@ -495,6 +523,7 @@ class MatchManager:
 
 
 def get_match_manager() -> MatchManager:
+    """Фабрика для получения экземпляра MatchManager."""
     return MatchManager()
 
 
@@ -511,7 +540,7 @@ if __name__ == "__main__":
         status = manager.get_calendar_status()
 
         print("=" * 50)
-        print(" FAJ MATCH MANAGER v3.0")
+        print(" FAJ MATCH MANAGER v3.1")
         print("=" * 50)
         print(f"Матчей:      {status['total_matches']}")
         print(f"Предстоящих: {status['scheduled']}")
