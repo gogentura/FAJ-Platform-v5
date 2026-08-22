@@ -2092,6 +2092,65 @@ class FAJDatabase:
         finally:
             conn.close()
     
+    def unlock_match_result(self, match_id: int) -> bool:
+        """
+        Снимает LOCK только с результата матча.
+        Используется для восстановления отсутствующих
+        фактических данных статистики/xG.
+        
+        ВАЖНО:
+            - счёт не удаляется;
+            - матч не удаляется;
+            - существующие факты не удаляются;
+            - после повторного сохранения факт снова LOCKED.
+        """
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Снимаем LOCK только с match_results
+            # и matches, если они были залочены
+            cursor.execute("""
+                UPDATE match_results
+                SET fact_status = 'pending'
+                WHERE match_id = ?
+                  AND fact_status = 'locked'
+            """, (match_id,))
+            
+            # Обновляем matches для согласованности
+            cursor.execute("""
+                UPDATE matches
+                SET fact_status = 'pending', updated_at = ?
+                WHERE id = ?
+                  AND fact_status = 'locked'
+            """, (datetime.now().isoformat(), match_id))
+            
+            conn.commit()
+            
+            if cursor.rowcount == 0:
+                # Если ничего не обновилось — возможно, уже разлочено
+                logger.debug(
+                    "MATCH RESULT ALREADY UNLOCKED | match_id=%s",
+                    match_id
+                )
+                return True
+            
+            logger.info(
+                "MATCH RESULT UNLOCKED | match_id=%s",
+                match_id
+            )
+            return True
+            
+        except Exception as e:
+            conn.rollback()
+            logger.error(
+                "Unlock match result error: %s",
+                e
+            )
+            return False
+        finally:
+            conn.close()
+    
     def is_result_locked(self, match_id) -> bool:
         conn = self.get_connection()
         try:
