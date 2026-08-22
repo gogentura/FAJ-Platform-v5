@@ -11,48 +11,115 @@ app/etc/parameter_optimizer.py
 
 НАЗНАЧЕНИЕ
 -----------
-Формирование предложений по изменению параметров FAJ
-на основании накопленных сигналов обучения ETC.
+Формирование предложений по изменению модельных параметров
+FAJ на основании накопленных сигналов ETC.
 
-ЦЕПОЧКА:
+АРХИТЕКТУРА:
 
-    learning_records
+    MATCH RESULT
           ↓
-    LearningAnalyzer
+    FACTS / GOLD
           ↓
-    Error Patterns / Signals
+    ERROR CLASSIFIER
           ↓
-    ParameterOptimizer
+    LEARNING MEMORY
           ↓
-    Parameter Change Proposal
+    LEARNING ANALYZER
           ↓
-    EvolutionEngine
+    ERROR PATTERNS
+          ↓
+    ETC SIGNALS
+          ↓
+    PARAMETER OPTIMIZER
+          ↓
+    PARAMETER PROPOSALS
+          ↓
+    [MANUAL / EVOLUTION ENGINE]
           ↓
     model_parameters
+          ↓
+    NEXT LEARNING CYCLE
 
 ВАЖНО
 ------
-Этот модуль НЕ изменяет параметры модели.
+ParameterOptimizer НЕ является Evolution Engine.
+
+Он НЕ применяет изменения.
 
 Он только отвечает на вопрос:
 
-    "Есть ли достаточно оснований предложить изменение?"
+    "Есть ли достаточно накопленных доказательств,
+     чтобы предложить изменение конкретного
+     модельного параметра?"
+
+============================================================
+ЖЁСТКИЕ ПРИНЦИПЫ FAJ
+============================================================
 
 МОДУЛЬ НЕ:
+
     - не изменяет database.py;
-    - не изменяет model_parameters;
-    - не изменяет team_passports;
+    - не изменяет match_results;
     - не изменяет predictions;
-    - не выполняет обучение;
-    - не применяет изменения автоматически.
+    - не изменяет gold;
+    - не изменяет learning_memory;
+    - не изменяет team_passports;
+    - не изменяет FAJ Club Rating;
+    - не изменяет model_parameters;
+    - не запускает обучение;
+    - не применяет proposal автоматически;
+    - не удаляет исторические данные.
 
 МОДУЛЬ:
-    - анализирует сигналы ETC;
-    - сопоставляет ошибки с параметрами;
-    - рассчитывает направление изменения;
-    - рассчитывает величину предлагаемого изменения;
+
+    - читает сигналы ETC;
+    - проверяет достаточность доказательств;
+    - определяет потенциальный параметр;
+    - определяет направление;
+    - рассчитывает малое изменение;
     - формирует proposal;
-    - устанавливает уровень уверенности.
+    - присваивает confidence;
+    - присваивает priority;
+    - объясняет причину предложения.
+
+============================================================
+ВАЖНОЕ РАЗДЕЛЕНИЕ
+============================================================
+
+FAJ CLUB RATING
+    ↓
+    отдельный динамический рейтинг команды.
+
+MODEL PARAMETERS
+    ↓
+    параметры математической модели.
+
+Поэтому:
+
+    "faj_rating" НЕ является параметром,
+    который должен изменяться этим модулем.
+
+Изменение Club Rating выполняется:
+
+    match_result
+         ↓
+    club_rating_updater.py
+         ↓
+    team_passport
+         +
+    team_history
+
+А изменение model_parameters должно проходить:
+
+    ETC signals
+         ↓
+    ParameterOptimizer
+         ↓
+    proposal
+         ↓
+    Evolution Engine / controlled approval
+         ↓
+    model_parameters
 
 ============================================================
 """
@@ -60,26 +127,169 @@ app/etc/parameter_optimizer.py
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional
 
 
 logger = logging.getLogger(__name__)
 
-MODULE_VERSION = "1.0"
+
+MODULE_VERSION = "2.0"
 MODULE_NAME = "ETC Parameter Optimizer"
 
 
 # ============================================================
-# LIMITS
+# SAFETY LIMITS
 # ============================================================
 
+# Минимальное доверие для предложения.
 MIN_CONFIDENCE = 0.60
+
+# Минимальная сила сигнала.
 MIN_SIGNAL_STRENGTH = 0.30
+
+# Минимальное количество подтверждений.
 MIN_PATTERN_COUNT = 3
 
+# Максимальное изменение параметра за один proposal.
 MAX_PARAMETER_DELTA = 0.05
+
+# Базовое изменение.
 DEFAULT_PARAMETER_DELTA = 0.02
+
+
+# ============================================================
+# PARAMETER LIMITS
+# ============================================================
+
+"""
+Безопасные границы параметров FAJ.
+
+ВАЖНО:
+
+Это НЕ новая архитектура весов.
+
+Это только safety limits для proposal.
+
+Они не применяются автоматически.
+"""
+
+PARAMETER_LIMITS: Dict[str, tuple[float, float]] = {
+
+    # Основные FAJ model weights.
+    "attack": (0.00, 1.00),
+    "defense": (0.00, 1.00),
+    "control": (0.00, 1.00),
+    "efficiency": (0.00, 1.00),
+    "mentality": (0.00, 1.00),
+    "discipline": (0.00, 1.00),
+    "fitness": (0.00, 1.00),
+    "predictability": (0.00, 1.00),
+    "opposition": (0.00, 1.00),
+
+    # Тактические компоненты.
+    "tempo": (0.00, 1.00),
+    "press": (0.00, 1.00),
+    "transition": (0.00, 1.00),
+    "tactical": (0.00, 1.00),
+    "coach": (0.00, 1.00),
+    "form": (0.00, 1.00),
+
+    # xG calibration component.
+    "xg_scale": (0.10, 5.00),
+}
+
+
+# ============================================================
+# PARAMETER MAPPING
+# ============================================================
+
+"""
+Сопоставление причин ошибок с модельными параметрами.
+
+ВАЖНО:
+
+Club Rating здесь отсутствует намеренно.
+
+faj_rating:
+    НЕ параметр optimizer.
+
+FAJ Rating обновляется club_rating_updater.py.
+"""
+
+CAUSE_PARAMETER_MAP: Dict[str, str] = {
+
+    # --------------------------------------------------------
+    # ATTACK
+    # --------------------------------------------------------
+
+    "home_attack_overestimated":
+        "attack",
+
+    "home_attack_underestimated":
+        "attack",
+
+    "away_attack_overestimated":
+        "attack",
+
+    "away_attack_underestimated":
+        "attack",
+
+    # --------------------------------------------------------
+    # XG
+    # --------------------------------------------------------
+
+    "xg_overestimated":
+        "xg_scale",
+
+    "xg_underestimated":
+        "xg_scale",
+
+    # --------------------------------------------------------
+    # TACTICAL / TEMPO
+    # --------------------------------------------------------
+
+    "tempo_overestimated":
+        "tempo",
+
+    "tempo_underestimated":
+        "tempo",
+
+    "press_overestimated":
+        "press",
+
+    "press_underestimated":
+        "press",
+
+    "transition_overestimated":
+        "transition",
+
+    "transition_underestimated":
+        "transition",
+
+    # --------------------------------------------------------
+    # FORM / TEAM STATE
+    # --------------------------------------------------------
+
+    "form_overestimated":
+        "form",
+
+    "form_underestimated":
+        "form",
+
+    # --------------------------------------------------------
+    # TACTICAL BALANCE
+    # --------------------------------------------------------
+
+    "tactical_misread":
+        "tactical",
+
+    "transition_misread":
+        "transition",
+
+    "press_misread":
+        "press",
+}
 
 
 # ============================================================
@@ -89,9 +299,11 @@ DEFAULT_PARAMETER_DELTA = 0.02
 @dataclass
 class ParameterProposal:
     """
-    Предложение ETC по изменению параметра.
+    Предложение ETC по изменению модельного параметра.
 
-    Это НЕ применённое изменение.
+    Это только аналитическое предложение.
+
+    Оно НЕ означает, что параметр уже изменён.
     """
 
     parameter_name: str
@@ -132,7 +344,10 @@ class ParameterOptimizer:
     """
     ETC Parameter Optimizer.
 
-    Только формирует предложения.
+    Только аналитический слой.
+
+    НЕ изменяет БД.
+    НЕ изменяет параметры.
     """
 
     def __init__(
@@ -145,12 +360,18 @@ class ParameterOptimizer:
 
         self.min_confidence = max(
             0.0,
-            min(1.0, float(min_confidence)),
+            min(
+                1.0,
+                float(min_confidence),
+            ),
         )
 
         self.min_signal_strength = max(
             0.0,
-            min(1.0, float(min_signal_strength)),
+            min(
+                1.0,
+                float(min_signal_strength),
+            ),
         )
 
         self.min_pattern_count = max(
@@ -172,45 +393,56 @@ class ParameterOptimizer:
         cause_type: str,
     ) -> Optional[str]:
         """
-        Сопоставляет тип ошибки с параметром модели.
+        Сопоставляет сигнал ETC с модельным параметром.
 
-        Здесь намеренно нет агрессивного автоматического
-        маппинга всех ошибок.
+        Никакого изменения здесь не происходит.
         """
 
-        mapping = {
+        error_type = (
+            str(error_type)
+            if error_type is not None
+            else "unknown"
+        )
 
-            "home_attack_overestimated":
-                "attack",
+        cause_type = (
+            str(cause_type)
+            if cause_type is not None
+            else "unknown"
+        )
 
-            "home_attack_underestimated":
-                "attack",
+        # Сначала используем наиболее точную причину.
+        parameter = CAUSE_PARAMETER_MAP.get(
+            cause_type
+        )
 
-            "away_attack_overestimated":
-                "attack",
+        if parameter:
+            return parameter
 
-            "away_attack_underestimated":
-                "attack",
+        # ----------------------------------------------------
+        # Общие fallback-сигналы
+        # ----------------------------------------------------
 
-            "match_balance_misread":
-                "faj_rating",
-
-        }
-
-        if cause_type in mapping:
-            return mapping[cause_type]
-
-        if error_type == "over25_miss":
-            return "tempo"
-
-        if error_type == "over35_miss":
+        if error_type in (
+            "over25_miss",
+            "over35_miss",
+        ):
             return "tempo"
 
         if error_type == "btts_miss":
             return "attack"
 
-        if error_type == "winner_miss":
-            return "faj_rating"
+        # winner_miss намеренно НЕ маппится
+        # на faj_rating.
+        #
+        # Ошибка winner может быть вызвана:
+        #   - балансом;
+        #   - home advantage;
+        #   - xG;
+        #   - формой;
+        #   - тактикой.
+        #
+        # Поэтому недостаточно доказательств
+        # для автоматического предложения.
 
         return None
 
@@ -223,18 +455,20 @@ class ParameterOptimizer:
         cause_type: str,
     ) -> str:
         """
-        Определяет направление изменения.
+        Определяет направление потенциального изменения.
         """
 
-        if cause_type in (
-            "home_attack_overestimated",
-            "away_attack_overestimated",
+        cause_type = str(
+            cause_type or ""
+        )
+
+        if cause_type.endswith(
+            "_overestimated"
         ):
             return "decrease"
 
-        if cause_type in (
-            "home_attack_underestimated",
-            "away_attack_underestimated",
+        if cause_type.endswith(
+            "_underestimated"
         ):
             return "increase"
 
@@ -249,30 +483,24 @@ class ParameterOptimizer:
         signal: Dict[str, Any],
     ) -> float:
         """
-        Рассчитывает предлагаемую величину изменения.
+        Рассчитывает величину proposal.
 
-        Изменение ограничивается MAX_PARAMETER_DELTA.
+        Величина намеренно маленькая.
+
+        ETC не должен делать резкие изменения модели
+        после нескольких матчей.
         """
 
-        confidence = float(
-            signal.get(
-                "confidence",
-                0.0,
-            )
+        confidence = self._safe_float(
+            signal.get("confidence")
         )
 
-        strength = float(
-            signal.get(
-                "signal_strength",
-                0.0,
-            )
+        strength = self._safe_float(
+            signal.get("signal_strength")
         )
 
-        count = int(
-            signal.get(
-                "count",
-                0,
-            )
+        count = self._safe_int(
+            signal.get("count")
         )
 
         if count < self.min_pattern_count:
@@ -284,14 +512,20 @@ class ParameterOptimizer:
         if strength < self.min_signal_strength:
             return 0.0
 
+        # ----------------------------------------------------
+        # Базовое изменение
+        # ----------------------------------------------------
+
         base = DEFAULT_PARAMETER_DELTA
 
-        factor = (
+        # Confidence factor.
+        confidence_factor = (
             0.5
             + 0.5 * confidence
         )
 
-        factor *= (
+        # Evidence factor.
+        evidence_factor = (
             0.5
             + 0.5 * min(
                 1.0,
@@ -299,14 +533,27 @@ class ParameterOptimizer:
             )
         )
 
-        delta = base * factor
+        # Signal strength factor.
+        strength_factor = (
+            0.5
+            + 0.5 * strength
+        )
+
+        delta = (
+            base
+            * confidence_factor
+            * evidence_factor
+            * strength_factor
+        )
+
+        delta = min(
+            delta,
+            self.max_parameter_delta,
+        )
 
         return round(
-            min(
-                delta,
-                self.max_parameter_delta,
-            ),
-            4,
+            delta,
+            6,
         )
 
     # ========================================================
@@ -314,37 +561,92 @@ class ParameterOptimizer:
     # ========================================================
 
     @staticmethod
+    def _get_current_value(
+        parameter_name: str,
+        current_parameters: Optional[
+            Dict[str, float]
+        ],
+    ) -> Optional[float]:
+
+        if not current_parameters:
+            return None
+
+        value = current_parameters.get(
+            parameter_name
+        )
+
+        if value is None:
+            return None
+
+        try:
+            return float(value)
+
+        except (TypeError, ValueError):
+            return None
+
+    # ========================================================
+    # PROPOSED VALUE
+    # ========================================================
+
+    @staticmethod
     def calculate_proposed_value(
         current_value: Optional[float],
         delta: float,
         direction: str,
+        parameter_name: Optional[str] = None,
     ) -> Optional[float]:
         """
-        Рассчитывает новое значение.
+        Рассчитывает proposed_value.
 
-        Если текущее значение неизвестно,
-        proposal всё равно может существовать,
-        но proposed_value будет None.
+        Значение дополнительно ограничивается
+        safety limits параметра.
         """
 
         if current_value is None:
             return None
 
-        current = float(current_value)
+        current = float(
+            current_value
+        )
 
         if direction == "increase":
-            return round(
-                current + delta,
-                6,
+
+            proposed = current + delta
+
+        elif direction == "decrease":
+
+            proposed = current - delta
+
+        else:
+
+            proposed = current
+
+        # ----------------------------------------------------
+        # SAFETY LIMITS
+        # ----------------------------------------------------
+
+        if parameter_name:
+
+            limits = PARAMETER_LIMITS.get(
+                parameter_name
             )
 
-        if direction == "decrease":
-            return round(
-                current - delta,
-                6,
-            )
+            if limits:
 
-        return current
+                minimum, maximum = limits
+
+                proposed = max(
+                    minimum,
+                    min(
+                        maximum,
+                        proposed,
+                    ),
+                )
+
+        return round(
+            proposed,
+            6,
+        )
 
     # ========================================================
     # PRIORITY
@@ -355,22 +657,55 @@ class ParameterOptimizer:
         count: int,
         confidence: float,
         severity: float,
+        signal_strength: float,
     ) -> str:
+        """
+        Определяет приоритет предложения.
+        """
 
         if (
             count >= 5
             and confidence >= 0.80
-            and severity >= 3
+            and severity >= 3.0
+            and signal_strength >= 0.60
         ):
             return "high"
 
         if (
             count >= 3
             and confidence >= 0.60
+            and signal_strength >= 0.30
         ):
             return "medium"
 
         return "low"
+
+    # ========================================================
+    # REASON
+    # ========================================================
+
+    @staticmethod
+    def _build_reason(
+        error_type: str,
+        cause_type: str,
+        count: int,
+        confidence: float,
+        signal_strength: float,
+        direction: str,
+        parameter_name: str,
+    ) -> str:
+
+        return (
+            f"Повторяющийся сигнал ETC: "
+            f"error_type={error_type}; "
+            f"cause_type={cause_type}; "
+            f"parameter={parameter_name}; "
+            f"direction={direction}; "
+            f"наблюдений={count}; "
+            f"confidence={confidence:.2f}; "
+            f"signal_strength={signal_strength:.2f}. "
+            f"Требуется отдельная проверка перед применением."
+        )
 
     # ========================================================
     # SINGLE PROPOSAL
@@ -384,8 +719,14 @@ class ParameterOptimizer:
         ] = None,
     ) -> Optional[ParameterProposal]:
         """
-        Создаёт предложение для одного сигнала.
+        Создаёт proposal для одного сигнала.
+
+        Если доказательств недостаточно —
+        возвращает None.
         """
+
+        if not signal:
+            return None
 
         error_type = (
             signal.get("error_type")
@@ -397,43 +738,50 @@ class ParameterOptimizer:
             or "unknown"
         )
 
+        # ----------------------------------------------------
+        # PARAMETER
+        # ----------------------------------------------------
+
         parameter_name = (
             self.map_signal_to_parameter(
-                error_type,
-                cause_type,
+                error_type=error_type,
+                cause_type=cause_type,
             )
         )
 
         if not parameter_name:
+            logger.debug(
+                "No parameter mapping for "
+                "error=%s cause=%s",
+                error_type,
+                cause_type,
+            )
+
             return None
 
-        count = int(
-            signal.get(
-                "count",
-                0,
-            )
+        # ----------------------------------------------------
+        # EVIDENCE
+        # ----------------------------------------------------
+
+        count = self._safe_int(
+            signal.get("count")
         )
 
-        confidence = float(
-            signal.get(
-                "confidence",
-                0.0,
-            )
+        confidence = self._safe_float(
+            signal.get("confidence")
         )
 
-        signal_strength = float(
-            signal.get(
-                "signal_strength",
-                0.0,
-            )
+        signal_strength = self._safe_float(
+            signal.get("signal_strength")
         )
 
-        average_severity = float(
-            signal.get(
-                "average_severity",
-                0.0,
-            )
+        average_severity = self._safe_float(
+            signal.get("average_severity")
         )
+
+        # ----------------------------------------------------
+        # DELTA
+        # ----------------------------------------------------
 
         delta = self.calculate_delta(
             signal
@@ -442,40 +790,68 @@ class ParameterOptimizer:
         if delta <= 0:
             return None
 
+        # ----------------------------------------------------
+        # DIRECTION
+        # ----------------------------------------------------
+
         direction = self.determine_direction(
             cause_type
         )
 
-        current_value = None
+        # Не предлагаем изменение,
+        # если направление неизвестно.
+        if direction == "review":
+            return None
 
-        if current_parameters:
+        # ----------------------------------------------------
+        # CURRENT PARAMETER
+        # ----------------------------------------------------
 
-            current_value = current_parameters.get(
-                parameter_name
+        current_value = (
+            self._get_current_value(
+                parameter_name,
+                current_parameters,
             )
+        )
+
+        # ----------------------------------------------------
+        # PROPOSED VALUE
+        # ----------------------------------------------------
 
         proposed_value = (
             self.calculate_proposed_value(
-                current_value,
-                delta,
-                direction,
+                current_value=current_value,
+                delta=delta,
+                direction=direction,
+                parameter_name=parameter_name,
             )
         )
+
+        # ----------------------------------------------------
+        # PRIORITY
+        # ----------------------------------------------------
 
         priority = (
             self.determine_priority(
-                count,
-                confidence,
-                average_severity,
+                count=count,
+                confidence=confidence,
+                severity=average_severity,
+                signal_strength=signal_strength,
             )
         )
 
-        reason = (
-            f"Повторяющаяся ошибка "
-            f"{error_type}; причина "
-            f"{cause_type}; "
-            f"наблюдений={count}; "
-            f"confidence={confidence:.2f}"
+        # ----------------------------------------------------
+        # REASON
+        # ----------------------------------------------------
+
+        reason = self._build_reason(
+            error_type=error_type,
+            cause_type=cause_type,
+            count=count,
+            confidence=confidence,
+            signal_strength=signal_strength,
+            direction=direction,
+            parameter_name=parameter_name,
         )
 
         return ParameterProposal(
@@ -504,6 +880,8 @@ class ParameterOptimizer:
 
             priority=priority,
 
+            status="proposed",
+
         )
 
     # ========================================================
@@ -520,24 +898,35 @@ class ParameterOptimizer:
         ] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Формирует список предложений.
+        Формирует proposals для всех сигналов.
         """
 
-        proposals = []
+        proposals: List[
+            Dict[str, Any]
+        ] = []
 
         for signal in signals:
 
-            proposal = self.create_proposal(
-                signal=signal,
-                current_parameters=current_parameters,
-            )
+            try:
 
-            if proposal is None:
-                continue
+                proposal = self.create_proposal(
+                    signal=signal,
+                    current_parameters=current_parameters,
+                )
 
-            proposals.append(
-                proposal.to_dict()
-            )
+                if proposal is None:
+                    continue
+
+                proposals.append(
+                    proposal.to_dict()
+                )
+
+            except Exception as exc:
+
+                logger.exception(
+                    "Parameter proposal failed: %s",
+                    exc,
+                )
 
         return proposals
 
@@ -550,11 +939,15 @@ class ParameterOptimizer:
         proposals: List[
             Dict[str, Any]
         ],
-    ) -> List[Dict[str, Any]]:
+    ) -> List[
+        Dict[str, Any]
+    ]:
         """
         Если несколько сигналов предлагают
-        изменить один параметр, оставляем
-        наиболее сильный сигнал.
+        изменение одного параметра, оставляет
+        наиболее доказательный proposal.
+
+        Никаких изменений БД здесь нет.
         """
 
         best: Dict[
@@ -564,9 +957,12 @@ class ParameterOptimizer:
 
         for proposal in proposals:
 
-            parameter = proposal[
+            parameter = proposal.get(
                 "parameter_name"
-            ]
+            )
+
+            if not parameter:
+                continue
 
             if parameter not in best:
 
@@ -589,6 +985,15 @@ class ParameterOptimizer:
                         0.0,
                     )
                 )
+                * max(
+                    1,
+                    int(
+                        existing.get(
+                            "evidence_count",
+                            0,
+                        )
+                    ),
+                )
             )
 
             new_strength = (
@@ -604,13 +1009,96 @@ class ParameterOptimizer:
                         0.0,
                     )
                 )
+                * max(
+                    1,
+                    int(
+                        proposal.get(
+                            "evidence_count",
+                            0,
+                        )
+                    ),
+                )
             )
 
             if new_strength > existing_strength:
 
                 best[parameter] = proposal
 
-        return list(best.values())
+        return list(
+            best.values()
+        )
+
+    # ========================================================
+    # CONFLICT DETECTION
+    # ========================================================
+
+    @staticmethod
+    def detect_conflicts(
+        proposals: List[
+            Dict[str, Any]
+        ],
+    ) -> List[
+        Dict[str, Any]
+    ]:
+        """
+        Проверяет предложения на конфликт направлений.
+
+        Например:
+
+            attack increase
+            attack decrease
+
+        одновременно.
+
+        Такой конфликт нельзя автоматически применять.
+        """
+
+        directions: Dict[
+            str,
+            set[str]
+        ] = {}
+
+        for proposal in proposals:
+
+            parameter = proposal.get(
+                "parameter_name"
+            )
+
+            direction = proposal.get(
+                "direction"
+            )
+
+            if not parameter or not direction:
+                continue
+
+            directions.setdefault(
+                parameter,
+                set(),
+            ).add(direction)
+
+        conflicts = []
+
+        for parameter, values in directions.items():
+
+            if (
+                "increase" in values
+                and "decrease" in values
+            ):
+
+                conflicts.append(
+                    {
+                        "parameter_name": parameter,
+                        "directions": sorted(
+                            values
+                        ),
+                        "status": "conflict",
+                        "action": (
+                            "manual_review_required"
+                        ),
+                    }
+                )
+
+        return conflicts
 
     # ========================================================
     # FULL RUN
@@ -626,27 +1114,134 @@ class ParameterOptimizer:
         ] = None,
     ) -> Dict[str, Any]:
         """
-        Полный цикл формирования proposals.
+        Полный цикл Parameter Optimizer.
+
+        Результат является аналитическим proposal.
+
+        Никаких изменений модели не происходит.
         """
 
-        proposals = self.optimize(
+        signals = signals or []
+
+        raw_proposals = self.optimize(
             signals=signals,
             current_parameters=current_parameters,
         )
 
         proposals = self.deduplicate(
-            proposals
+            raw_proposals
         )
 
-        return {
+        conflicts = self.detect_conflicts(
+            raw_proposals
+        )
+
+        # ----------------------------------------------------
+        # Конфликт делает proposal небезопасным
+        # для автоматического применения.
+        # ----------------------------------------------------
+
+        conflict_parameters = {
+            item["parameter_name"]
+            for item in conflicts
+        }
+
+        for proposal in proposals:
+
+            parameter = proposal.get(
+                "parameter_name"
+            )
+
+            if parameter in conflict_parameters:
+
+                proposal["status"] = (
+                    "conflict_review"
+                )
+
+        result = {
             "module": MODULE_NAME,
             "module_version": MODULE_VERSION,
-            "signals_analyzed": len(signals),
+
+            "signals_analyzed": len(
+                signals
+            ),
+
+            "raw_proposals_created": len(
+                raw_proposals
+            ),
+
             "proposals_created": len(
                 proposals
             ),
+
+            "conflicts": conflicts,
+
+            "conflict_count": len(
+                conflicts
+            ),
+
+            "requires_review": bool(
+                conflicts
+            ),
+
+            "auto_apply": False,
+
             "proposals": proposals,
         }
+
+        logger.info(
+            "ETC Parameter Optimizer: "
+            "signals=%s proposals=%s conflicts=%s",
+            len(signals),
+            len(proposals),
+            len(conflicts),
+        )
+
+        return result
+
+    # ========================================================
+    # SAFE HELPERS
+    # ========================================================
+
+    @staticmethod
+    def _safe_float(
+        value: Any,
+        default: float = 0.0,
+    ) -> float:
+
+        try:
+
+            if value is None:
+                return default
+
+            return float(value)
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+
+            return default
+
+    @staticmethod
+    def _safe_int(
+        value: Any,
+        default: int = 0,
+    ) -> int:
+
+        try:
+
+            if value is None:
+                return default
+
+            return int(value)
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+
+            return default
 
 
 # ============================================================
@@ -662,7 +1257,9 @@ def optimize_parameters(
     ] = None,
 ) -> Dict[str, Any]:
     """
-    Удобная функция для ETC.
+    Удобная точка входа ETC.
+
+    Только формирует proposals.
     """
 
     optimizer = ParameterOptimizer()
@@ -681,7 +1278,11 @@ if __name__ == "__main__":
 
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(message)s",
+        format=(
+            "%(asctime)s | "
+            "%(levelname)s | "
+            "%(message)s"
+        ),
     )
 
     print("=" * 70)
@@ -701,19 +1302,66 @@ if __name__ == "__main__":
         },
 
         {
+            "error_type": "over25_miss",
+            "cause_type": "tempo_overestimated",
+            "count": 5,
+            "average_severity": 3.0,
+            "confidence": 0.75,
+            "signal_strength": 0.65,
+        },
+
+        {
             "error_type": "winner_miss",
             "cause_type": "match_balance_misread",
-            "count": 2,
+            "count": 8,
+            "average_severity": 4.0,
+            "confidence": 0.90,
+            "signal_strength": 0.80,
+        },
+
+        {
+            "error_type": "score_miss",
+            "cause_type": "home_attack_underestimated",
+            "count": 4,
             "average_severity": 3.0,
-            "confidence": 0.40,
-            "signal_strength": 0.25,
+            "confidence": 0.70,
+            "signal_strength": 0.60,
         },
     ]
 
     current_parameters = {
+
         "attack": 0.18,
-        "faj_rating": 0.20,
+
+        "defense": 0.18,
+
+        "control": 0.15,
+
+        "efficiency": 0.12,
+
+        "mentality": 0.10,
+
+        "discipline": 0.08,
+
+        "fitness": 0.07,
+
+        "predictability": 0.07,
+
+        "opposition": 0.05,
+
         "tempo": 0.05,
+
+        "press": 0.05,
+
+        "transition": 0.05,
+
+        "tactical": 0.05,
+
+        "coach": 0.04,
+
+        "form": 0.03,
+
+        "xg_scale": 2.50,
     }
 
     result = optimize_parameters(
@@ -727,8 +1375,23 @@ if __name__ == "__main__":
     )
 
     print(
-        f"Proposals: "
+        f"Raw proposals: "
+        f"{result['raw_proposals_created']}"
+    )
+
+    print(
+        f"Final proposals: "
         f"{result['proposals_created']}"
+    )
+
+    print(
+        f"Conflicts: "
+        f"{result['conflict_count']}"
+    )
+
+    print(
+        f"Auto apply: "
+        f"{result['auto_apply']}"
     )
 
     for proposal in result["proposals"]:
