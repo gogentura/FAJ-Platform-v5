@@ -1858,7 +1858,7 @@ class FAJDatabase:
             conn.close()
     
     # ============================================================
-    # GET ROUND MATCHES BY NUMBER — НОВЫЙ МЕТОД
+    # GET ROUND MATCHES BY NUMBER
     # ============================================================
     
     def get_round_matches_by_number(
@@ -1914,6 +1914,55 @@ class FAJDatabase:
                 dict(row)
                 for row in rows
             ]
+        finally:
+            conn.close()
+    
+    # ============================================================
+    # 🆕 НОВЫЙ МЕТОД: GET MATCHES
+    # ============================================================
+    
+    def get_matches(self, round_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        Возвращает список матчей.
+        
+        Args:
+            round_id: ID тура (если None — все матчи)
+        
+        Returns:
+            Список словарей с полями matches
+        """
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            if round_id is not None:
+                cursor.execute("""
+                    SELECT
+                        m.*,
+                        ht.name AS home_team_name,
+                        at.name AS away_team_name,
+                        r.round_number
+                    FROM matches m
+                    LEFT JOIN teams ht ON ht.id = m.home_team_id
+                    LEFT JOIN teams at ON at.id = m.away_team_id
+                    LEFT JOIN rounds r ON r.id = m.round_id
+                    WHERE m.round_id = ?
+                    ORDER BY datetime(m.date) ASC, m.id ASC
+                """, (round_id,))
+            else:
+                cursor.execute("""
+                    SELECT
+                        m.*,
+                        ht.name AS home_team_name,
+                        at.name AS away_team_name,
+                        r.round_number
+                    FROM matches m
+                    LEFT JOIN teams ht ON ht.id = m.home_team_id
+                    LEFT JOIN teams at ON at.id = m.away_team_id
+                    LEFT JOIN rounds r ON r.id = m.round_id
+                    ORDER BY datetime(m.date) DESC, m.id DESC
+                """)
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
         finally:
             conn.close()
     
@@ -2042,7 +2091,8 @@ class FAJDatabase:
                     data.get("parser_version"),
                     data.get("data_quality", 1.0),
                     data.get("fact_status", "scheduled"),
-                    now, now                ))
+                    now, now
+                ))
                 match_id = cursor.lastrowid
             
             conn.commit()
@@ -3105,11 +3155,19 @@ class FAJDatabase:
             conn.close()
     
     # ============================================================
-    # VALIDATION — с prediction_id
+    # 🆕 НОВЫЙ МЕТОД: ADD PREDICTION VALIDATION
     # ============================================================
     
     def add_prediction_validation(self, data: Dict[str, Any]) -> int:
-        """P0.5: Сохраняет валидацию с привязкой к prediction_id."""
+        """
+        Сохраняет валидацию прогноза с привязкой к prediction_id.
+        
+        Args:
+            data: словарь с полями validation
+        
+        Returns:
+            ID записи validation
+        """
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
@@ -3139,7 +3197,9 @@ class FAJDatabase:
                     predicted_home_xg, actual_home_xg,
                     predicted_away_xg, actual_away_xg,
                     predicted_winner, actual_winner,
-                    predicted_probability_home, predicted_probability_draw, predicted_probability_away,
+                    predicted_probability_home,
+                    predicted_probability_draw,
+                    predicted_probability_away,
                     score_probability, confidence, risk,
                     predicted_btts, actual_btts,
                     predicted_over25, actual_over25,
@@ -3175,9 +3235,9 @@ class FAJDatabase:
             row_id = cursor.lastrowid
             conn.commit()
             return row_id
-        except Exception:
+        except Exception as e:
             conn.rollback()
-            raise
+            raise RuntimeError(f"Ошибка при добавлении валидации прогноза: {e}")
         finally:
             conn.close()
     
@@ -3202,7 +3262,7 @@ class FAJDatabase:
                 SELECT * FROM prediction_validation
                 WHERE prediction_id = ?
                 ORDER BY created_at DESC
-            """, (match_id,))
+            """, (prediction_id,))
             return cursor.fetchall()
         finally:
             conn.close()
@@ -3610,7 +3670,7 @@ class FAJDatabase:
                     datetime.now().isoformat(),
                     gold_id
                 ))
-                conn.commit()  # P0.1: Добавлен commit
+                conn.commit()
                 return gold_id
             else:
                 cursor.execute("""
