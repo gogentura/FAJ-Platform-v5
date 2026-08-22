@@ -2042,8 +2042,7 @@ class FAJDatabase:
                     data.get("parser_version"),
                     data.get("data_quality", 1.0),
                     data.get("fact_status", "scheduled"),
-                    now, now
-                ))
+                    now, now                ))
                 match_id = cursor.lastrowid
             
             conn.commit()
@@ -4376,6 +4375,62 @@ class FAJDatabase:
             """, (limit,))
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
+        finally:
+            conn.close()
+    
+    # ============================================================
+    # UNLOCK GOLD FOR MATCH — НОВЫЙ МЕТОД
+    # ============================================================
+    
+    def unlock_gold_for_match(self, match_id: int) -> bool:
+        """
+        Снимает LOCK с GOLD-записи конкретного матча.
+        
+        Используется ТОЛЬКО для восстановления/дозаполнения
+        фактической статистики и xG.
+        
+        ВАЖНО:
+            - счёт не удаляется;
+            - матч не удаляется;
+            - существующие факты не удаляются;
+            - GOLD запись не удаляется;
+            - после повторного сохранения факта GOLD снова блокируется.
+        """
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Снимаем LOCK с gold_dataset
+            cursor.execute("""
+                UPDATE gold_dataset
+                SET locked = 0, status = 'pending'
+                WHERE match_id = ?
+                  AND locked = 1
+            """, (match_id,))
+            
+            conn.commit()
+            
+            if cursor.rowcount == 0:
+                logger.debug(
+                    "GOLD ALREADY UNLOCKED | match_id=%s",
+                    match_id
+                )
+            else:
+                logger.info(
+                    "GOLD UNLOCKED | match_id=%s",
+                    match_id
+                )
+            
+            return True
+            
+        except Exception as e:
+            conn.rollback()
+            logger.error(
+                "Unlock GOLD error | match_id=%s | %s",
+                match_id,
+                e
+            )
+            return False
         finally:
             conn.close()
 
