@@ -811,12 +811,16 @@ class BatchController:
         # Старые необученные матчи идут первыми.
         # Это обеспечивает детерминированное
         # формирование последовательных batch.
+        #
+        # ИСПРАВЛЕНО: используется date из database.py
+        # с fallback на match_date
         # ----------------------------------------------------
 
         finished.sort(
             key=lambda item: (
                 _safe_string(
-                    item.get("match_date")
+                    item.get("date")
+                    or item.get("match_date")
                 ),
                 _safe_int(
                     item.get("id")
