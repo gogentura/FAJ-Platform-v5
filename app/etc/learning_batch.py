@@ -11,86 +11,92 @@ app/etc/learning_batch.py
 
 НАЗНАЧЕНИЕ
 -----------
-Контейнер и builder данных для ETC.
+
+LearningBatch — безопасный in-memory контейнер одного
+конкретного ETC batch.
 
 ВАЖНО:
 
-    learning_batch.py НЕ является оркестратором ETC.
+    BatchController ВЫБИРАЕТ batch.
 
-    Главный оркестратор:
-        etc_controller.py
+    LearningBatchBuilder НЕ выбирает batch.
 
-    Управление batch:
-        batch_controller.py
+    ETCController ОРКЕСТРИРУЕТ.
 
-    learning_batch.py:
-        только формирует безопасный контейнер
-        данных для ETC и предоставляет методы
-        проверки/статистики.
+    ETCLearningEngine ОБУЧАЕТ.
 
 АРХИТЕКТУРА:
 
-    MATCH RESULTS / GOLD / LEARNING RECORDS
-                     │
-                     ▼
-             LearningBatchBuilder
-                     │
-                     ▼
-              LearningBatch
-                     │
-                     ▼
-             BatchController
-                     │
-                     ▼
-                 ETC
-                     │
-                     ▼
-             Learning Engine
-                     │
-                     ▼
-             Learning Memory
-                     │
-                     ▼
-                  SQLite
+    match_results
+          │
+          ▼
+    BatchController
+          │
+          │ selected matches
+          ▼
+    LearningBatchBuilder
+          │
+          ▼
+    LearningBatch
+          │
+          ▼
+    ETCController
+          │
+          ▼
+    ETCLearningEngine
+          │
+          ▼
+    learning_memory
 
 ============================================================
-ПРИНЦИПЫ
+ОТВЕТСТВЕННОСТЬ
 ============================================================
 
-МОДУЛЬ:
+Этот модуль:
 
-    - READ ONLY относительно SQLite;
-    - не обучает модель;
-    - не изменяет database.py;
-    - не изменяет match_results;
-    - не изменяет predictions;
-    - не изменяет gold;
-    - не изменяет learning_memory;
-    - не изменяет FAJ Rating;
-    - не изменяет model_parameters;
-    - не удаляет данные;
-    - не блокирует данные;
-    - не помечает записи processed.
+    - принимает уже выбранные BatchController матчи;
+    - читает необходимые факты из SQLite;
+    - формирует временный LearningBatch;
+    - выполняет структурную валидацию;
+    - предоставляет статистику;
+    - не обучает модель.
+
+Этот модуль НЕ:
+
+    - выбирает batch;
+    - определяет размер batch;
+    - проверяет processed marker;
+    - создаёт batch_learning;
+    - пишет learning_memory;
+    - изменяет match_results;
+    - изменяет matches;
+    - изменяет predictions;
+    - изменяет model_parameters;
+    - изменяет FAJ Rating;
+    - удаляет данные;
+    - создаёт собственную схему БД.
 
 database.py остаётся единым источником схемы.
 
 ============================================================
-РОЛЬ BATCH
+ГЛАВНОЕ ПРАВИЛО
 ============================================================
 
-LearningBatch — временный объект одного запуска ETC.
+BatchController:
 
-Он содержит:
+    "ВОТ ЭТИ МАТЧИ ДОЛЖНЫ ОБРАБАТЫВАТЬСЯ."
 
-    match_ids
-    gold_records
-    learning_records
-    source IDs
-    metadata
+LearningBatchBuilder:
 
-Старые записи SQLite не являются частью batch навсегда.
+    "ПРИНЯЛ. УПАКОВАЛ ИХ В РАБОЧИЙ КОНТЕЙНЕР."
 
-Batch — это рабочий снимок данных для конкретного ETC-run.
+ETCController:
+
+    "ПЕРЕДАЮ КОНТЕЙНЕР В ENGINE."
+
+ETCLearningEngine:
+
+    "ОБРАБАТЫВАЮ И ФИКСИРУЮ УСПЕШНЫЙ РЕЗУЛЬТАТ."
 
 ============================================================
 """
@@ -107,7 +113,7 @@ from app.database import FAJDatabase
 
 logger = logging.getLogger(__name__)
 
-MODULE_VERSION = "1.1"
+MODULE_VERSION = "2.0"
 MODULE_NAME = "ETC Learning Batch"
 
 
@@ -116,6 +122,7 @@ MODULE_NAME = "ETC Learning Batch"
 # ============================================================
 
 def _now() -> str:
+    """Текущее время создания in-memory batch."""
     return datetime.now().isoformat()
 
 
@@ -123,6 +130,8 @@ def _safe_int(
     value: Any,
     default: Optional[int] = None,
 ) -> Optional[int]:
+    """Безопасное преобразование значения в int."""
+
     try:
         if value is None:
             return default
@@ -133,10 +142,12 @@ def _safe_int(
         return default
 
 
-def _unique_ints(values: Iterable[Any]) -> List[int]:
+def _unique_ints(
+    values: Iterable[Any],
+) -> List[int]:
     """
-    Преобразует значения в уникальные int,
-    сохраняя порядок.
+    Уникальные положительные int
+    с сохранением исходного порядка.
     """
 
     result: List[int] = []
@@ -149,6 +160,9 @@ def _unique_ints(values: Iterable[Any]) -> List[int]:
         if number is None:
             continue
 
+        if number <= 0:
+            continue
+
         if number in seen:
             continue
 
@@ -158,6 +172,34 @@ def _unique_ints(values: Iterable[Any]) -> List[int]:
     return result
 
 
+def _row_to_dict(
+    row: Any,
+) -> Optional[Dict[str, Any]]:
+    """
+    Унифицированное преобразование строки БД
+    в обычный dict.
+
+    Поддерживает:
+
+        dict
+        sqlite3.Row
+        mapping-like object
+    """
+
+    if row is None:
+        return None
+
+    if isinstance(row, dict):
+        return dict(row)
+
+    try:
+        return dict(row)
+    except Exception:
+        pass
+
+    return None
+
+
 # ============================================================
 # DATA STRUCTURE
 # ============================================================
@@ -165,43 +207,53 @@ def _unique_ints(values: Iterable[Any]) -> List[int]:
 @dataclass
 class LearningBatch:
     """
-    Временный контейнер данных одного ETC-run.
+    Временный контейнер одного ETC-run.
 
     ВАЖНО:
 
-        LearningBatch не пишет в БД.
+        LearningBatch ничего не записывает в SQLite.
 
-        Это обычный in-memory объект.
+    BatchController уже определил,
+    какие матчи входят в batch.
+
+    Здесь они только представлены
+    в безопасном рабочем формате.
     """
 
     batch_id: str
     created_at: str
 
     # --------------------------------------------------------
-    # Основные источники
+    # Идентификаторы выбранных матчей
     # --------------------------------------------------------
 
     match_ids: List[int] = field(
         default_factory=list
     )
 
-    gold_records: List[Dict[str, Any]] = field(
-        default_factory=list
-    )
+    # --------------------------------------------------------
+    # Полные строки matches
+    # --------------------------------------------------------
 
-    learning_records: List[Dict[str, Any]] = field(
+    matches: List[Dict[str, Any]] = field(
         default_factory=list
     )
 
     # --------------------------------------------------------
-    # Audit
+    # Фактические результаты
     # --------------------------------------------------------
 
-    source_gold_ids: List[int] = field(
+    results: List[Dict[str, Any]] = field(
         default_factory=list
     )
 
-    source_learning_ids: List[int] = field(
+    # --------------------------------------------------------
+    # Объединённые записи:
+    #
+    # match + result
+    # --------------------------------------------------------
+
+    records: List[Dict[str, Any]] = field(
         default_factory=list
     )
 
@@ -219,93 +271,103 @@ class LearningBatch:
 
     @property
     def size(self) -> int:
-        """
-        Количество уникальных матчей batch.
-        """
-
-        return len(self.match_ids)
-
-    @property
-    def gold_size(self) -> int:
-        return len(self.gold_records)
-
-    @property
-    def learning_size(self) -> int:
-        return len(self.learning_records)
-
-    @property
-    def is_empty(self) -> bool:
-        return (
-            self.size == 0
-            and self.gold_size == 0
-            and self.learning_size == 0
+        """Количество матчей в batch."""
+        return len(
+            self.match_ids
         )
 
     @property
-    def is_ready(self) -> bool:
+    def is_empty(self) -> bool:
+        """Пуст ли batch."""
+        return self.size == 0
+
+    @property
+    def is_complete(self) -> bool:
         """
-        Batch считается готовым,
-        если в нём есть хотя бы один источник данных.
+        Все выбранные матчи имеют факт результата.
+
+        Это НЕ решение READY/WAIT.
+
+        Это только структурная проверка
+        уже выбранного batch.
         """
 
-        return not self.is_empty
+        if self.is_empty:
+            return False
+
+        return (
+            len(self.results)
+            == len(self.match_ids)
+        )
+
+    @property
+    def is_valid(self) -> bool:
+        """
+        Batch структурно пригоден
+        для передачи ETCController.
+        """
+
+        if self.is_empty:
+            return False
+
+        if len(self.matches) != self.size:
+            return False
+
+        if len(self.records) != self.size:
+            return False
+
+        if not self.is_complete:
+            return False
+
+        return True
 
     # ========================================================
     # MATCH IDS
     # ========================================================
 
     def get_match_ids(self) -> List[int]:
-        """
-        Возвращает уникальные match_id.
-        """
+        """Возвращает уникальные match_id."""
 
-        ids = list(self.match_ids)
-
-        for record in self.gold_records:
-            ids.append(
-                record.get("match_id")
-            )
-
-        for record in self.learning_records:
-            ids.append(
-                record.get("match_id")
-            )
-
-        return _unique_ints(ids)
+        return list(
+            self.match_ids
+        )
 
     # ========================================================
     # DICT
     # ========================================================
 
     def to_dict(self) -> Dict[str, Any]:
-        """
-        Преобразует batch в обычный dict.
-        """
-
-        match_ids = self.get_match_ids()
+        """Безопасное представление batch в виде dict."""
 
         return {
             "batch_id": self.batch_id,
             "created_at": self.created_at,
 
-            "match_ids": match_ids,
-
-            "gold_records": self.gold_records,
-            "learning_records": self.learning_records,
-
-            "source_gold_ids": self.source_gold_ids,
-            "source_learning_ids": (
-                self.source_learning_ids
+            "match_ids": list(
+                self.match_ids
             ),
 
-            "metadata": self.metadata,
+            "matches": list(
+                self.matches
+            ),
 
-            "size": len(match_ids),
-            "gold_size": self.gold_size,
-            "learning_size": self.learning_size,
+            "results": list(
+                self.results
+            ),
+
+            "records": list(
+                self.records
+            ),
+
+            "metadata": dict(
+                self.metadata
+            ),
+
+            "size": self.size,
 
             "is_empty": self.is_empty,
-            "is_ready": self.is_ready,
+            "is_complete": self.is_complete,
+            "is_valid": self.is_valid,
         }
 
 
@@ -315,15 +377,18 @@ class LearningBatch:
 
 class LearningBatchBuilder:
     """
-    Формирует временный LearningBatch.
+    Формирует LearningBatch из УЖЕ ВЫБРАННЫХ
+    BatchController матчей.
 
-    Только READ из SQLite.
+    Builder НЕ выбирает batch.
 
-    ВАЖНО:
+    Builder НЕ знает правил:
 
-        Builder не управляет жизненным циклом batch.
+        РПЛ = 5
+        АПЛ = 3
+        ЛЧ = 2
 
-        За lifecycle отвечает BatchController.
+    Эти правила принадлежат BatchController.
     """
 
     def __init__(
@@ -340,7 +405,7 @@ class LearningBatchBuilder:
     @staticmethod
     def _make_batch_id() -> str:
         """
-        Уникальный ID текущего in-memory batch.
+        Уникальный ID in-memory batch.
         """
 
         timestamp = datetime.now().strftime(
@@ -350,240 +415,195 @@ class LearningBatchBuilder:
         return f"ETC-{timestamp}"
 
     # ========================================================
-    # GOLD
+    # NORMALIZE MATCHES
     # ========================================================
 
-    def get_pending_gold(
-        self,
-        limit: int = 100,
+    @staticmethod
+    def _normalize_matches(
+        matches: Iterable[Any],
     ) -> List[Dict[str, Any]]:
         """
-        Получает доступные gold-записи.
+        Преобразует переданные BatchController
+        match objects в обычные dict.
 
-        Использует только API database.py.
-
-        Никаких прямых SQL-запросов здесь нет.
+        Никакого поиска дополнительных матчей.
         """
 
-        limit = max(1, int(limit))
+        result: List[
+            Dict[str, Any]
+        ] = []
 
-        getter = getattr(
-            self.db,
-            "get_gold_pending",
-            None,
-        )
+        seen = set()
 
-        if not callable(getter):
+        for item in matches:
 
-            logger.info(
-                "FAJDatabase.get_gold_pending() "
-                "не предоставлен — gold source пропущен."
+            record = _row_to_dict(
+                item
             )
 
-            return []
+            if not record:
+                continue
 
-        try:
-
-            rows = getter()
-
-            records = [
-                dict(row)
-                for row in rows
-            ]
-
-            return records[:limit]
-
-        except Exception as exc:
-
-            logger.warning(
-                "Unable to read pending gold: %s",
-                exc,
+            match_id = _safe_int(
+                record.get("id")
             )
 
-            return []
-
-    # ========================================================
-    # LEARNING RECORDS
-    # ========================================================
-
-    def get_new_learning_records(
-        self,
-        limit: int = 500,
-    ) -> List[Dict[str, Any]]:
-        """
-        Получает новые learning_records.
-
-        Только чтение.
-        """
-
-        limit = max(1, int(limit))
-
-        getter = getattr(
-            self.db,
-            "get_learning_records",
-            None,
-        )
-
-        if not callable(getter):
-
-            logger.info(
-                "FAJDatabase.get_learning_records() "
-                "не предоставлен — learning source пропущен."
-            )
-
-            return []
-
-        try:
-
-            # Сначала пытаемся использовать status="new",
-            # если текущий database.py поддерживает этот API.
-            try:
-
-                rows = getter(
-                    status="new"
+            if match_id is None:
+                match_id = _safe_int(
+                    record.get("match_id")
                 )
 
-            except TypeError:
+            if match_id is None:
+                continue
 
-                # Совместимость с API без status.
-                rows = getter()
+            if match_id in seen:
+                continue
 
-            records = [
-                dict(row)
-                for row in rows
-            ]
+            seen.add(match_id)
 
-            # Не ограничиваем источник SQL-запросом здесь.
-            # Просто ограничиваем рабочий batch.
-            return records[:limit]
+            # Нормализуем canonical match_id.
+            record["match_id"] = match_id
+
+            result.append(
+                record
+            )
+
+        return result
+
+    # ========================================================
+    # READ RESULT
+    # ========================================================
+
+    def _get_match_result(
+        self,
+        match_id: int,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Читает фактический результат конкретного матча.
+
+        Только READ.
+
+        Источник:
+
+            FAJDatabase.get_match_result()
+        """
+
+        getter = getattr(
+            self.db,
+            "get_match_result",
+            None,
+        )
+
+        if not callable(getter):
+
+            logger.error(
+                "FAJDatabase.get_match_result() "
+                "не найден."
+            )
+
+            return None
+
+        try:
+
+            row = getter(
+                match_id
+            )
+
+            return _row_to_dict(
+                row
+            )
 
         except Exception as exc:
 
             logger.warning(
-                "Unable to read learning records: %s",
+                "Unable to read match result "
+                "match_id=%s: %s",
+                match_id,
                 exc,
             )
 
-            return []
+            return None
 
     # ========================================================
-    # VALIDATE GOLD
+    # VALIDATE RESULT
     # ========================================================
 
     @staticmethod
-    def validate_gold(
-        record: Dict[str, Any],
+    def validate_result(
+        result: Optional[Dict[str, Any]],
     ) -> bool:
         """
-        Минимальная проверка gold.
+        Проверяет наличие фактического результата.
 
-        Не требует изменения записи.
+        0:0 является валидным результатом.
+
+        None означает отсутствие факта.
         """
 
-        if not record:
+        if not result:
             return False
 
-        # Старые/заблокированные записи не берём
-        # в новый рабочий batch.
-
-        locked = record.get("locked")
-
-        if locked in (
-            1,
-            True,
-            "1",
-            "true",
-            "True",
-        ):
-            return False
-
-        # Gold должен иметь идентификатор
-        # или match_id для аудита.
-
-        record_id = record.get("id")
-        match_id = record.get("match_id")
-
-        if (
-            record_id is None
-            and match_id is None
-        ):
-            return False
-
-        # Факт счёта — минимальный признак
-        # завершённого gold объекта.
-
-        actual_score = record.get(
-            "actual_score"
+        home_goals = result.get(
+            "home_goals"
         )
 
-        if actual_score is None:
+        away_goals = result.get(
+            "away_goals"
+        )
 
-            # Возможны схемы, где счёт хранится
-            # отдельными полями.
+        if home_goals is None:
+            return False
 
-            home_goals = record.get(
-                "actual_home_goals"
-            )
-
-            away_goals = record.get(
-                "actual_away_goals"
-            )
-
-            if (
-                home_goals is None
-                or away_goals is None
-            ):
-                return False
+        if away_goals is None:
+            return False
 
         return True
 
     # ========================================================
-    # VALIDATE LEARNING RECORD
+    # BUILD RECORD
     # ========================================================
 
     @staticmethod
-    def validate_learning_record(
-        record: Dict[str, Any],
-    ) -> bool:
+    def _build_record(
+        match: Dict[str, Any],
+        result: Dict[str, Any],
+    ) -> Dict[str, Any]:
         """
-        Минимальная проверка learning_record.
-        """
+        Создаёт единый рабочий record:
 
-        if not record:
-            return False
+            match
+            +
+            result
+        """
 
         match_id = _safe_int(
-            record.get("match_id")
+            match.get("match_id")
         )
 
-        if match_id is None:
-            return False
+        record: Dict[str, Any] = {
+            "match_id": match_id,
+            "match": dict(match),
+            "result": dict(result),
+        }
 
-        # Для ETC запись должна содержать
-        # хотя бы некоторый сигнал обучения.
+        # ----------------------------------------------------
+        # Удобные canonical поля.
+        # ----------------------------------------------------
 
-        error_type = record.get(
-            "error_type"
+        record["home_goals"] = result.get(
+            "home_goals"
         )
 
-        cause_type = record.get(
-            "cause_type"
+        record["away_goals"] = result.get(
+            "away_goals"
         )
 
-        learning_type = record.get(
-            "learning_type"
+        record["actual_score"] = (
+            f"{result.get('home_goals')}:"
+            f"{result.get('away_goals')}"
         )
 
-        if not any(
-            (
-                error_type,
-                cause_type,
-                learning_type,
-            )
-        ):
-            return False
-
-        return True
+        return record
 
     # ========================================================
     # BUILD
@@ -591,116 +611,140 @@ class LearningBatchBuilder:
 
     def build(
         self,
-        gold_limit: int = 100,
-        learning_limit: int = 500,
+        matches: Optional[
+            Iterable[Any]
+        ] = None,
+        *,
+        batch_id: Optional[str] = None,
     ) -> LearningBatch:
         """
-        Создаёт новый временный LearningBatch.
+        Формирует LearningBatch из конкретного
+        списка матчей.
 
-        НИЧЕГО не записывает в SQLite.
+        ВАЖНО:
+
+        matches должен прийти от BatchController.
+
+        Если matches не передан,
+        создаётся пустой batch.
+
+        Builder НЕ вызывает:
+
+            BatchController.create_batch()
+            BatchController.check()
+            get_pending_count()
+
+        Он не выбирает матчи самостоятельно.
         """
 
-        gold_limit = max(
-            1,
-            int(gold_limit),
-        )
-
-        learning_limit = max(
-            1,
-            int(learning_limit),
-        )
-
-        batch_id = self._make_batch_id()
         created_at = _now()
 
-        # ----------------------------------------------------
-        # GOLD
-        # ----------------------------------------------------
+        if batch_id:
+            current_batch_id = str(
+                batch_id
+            )
+        else:
+            current_batch_id = (
+                self._make_batch_id()
+            )
 
-        raw_gold = self.get_pending_gold(
-            limit=gold_limit
+        normalized_matches = (
+            self._normalize_matches(
+                matches or []
+            )
         )
 
-        valid_gold = [
-            record
-            for record in raw_gold
-            if self.validate_gold(record)
+        match_ids = [
+            _safe_int(
+                match.get("match_id")
+            )
+            for match in normalized_matches
         ]
-
-        # ----------------------------------------------------
-        # LEARNING
-        # ----------------------------------------------------
-
-        raw_learning = (
-            self.get_new_learning_records(
-                limit=learning_limit
-            )
-        )
-
-        valid_learning = [
-            record
-            for record in raw_learning
-            if self.validate_learning_record(
-                record
-            )
-        ]
-
-        # ----------------------------------------------------
-        # SOURCE IDS
-        # ----------------------------------------------------
-
-        gold_ids = _unique_ints(
-            record.get("id")
-            for record in valid_gold
-        )
-
-        learning_ids = _unique_ints(
-            record.get("id")
-            for record in valid_learning
-        )
-
-        # ----------------------------------------------------
-        # MATCH IDS
-        # ----------------------------------------------------
-
-        match_ids: List[int] = []
-
-        for record in valid_gold:
-            match_ids.append(
-                record.get("match_id")
-            )
-
-        for record in valid_learning:
-            match_ids.append(
-                record.get("match_id")
-            )
 
         match_ids = _unique_ints(
             match_ids
         )
 
+        results: List[
+            Dict[str, Any]
+        ] = []
+
+        records: List[
+            Dict[str, Any]
+        ] = []
+
+        missing_result_ids: List[int] = []
+
+        # ----------------------------------------------------
+        # READ FACTS
+        # ----------------------------------------------------
+
+        for match in normalized_matches:
+
+            match_id = _safe_int(
+                match.get("match_id")
+            )
+
+            if match_id is None:
+                continue
+
+            result = self._get_match_result(
+                match_id
+            )
+
+            if not self.validate_result(
+                result
+            ):
+
+                missing_result_ids.append(
+                    match_id
+                )
+
+                continue
+
+            # result точно Dict после validation
+            assert result is not None
+
+            results.append(
+                dict(result)
+            )
+
+            records.append(
+                self._build_record(
+                    match,
+                    result,
+                )
+            )
+
         # ----------------------------------------------------
         # METADATA
         # ----------------------------------------------------
 
-        metadata = {
+        metadata: Dict[str, Any] = {
             "module": MODULE_NAME,
             "module_version": MODULE_VERSION,
 
-            "gold_requested": len(raw_gold),
-            "gold_valid": len(valid_gold),
-
-            "learning_requested": (
-                len(raw_learning)
+            "requested_matches": len(
+                normalized_matches
             ),
 
-            "learning_valid": (
-                len(valid_learning)
+            "loaded_results": len(
+                results
             ),
 
-            "matches": len(match_ids),
+            "records": len(
+                records
+            ),
+
+            "missing_result_ids": (
+                missing_result_ids
+            ),
 
             "read_only": True,
+
+            "source": (
+                "BatchController"
+            ),
         }
 
         # ----------------------------------------------------
@@ -708,76 +752,173 @@ class LearningBatchBuilder:
         # ----------------------------------------------------
 
         batch = LearningBatch(
-            batch_id=batch_id,
+            batch_id=current_batch_id,
             created_at=created_at,
 
             match_ids=match_ids,
 
-            gold_records=valid_gold,
-            learning_records=valid_learning,
+            matches=normalized_matches,
 
-            source_gold_ids=gold_ids,
-            source_learning_ids=learning_ids,
+            results=results,
+
+            records=records,
 
             metadata=metadata,
         )
 
         logger.info(
-            "ETC LearningBatch built: "
-            "id=%s matches=%s gold=%s learning=%s",
+            "ETC LearningBatch built | "
+            "batch=%s | requested=%s | "
+            "results=%s | valid=%s",
             batch.batch_id,
-            len(match_ids),
-            len(valid_gold),
-            len(valid_learning),
+            len(normalized_matches),
+            len(results),
+            batch.is_valid,
         )
 
         return batch
 
     # ========================================================
-    # READINESS
+    # BUILD FROM IDS
     # ========================================================
 
-    def is_ready(
+    def build_from_match_ids(
         self,
-        gold_limit: int = 1,
-        learning_limit: int = 1,
+        match_ids: Iterable[Any],
+        *,
+        batch_id: Optional[str] = None,
+    ) -> LearningBatch:
+        """
+        Совместимый способ построения batch,
+        если ETCController передаёт только IDs.
+
+        ВАЖНО:
+
+        Этот метод НЕ выбирает batch.
+
+        Он только загружает конкретные match_id,
+        которые уже были выбраны выше по цепочке.
+        """
+
+        ids = _unique_ints(
+            match_ids
+        )
+
+        if not ids:
+            return self.build(
+                [],
+                batch_id=batch_id,
+            )
+
+        getter = getattr(
+            self.db,
+            "get_matches",
+            None,
+        )
+
+        if not callable(getter):
+
+            logger.error(
+                "FAJDatabase.get_matches() "
+                "не найден."
+            )
+
+            return self.build(
+                [],
+                batch_id=batch_id,
+            )
+
+        try:
+
+            rows = getter()
+
+        except Exception as exc:
+
+            logger.exception(
+                "Unable to read matches: %s",
+                exc,
+            )
+
+            return self.build(
+                [],
+                batch_id=batch_id,
+            )
+
+        wanted = set(ids)
+
+        selected: List[
+            Dict[str, Any]
+        ] = []
+
+        for row in rows:
+
+            record = _row_to_dict(
+                row
+            )
+
+            if not record:
+                continue
+
+            match_id = _safe_int(
+                record.get("id")
+            )
+
+            if match_id is None:
+                match_id = _safe_int(
+                    record.get("match_id")
+                )
+
+            if match_id not in wanted:
+                continue
+
+            selected.append(
+                record
+            )
+
+        # ----------------------------------------------------
+        # Сохраняем порядок match_ids,
+        # заданный BatchController.
+        # ----------------------------------------------------
+
+        by_id = {
+            _safe_int(
+                item.get("id")
+                or item.get("match_id")
+            ): item
+            for item in selected
+        }
+
+        ordered = [
+            by_id[match_id]
+            for match_id in ids
+            if match_id in by_id
+        ]
+
+        return self.build(
+            ordered,
+            batch_id=batch_id,
+        )
+
+    # ========================================================
+    # VALIDATE BATCH
+    # ========================================================
+
+    @staticmethod
+    def validate_batch(
+        batch: Optional[LearningBatch],
     ) -> bool:
         """
-        Проверяет, есть ли данные для ETC.
+        Структурная проверка LearningBatch.
 
-        Готовность определяется не только gold.
+        Это НЕ проверка ETC readiness.
 
-        Это важно для новой архитектуры ETC,
-        где learning_records являются отдельным
-        источником аналитических сигналов.
+        READY/WAIT принадлежит BatchController.
         """
 
-        gold = self.get_pending_gold(
-            limit=max(1, int(gold_limit))
-        )
+        if batch is None:
+            return False
 
-        if any(
-            self.validate_gold(record)
-            for record in gold
-        ):
-            return True
-
-        learning = (
-            self.get_new_learning_records(
-                limit=max(
-                    1,
-                    int(learning_limit),
-                )
-            )
-        )
-
-        if any(
-            self.validate_learning_record(record)
-            for record in learning
-        ):
-            return True
-
-        return False
+        return batch.is_valid
 
     # ========================================================
     # SUMMARY
@@ -788,49 +929,52 @@ class LearningBatchBuilder:
         batch: LearningBatch,
     ) -> Dict[str, Any]:
         """
-        Краткая статистика batch.
+        Диагностическая статистика batch.
         """
-
-        match_ids = batch.get_match_ids()
 
         return {
             "batch_id": batch.batch_id,
             "created_at": batch.created_at,
 
-            "matches": len(match_ids),
-            "match_ids": match_ids,
+            "matches": batch.size,
+            "match_ids": batch.get_match_ids(),
 
-            "gold_count": batch.gold_size,
-            "learning_count": (
-                batch.learning_size
+            "results": len(
+                batch.results
             ),
 
-            "gold_ids": (
-                batch.source_gold_ids
-            ),
-
-            "learning_ids": (
-                batch.source_learning_ids
+            "records": len(
+                batch.records
             ),
 
             "is_empty": batch.is_empty,
-            "ready": batch.is_ready,
+            "is_complete": batch.is_complete,
+            "is_valid": batch.is_valid,
+
+            "metadata": dict(
+                batch.metadata
+            ),
         }
 
 
 # ============================================================
-# MODULE-LEVEL HELPERS
+# MODULE-LEVEL API
 # ============================================================
 
 def build_learning_batch(
+    matches: Optional[
+        Iterable[Any]
+    ] = None,
     db: Optional[FAJDatabase] = None,
-    gold_limit: int = 100,
-    learning_limit: int = 500,
+    *,
+    batch_id: Optional[str] = None,
 ) -> LearningBatch:
     """
-    Публичная точка формирования batch.
+    Публичная точка создания LearningBatch.
 
-    Только READ.
+    В нормальной ETC-цепи:
+
+        matches = результат BatchController.
     """
 
     builder = LearningBatchBuilder(
@@ -838,31 +982,50 @@ def build_learning_batch(
     )
 
     return builder.build(
-        gold_limit=gold_limit,
-        learning_limit=learning_limit,
+        matches=matches,
+        batch_id=batch_id,
     )
 
 
-def is_learning_ready(
+def build_learning_batch_from_ids(
+    match_ids: Iterable[Any],
     db: Optional[FAJDatabase] = None,
-) -> bool:
+    *,
+    batch_id: Optional[str] = None,
+) -> LearningBatch:
     """
-    Проверяет наличие данных,
-    готовых для ETC.
+    Создаёт LearningBatch из конкретных match_id.
+
+    IDs должны быть получены выше по цепочке.
     """
 
     builder = LearningBatchBuilder(
         db=db
     )
 
-    return builder.is_ready()
+    return builder.build_from_match_ids(
+        match_ids=match_ids,
+        batch_id=batch_id,
+    )
+
+
+def validate_learning_batch(
+    batch: Optional[LearningBatch],
+) -> bool:
+    """
+    Проверяет структурную целостность batch.
+    """
+
+    return LearningBatchBuilder.validate_batch(
+        batch
+    )
 
 
 def summarize_learning_batch(
     batch: LearningBatch,
 ) -> Dict[str, Any]:
     """
-    Публичный helper статистики batch.
+    Публичный helper статистики.
     """
 
     return LearningBatchBuilder.summarize(
@@ -887,62 +1050,85 @@ if __name__ == "__main__":
 
     print("=" * 70)
     print("FAJ Platform v12.1")
-    print("ETC — Learning Batch")
+    print("ETC — Evolution Training Center")
+    print("Learning Batch")
     print(f"Version: {MODULE_VERSION}")
     print("=" * 70)
 
-    try:
+    print()
+    print("ARCHITECTURAL CONTRACT")
+    print("-" * 70)
 
-        db = FAJDatabase()
+    print(
+        "BatchController = выбирает batch"
+    )
 
-        builder = LearningBatchBuilder(
-            db=db
-        )
+    print(
+        "LearningBatchBuilder = упаковывает batch"
+    )
 
-        batch = builder.build(
-            gold_limit=10,
-            learning_limit=50,
-        )
+    print(
+        "ETCController = оркестрирует"
+    )
 
-        summary = builder.summarize(
-            batch
-        )
+    print(
+        "ETCLearningEngine = обучает"
+    )
 
-        print(
-            f"Batch ID: "
-            f"{summary['batch_id']}"
-        )
+    print(
+        "learning_memory = хранит результат"
+    )
 
-        print(
-            f"Matches: "
-            f"{summary['matches']}"
-        )
+    print()
+    print("READ ONLY")
+    print("-" * 70)
 
-        print(
-            f"Gold records: "
-            f"{summary['gold_count']}"
-        )
+    print(
+        "matches: READ"
+    )
 
-        print(
-            f"Learning records: "
-            f"{summary['learning_count']}"
-        )
+    print(
+        "match_results: READ"
+    )
 
-        print(
-            f"Ready: "
-            f"{summary['ready']}"
-        )
+    print(
+        "learning_memory: НЕ ИЗМЕНЯЕТСЯ"
+    )
 
-        print(
-            f"Empty: "
-            f"{summary['is_empty']}"
-        )
+    print(
+        "DELETE: отсутствует"
+    )
 
-    except Exception as exc:
+    print(
+        "DROP: отсутствует"
+    )
 
-        logger.error(
-            "Learning batch self-test failed: %s",
-            exc,
-        )
+    print(
+        "INSERT: отсутствует"
+    )
+
+    print(
+        "UPDATE: отсутствует"
+    )
+
+    print()
+    print("ВАЖНО")
+    print("-" * 70)
+
+    print(
+        "Этот модуль НЕ выбирает batch."
+    )
+
+    print(
+        "Этот модуль НЕ создаёт batch_learning."
+    )
+
+    print(
+        "Этот модуль НЕ обучает модель."
+    )
+
+    print(
+        "Batch должен прийти от BatchController."
+    )
 
     print("=" * 70)
