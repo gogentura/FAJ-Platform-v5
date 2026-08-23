@@ -17,7 +17,7 @@ app/etc/etc_controller.py
 ETC запускается только после появления новых фактов
 сыгранных матчей.
 
-АРХИТЕКТУРА:
+АКТУАЛЬНАЯ АРХИТЕКТУРА:
 
     MATCH
       ↓
@@ -25,23 +25,54 @@ ETC запускается только после появления новых
       ↓
     match_results / match_statistics
       ↓
-    ETCController
-      ↓
     BatchController
-      ↓
-    READY / WAIT / ALREADY_PROCESSED
-      ↓
-    готовый batch
-      ↓
-    ETCLearningEngine.process_match()
-      ↓
-    StatisticalAnalyzer
-      ↓
-    LearningMemory
-      ↓
-    BatchController.mark_processed()
-      ↓
-    NEXT ETC BATCH
+      │
+      ├── WAIT
+      ├── READY
+      └── ALREADY_PROCESSED
+              │
+              ▼
+       get_learning_batch()
+              │
+              ▼
+       ETCLearningEngine.run_batch()
+              │
+              ▼
+       StatisticalAnalyzer
+              │
+              ├── analysis memory
+              │
+              └── batch_learning
+                      │
+                      ▼
+                LearningMemory
+                      │
+                      ▼
+                    SQLite
+
+
+ВАЖНО
+------
+
+Контроллер согласован с РЕАЛЬНЫМ API:
+
+BatchController:
+
+    check()
+    get_learning_batch()
+
+ETCLearningEngine:
+
+    process_match()
+    run_batch()
+
+НЕ ИСПОЛЬЗУЮТСЯ:
+
+    create_batch()
+    mark_processed()
+
+Эти методы отсутствуют в текущем контракте
+BatchController и не должны искусственно добавляться.
 
 
 ГРАНИЦЫ ОТВЕТСТВЕННОСТИ
@@ -57,86 +88,51 @@ ETCController НЕ:
     - пишет learning_memory напрямую;
     - изменяет match_results;
     - изменяет match_statistics;
-    - изменяет matches;
     - изменяет календарь;
     - изменяет database.py;
     - выполняет DELETE;
     - выполняет DROP.
 
-ETCController отвечает только за ORCHESTRATION:
+ETCController только:
 
-    1. получение batch;
-    2. последовательный запуск LearningEngine;
-    3. сбор результатов;
-    4. передача только успешных матчей
-       в BatchController.mark_processed();
-    5. возврат строгого результата ETC.
-
+    1. получает решение BatchController;
+    2. при READY получает batch;
+    3. передаёт выполнение ETCLearningEngine;
+    4. возвращает единый результат ETC.
 
 ВАЖНО
 ------
 
-ETCLearningEngine уже владеет:
+ETCLearningEngine является владельцем процесса:
 
     StatisticalAnalyzer
+        ↓
+    analysis memory
+        ↓
+    batch_learning
+        ↓
     LearningMemory
 
-Поэтому ETCController никогда не вызывает
-StatisticalAnalyzer напрямую.
+Поэтому ETCController НЕ должен повторно
+вызывать StatisticalAnalyzer.
 
-
-ВАЖНО №2
----------
-
-ETCLearningEngine.process_match() НЕ должен создавать
-batch_learning marker.
-
-Marker успешной обработки матча создаётся владельцем
-batch-state:
-
-    BatchController.mark_processed()
-
-Это устраняет двойное владение состоянием.
-
+Также ETCController НЕ должен самостоятельно
+создавать batch_learning и НЕ должен самостоятельно
+помечать матч обработанным.
 
 ИДЕМПОТЕНТНОСТЬ
 ---------------
 
-BatchController является единственным владельцем
-состояния processed/unprocessed.
+BatchController является владельцем решения:
 
-ETCController:
+    READY / WAIT / ALREADY_PROCESSED
 
-    НЕ хранит свой список обработанных матчей;
-    НЕ определяет самостоятельно processed;
-    НЕ пишет learning_memory;
-    НЕ пытается заменить BatchController.
+ETCLearningEngine является владельцем факта:
 
+    batch_learning
 
-ОШИБКА ОДНОГО МАТЧА
--------------------
-
-Ошибка одного матча НЕ останавливает batch.
-
-Успешные матчи:
-
-    → передаются в mark_processed()
-
-Неуспешные:
-
-    → НЕ передаются в mark_processed()
-
-Следующий ETC-run сможет обработать
-оставшиеся матчи.
-
-
-FORCE
------
-
-force=True только передаётся BatchController.
-
-force НЕ превращает ошибку анализа
-в успешную обработку.
+ETCController не хранит собственный список
+обработанных матчей.
 
 
 ============================================================
@@ -148,11 +144,15 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-
 from app.database import FAJDatabase
 
 from app.etc.batch_controller import (
     BatchController,
+    STATUS_READY,
+    STATUS_WAIT,
+    STATUS_ALREADY_PROCESSED,
+    STATUS_UNKNOWN_LEAGUE,
+    BATCH_RULES,
 )
 
 from app.etc.learning_engine import (
@@ -163,8 +163,8 @@ from app.etc.learning_engine import (
 logger = logging.getLogger(__name__)
 
 
-MODULE_VERSION = "3.0"
-MODULE_NAME = "FAJ ETC Controller"
+MODULE_VERSION = "2.2"
+MODULE_NAME = "ETC Controller"
 
 
 # ============================================================
@@ -173,10 +173,8 @@ MODULE_NAME = "FAJ ETC Controller"
 
 def _now() -> str:
     """
-    Возвращает текущее локальное время
-    в ISO формате.
+    Текущее локальное время в ISO-формате.
     """
-
     return datetime.now().isoformat()
 
 
@@ -185,18 +183,16 @@ def _safe_int(
     default: Optional[int] = None,
 ) -> Optional[int]:
     """
-    Безопасное преобразование значения в int.
+    Безопасное преобразование в int.
     """
 
     try:
-
         if value is None:
             return default
 
         return int(value)
 
     except (TypeError, ValueError):
-
         return default
 
 
@@ -205,67 +201,50 @@ def _safe_count(
     default: int = 0,
 ) -> int:
     """
-    Безопасное преобразование значения
-    в неотрицательный счётчик.
+    Безопасное преобразование счётчика.
     """
 
     try:
-
         if value is None:
             return default
 
-        return max(
-            0,
-            int(value),
-        )
+        return max(0, int(value))
 
     except (TypeError, ValueError):
-
         return default
 
 
 # ============================================================
-# ETC CONTROLLER
+# CONTROLLER
 # ============================================================
 
 class ETCController:
     """
-    Главный оркестратор Evolution Training Center.
+    Главный оркестратор ETC.
 
-    ETCController НЕ содержит математической логики.
+    АКТУАЛЬНАЯ ЦЕПОЧКА:
 
-    Его ответственность:
+        BatchController.check()
+                ↓
+        get_learning_batch()
+                ↓
+        ETCLearningEngine.run_batch()
+                ↓
+        StatisticalAnalyzer
+                ↓
+        LearningMemory
 
-        BatchController
-              ↓
-        ETCLearningEngine
-              ↓
-        BatchController.mark_processed()
-
-    Владелец:
-
-        batch lifecycle = BatchController
-        analysis       = ETCLearningEngine
-        statistics     = StatisticalAnalyzer
-        memory         = LearningMemory
+    ETCController не содержит бизнес-математики.
     """
 
     def __init__(
         self,
         db: Optional[FAJDatabase] = None,
-        batch_controller: Optional[
-            BatchController
-        ] = None,
-        learning_engine: Optional[
-            ETCLearningEngine
-        ] = None,
+        batch_controller: Optional[BatchController] = None,
+        learning_engine: Optional[ETCLearningEngine] = None,
     ) -> None:
 
         self.db = db or FAJDatabase()
-
-        # ----------------------------------------------------
-        # SINGLE OWNER OF BATCH STATE
-        # ----------------------------------------------------
 
         self.batch_controller = (
             batch_controller
@@ -273,10 +252,6 @@ class ETCController:
                 db=self.db
             )
         )
-
-        # ----------------------------------------------------
-        # SINGLE OWNER OF ANALYSIS
-        # ----------------------------------------------------
 
         self.learning_engine = (
             learning_engine
@@ -292,21 +267,13 @@ class ETCController:
     def status(self) -> Dict[str, Any]:
         """
         Read-only состояние ETC.
-
-        Никаких изменений БД.
         """
 
         result: Dict[str, Any] = {
-
             "module": MODULE_NAME,
-
             "version": MODULE_VERSION,
-
             "status": "ready",
-
             "timestamp": _now(),
-
-            "pending_matches": None,
 
             "batch_controller": (
                 self.batch_controller
@@ -320,59 +287,91 @@ class ETCController:
                 .__name__
             ),
 
-            "batch_state_owner": (
-                "BatchController"
-            ),
+            "api_contract": {
+                "batch_check": hasattr(
+                    self.batch_controller,
+                    "check",
+                ),
 
-            "analysis_owner": (
-                "ETCLearningEngine"
-            ),
+                "batch_get_learning_batch": hasattr(
+                    self.batch_controller,
+                    "get_learning_batch",
+                ),
 
-            "memory_owner": (
-                "LearningMemory"
-            ),
+                "learning_run_batch": hasattr(
+                    self.learning_engine,
+                    "run_batch",
+                ),
 
-            "historical_facts_modified": False,
+                "learning_process_match": hasattr(
+                    self.learning_engine,
+                    "process_match",
+                ),
+            },
 
-            "model_parameters_modified": False,
+            "legacy_api_used": False,
 
-            "faj_rating_modified": False,
-
-            "predictions_modified": False,
-
-            "append_only_memory": True,
+            "forbidden_methods": [
+                "create_batch",
+                "mark_processed",
+            ],
         }
 
-        try:
+        # ----------------------------------------------------
+        # Проверяем только наличие реального API.
+        # Никаких изменений БД.
+        # ----------------------------------------------------
 
-            method = getattr(
-                self.batch_controller,
-                "get_pending_count",
-                None,
-            )
+        required_methods = [
+            (
+                "BatchController.check",
+                getattr(
+                    self.batch_controller,
+                    "check",
+                    None,
+                ),
+            ),
+            (
+                "BatchController.get_learning_batch",
+                getattr(
+                    self.batch_controller,
+                    "get_learning_batch",
+                    None,
+                ),
+            ),
+            (
+                "ETCLearningEngine.run_batch",
+                getattr(
+                    self.learning_engine,
+                    "run_batch",
+                    None,
+                ),
+            ),
+            (
+                "ETCLearningEngine.process_match",
+                getattr(
+                    self.learning_engine,
+                    "process_match",
+                    None,
+                ),
+            ),
+        ]
 
-            if callable(method):
+        missing = [
+            name
+            for name, method in required_methods
+            if not callable(method)
+        ]
 
-                result[
-                    "pending_matches"
-                ] = _safe_count(
-                    method()
-                )
+        if missing:
 
-        except Exception as exc:
+            result["status"] = "degraded"
 
-            logger.warning(
-                "ETC status degraded: %s",
-                exc,
-            )
+            result["missing_api"] = missing
 
-            result[
-                "status"
-            ] = "degraded"
+        else:
 
-            result[
-                "status_error"
-            ] = str(exc)
+            result["missing_api"] = []
 
         return result
 
@@ -382,53 +381,62 @@ class ETCController:
 
     def run(
         self,
+        league: Optional[str] = None,
+        season_id: Optional[int] = None,
         limit: Optional[int] = None,
         force: bool = False,
     ) -> Dict[str, Any]:
         """
-        Выполняет один полный ETC-run.
+        Выполняет ETC.
 
-        FLOW:
+        Если league указан:
 
-            1. BatchController.create_batch()
-            2. LearningEngine.process_match()
-            3. BatchController.mark_processed()
+            проверяется только этот турнир.
 
-        Только успешные матчи передаются
-        в mark_processed().
+        Если league=None:
+
+            ETC последовательно проверяет все турниры,
+            для которых существуют правила BATCH_RULES.
+
+        force НЕ изменяет архитектурное решение
+        BatchController.
+
+        Он только передаётся в результат как
+        диагностический флаг и не превращает WAIT
+        или ошибку в успех.
         """
 
         started_at = _now()
 
         result: Dict[str, Any] = {
-
             "module": MODULE_NAME,
-
             "version": MODULE_VERSION,
 
             "status": "started",
 
             "started_at": started_at,
-
             "finished_at": None,
 
+            "league": league,
+            "season_id": season_id,
+            "force": bool(force),
+
+            "leagues_checked": [],
+
             "batch_size": 0,
-
             "analyzed": 0,
-
             "learned": 0,
-
             "processed": 0,
 
-            "memory_events": 0,
-
             "learning_events": 0,
+            "memory_events": 0,
 
             "errors": 0,
 
             "failed_matches": [],
-
             "processed_match_ids": [],
+
+            "batches": [],
 
             "message": "",
         }
@@ -438,460 +446,668 @@ class ETCController:
         )
 
         logger.info(
-            "ETC RUN STARTED | limit=%s | force=%s",
+            "ETC RUN STARTED | "
+            "league=%s | season=%s | limit=%s | force=%s",
+            league,
+            season_id,
             limit,
             force,
         )
 
-        # ====================================================
-        # STEP 1
-        # ====================================================
-
         try:
 
-            logger.info(
-                "ETC STEP 1/3 — CREATE BATCH"
-            )
+            # =================================================
+            # API VALIDATION
+            # =================================================
 
-            batch = (
-                self.batch_controller.create_batch(
+            api_status = self.status()
+
+            if api_status.get("status") == "degraded":
+
+                result["status"] = "failed"
+
+                result["errors"] += 1
+
+                result["message"] = (
+                    "ETC API contract is incomplete: "
+                    f"{api_status.get('missing_api', [])}"
+                )
+
+                result["finished_at"] = _now()
+
+                return result
+
+            # =================================================
+            # LEAGUES
+            # =================================================
+
+            if league:
+
+                leagues = [league]
+
+            else:
+
+                leagues = list(
+                    BATCH_RULES.keys()
+                )
+
+            if not leagues:
+
+                result["status"] = "failed"
+                result["errors"] += 1
+                result["message"] = (
+                    "Не определён ни один турнир ETC."
+                )
+                result["finished_at"] = _now()
+
+                return result
+
+            # =================================================
+            # PROCESS EACH LEAGUE
+            # =================================================
+
+            for current_league in leagues:
+
+                result["leagues_checked"].append(
+                    current_league
+                )
+
+                league_result = self._run_league(
+                    league=current_league,
+                    season_id=season_id,
                     limit=limit,
                     force=force,
                 )
-            )
 
-        except Exception as exc:
-
-            logger.exception(
-                "ETC BatchController.create_batch failed"
-            )
-
-            result[
-                "status"
-            ] = "batch_error"
-
-            result[
-                "errors"
-            ] = 1
-
-            result[
-                "message"
-            ] = str(exc)
-
-            result[
-                "finished_at"
-            ] = _now()
-
-            return result
-
-        # ====================================================
-        # EMPTY BATCH
-        # ====================================================
-
-        if not batch:
-
-            result[
-                "status"
-            ] = "nothing_to_process"
-
-            result[
-                "message"
-            ] = (
-                "Нет новых завершённых "
-                "матчей для ETC."
-            )
-
-            result[
-                "finished_at"
-            ] = _now()
-
-            logger.info(
-                "ETC RUN FINISHED — "
-                "nothing to process"
-            )
-
-            return result
-
-        result[
-            "batch_size"
-        ] = len(batch)
-
-        logger.info(
-            "ETC batch created: %s matches",
-            len(batch),
-        )
-
-        # ====================================================
-        # STEP 2
-        # ====================================================
-
-        logger.info(
-            "ETC STEP 2/3 — LEARNING ENGINE"
-        )
-
-        successful_items: List[Any] = []
-
-        for batch_item in batch:
-
-            match_id = (
-                self._extract_match_id(
-                    batch_item
-                )
-            )
-
-            # ------------------------------------------------
-            # INVALID ITEM
-            # ------------------------------------------------
-
-            if match_id is None:
-
-                result[
-                    "errors"
-                ] += 1
-
-                result[
-                    "failed_matches"
-                ].append(
-                    {
-                        "match_id": None,
-                        "stage": "batch",
-                        "error": (
-                            "Batch item "
-                            "не содержит "
-                            "валидный match_id"
-                        ),
-                    }
+                result["batches"].append(
+                    league_result
                 )
 
-                logger.error(
-                    "ETC invalid batch item: %r",
-                    batch_item,
-                )
+                # ------------------------------------------------
+                # Aggregate counters
+                # ------------------------------------------------
 
-                continue
-
-            # ------------------------------------------------
-            # PROCESS MATCH
-            # ------------------------------------------------
-
-            try:
-
-                learning_result = (
-                    self.learning_engine
-                    .process_match(
-                        match_id=match_id
+                result["batch_size"] += _safe_count(
+                    league_result.get(
+                        "batch_size",
+                        0,
                     )
                 )
 
-                if not isinstance(
-                    learning_result,
-                    dict,
-                ):
-
-                    raise ValueError(
-                        "LearningEngine "
-                        "вернул не-dict"
-                    )
-
-                if not learning_result.get(
-                    "success",
-                    False,
-                ):
-
-                    status = (
-                        learning_result.get(
-                            "status",
-                            "processing_failed",
-                        )
-                    )
-
-                    error = (
-                        learning_result.get(
-                            "error"
-                        )
-                        or status
-                    )
-
-                    raise ValueError(
-                        f"LearningEngine "
-                        f"неуспешен: {error}"
-                    )
-
-                # --------------------------------------------
-                # SUCCESS
-                # --------------------------------------------
-
-                successful_items.append(
-                    batch_item
-                )
-
-                result[
-                    "analyzed"
-                ] += 1
-
-                result[
-                    "learned"
-                ] += 1
-
-                result[
-                    "processed_match_ids"
-                ].append(
-                    match_id
-                )
-
-                memory_ids = (
-                    learning_result.get(
-                        "memory_ids",
-                        [],
+                result["analyzed"] += _safe_count(
+                    league_result.get(
+                        "analyzed",
+                        0,
                     )
                 )
 
-                if isinstance(
-                    memory_ids,
-                    list,
-                ):
-
-                    result[
-                        "memory_events"
-                    ] += len(
-                        memory_ids
+                result["learned"] += _safe_count(
+                    league_result.get(
+                        "learned",
+                        0,
                     )
+                )
 
-                result[
-                    "learning_events"
-                ] += _safe_count(
-                    learning_result.get(
+                result["processed"] += _safe_count(
+                    league_result.get(
+                        "processed",
+                        0,
+                    )
+                )
+
+                result["learning_events"] += _safe_count(
+                    league_result.get(
                         "learning_events",
                         0,
                     )
                 )
 
-                logger.info(
-                    "ETC learning OK | "
-                    "match_id=%s",
-                    match_id,
+                result["memory_events"] += _safe_count(
+                    league_result.get(
+                        "memory_events",
+                        0,
+                    )
                 )
 
-            except Exception as exc:
-
-                result[
-                    "errors"
-                ] += 1
-
-                result[
-                    "failed_matches"
-                ].append(
-                    {
-                        "match_id": match_id,
-                        "stage": "learning",
-                        "error": str(exc),
-                    }
+                result["errors"] += _safe_count(
+                    league_result.get(
+                        "errors",
+                        0,
+                    )
                 )
 
-                logger.exception(
-                    "ETC learning failed | "
-                    "match_id=%s",
-                    match_id,
+                result["processed_match_ids"].extend(
+                    league_result.get(
+                        "processed_match_ids",
+                        [],
+                    )
                 )
 
-                # ВАЖНО:
-                #
-                # Ошибка одного матча
-                # НЕ останавливает batch.
+                result["failed_matches"].extend(
+                    league_result.get(
+                        "failed_matches",
+                        [],
+                    )
+                )
 
-                continue
+            # =================================================
+            # FINAL STATUS
+            # =================================================
 
-        # ====================================================
-        # STEP 3
-        # ====================================================
+            result["finished_at"] = _now()
 
-        logger.info(
-            "ETC STEP 3/3 — MARK PROCESSED"
-        )
+            statuses = [
+                batch.get(
+                    "status"
+                )
+                for batch in result["batches"]
+            ]
 
-        # ----------------------------------------------------
-        # НЕТ УСПЕШНЫХ МАТЧЕЙ
-        # ----------------------------------------------------
+            successful = [
+                status == "completed"
+                for status in statuses
+            ]
 
-        if not successful_items:
-
-            result[
-                "status"
-            ] = "failed"
-
-            result[
-                "message"
-            ] = (
-                "Ни один матч не прошёл "
-                "ETCLearningEngine."
+            has_processing = (
+                result["processed"] > 0
             )
 
-            result[
-                "finished_at"
-            ] = _now()
+            has_errors = (
+                result["errors"] > 0
+            )
+
+            # -------------------------------------------------
+            # NOTHING READY
+            # -------------------------------------------------
+
+            if all(
+                status in {
+                    STATUS_WAIT,
+                    STATUS_ALREADY_PROCESSED,
+                    STATUS_UNKNOWN_LEAGUE,
+                    "nothing_to_process",
+                    "empty",
+                }
+                for status in statuses
+            ):
+
+                result["status"] = "nothing_to_process"
+
+                result["message"] = (
+                    "Нет готового ETC batch."
+                )
+
+            # -------------------------------------------------
+            # ALL COMPLETED
+            # -------------------------------------------------
+
+            elif all(successful):
+
+                result["status"] = "completed"
+
+                result["message"] = (
+                    "ETC успешно завершил "
+                    "готовые batch."
+                )
+
+            # -------------------------------------------------
+            # PARTIAL
+            # -------------------------------------------------
+
+            elif has_processing:
+
+                result["status"] = (
+                    "completed_with_errors"
+                )
+
+                result["message"] = (
+                    "ETC обработал доступные batch "
+                    "частично или с ошибками."
+                )
+
+            # -------------------------------------------------
+            # FAILED
+            # -------------------------------------------------
+
+            else:
+
+                result["status"] = "failed"
+
+                result["message"] = (
+                    "ETC не смог успешно обработать "
+                    "готовый batch."
+                )
+
+            logger.info(
+                "ETC RUN FINISHED | "
+                "status=%s | "
+                "processed=%s | "
+                "errors=%s",
+                result["status"],
+                result["processed"],
+                result["errors"],
+            )
+
+            logger.info(
+                "=================================================="
+            )
 
             return result
 
-        # ----------------------------------------------------
-        # MARK ONLY SUCCESSFUL ITEMS
-        # ----------------------------------------------------
+        except Exception as exc:
+
+            result["status"] = "failed"
+
+            result["errors"] += 1
+
+            result["message"] = str(exc)
+
+            result["finished_at"] = _now()
+
+            logger.exception(
+                "ETC RUN FAILED: %s",
+                exc,
+            )
+
+            logger.info(
+                "=================================================="
+            )
+
+            return result
+
+    # ========================================================
+    # SINGLE LEAGUE
+    # ========================================================
+
+    def _run_league(
+        self,
+        league: str,
+        season_id: Optional[int],
+        limit: Optional[int],
+        force: bool,
+    ) -> Dict[str, Any]:
+        """
+        Выполняет один ETC batch для одного турнира.
+
+        КРИТИЧЕСКИЙ КОНТРАК:
+
+            check()
+                ↓
+            READY
+                ↓
+            get_learning_batch()
+                ↓
+            learning_engine.run_batch()
+
+        ETCController не создаёт batch самостоятельно.
+        """
+
+        result: Dict[str, Any] = {
+            "league": league,
+            "season_id": season_id,
+
+            "status": "started",
+
+            "batch_size": 0,
+            "analyzed": 0,
+            "learned": 0,
+            "processed": 0,
+
+            "learning_events": 0,
+            "memory_events": 0,
+
+            "errors": 0,
+
+            "failed_matches": [],
+            "processed_match_ids": [],
+
+            "batch_check": None,
+            "selected_match_ids": [],
+
+            "learning_result": None,
+
+            "message": "",
+        }
+
+        # =====================================================
+        # STEP 1 — CHECK
+        # =====================================================
+
+        logger.info(
+            "ETC [%s] STEP 1 — BatchController.check()",
+            league,
+        )
 
         try:
 
-            processed = (
-                self.batch_controller
-                .mark_processed(
-                    successful_items
+            batch_check = (
+                self.batch_controller.check(
+                    league=league,
+                    season_id=season_id,
                 )
             )
 
-            result[
-                "processed"
-            ] = _safe_count(
-                processed,
-                0,
+            result["batch_check"] = batch_check
+
+        except Exception as exc:
+
+            result["status"] = "failed"
+            result["errors"] = 1
+            result["message"] = str(exc)
+
+            logger.exception(
+                "ETC BatchController.check failed | "
+                "league=%s",
+                league,
+            )
+
+            return result
+
+        controller_status = batch_check.get(
+            "status"
+        )
+
+        # =====================================================
+        # NOT READY
+        # =====================================================
+
+        if controller_status != STATUS_READY:
+
+            result["status"] = (
+                controller_status
+                or STATUS_WAIT
+            )
+
+            result["message"] = (
+                batch_check.get(
+                    "reason",
+                    "Batch не готов.",
+                )
+            )
+
+            logger.info(
+                "ETC [%s] batch status: %s | %s",
+                league,
+                result["status"],
+                result["message"],
+            )
+
+            return result
+
+        # =====================================================
+        # STEP 2 — GET BATCH
+        # =====================================================
+
+        logger.info(
+            "ETC [%s] STEP 2 — "
+            "BatchController.get_learning_batch()",
+            league,
+        )
+
+        try:
+
+            selected_batch = (
+                self.batch_controller
+                .get_learning_batch(
+                    league=league,
+                    season_id=season_id,
+                    limit=limit,
+                )
             )
 
         except Exception as exc:
 
-            # ------------------------------------------------
-            # CRITICAL
-            # ------------------------------------------------
-
-            result[
-                "processed"
-            ] = 0
-
-            result[
-                "errors"
-            ] += 1
-
-            result[
-                "failed_matches"
-            ].append(
-                {
-                    "match_id": None,
-                    "stage": "mark_processed",
-                    "error": str(exc),
-                }
-            )
+            result["status"] = "failed"
+            result["errors"] = 1
+            result["message"] = str(exc)
 
             logger.exception(
-                "ETC mark_processed failed"
+                "ETC get_learning_batch failed | "
+                "league=%s",
+                league,
             )
 
-        # ====================================================
-        # FINAL STATUS
-        # ====================================================
+            return result
 
-        result[
-            "finished_at"
-        ] = _now()
+        if not selected_batch:
 
-        batch_size = (
-            result["batch_size"]
+            result["status"] = "empty"
+
+            result["message"] = (
+                "BatchController сообщил READY, "
+                "но get_learning_batch() вернул пустой batch."
+            )
+
+            result["errors"] = 1
+
+            logger.error(
+                "ETC CONTRACT ERROR | "
+                "READY but empty batch | league=%s",
+                league,
+            )
+
+            return result
+
+        result["batch_size"] = len(
+            selected_batch
         )
 
-        processed = (
-            result["processed"]
+        result["selected_match_ids"] = [
+            self._extract_match_id(item)
+            for item in selected_batch
+            if self._extract_match_id(item)
+            is not None
+        ]
+
+        logger.info(
+            "ETC [%s] batch selected | "
+            "size=%s | matches=%s",
+            league,
+            len(selected_batch),
+            result["selected_match_ids"],
         )
 
-        failed = (
-            result["errors"]
+        # =====================================================
+        # STEP 3 — LEARNING ENGINE
+        # =====================================================
+
+        logger.info(
+            "ETC [%s] STEP 3 — "
+            "ETCLearningEngine.run_batch()",
+            league,
         )
 
-        # ----------------------------------------------------
-        # COMPLETE
-        # ----------------------------------------------------
+        try:
 
-        if (
-            processed == batch_size
-            and failed == 0
-        ):
-
-            result[
-                "status"
-            ] = "completed"
-
-            result[
-                "message"
-            ] = (
-                "ETC полностью обработал "
-                "batch."
+            learning_result = (
+                self.learning_engine.run_batch(
+                    league=league,
+                    season_id=season_id,
+                    batch=selected_batch,
+                )
             )
 
-        # ----------------------------------------------------
-        # PARTIAL
-        # ----------------------------------------------------
-
-        elif processed > 0:
-
-            result[
-                "status"
-            ] = "partial"
-
-            result[
-                "message"
-            ] = (
-                "ETC частично обработал "
-                "batch. Неуспешные матчи "
-                "не закрыты."
+            result["learning_result"] = (
+                learning_result
             )
 
-        # ----------------------------------------------------
-        # ANALYSIS SUCCESS BUT MARK FAILED
-        # ----------------------------------------------------
+        except Exception as exc:
 
-        elif result["learned"] > 0:
+            result["status"] = "failed"
+            result["errors"] = 1
+            result["message"] = str(exc)
 
-            result[
-                "status"
-            ] = "mark_failed"
-
-            result[
-                "message"
-            ] = (
-                "Анализ ETC выполнен, "
-                "но BatchController "
-                "не смог закрыть "
-                "обработанные матчи."
+            logger.exception(
+                "ETC LearningEngine.run_batch failed | "
+                "league=%s",
+                league,
             )
 
-        # ----------------------------------------------------
-        # TOTAL FAILURE
-        # ----------------------------------------------------
+            return result
+
+        # =====================================================
+        # AGGREGATE LEARNING RESULT
+        # =====================================================
+
+        result["analyzed"] = _safe_count(
+            learning_result.get(
+                "processed",
+                0,
+            )
+        )
+
+        result["learned"] = _safe_count(
+            learning_result.get(
+                "processed",
+                0,
+            )
+        )
+
+        result["processed"] = _safe_count(
+            learning_result.get(
+                "processed",
+                0,
+            )
+        )
+
+        result["memory_events"] = len(
+            learning_result.get(
+                "memory_ids",
+                [],
+            )
+            or []
+        )
+
+        result["learning_events"] = _safe_count(
+            learning_result.get(
+                "learning_events",
+                0,
+            )
+        )
+
+        result["processed_match_ids"] = (
+            learning_result.get(
+                "processed_match_ids",
+                [],
+            )
+            or []
+        )
+
+        learning_errors = (
+            learning_result.get(
+                "errors",
+                [],
+            )
+            or []
+        )
+
+        result["errors"] = len(
+            learning_errors
+        )
+
+        # =====================================================
+        # FAILED MATCHES
+        # =====================================================
+
+        for error in learning_errors:
+
+            if isinstance(
+                error,
+                dict,
+            ):
+
+                result["failed_matches"].append(
+                    error
+                )
+
+            else:
+
+                result["failed_matches"].append(
+                    {
+                        "match_id": None,
+                        "stage": "learning",
+                        "error": str(error),
+                    }
+                )
+
+        # =====================================================
+        # FINAL LEAGUE STATUS
+        # =====================================================
+
+        learning_status = learning_result.get(
+            "status"
+        )
+
+        if learning_status == "completed":
+
+            result["status"] = "completed"
+
+            result["message"] = (
+                "ETC batch полностью "
+                "обработан."
+            )
+
+        elif learning_status == "partial":
+
+            result["status"] = "partial"
+
+            result["message"] = (
+                "ETC batch обработан частично. "
+                "Неуспешные матчи не считаются "
+                "успешно закрытыми."
+            )
+
+        elif learning_status in {
+            "WAIT",
+            "ALREADY_PROCESSED",
+            "UNKNOWN_LEAGUE",
+        }:
+
+            result["status"] = learning_status
+
+            result["message"] = (
+                learning_result.get(
+                    "message",
+                    learning_status,
+                )
+            )
+
+        elif learning_status == "empty":
+
+            result["status"] = "empty"
+
+            result["message"] = (
+                "Learning Engine получил "
+                "пустой batch."
+            )
 
         else:
 
-            result[
-                "status"
-            ] = "failed"
-
-            result[
-                "message"
-            ] = (
-                "ETC не смог успешно "
-                "обработать batch."
+            result["status"] = (
+                "failed"
             )
 
-        logger.info(
-            "ETC RUN FINISHED | "
-            "status=%s | "
-            "batch=%s | "
-            "analyzed=%s | "
-            "learned=%s | "
-            "processed=%s | "
-            "errors=%s",
-            result["status"],
-            result["batch_size"],
-            result["analyzed"],
-            result["learned"],
-            result["processed"],
-            result["errors"],
-        )
+            if not result["message"]:
+
+                result["message"] = (
+                    learning_result.get(
+                        "errors",
+                        learning_result.get(
+                            "status",
+                            "ETC learning failed.",
+                        ),
+                    )
+                )
 
         logger.info(
-            "=================================================="
+            "ETC [%s] FINISHED | "
+            "status=%s | "
+            "processed=%s | "
+            "errors=%s",
+            league,
+            result["status"],
+            result["processed"],
+            result["errors"],
         )
 
         return result
@@ -906,29 +1122,29 @@ class ETCController:
         force: bool = False,
     ) -> Dict[str, Any]:
         """
-        Диагностическая обработка одного матча.
+        Обрабатывает один матч.
+
+        Использует только:
+
+            ETCLearningEngine.process_match()
+
+        Никакого прямого обращения
+        к StatisticalAnalyzer.
 
         ВАЖНО:
 
-        Здесь НЕ вызывается BatchController.mark_processed().
+        process_match() является диагностическим
+        single-match режимом.
 
-        Этот метод предназначен для:
-
-            Match Laboratory
-            диагностики
-            ручного анализа
-
-        Полный ETC lifecycle использует run().
+        Он НЕ является batch commit.
         """
 
-        normalized_match_id = (
-            _safe_int(match_id)
+        normalized_match_id = _safe_int(
+            match_id
         )
 
         result: Dict[str, Any] = {
-
             "module": MODULE_NAME,
-
             "version": MODULE_VERSION,
 
             "match_id": normalized_match_id,
@@ -936,39 +1152,40 @@ class ETCController:
             "status": "started",
 
             "learning": None,
-
             "error": None,
+
+            "force": bool(force),
         }
 
-        if normalized_match_id is None:
+        if (
+            normalized_match_id is None
+            or normalized_match_id <= 0
+        ):
 
-            result[
-                "status"
-            ] = "invalid_match_id"
+            result["status"] = (
+                "invalid_match_id"
+            )
 
-            result[
-                "error"
-            ] = "Некорректный match_id"
+            result["error"] = (
+                "Некорректный match_id."
+            )
 
             if force:
                 return result
 
             raise ValueError(
-                "Некорректный match_id"
+                "Некорректный match_id."
             )
 
         try:
 
             learning = (
-                self.learning_engine
-                .process_match(
+                self.learning_engine.process_match(
                     match_id=normalized_match_id
                 )
             )
 
-            result[
-                "learning"
-            ] = learning
+            result["learning"] = learning
 
             if not isinstance(
                 learning,
@@ -976,8 +1193,8 @@ class ETCController:
             ):
 
                 raise ValueError(
-                    "LearningEngine "
-                    "вернул не-dict"
+                    "LearningEngine вернул "
+                    "не-dict."
                 )
 
             if not learning.get(
@@ -986,28 +1203,23 @@ class ETCController:
             ):
 
                 raise ValueError(
-                    "LearningEngine "
-                    "неуспешен: "
-                    f"{learning.get('error') "
-                    f"or learning.get('status', "
-                    f"'processing_failed')}"
+                    "LearningEngine неуспешен: "
+                    f"{learning.get('error', "
+                    f"learning.get('status', "
+                    f"'processing_failed'"))}"
                 )
 
-            result[
-                "status"
-            ] = "completed"
+            result["status"] = (
+                "completed"
+            )
 
             return result
 
         except Exception as exc:
 
-            result[
-                "status"
-            ] = "failed"
+            result["status"] = "failed"
 
-            result[
-                "error"
-            ] = str(exc)
+            result["error"] = str(exc)
 
             logger.exception(
                 "ETC single match failed | "
@@ -1029,24 +1241,19 @@ class ETCController:
         item: Any,
     ) -> Optional[int]:
         """
-        Унифицированное извлечение match_id.
+        Унифицированно извлекает match_id.
 
         Поддерживает:
 
             int
             dict
-            sqlite3.Row
-            Mapping
+            sqlite3.Row / Mapping
             object.match_id
             object.id
         """
 
         if item is None:
             return None
-
-        # ----------------------------------------------------
-        # INT
-        # ----------------------------------------------------
 
         if isinstance(
             item,
@@ -1058,10 +1265,6 @@ class ETCController:
                 if item > 0
                 else None
             )
-
-        # ----------------------------------------------------
-        # DICT
-        # ----------------------------------------------------
 
         if isinstance(
             item,
@@ -1092,7 +1295,7 @@ class ETCController:
             return None
 
         # ----------------------------------------------------
-        # MAPPING / SQLITE ROW
+        # Mapping / sqlite3.Row
         # ----------------------------------------------------
 
         for key in (
@@ -1119,7 +1322,7 @@ class ETCController:
                 pass
 
         # ----------------------------------------------------
-        # OBJECT
+        # Object attributes
         # ----------------------------------------------------
 
         for attribute in (
@@ -1158,17 +1361,25 @@ class ETCController:
 
 def run_etc(
     db: Optional[FAJDatabase] = None,
+    league: Optional[str] = None,
+    season_id: Optional[int] = None,
     limit: Optional[int] = None,
     force: bool = False,
 ) -> Dict[str, Any]:
     """
     Главная публичная точка запуска ETC.
 
-    Используется:
+    Пример:
 
-        faj_cycle.py
-        Streamlit ETC page
-        ручной запуск ETC
+        run_etc(
+            db=db,
+            league="РПЛ",
+            season_id=1,
+        )
+
+    Если league не указан,
+    ETC последовательно проверит все турниры
+    из BATCH_RULES.
     """
 
     controller = ETCController(
@@ -1176,6 +1387,8 @@ def run_etc(
     )
 
     return controller.run(
+        league=league,
+        season_id=season_id,
         limit=limit,
         force=force,
     )
@@ -1187,8 +1400,7 @@ def process_etc_match(
     force: bool = False,
 ) -> Dict[str, Any]:
     """
-    Публичная диагностическая точка
-    обработки одного матча.
+    Публичная точка обработки одного матча.
     """
 
     controller = ETCController(
@@ -1205,7 +1417,7 @@ def get_etc_status(
     db: Optional[FAJDatabase] = None,
 ) -> Dict[str, Any]:
     """
-    Read-only состояние ETC.
+    Публичная read-only точка состояния ETC.
     """
 
     controller = ETCController(
@@ -1259,33 +1471,41 @@ if __name__ == "__main__":
         )
 
         print(
-            "Batch state owner: "
-            "BatchController"
+            "BatchController API:"
         )
 
         print(
-            "Analysis owner: "
-            "ETCLearningEngine"
+            "  check()"
         )
 
         print(
-            "Memory owner: "
-            "LearningMemory"
+            "  get_learning_batch()"
         )
 
         print(
-            "Historical facts: "
-            "READ ONLY"
+            "LearningEngine API:"
         )
 
         print(
-            "Database schema: "
-            "READ ONLY"
+            "  process_match()"
         )
 
         print(
-            "DELETE/DROP: "
-            "FORBIDDEN"
+            "  run_batch()"
+        )
+
+        print()
+        print(
+            "create_batch() НЕ используется."
+        )
+
+        print(
+            "mark_processed() НЕ используется."
+        )
+
+        print(
+            "LearningMemory остаётся "
+            "единственным механизмом записи памяти."
         )
 
     except Exception as exc:
