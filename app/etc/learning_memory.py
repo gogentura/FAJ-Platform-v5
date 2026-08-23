@@ -20,15 +20,28 @@ app/etc/learning_memory.py
       ↓
     ANALYSIS
       ↓
-    ETC
+    ETC LEARNING ENGINE
       ↓
     EVOLUTION EVENT
       ↓
     LearningMemory
       ↓
-    database.py
+    FAJDatabase.add_learning_memory()
       ↓
-    SQLite
+    SQLite / learning_memory
+
+
+ОТВЕТСТВЕННОСТЬ
+---------------
+
+LearningMemory отвечает только за:
+
+    1. валидацию ETC-события;
+    2. сериализацию значений;
+    3. передачу события в FAJDatabase;
+    4. чтение истории learning_memory;
+    5. предоставление специализированных ETC API.
+
 
 ВАЖНО
 ------
@@ -41,25 +54,86 @@ app/etc/learning_memory.py
     - изменяет FAJ Rating;
     - изменяет model_parameters;
     - изменяет исторические факты;
+    - изменяет match_results;
+    - изменяет match_statistics;
+    - изменяет matches;
     - удаляет память;
     - выполняет DELETE;
-    - изменяет database.py.
+    - выполняет UPDATE;
+    - изменяет database.py;
+    - самостоятельно принимает решения об эволюции модели.
 
-Этот модуль ТОЛЬКО:
 
-    1. принимает уже рассчитанное ETC-событие;
-    2. сохраняет его в learning_memory;
-    3. читает историю памяти;
-    4. предоставляет единый API для ETC.
+APPEND-ONLY
+-----------
 
-ПРИНЦИП:
+Каждое ETC-событие является новой записью.
 
-    LearningMemory = APP/ETC → DATABASE → SQLite
+Существующие записи:
 
-Память является APPEND-ONLY.
+    НЕ изменяются;
+    НЕ удаляются;
+    НЕ переписываются.
 
-Существующие записи не удаляются
-и не переписываются.
+
+DATABASE CONTRACT
+-----------------
+
+database.py v12.1 является единственным источником
+схемы базы данных.
+
+Запись выполняется ТОЛЬКО через:
+
+    FAJDatabase.add_learning_memory(data)
+
+
+LearningMemory не содержит INSERT SQL.
+
+
+BATCH LEARNING CONTRACT
+-----------------------
+
+После успешной обработки конкретного матча
+ETCLearningEngine должен создать событие:
+
+    event_type = "batch_learning"
+
+    object = "match:<match_id>"
+
+    reference_id = <match_id>
+
+
+Именно это событие используется BatchController
+для определения уже обработанного матча.
+
+Таким образом:
+
+    match_results
+          ≠
+    processed match
+
+Обработанным матч считается только после:
+
+    successful ETC learning
+          +
+    batch_learning event
+          +
+    reference_id = match_id
+
+
+PRINCIPLE
+---------
+
+    FACTS
+      ↓
+    ANALYSIS
+      ↓
+    ETC DECISION
+      ↓
+    LEARNING MEMORY
+      ↓
+    APPEND-ONLY HISTORY
+
 
 ============================================================
 """
@@ -77,8 +151,13 @@ from app.database import FAJDatabase
 logger = logging.getLogger(__name__)
 
 
-MODULE_VERSION = "2.0"
+MODULE_VERSION = "2.1"
 MODULE_NAME = "FAJ ETC Learning Memory"
+
+DEFAULT_MODEL_VERSION = "v12.1"
+DEFAULT_ALGORITHM = "ETC"
+
+BATCH_LEARNING_EVENT = "batch_learning"
 
 
 # ============================================================
@@ -87,8 +166,10 @@ MODULE_NAME = "FAJ ETC Learning Memory"
 
 def _now() -> str:
     """
-    Возвращает локальное время создания события.
+    Возвращает локальное время создания события
+    в ISO формате.
     """
+
     return datetime.now().isoformat()
 
 
@@ -99,13 +180,16 @@ def _safe_float(
     """
     Безопасное преобразование в float.
     """
+
     try:
+
         if value is None:
             return default
 
         return float(value)
 
     except (TypeError, ValueError):
+
         return default
 
 
@@ -116,13 +200,16 @@ def _safe_int(
     """
     Безопасное преобразование в int.
     """
+
     try:
+
         if value is None:
             return default
 
         return int(value)
 
     except (TypeError, ValueError):
+
         return default
 
 
@@ -130,22 +217,41 @@ def _serialize(
     value: Any,
 ) -> Optional[str]:
     """
-    Безопасное представление значения для TEXT-поля.
+    Безопасное представление значения
+    для TEXT-поля learning_memory.
 
-    Числа и строки сохраняются как строки.
+    Правила:
 
-    dict/list/tuple → JSON.
+        None
+            → NULL
 
-    None → NULL.
+        bool
+            → "1" / "0"
+
+        dict/list/tuple
+            → JSON
+
+        остальные значения
+            → строка
     """
 
     if value is None:
+
         return None
 
     if isinstance(value, bool):
+
         return "1" if value else "0"
 
-    if isinstance(value, (dict, list, tuple)):
+    if isinstance(
+        value,
+        (
+            dict,
+            list,
+            tuple,
+        ),
+    ):
+
         return json.dumps(
             value,
             ensure_ascii=False,
@@ -166,21 +272,56 @@ def _deserialize(
     """
 
     if value is None:
+
         return None
 
-    if not isinstance(value, str):
+    if not isinstance(
+        value,
+        str,
+    ):
+
         return value
 
     text = value.strip()
 
     if not text:
+
         return value
 
     try:
-        return json.loads(text)
 
-    except (TypeError, ValueError, json.JSONDecodeError):
+        return json.loads(
+            text
+        )
+
+    except (
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+    ):
+
         return value
+
+
+def _normalize_confidence(
+    value: Any,
+) -> float:
+    """
+    Нормализует confidence в диапазон 0..1.
+    """
+
+    confidence = _safe_float(
+        value,
+        1.0,
+    )
+
+    return max(
+        0.0,
+        min(
+            1.0,
+            confidence,
+        ),
+    )
 
 
 # ============================================================
@@ -191,11 +332,12 @@ class LearningMemory:
     """
     Единый слой памяти ETC.
 
-    Никакой бизнес-логики обучения здесь нет.
+    LearningMemory НЕ содержит бизнес-логику обучения.
 
-    ETC рассчитывает изменение.
+    ETC рассчитывает событие.
 
-    LearningMemory только фиксирует его.
+    LearningMemory только фиксирует его
+    через FAJDatabase.add_learning_memory().
     """
 
     def __init__(
@@ -206,7 +348,7 @@ class LearningMemory:
         self.db = db or FAJDatabase()
 
     # ========================================================
-    # WRITE
+    # WRITE — GENERIC
     # ========================================================
 
     def record(
@@ -220,60 +362,56 @@ class LearningMemory:
         reason: str = "",
         confidence: float = 1.0,
         impact: float = 1.0,
-        algorithm: str = "ETC",
-        model_version: str = "v12.1",
+        algorithm: str = DEFAULT_ALGORITHM,
+        model_version: str = DEFAULT_MODEL_VERSION,
         reference_id: Optional[int] = None,
+        created_at: Optional[str] = None,
     ) -> int:
         """
         Записывает одно эволюционное событие.
 
-        ВАЖНО:
+        Только APPEND.
 
-        Метод ничего не изменяет в модели.
+        Реальная запись выполняется database.py:
 
-        Он только создаёт новую запись памяти.
-
-        Пример:
-
-            memory.record(
-                event_type="prediction_error",
-                object_type="match:123",
-                feature="xg",
-                before_value=1.72,
-                after_value=0.94,
-                delta=-0.78,
-                reason="Observed xG ниже прогнозного",
-                confidence=0.86,
-                impact=0.65,
-                algorithm="ETC.StatisticalAnalyzer",
-                reference_id=123,
-            )
+            FAJDatabase.add_learning_memory()
         """
 
         if not event_type:
+
             raise ValueError(
                 "event_type обязателен"
             )
 
         if not object_type:
+
             raise ValueError(
                 "object_type обязателен"
             )
 
         if not feature:
+
             raise ValueError(
                 "feature обязателен"
             )
 
-        confidence = max(
-            0.0,
-            min(
-                1.0,
-                _safe_float(
-                    confidence,
-                    1.0,
-                ),
-            ),
+        normalized_reference_id = None
+
+        if reference_id is not None:
+
+            normalized_reference_id = _safe_int(
+                reference_id
+            )
+
+            if normalized_reference_id <= 0:
+
+                raise ValueError(
+                    "reference_id должен быть "
+                    "положительным integer"
+                )
+
+        confidence = _normalize_confidence(
+            confidence
         )
 
         impact = _safe_float(
@@ -282,9 +420,18 @@ class LearningMemory:
         )
 
         data: Dict[str, Any] = {
-            "event_type": str(event_type),
-            "object": str(object_type),
-            "feature": str(feature),
+
+            "event_type": str(
+                event_type
+            ),
+
+            "object": str(
+                object_type
+            ),
+
+            "feature": str(
+                feature
+            ),
 
             "before_value": _serialize(
                 before_value
@@ -298,48 +445,78 @@ class LearningMemory:
                 delta
             ),
 
-            "reason": str(reason or ""),
+            "reason": str(
+                reason or ""
+            ),
 
             "confidence": confidence,
 
             "impact": impact,
 
             "algorithm": str(
-                algorithm or "ETC"
+                algorithm or DEFAULT_ALGORITHM
             ),
 
             "model_version": str(
-                model_version or "v12.1"
+                model_version or DEFAULT_MODEL_VERSION
             ),
 
-            "reference_id": reference_id,
+            "reference_id":
+                normalized_reference_id,
 
-            "created_at": _now(),
+            "created_at":
+                str(
+                    created_at
+                    or _now()
+                ),
         }
 
-        memory_id = self.db.add_learning_memory(
-            data
+        # ----------------------------------------------------
+        # DATABASE CONTRACT
+        # ----------------------------------------------------
+        #
+        # Никакого SQL здесь нет.
+        #
+        # database.py является единственным
+        # владельцем схемы и операции INSERT.
+        #
+
+        memory_id = (
+            self.db.add_learning_memory(
+                data
+            )
         )
 
         if memory_id is None:
+
             raise RuntimeError(
-                "database.py не вернул ID записи learning_memory."
+                "database.py не вернул ID "
+                "записи learning_memory."
             )
 
         memory_id = _safe_int(
             memory_id
         )
 
+        if memory_id <= 0:
+
+            raise RuntimeError(
+                "database.py вернул некорректный "
+                "ID записи learning_memory."
+            )
+
         logger.info(
             "ETC MEMORY APPEND | "
             "id=%s | "
             "event=%s | "
             "object=%s | "
-            "feature=%s",
+            "feature=%s | "
+            "reference_id=%s",
             memory_id,
             event_type,
             object_type,
             feature,
+            normalized_reference_id,
         )
 
         return memory_id
@@ -360,15 +537,15 @@ class LearningMemory:
         reason: str = "",
         confidence: float = 1.0,
         impact: float = 1.0,
-        algorithm: str = "ETC",
-        model_version: str = "v12.1",
+        algorithm: str = DEFAULT_ALGORITHM,
+        model_version: str = DEFAULT_MODEL_VERSION,
         reference_id: Optional[int] = None,
+        created_at: Optional[str] = None,
     ) -> int:
         """
-        Явный API для ETC event pipeline.
+        Явный универсальный API ETC events.
 
-        Это основной рекомендуемый интерфейс
-        для новых ETC-модулей.
+        Рекомендуемый интерфейс для новых ETC-модулей.
         """
 
         return self.record(
@@ -384,6 +561,96 @@ class LearningMemory:
             algorithm=algorithm,
             model_version=model_version,
             reference_id=reference_id,
+            created_at=created_at,
+        )
+
+    # ========================================================
+    # BATCH LEARNING EVENT
+    # ========================================================
+
+    def record_batch_learning(
+        self,
+        match_id: int,
+        *,
+        feature: str = "etc_batch_processed",
+        before_value: Any = None,
+        after_value: Any = None,
+        delta: Any = None,
+        reason: str = "",
+        confidence: float = 1.0,
+        impact: float = 1.0,
+        algorithm: str = "ETC.LearningEngine",
+        model_version: str = DEFAULT_MODEL_VERSION,
+        created_at: Optional[str] = None,
+    ) -> int:
+        """
+        Фиксирует успешную обработку конкретного матча
+        ETC Learning Engine.
+
+        КРИТИЧЕСКИЙ КОНТРАК:
+
+            event_type
+                = "batch_learning"
+
+            object
+                = "match:<match_id>"
+
+            reference_id
+                = match_id
+
+        Именно этот event читается BatchController
+        для определения уже обработанного матча.
+
+        ВАЖНО:
+
+        Метод НЕ выполняет обучение.
+
+        Он только фиксирует факт того,
+        что ETC Learning Engine успешно завершил
+        обработку данного матча.
+        """
+
+        normalized_match_id = _safe_int(
+            match_id
+        )
+
+        if normalized_match_id <= 0:
+
+            raise ValueError(
+                "match_id должен быть "
+                "положительным integer"
+            )
+
+        return self.record(
+            event_type=BATCH_LEARNING_EVENT,
+
+            object_type=(
+                f"match:{normalized_match_id}"
+            ),
+
+            feature=feature,
+
+            before_value=before_value,
+
+            after_value=after_value,
+
+            delta=delta,
+
+            reason=reason,
+
+            confidence=confidence,
+
+            impact=impact,
+
+            algorithm=algorithm,
+
+            model_version=model_version,
+
+            reference_id=(
+                normalized_match_id
+            ),
+
+            created_at=created_at,
         )
 
     # ========================================================
@@ -400,31 +667,53 @@ class LearningMemory:
         reason: str,
         confidence: float = 1.0,
         impact: float = 1.0,
-        model_version: str = "v12.1",
+        model_version: str = DEFAULT_MODEL_VERSION,
         reference_id: Optional[int] = None,
     ) -> int:
         """
         Фиксирует событие xG-калибровки.
-
-        ВАЖНО:
 
         Само изменение xG здесь НЕ выполняется.
 
         Здесь только память о решении ETC.
         """
 
+        normalized_team_id = _safe_int(
+            team_id
+        )
+
+        if normalized_team_id <= 0:
+
+            raise ValueError(
+                "team_id должен быть "
+                "положительным integer"
+            )
+
         return self.record(
             event_type="xg_calibration",
-            object_type=f"team:{team_id}",
+
+            object_type=(
+                f"team:{normalized_team_id}"
+            ),
+
             feature=feature,
+
             before_value=before_value,
+
             after_value=after_value,
+
             delta=delta,
+
             reason=reason,
+
             confidence=confidence,
+
             impact=impact,
+
             algorithm="ETC.xGCalibration",
+
             model_version=model_version,
+
             reference_id=reference_id,
         )
 
@@ -441,7 +730,7 @@ class LearningMemory:
         reason: str,
         confidence: float = 1.0,
         impact: float = 1.0,
-        model_version: str = "v12.1",
+        model_version: str = DEFAULT_MODEL_VERSION,
         reference_id: Optional[int] = None,
     ) -> int:
         """
@@ -452,18 +741,42 @@ class LearningMemory:
         LearningMemory только сохраняет историю.
         """
 
+        normalized_team_id = _safe_int(
+            team_id
+        )
+
+        if normalized_team_id <= 0:
+
+            raise ValueError(
+                "team_id должен быть "
+                "положительным integer"
+            )
+
         return self.record(
             event_type="club_rating_update",
-            object_type=f"team:{team_id}",
+
+            object_type=(
+                f"team:{normalized_team_id}"
+            ),
+
             feature="faj_rating",
+
             before_value=before_value,
+
             after_value=after_value,
+
             delta=delta,
+
             reason=reason,
+
             confidence=confidence,
+
             impact=impact,
+
             algorithm="ETC.ClubRatingUpdater",
+
             model_version=model_version,
+
             reference_id=reference_id,
         )
 
@@ -480,7 +793,7 @@ class LearningMemory:
         reason: str,
         confidence: float = 1.0,
         impact: float = 1.0,
-        model_version: str = "v12.1",
+        model_version: str = DEFAULT_MODEL_VERSION,
         reference_id: Optional[int] = None,
     ) -> int:
         """
@@ -490,18 +803,35 @@ class LearningMemory:
         отдельным ETC-компонентом.
         """
 
+        if not parameter_name:
+
+            raise ValueError(
+                "parameter_name обязателен"
+            )
+
         return self.record(
             event_type="parameter_update",
+
             object_type="model",
+
             feature=parameter_name,
+
             before_value=before_value,
+
             after_value=after_value,
+
             delta=delta,
+
             reason=reason,
+
             confidence=confidence,
+
             impact=impact,
+
             algorithm="ETC.ParameterUpdater",
+
             model_version=model_version,
+
             reference_id=reference_id,
         )
 
@@ -518,7 +848,7 @@ class LearningMemory:
         reason: str,
         confidence: float = 1.0,
         impact: float = 1.0,
-        model_version: str = "v12.1",
+        model_version: str = DEFAULT_MODEL_VERSION,
     ) -> int:
         """
         Фиксирует ошибку прогноза.
@@ -529,6 +859,23 @@ class LearningMemory:
         и НЕ изменяет модель.
         """
 
+        normalized_match_id = _safe_int(
+            match_id
+        )
+
+        if normalized_match_id <= 0:
+
+            raise ValueError(
+                "match_id должен быть "
+                "положительным integer"
+            )
+
+        if not error_type:
+
+            raise ValueError(
+                "error_type обязателен"
+            )
+
         full_reason = (
             f"{cause_type}: {reason}"
             if cause_type
@@ -537,17 +884,32 @@ class LearningMemory:
 
         return self.record(
             event_type="prediction_error",
-            object_type=f"match:{match_id}",
+
+            object_type=(
+                f"match:{normalized_match_id}"
+            ),
+
             feature=error_type,
+
             before_value=None,
+
             after_value=severity,
+
             delta=None,
+
             reason=full_reason,
+
             confidence=confidence,
+
             impact=impact,
+
             algorithm="ETC.PredictionErrorAnalyzer",
+
             model_version=model_version,
-            reference_id=match_id,
+
+            reference_id=(
+                normalized_match_id
+            ),
         )
 
     # ========================================================
@@ -565,7 +927,7 @@ class LearningMemory:
         confidence: float = 1.0,
         impact: float = 1.0,
         reference_id: Optional[int] = None,
-        model_version: str = "v12.1",
+        model_version: str = DEFAULT_MODEL_VERSION,
     ) -> int:
         """
         Фиксирует аналитическое наблюдение ETC.
@@ -573,20 +935,35 @@ class LearningMemory:
         Используется StatisticalAnalyzer,
         prediction diagnostics и другими
         аналитическими компонентами.
+
+        ВАЖНО:
+
+        Это ещё НЕ означает изменение модели.
         """
 
         return self.record(
             event_type="analysis",
+
             object_type=object_type,
+
             feature=feature,
+
             before_value=expected_value,
+
             after_value=observed_value,
+
             delta=deviation,
+
             reason=reason,
+
             confidence=confidence,
+
             impact=impact,
+
             algorithm="ETC.Analysis",
+
             model_version=model_version,
+
             reference_id=reference_id,
         )
 
@@ -625,7 +1002,12 @@ class LearningMemory:
             cursor = conn.cursor()
 
             conditions: List[str] = []
+
             params: List[Any] = []
+
+            # ------------------------------------------------
+            # OBJECT
+            # ------------------------------------------------
 
             if object_type is not None:
 
@@ -637,6 +1019,10 @@ class LearningMemory:
                     object_type
                 )
 
+            # ------------------------------------------------
+            # FEATURE
+            # ------------------------------------------------
+
             if feature is not None:
 
                 conditions.append(
@@ -646,6 +1032,10 @@ class LearningMemory:
                 params.append(
                     feature
                 )
+
+            # ------------------------------------------------
+            # EVENT
+            # ------------------------------------------------
 
             if event_type is not None:
 
@@ -657,15 +1047,27 @@ class LearningMemory:
                     event_type
                 )
 
+            # ------------------------------------------------
+            # REFERENCE
+            # ------------------------------------------------
+
             if reference_id is not None:
+
+                normalized_reference_id = _safe_int(
+                    reference_id
+                )
 
                 conditions.append(
                     "reference_id = ?"
                 )
 
                 params.append(
-                    reference_id
+                    normalized_reference_id
                 )
+
+            # ------------------------------------------------
+            # WHERE
+            # ------------------------------------------------
 
             where = ""
 
@@ -713,22 +1115,38 @@ class LearningMemory:
 
             rows = cursor.fetchall()
 
-            result: List[Dict[str, Any]] = []
+            result: List[
+                Dict[str, Any]
+            ] = []
 
             for row in rows:
 
-                item = dict(row)
-
-                item["before_value"] = _deserialize(
-                    item.get("before_value")
+                item = dict(
+                    row
                 )
 
-                item["after_value"] = _deserialize(
-                    item.get("after_value")
+                item[
+                    "before_value"
+                ] = _deserialize(
+                    item.get(
+                        "before_value"
+                    )
                 )
 
-                item["delta"] = _deserialize(
-                    item.get("delta")
+                item[
+                    "after_value"
+                ] = _deserialize(
+                    item.get(
+                        "after_value"
+                    )
+                )
+
+                item[
+                    "delta"
+                ] = _deserialize(
+                    item.get(
+                        "delta"
+                    )
                 )
 
                 result.append(
@@ -740,6 +1158,34 @@ class LearningMemory:
         finally:
 
             conn.close()
+
+    # ========================================================
+    # BATCH MEMORY
+    # ========================================================
+
+    def get_batch_learning_memory(
+        self,
+        match_id: Optional[int] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """
+        Возвращает события batch_learning.
+
+        Если match_id указан,
+        возвращается память конкретного матча.
+
+        Только SELECT.
+        """
+
+        return self.get(
+            object_type=(
+                f"match:{_safe_int(match_id)}"
+                if match_id is not None
+                else None
+            ),
+            event_type=BATCH_LEARNING_EVENT,
+            limit=limit,
+        )
 
     # ========================================================
     # TEAM MEMORY
@@ -754,8 +1200,18 @@ class LearningMemory:
         История ETC конкретной команды.
         """
 
+        normalized_team_id = _safe_int(
+            team_id
+        )
+
+        if normalized_team_id <= 0:
+
+            return []
+
         return self.get(
-            object_type=f"team:{team_id}",
+            object_type=(
+                f"team:{normalized_team_id}"
+            ),
             limit=limit,
         )
 
@@ -772,8 +1228,18 @@ class LearningMemory:
         История ETC конкретного матча.
         """
 
+        normalized_match_id = _safe_int(
+            match_id
+        )
+
+        if normalized_match_id <= 0:
+
+            return []
+
         return self.get(
-            object_type=f"match:{match_id}",
+            object_type=(
+                f"match:{normalized_match_id}"
+            ),
             limit=limit,
         )
 
@@ -789,6 +1255,10 @@ class LearningMemory:
         """
         История изменения конкретного параметра.
         """
+
+        if not parameter_name:
+
+            return []
 
         return self.get(
             object_type="model",
@@ -809,8 +1279,18 @@ class LearningMemory:
         История xG-событий команды.
         """
 
+        normalized_team_id = _safe_int(
+            team_id
+        )
+
+        if normalized_team_id <= 0:
+
+            return []
+
         return self.get(
-            object_type=f"team:{team_id}",
+            object_type=(
+                f"team:{normalized_team_id}"
+            ),
             event_type="xg_calibration",
             limit=limit,
         )
@@ -828,10 +1308,22 @@ class LearningMemory:
         Возвращает ошибки прогнозов.
         """
 
+        normalized_match_id = None
+
+        if match_id is not None:
+
+            normalized_match_id = _safe_int(
+                match_id
+            )
+
+            if normalized_match_id <= 0:
+
+                return []
+
         return self.get(
             object_type=(
-                f"match:{match_id}"
-                if match_id is not None
+                f"match:{normalized_match_id}"
+                if normalized_match_id is not None
                 else None
             ),
             event_type="prediction_error",
@@ -852,6 +1344,10 @@ class LearningMemory:
         Последнее событие для объекта.
         """
 
+        if not object_type:
+
+            return None
+
         rows = self.get(
             object_type=object_type,
             feature=feature,
@@ -859,7 +1355,11 @@ class LearningMemory:
             limit=1,
         )
 
-        return rows[0] if rows else None
+        return (
+            rows[0]
+            if rows
+            else None
+        )
 
 
 # ============================================================
@@ -877,9 +1377,10 @@ def save_learning_memory(
     reason: str = "",
     confidence: float = 1.0,
     impact: float = 1.0,
-    algorithm: str = "ETC",
-    model_version: str = "v12.1",
+    algorithm: str = DEFAULT_ALGORITHM,
+    model_version: str = DEFAULT_MODEL_VERSION,
     reference_id: Optional[int] = None,
+    created_at: Optional[str] = None,
 ) -> int:
     """
     Единая функция записи памяти ETC.
@@ -902,6 +1403,48 @@ def save_learning_memory(
         algorithm=algorithm,
         model_version=model_version,
         reference_id=reference_id,
+        created_at=created_at,
+    )
+
+
+def record_batch_learning(
+    db: FAJDatabase,
+    match_id: int,
+    *,
+    feature: str = "etc_batch_processed",
+    before_value: Any = None,
+    after_value: Any = None,
+    delta: Any = None,
+    reason: str = "",
+    confidence: float = 1.0,
+    impact: float = 1.0,
+    algorithm: str = "ETC.LearningEngine",
+    model_version: str = DEFAULT_MODEL_VERSION,
+    created_at: Optional[str] = None,
+) -> int:
+    """
+    Module-level API для фиксации успешного
+    ETC batch learning события.
+
+    Это официальный контракт для ETCLearningEngine.
+    """
+
+    memory = LearningMemory(
+        db=db
+    )
+
+    return memory.record_batch_learning(
+        match_id=match_id,
+        feature=feature,
+        before_value=before_value,
+        after_value=after_value,
+        delta=delta,
+        reason=reason,
+        confidence=confidence,
+        impact=impact,
+        algorithm=algorithm,
+        model_version=model_version,
+        created_at=created_at,
     )
 
 
@@ -930,6 +1473,71 @@ def get_learning_memory(
     )
 
 
+def get_batch_learning_memory(
+    db: FAJDatabase,
+    match_id: Optional[int] = None,
+    limit: int = 100,
+) -> List[Dict[str, Any]]:
+    """
+    Module-level API для чтения batch_learning events.
+    """
+
+    memory = LearningMemory(
+        db=db
+    )
+
+    return memory.get_batch_learning_memory(
+        match_id=match_id,
+        limit=limit,
+    )
+
+
+# ============================================================
+# STATUS
+# ============================================================
+
+def get_memory_status() -> Dict[str, Any]:
+    """
+    Технический статус LearningMemory.
+    """
+
+    return {
+        "module": MODULE_NAME,
+
+        "version": MODULE_VERSION,
+
+        "role": "ETC_MEMORY_ADAPTER",
+
+        "append_only": True,
+
+        "writes_database": True,
+
+        "writes_learning_memory": True,
+
+        "changes_model": False,
+
+        "changes_rating": False,
+
+        "changes_parameters": False,
+
+        "changes_facts": False,
+
+        "deletes_data": False,
+
+        "updates_data": False,
+
+        "batch_learning_event": (
+            BATCH_LEARNING_EVENT
+        ),
+
+        "database_layer": "FAJDatabase",
+
+        "database_write_method": (
+            "add_learning_memory"
+        ),
+    }
+
+
 # ============================================================
 # SELF TEST
 # ============================================================
@@ -946,18 +1554,83 @@ if __name__ == "__main__":
     )
 
     print("=" * 70)
-    print("FAJ ETC — LEARNING MEMORY")
-    print(f"Version: {MODULE_VERSION}")
-    print("=" * 70)
-    print()
-    print("Режим: APPEND-ONLY")
-    print("Обучение: НЕТ")
-    print("Изменение модели: НЕТ")
-    print("Изменение фактов: НЕТ")
-    print("DELETE: НЕТ")
-    print()
+
     print(
-        "Модуль предназначен для работы "
-        "через FAJDatabase."
+        "FAJ ETC — LEARNING MEMORY"
     )
+
+    print(
+        f"Version: {MODULE_VERSION}"
+    )
+
+    print("=" * 70)
+
+    print()
+
+    print(
+        "Режим: APPEND-ONLY"
+    )
+
+    print(
+        "Обучение: НЕТ"
+    )
+
+    print(
+        "Изменение модели: НЕТ"
+    )
+
+    print(
+        "Изменение рейтинга: НЕТ"
+    )
+
+    print(
+        "Изменение параметров: НЕТ"
+    )
+
+    print(
+        "Изменение фактов: НЕТ"
+    )
+
+    print(
+        "UPDATE: НЕТ"
+    )
+
+    print(
+        "DELETE: НЕТ"
+    )
+
+    print()
+
+    print(
+        "Batch event:"
+    )
+
+    print(
+        f"event_type = {BATCH_LEARNING_EVENT}"
+    )
+
+    print(
+        "object = match:<match_id>"
+    )
+
+    print(
+        "reference_id = match_id"
+    )
+
+    print()
+
+    print(
+        "Запись выполняется только через:"
+    )
+
+    print(
+        "FAJDatabase.add_learning_memory()"
+    )
+
+    print()
+
+    print(
+        "LearningMemory готов."
+    )
+
     print("=" * 70)
