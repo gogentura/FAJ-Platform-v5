@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-ETC — Statistical Analyzer v1.1
+ETC — Statistical Analyzer v1.2
 ============================================================
 
 app/etc/statistical_analyzer.py
@@ -95,14 +95,11 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-
 from app.database import FAJDatabase
-
 
 logger = logging.getLogger(__name__)
 
-
-ANALYZER_VERSION = "1.1"
+ANALYZER_VERSION = "1.2"
 ANALYZER_NAME = "FAJ ETC Statistical Analyzer"
 
 
@@ -606,8 +603,12 @@ class StatisticalAnalyzer:
                 "round_id"
             ),
 
-            "match_date": match.get(
-                "match_date"
+            # ================================================
+            # ИСПРАВЛЕНО: match_date с fallback на date
+            # ================================================
+            "match_date": (
+                match.get("match_date")
+                or match.get("date")
             ),
 
             "league": (
