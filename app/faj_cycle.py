@@ -7,46 +7,135 @@ FAJ Platform v12.1
 FAJ CYCLE — Главный оркестратор
 ============================================================
 
-НАЗНАЧЕНИЕ:
-    FAJ Cycle — главный оркестратор платформы.
+НАЗНАЧЕНИЕ
+----------
 
-    Запускает полный цикл FAJ:
+FAJ Cycle — верхний оркестратор жизненного цикла FAJ.
 
-        1. Проверка БД
-        2. Загрузка матчей
-        3. Обновление результатов
-        4. Основное обучение (app/learning_engine.py)
-        5. ETC — Evolution Training Center
-        6. Прогнозирование
+FAJ Cycle НЕ содержит математической логики модели.
 
-    Используется:
-        - faj_cycle.py --match <match_id>
-        - faj_cycle.py --round <round_id>
-        - faj_cycle.py --season <season_id>
-        - faj_cycle.py --match <match_id> --force
+Его задача — правильно связать основные контуры платформы:
 
-    ETC:
-        - работает только с завершёнными матчами;
-        - использует append-only learning_memory;
-        - не управляет календарём;
-        - не создаёт прогнозы;
-        - не заменяет основной Learning Engine.
+    DATABASE
+        ↓
+    CALENDAR / MATCHES
+        ↓
+    FACTS
+        ↓
+    ETC
+        ↓
+    PREDICTIONS
+
+============================================================
+
+АРХИТЕКТУРА ПОСЛЕ MATCH
+-----------------------
+
+    MATCH
+      │
+      ▼
+    ТУР СЫГРАН
+      │
+      ▼
+    ФАКТЫ ТУРА
+      │
+      ├── MATCH_RESULT
+      │
+      └── MATCH_STATISTICS
+              │
+              ▼
+             ETC
+              │
+              ├── BatchController
+              │
+              ├── StatisticalAnalyzer
+              │
+              └── ETC LearningEngine
+                       │
+                       ▼
+                  learning_memory
+                       │
+                       ▼
+                 NEXT PREDICTION
+
+============================================================
+
+ВАЖНО
+------
+
+Старый:
+
+    app.learning_engine.py
+
+НЕ является частью FAJ Cycle.
+
+Он НЕ импортируется.
+Он НЕ запускается.
+Он НЕ конкурирует с ETC.
+
+Единственный контур эволюционного обучения:
+
+    app/etc/learning_engine.py
+
+ETC работает только с фактами, уже сохранёнными
+в SQLite.
+
+ETC НЕ получает статистику напрямую со страниц.
+
+Страницы:
+
+    ФАКТЫ ТУРА
+    ТУР СЫГРАН
+    другие match/facts UI
+
+сохраняют данные через FAJDatabase.
+
+После сохранения:
+
+    match_results
+    match_statistics
+
+становятся входом ETC.
+
+============================================================
+
+ПРИНЦИПЫ
+---------
+
+1. SQLite only.
+
+2. database.py — единый источник схемы.
+
+3. Исторические факты не удаляются.
+
+4. Старые predictions не переписываются.
+
+5. ETC не создаёт прогнозы.
+
+6. ETC не управляет календарём.
+
+7. FAJ Cycle не содержит расчётов xG/Poisson/Monte Carlo.
+
+8. Ошибка одного матча не должна уничтожать остальные.
+
+9. ETC обрабатывает только готовые факты.
+
+10. app.learning_engine.py не запускается.
+
 ============================================================
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
-import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from app.database import FAJDatabase
 from app.match_manager import MatchManager
-from app.result_manager import ResultManager
-from app.learning_engine import run_learning
 from app.etc.etc_controller import run_etc
 from app.core.prediction_manager import get_prediction_manager
 
@@ -59,20 +148,15 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 APP_VERSION = "12.1"
-FAJ_CYCLE_VERSION = "1.0"
+FAJ_CYCLE_VERSION = "2.0"
 
+
+# ============================================================
+# TIME
+# ============================================================
 
 def _now() -> str:
     return datetime.now().isoformat()
-
-
-# ============================================================
-# RESULT MANAGER HELPERS
-# ============================================================
-
-def _update_results(result_mgr: ResultManager) -> Dict[str, Any]:
-    """Обновляет результаты матчей."""
-    return result_mgr.update_all()
 
 
 # ============================================================
@@ -83,18 +167,36 @@ class FAJCycle:
     """
     Главный оркестратор FAJ.
 
-    Запускает полный цикл:
-        Database → Matches → Results → Learning → ETC → Predictions
+    Новый жизненный цикл:
+
+        DATABASE
+            ↓
+        MATCHES
+            ↓
+        FACTS ALREADY IN DB
+            ↓
+        ETC
+            ↓
+        PREDICTIONS
+
+    Старый app.learning_engine.py здесь НЕ используется.
     """
 
-    def __init__(self):
-        self.db = FAJDatabase()
-        self.match_mgr = MatchManager(self.db)
-        self.result_mgr = ResultManager(self.db)
+    def __init__(
+        self,
+        db: Optional[FAJDatabase] = None,
+    ) -> None:
+
+        self.db = db or FAJDatabase()
+
+        self.match_mgr = MatchManager(
+            self.db
+        )
+
         self.pred_mgr = get_prediction_manager()
 
     # ========================================================
-    # CYCLE
+    # MAIN CYCLE
     # ========================================================
 
     def run(
@@ -103,122 +205,211 @@ class FAJCycle:
         round_id: Optional[int] = None,
         season_id: Optional[int] = None,
         force: bool = False,
+        run_predictions: bool = True,
     ) -> Dict[str, Any]:
         """
-        Запускает полный FAJ Cycle.
+        Запускает FAJ Cycle.
 
-        Аргументы:
-            match_id: ID матча для обработки
-            round_id: ID тура для обработки
-            season_id: ID сезона для обработки
-            force: принудительный запуск даже при ошибках
+        Порядок:
 
-        Возвращает:
-            dict: результат выполнения цикла
+            1. DATABASE
+            2. MATCHES
+            3. FACTS / ETC
+            4. PREDICTIONS
+
+        ВАЖНО:
+
+        Факты не загружаются здесь напрямую со страницы.
+
+        Они должны быть уже сохранены UI-контуром
+        в match_results / match_statistics.
+
+        ETC затем обнаруживает готовые факты через
+        BatchController.
         """
+
         started = _now()
 
-        result = self._new_result(started)
+        result = self._new_result(
+            started
+        )
 
-        logger.info("FAJ Cycle started: %s", started)
+        logger.info(
+            "=================================================="
+        )
 
-        # =====================================================
+        logger.info(
+            "FAJ CYCLE STARTED | "
+            "version=%s | "
+            "match=%s | "
+            "round=%s | "
+            "season=%s | "
+            "force=%s",
+            FAJ_CYCLE_VERSION,
+            match_id,
+            round_id,
+            season_id,
+            force,
+        )
+
+        # ====================================================
         # 1. DATABASE
-        # =====================================================
+        # ====================================================
 
-        if not self._check_database(result):
-            return self._finish(result, started)
+        if not self._check_database(
+            result
+        ):
+            return self._finish(
+                result,
+                started,
+            )
 
-        # =====================================================
+        # ====================================================
         # 2. MATCHES
-        # =====================================================
+        # ====================================================
 
-        if not self._load_matches(result, match_id, round_id, season_id):
-            return self._finish(result, started)
+        if not self._load_matches(
+            result=result,
+            match_id=match_id,
+            round_id=round_id,
+            season_id=season_id,
+        ):
+            return self._finish(
+                result,
+                started,
+            )
 
-        # =====================================================
-        # 3. RESULTS
-        # =====================================================
+        # ====================================================
+        # 3. ETC
+        # ====================================================
 
-        if not self._update_results(result):
-            return self._finish(result, started)
+        if not self._run_etc(
+            result=result,
+            force=force,
+        ):
+            return self._finish(
+                result,
+                started,
+            )
 
-        # =====================================================
-        # 4. LEARNING
-        # =====================================================
+        # ====================================================
+        # 4. PREDICTIONS
+        # ====================================================
 
-        if not self._run_learning(result):
-            return self._finish(result, started)
+        if run_predictions:
 
-        # =====================================================
-        # 5. ETC — EVOLUTION TRAINING CENTER
-        # =====================================================
+            if not self._run_predictions(
+                result=result,
+                round_id=round_id,
+            ):
+                return self._finish(
+                    result,
+                    started,
+                )
 
-        if not self._run_etc(result):
-            return self._finish(result, started)
+        else:
 
-        # =====================================================
-        # 6. PREDICTIONS
-        # =====================================================
+            result["predictions"]["skipped"] = True
 
-        if not self._run_predictions(result, round_id=round_id):
-            return self._finish(result, started)
+            self._add_step(
+                result,
+                "predictions",
+                "skipped",
+                "⏭️ Прогнозирование отключено для этого запуска.",
+            )
 
-        # =====================================================
-        # COMPLETE
-        # =====================================================
+        # ====================================================
+        # FINISH
+        # ====================================================
 
-        return self._finish(result, started)
+        return self._finish(
+            result,
+            started,
+        )
 
     # ========================================================
-    # STEPS
+    # DATABASE
     # ========================================================
 
-    def _check_database(self, result: Dict[str, Any]) -> bool:
-        """Проверяет состояние базы данных."""
+    def _check_database(
+        self,
+        result: Dict[str, Any],
+    ) -> bool:
+        """
+        Проверка БД.
+
+        Только read-only.
+        """
+
         self._add_step(
             result,
             "database",
             "running",
-            "📁 Проверка базы данных..."
+            "📁 Проверка базы данных...",
         )
 
         try:
+
             status = self.db.get_status()
 
             if status.get("status") == "online":
+
                 result["database"]["ok"] = True
+
                 self._add_step(
                     result,
                     "database",
                     "success",
-                    f"✅ База данных доступна: {status.get('file', 'unknown')}"
+                    (
+                        "✅ База данных доступна: "
+                        f"{status.get('file', 'unknown')}"
+                    ),
                 )
+
                 return True
 
-            message = f"❌ База данных недоступна: {status.get('error', 'unknown error')}"
+            message = (
+                "❌ База данных недоступна: "
+                f"{status.get('error', 'unknown error')}"
+            )
+
             result["database"]["error"] = message
             result["errors"].append(message)
+
             self._add_step(
                 result,
                 "database",
                 "error",
-                message
+                message,
             )
+
             return False
 
         except Exception as exc:
-            message = f"❌ Ошибка проверки БД: {exc}"
+
+            message = (
+                f"❌ Ошибка проверки БД: {exc}"
+            )
+
             result["database"]["error"] = message
             result["errors"].append(message)
+
             self._add_step(
                 result,
                 "database",
                 "error",
-                message
+                message,
             )
-            logger.exception("Database check failed")
+
+            logger.exception(
+                "Database check failed"
+            )
+
             return False
+
+    # ========================================================
+    # MATCHES
+    # ========================================================
 
     def _load_matches(
         self,
@@ -227,424 +418,492 @@ class FAJCycle:
         round_id: Optional[int] = None,
         season_id: Optional[int] = None,
     ) -> bool:
-        """Загружает матчи."""
+        """
+        Загружает календарные матчи.
+
+        Никаких изменений результатов здесь нет.
+
+        Этот метод только определяет область текущего запуска.
+        """
+
         self._add_step(
             result,
             "matches",
             "running",
-            "📋 Загрузка матчей..."
+            "📋 Проверка матчей...",
         )
 
         try:
-            matches: List[Dict[str, Any]] = []
+
+            matches: List[Any] = []
+
+            # ------------------------------------------------
+            # SINGLE MATCH
+            # ------------------------------------------------
 
             if match_id is not None:
-                match = self.db.get_match_by_uuid(str(match_id))
+
+                match = self.db.get_match_by_uuid(
+                    str(match_id)
+                )
+
+                if not match:
+
+                    match = self.db.get_match_by_uuid(
+                        f"match_{match_id}"
+                    )
+
                 if match:
                     matches.append(match)
+
                 else:
-                    match = self.db.get_match_by_uuid(f"match_{match_id}")
-                    if match:
-                        matches.append(match)
-                    else:
-                        message = f"Матч {match_id} не найден"
-                        result["matches"]["error"] = message
-                        result["errors"].append(message)
-                        self._add_step(
-                            result,
-                            "matches",
-                            "error",
-                            f"❌ {message}"
-                        )
-                        return False
+
+                    message = (
+                        f"Матч {match_id} не найден"
+                    )
+
+                    result["matches"]["error"] = message
+                    result["errors"].append(message)
+
+                    self._add_step(
+                        result,
+                        "matches",
+                        "error",
+                        f"❌ {message}",
+                    )
+
+                    return False
+
+            # ------------------------------------------------
+            # ROUND
+            # ------------------------------------------------
 
             elif round_id is not None:
-                matches = self.db.get_matches(round_id)
+
+                matches = self.db.get_matches(
+                    round_id
+                )
+
                 if not matches:
-                    message = f"Тур {round_id} не найден или не содержит матчей"
+
+                    message = (
+                        f"Тур {round_id} "
+                        "не найден или не содержит матчей"
+                    )
+
                     result["matches"]["error"] = message
                     result["errors"].append(message)
+
                     self._add_step(
                         result,
                         "matches",
                         "error",
-                        f"❌ {message}"
+                        f"❌ {message}",
                     )
+
                     return False
+
+            # ------------------------------------------------
+            # SEASON
+            # ------------------------------------------------
 
             elif season_id is not None:
-                rounds = self.db.get_rounds(season_id)
+
+                rounds = self.db.get_rounds(
+                    season_id
+                )
+
                 for round_item in rounds:
-                    round_data = dict(round_item) if round_item else {}
-                    round_id_value = round_data.get("id")
-                    if round_id_value is not None:
-                        round_matches = self.db.get_matches(round_id_value)
-                        if round_matches:
-                            matches.extend(round_matches)
+
+                    round_data = (
+                        dict(round_item)
+                        if round_item
+                        else {}
+                    )
+
+                    current_round_id = (
+                        round_data.get("id")
+                    )
+
+                    if current_round_id is None:
+                        continue
+
+                    round_matches = (
+                        self.db.get_matches(
+                            current_round_id
+                        )
+                    )
+
+                    if round_matches:
+                        matches.extend(
+                            round_matches
+                        )
+
                 if not matches:
-                    message = f"Сезон {season_id} не содержит матчей"
+
+                    message = (
+                        f"Сезон {season_id} "
+                        "не содержит матчей"
+                    )
+
                     result["matches"]["error"] = message
                     result["errors"].append(message)
+
                     self._add_step(
                         result,
                         "matches",
                         "error",
-                        f"❌ {message}"
+                        f"❌ {message}",
                     )
+
                     return False
 
+            # ------------------------------------------------
+            # ALL
+            # ------------------------------------------------
+
             else:
-                # Без фильтра — все матчи
+
                 matches = self.db.get_matches()
 
-            result["matches"]["total"] = len(matches)
+            result["matches"]["total"] = (
+                len(matches)
+            )
 
             if matches:
+
                 result["matches"]["success"] = True
+
                 self._add_step(
                     result,
                     "matches",
                     "success",
-                    f"✅ Загружено матчей: {len(matches)}"
+                    (
+                        "✅ Матчи доступны: "
+                        f"{len(matches)}"
+                    ),
                 )
+
                 return True
 
             message = "Матчи не найдены"
+
             result["matches"]["error"] = message
             result["errors"].append(message)
+
             self._add_step(
                 result,
                 "matches",
                 "error",
-                f"❌ {message}"
+                f"❌ {message}",
             )
+
             return False
 
         except Exception as exc:
-            message = f"❌ Ошибка загрузки матчей: {exc}"
+
+            message = (
+                f"❌ Ошибка проверки матчей: {exc}"
+            )
+
             result["matches"]["error"] = message
             result["errors"].append(message)
+
             self._add_step(
                 result,
                 "matches",
                 "error",
-                message
+                message,
             )
-            logger.exception("Matches loading failed")
-            return False
 
-    def _update_results(self, result: Dict[str, Any]) -> bool:
-        """Обновляет результаты матчей."""
-        self._add_step(
-            result,
-            "results",
-            "running",
-            "📊 Обновление результатов..."
-        )
-
-        try:
-            update_result = _update_results(self.result_mgr)
-
-            if not isinstance(update_result, dict):
-                result["results"]["success"] = True
-                self._add_step(
-                    result,
-                    "results",
-                    "success",
-                    "✅ Результаты обновлены"
-                )
-                return True
-
-            status = update_result.get("status")
-            processed = update_result.get("processed", 0) or 0
-            errors = update_result.get("errors", 0) or 0
-            updated = update_result.get("updated", 0) or 0
-
-            result["results"]["processed"] = int(processed)
-            result["results"]["updated"] = int(updated)
-            result["results"]["errors"] = int(errors)
-
-            if status == "completed" and errors == 0:
-                result["results"]["success"] = True
-                self._add_step(
-                    result,
-                    "results",
-                    "success",
-                    f"✅ Результаты обновлены: обновлено={updated}, всего={processed}"
-                )
-                return True
-
-            if status == "completed_with_errors":
-                message = f"⚠️ Результаты обновлены с ошибками: обновлено={updated}, ошибок={errors}"
-                result["results"]["error"] = message
-                result["errors"].append(message)
-                self._add_step(
-                    result,
-                    "results",
-                    "error",
-                    message
-                )
-                return False
-
-            if status == "nothing_to_update":
-                result["results"]["success"] = True
-                self._add_step(
-                    result,
-                    "results",
-                    "skipped",
-                    "⏭️ Новых результатов для обновления нет"
-                )
-                return True
-
-            message = f"❌ Неизвестный статус обновления результатов: {status}"
-            result["results"]["error"] = message
-            result["errors"].append(message)
-            self._add_step(
-                result,
-                "results",
-                "error",
-                message
+            logger.exception(
+                "Matches loading failed"
             )
-            return False
 
-        except Exception as exc:
-            message = f"❌ Ошибка обновления результатов: {exc}"
-            result["results"]["error"] = message
-            result["errors"].append(message)
-            self._add_step(
-                result,
-                "results",
-                "error",
-                message
-            )
-            logger.exception("Results update failed")
             return False
 
     # ========================================================
-    # 4. LEARNING
+    # ETC
     # ========================================================
 
-    def _run_learning(self, result: Dict[str, Any]) -> bool:
-        """Запускает основной Learning Engine."""
-        self._add_step(
-            result,
-            "learning",
-            "running",
-            "🧠 Запуск основного обучения FAJ..."
-        )
-        result["learning"]["started"] = True
-
-        try:
-            learning_result = run_learning(force=False)
-
-            if not isinstance(learning_result, dict):
-                result["learning"]["success"] = True
-                self._add_step(
-                    result,
-                    "learning",
-                    "success",
-                    "✅ Обучение завершено"
-                )
-                return True
-
-            status = learning_result.get("status", "")
-            processed = learning_result.get("processed", 0) or 0
-            errors = learning_result.get("errors", 0) or 0
-
-            result["learning"]["processed"] = int(processed)
-            result["learning"]["result"] = learning_result
-
-            if status == "nothing_to_process":
-                result["learning"]["skipped"] = True
-                self._add_step(
-                    result,
-                    "learning",
-                    "skipped",
-                    "⏭️ Обучение: новых данных нет"
-                )
-                return True
-
-            if status == "completed" and errors == 0:
-                result["learning"]["success"] = True
-                self._add_step(
-                    result,
-                    "learning",
-                    "success",
-                    f"✅ Обучение завершено: обработано={processed}"
-                )
-                return True
-
-            if status == "completed_with_errors":
-                message = f"❌ Обучение завершено с ошибками: обработано={processed}, ошибок={errors}"
-                result["learning"]["error"] = message
-                result["errors"].append(message)
-                self._add_step(
-                    result,
-                    "learning",
-                    "error",
-                    message
-                )
-                return False
-
-            if status == "failed":
-                message = f"❌ Обучение завершилось критической ошибкой: {learning_result.get('message', 'unknown error')}"
-                result["learning"]["error"] = message
-                result["errors"].append(message)
-                self._add_step(
-                    result,
-                    "learning",
-                    "error",
-                    message
-                )
-                return False
-
-            message = f"❌ Неизвестный статус обучения: {status}"
-            result["learning"]["error"] = message
-            result["errors"].append(message)
-            self._add_step(
-                result,
-                "learning",
-                "error",
-                message
-            )
-            return False
-
-        except Exception as exc:
-            message = f"❌ Ошибка основного обучения: {exc}"
-            result["learning"]["error"] = message
-            result["errors"].append(message)
-            self._add_step(
-                result,
-                "learning",
-                "error",
-                message
-            )
-            logger.exception("Learning failed")
-            return False
-
-    # ========================================================
-    # 5. ETC — EVOLUTION TRAINING CENTER
-    # ========================================================
-
-    def _run_etc(self, result: Dict[str, Any]) -> bool:
+    def _run_etc(
+        self,
+        result: Dict[str, Any],
+        force: bool = False,
+    ) -> bool:
         """
-        Запускает ETC после основного Learning Engine.
+        Запускает ETC.
 
-        ETC:
-            - работает только с завершёнными матчами;
-            - использует append-only learning_memory;
-            - не управляет календарём;
-            - не создаёт прогнозы;
-            - не заменяет основной Learning Engine.
+        ETC получает факты из SQLite.
+
+        FAJ Cycle НЕ передаёт ETC сырую статистику.
+
+        Источник:
+
+            match_results
+            match_statistics
+
+        Определение готовых матчей выполняет
+        BatchController.
+
+        Единственный Learning Engine:
+
+            app/etc/learning_engine.py
         """
+
         self._add_step(
             result,
             "etc",
             "running",
-            "🧬 Запуск ETC — Evolution Training Center..."
+            "🧬 Запуск ETC — Evolution Training Center...",
         )
+
         result["etc"]["started"] = True
 
         try:
-            etc_result = run_etc()
-            result["etc"]["result"] = etc_result
 
-            if not isinstance(etc_result, dict):
+            etc_result = run_etc(
+                db=self.db,
+                force=force,
+            )
+
+            result["etc"]["result"] = (
+                etc_result
+            )
+
+            if not isinstance(
+                etc_result,
+                dict,
+            ):
+
                 result["etc"]["success"] = True
+
                 self._add_step(
                     result,
                     "etc",
                     "success",
-                    "✅ ETC завершён"
+                    "✅ ETC завершён.",
                 )
+
                 return True
 
-            status = etc_result.get("status", "")
-            processed = etc_result.get("processed", 0) or 0
-            errors = etc_result.get("errors", 0) or 0
-            result["etc"]["processed"] = int(processed)
+            status = (
+                etc_result.get(
+                    "status",
+                    "",
+                )
+            )
 
-            # ETC не нашёл новых матчей
+            processed = int(
+                etc_result.get(
+                    "processed",
+                    0,
+                ) or 0
+            )
+
+            analyzed = int(
+                etc_result.get(
+                    "analyzed",
+                    0,
+                ) or 0
+            )
+
+            learned = int(
+                etc_result.get(
+                    "learned",
+                    0,
+                ) or 0
+            )
+
+            errors = int(
+                etc_result.get(
+                    "errors",
+                    0,
+                ) or 0
+            )
+
+            result["etc"]["processed"] = (
+                processed
+            )
+
+            result["etc"]["analyzed"] = (
+                analyzed
+            )
+
+            result["etc"]["learned"] = (
+                learned
+            )
+
+            result["etc"]["errors_count"] = (
+                errors
+            )
+
+            # ------------------------------------------------
+            # NOTHING
+            # ------------------------------------------------
+
             if status == "nothing_to_process":
+
+                result["etc"]["success"] = True
                 result["etc"]["skipped"] = True
+
                 self._add_step(
                     result,
                     "etc",
                     "skipped",
-                    "⏭️ ETC: новых завершённых матчей для эволюции нет"
+                    (
+                        "⏭️ ETC: новых завершённых "
+                        "фактов для обработки нет."
+                    ),
                 )
+
                 return True
 
-            # ETC завершился полностью
-            if status == "completed" and errors == 0:
+            # ------------------------------------------------
+            # COMPLETED
+            # ------------------------------------------------
+
+            if (
+                status == "completed"
+                and errors == 0
+            ):
+
                 result["etc"]["success"] = True
+
                 self._add_step(
                     result,
                     "etc",
                     "success",
-                    f"✅ ETC завершён: обработано матчей={processed}"
+                    (
+                        "✅ ETC завершён: "
+                        f"analyzed={analyzed}, "
+                        f"learned={learned}, "
+                        f"processed={processed}"
+                    ),
                 )
+
                 return True
 
-            # ETC завершился с ошибками
+            # ------------------------------------------------
+            # PARTIAL
+            # ------------------------------------------------
+
             if status == "completed_with_errors":
+
                 message = (
-                    f"❌ ETC завершён с ошибками: "
-                    f"обработано={processed}, ошибок={errors}"
+                    "⚠️ ETC завершён с ошибками: "
+                    f"processed={processed}, "
+                    f"errors={errors}"
                 )
-                result["etc"]["errors"].append(message)
-                result["errors"].append(message)
+
+                result["etc"]["errors"].append(
+                    message
+                )
+
+                result["errors"].append(
+                    message
+                )
+
                 self._add_step(
                     result,
                     "etc",
                     "error",
-                    message
+                    message,
                 )
+
+                # Важно:
+                # сам ETC уже сохранил успешно
+                # обработанные batch-записи.
+                #
+                # FAJ Cycle не пытается
+                # откатить их.
+
                 return False
 
-            # Явный failed
+            # ------------------------------------------------
+            # FAILED
+            # ------------------------------------------------
+
             if status == "failed":
+
                 message = (
-                    "❌ ETC завершился критической ошибкой: "
+                    "❌ ETC завершился критической "
+                    "ошибкой: "
                     f"{etc_result.get('message', 'unknown error')}"
                 )
-                result["etc"]["errors"].append(message)
-                result["errors"].append(message)
+
+                result["etc"]["errors"].append(
+                    message
+                )
+
+                result["errors"].append(
+                    message
+                )
+
                 self._add_step(
                     result,
                     "etc",
                     "error",
-                    message
+                    message,
                 )
+
                 return False
 
-            # Неизвестный статус считаем ошибкой
-            message = f"❌ ETC вернул неизвестный статус: {status}"
-            result["etc"]["errors"].append(message)
-            result["errors"].append(message)
+            # ------------------------------------------------
+            # UNKNOWN
+            # ------------------------------------------------
+
+            message = (
+                "❌ ETC вернул неизвестный статус: "
+                f"{status}"
+            )
+
+            result["etc"]["errors"].append(
+                message
+            )
+
+            result["errors"].append(
+                message
+            )
+
             self._add_step(
                 result,
                 "etc",
                 "error",
-                message
+                message,
             )
+
             return False
 
         except Exception as exc:
-            message = f"❌ Ошибка ETC: {exc}"
-            result["etc"]["errors"].append(message)
-            result["errors"].append(message)
+
+            message = (
+                f"❌ Ошибка ETC: {exc}"
+            )
+
+            result["etc"]["errors"].append(
+                message
+            )
+
+            result["errors"].append(
+                message
+            )
+
             self._add_step(
                 result,
                 "etc",
                 "error",
-                message
+                message,
             )
-            logger.exception("ETC failed")
+
+            logger.exception(
+                "ETC failed"
+            )
+
             return False
 
     # ========================================================
-    # 6. PREDICTIONS
+    # PREDICTIONS
     # ========================================================
 
     def _run_predictions(
@@ -652,176 +911,322 @@ class FAJCycle:
         result: Dict[str, Any],
         round_id: Optional[int] = None,
     ) -> bool:
-        """Запускает прогнозирование."""
+        """
+        Запускает прогнозирование.
+
+        ETC НЕ создаёт прогнозы.
+
+        PredictionManager остаётся отдельным контуром.
+        """
+
         self._add_step(
             result,
             "predictions",
             "running",
-            "🔮 Прогнозирование..."
+            "🔮 Прогнозирование...",
         )
+
         result["predictions"]["started"] = True
 
         try:
+
+            # ------------------------------------------------
+            # ROUND
+            # ------------------------------------------------
+
             if round_id is not None:
-                # Прогнозируем конкретный тур
-                matches = self.db.get_matches(round_id)
+
+                matches = self.db.get_matches(
+                    round_id
+                )
+
                 if not matches:
-                    message = f"Тур {round_id} не содержит матчей для прогнозирования"
-                    result["predictions"]["error"] = message
-                    result["errors"].append(message)
+
+                    message = (
+                        f"Тур {round_id} "
+                        "не содержит матчей "
+                        "для прогнозирования"
+                    )
+
+                    result["predictions"]["error"] = (
+                        message
+                    )
+
+                    result["errors"].append(
+                        message
+                    )
+
                     self._add_step(
                         result,
                         "predictions",
                         "error",
-                        f"❌ {message}"
+                        f"❌ {message}",
                     )
+
                     return False
 
-                predictions_result = self.pred_mgr.predict_round(round_id)
+                predictions_result = (
+                    self.pred_mgr.predict_round(
+                        round_id
+                    )
+                )
+
+            # ------------------------------------------------
+            # ALL
+            # ------------------------------------------------
 
             else:
-                # Прогнозируем все матчи без прогнозов
-                predictions_result = self.pred_mgr.predict_all()
 
-            if not isinstance(predictions_result, dict):
+                predictions_result = (
+                    self.pred_mgr.predict_all()
+                )
+
+            if not isinstance(
+                predictions_result,
+                dict,
+            ):
+
                 result["predictions"]["success"] = True
+
                 self._add_step(
                     result,
                     "predictions",
                     "success",
-                    "✅ Прогнозы созданы"
+                    "✅ Прогнозы созданы.",
                 )
+
                 return True
 
-            status = predictions_result.get("status", "")
-            total = predictions_result.get("total", 0) or 0
-            predicted = predictions_result.get("predicted", 0) or 0
-            errors = predictions_result.get("errors", 0) or 0
-            skipped = predictions_result.get("skipped", 0) or 0
+            status = (
+                predictions_result.get(
+                    "status",
+                    "",
+                )
+            )
 
-            result["predictions"]["total"] = int(total)
-            result["predictions"]["predicted"] = int(predicted)
-            result["predictions"]["errors"] = int(errors)
-            result["predictions"]["skipped"] = int(skipped)
+            total = int(
+                predictions_result.get(
+                    "total",
+                    0,
+                ) or 0
+            )
 
-            if status == "completed" and errors == 0:
+            predicted = int(
+                predictions_result.get(
+                    "predicted",
+                    0,
+                ) or 0
+            )
+
+            errors = int(
+                predictions_result.get(
+                    "errors",
+                    0,
+                ) or 0
+            )
+
+            skipped = int(
+                predictions_result.get(
+                    "skipped",
+                    0,
+                ) or 0
+            )
+
+            result["predictions"]["total"] = (
+                total
+            )
+
+            result["predictions"]["predicted"] = (
+                predicted
+            )
+
+            result["predictions"]["errors"] = (
+                errors
+            )
+
+            result["predictions"]["skipped_count"] = (
+                skipped
+            )
+
+            if (
+                status == "completed"
+                and errors == 0
+            ):
+
                 result["predictions"]["success"] = True
+
                 self._add_step(
                     result,
                     "predictions",
                     "success",
-                    f"✅ Прогнозы созданы: создано={predicted}, пропущено={skipped}"
+                    (
+                        "✅ Прогнозы созданы: "
+                        f"created={predicted}, "
+                        f"skipped={skipped}"
+                    ),
                 )
-                return True
 
-            if status == "completed_with_errors":
-                message = f"⚠️ Прогнозы созданы с ошибками: создано={predicted}, ошибок={errors}"
-                result["predictions"]["error"] = message
-                result["errors"].append(message)
-                self._add_step(
-                    result,
-                    "predictions",
-                    "error",
-                    message
-                )
-                return False
+                return True
 
             if status == "nothing_to_predict":
+
                 result["predictions"]["success"] = True
+                result["predictions"]["skipped"] = True
+
                 self._add_step(
                     result,
                     "predictions",
                     "skipped",
-                    "⏭️ Прогнозов для создания нет"
+                    "⏭️ Новых прогнозов нет.",
                 )
+
                 return True
 
-            message = f"❌ Неизвестный статус прогнозирования: {status}"
-            result["predictions"]["error"] = message
-            result["errors"].append(message)
+            if status == "completed_with_errors":
+
+                message = (
+                    "⚠️ Прогнозы созданы с ошибками: "
+                    f"created={predicted}, "
+                    f"errors={errors}"
+                )
+
+                result["predictions"]["error"] = (
+                    message
+                )
+
+                result["errors"].append(
+                    message
+                )
+
+                self._add_step(
+                    result,
+                    "predictions",
+                    "error",
+                    message,
+                )
+
+                return False
+
+            message = (
+                "❌ Неизвестный статус "
+                "прогнозирования: "
+                f"{status}"
+            )
+
+            result["predictions"]["error"] = (
+                message
+            )
+
+            result["errors"].append(
+                message
+            )
+
             self._add_step(
                 result,
                 "predictions",
                 "error",
-                message
+                message,
             )
+
             return False
 
         except Exception as exc:
-            message = f"❌ Ошибка прогнозирования: {exc}"
-            result["predictions"]["error"] = message
-            result["errors"].append(message)
+
+            message = (
+                f"❌ Ошибка прогнозирования: {exc}"
+            )
+
+            result["predictions"]["error"] = (
+                message
+            )
+
+            result["errors"].append(
+                message
+            )
+
             self._add_step(
                 result,
                 "predictions",
                 "error",
-                message
+                message,
             )
-            logger.exception("Predictions failed")
+
+            logger.exception(
+                "Predictions failed"
+            )
+
             return False
 
     # ========================================================
-    # HELPERS
+    # RESULT STRUCTURE
     # ========================================================
 
-    def _new_result(self, started: str) -> Dict[str, Any]:
+    def _new_result(
+        self,
+        started: str,
+    ) -> Dict[str, Any]:
+
         return {
+            "module": "FAJ Cycle",
+            "version": FAJ_CYCLE_VERSION,
+
             "started_at": started,
             "finished_at": None,
             "elapsed_seconds": None,
+
             "ready": False,
+            "status": "started",
+
             "errors": [],
             "steps": [],
+
             "database": {
                 "ok": False,
                 "error": None,
                 "steps": [],
             },
+
             "matches": {
                 "success": False,
                 "total": 0,
                 "error": None,
                 "steps": [],
             },
-            "results": {
-                "success": False,
-                "processed": 0,
-                "updated": 0,
-                "errors": 0,
-                "error": None,
-                "steps": [],
-            },
-            "learning": {
-                "started": False,
-                "success": False,
-                "skipped": False,
-                "error": None,
-                "errors": [],
-                "processed": 0,
-                "message": "",
-                "steps": [],
-            },
+
             "etc": {
                 "started": False,
                 "success": False,
                 "skipped": False,
                 "result": None,
+
+                "analyzed": 0,
+                "learned": 0,
                 "processed": 0,
+                "errors_count": 0,
+
                 "errors": [],
                 "message": "",
                 "steps": [],
             },
+
             "predictions": {
                 "started": False,
                 "success": False,
                 "skipped": False,
+
                 "total": 0,
                 "predicted": 0,
                 "errors": 0,
+                "skipped_count": 0,
+
                 "error": None,
                 "steps": [],
             },
         }
+
+    # ========================================================
+    # STEP
+    # ========================================================
 
     def _add_step(
         self,
@@ -830,58 +1235,131 @@ class FAJCycle:
         status: str,
         message: str,
     ) -> None:
-        """Добавляет шаг в результат."""
+
         step = {
             "section": section,
             "status": status,
             "message": message,
             "timestamp": _now(),
         }
-        result["steps"].append(step)
+
+        result["steps"].append(
+            step
+        )
 
         if section in result:
+
             if "steps" not in result[section]:
                 result[section]["steps"] = []
-            result[section]["steps"].append(step)
+
+            result[section]["steps"].append(
+                step
+            )
+
+    # ========================================================
+    # FINISH
+    # ========================================================
 
     def _finish(
         self,
         result: Dict[str, Any],
         started: str,
     ) -> Dict[str, Any]:
-        """Завершает цикл."""
+
         finished_at = _now()
-        result["finished_at"] = finished_at
+
+        result["finished_at"] = (
+            finished_at
+        )
 
         try:
-            started_dt = datetime.fromisoformat(started)
-            finished_dt = datetime.fromisoformat(finished_at)
+
+            started_dt = (
+                datetime.fromisoformat(
+                    started
+                )
+            )
+
+            finished_dt = (
+                datetime.fromisoformat(
+                    finished_at
+                )
+            )
+
             result["elapsed_seconds"] = round(
-                (finished_dt - started_dt).total_seconds(),
+                (
+                    finished_dt - started_dt
+                ).total_seconds(),
                 2,
             )
+
         except Exception:
+
             result["elapsed_seconds"] = None
 
         result["ready"] = (
             result["database"]["ok"]
             and result["matches"]["success"]
-            and result["results"]["success"]
-            and (result["learning"]["success"] or result["learning"]["skipped"])
-            and (result["etc"]["success"] or result["etc"]["skipped"])
-            and (result["predictions"]["success"] or result["predictions"]["skipped"])
+            and (
+                result["etc"]["success"]
+                or result["etc"]["skipped"]
+            )
+            and (
+                result["predictions"]["success"]
+                or result["predictions"]["skipped"]
+            )
         )
 
-        status = "completed" if result["ready"] else "failed"
+        result["status"] = (
+            "completed"
+            if result["ready"]
+            else "failed"
+        )
+
         logger.info(
-            "FAJ Cycle finished: status=%s, elapsed=%s, errors=%s",
-            status,
+            "FAJ CYCLE FINISHED | "
+            "status=%s | "
+            "elapsed=%s | "
+            "errors=%s",
+            result["status"],
             result["elapsed_seconds"],
             len(result["errors"]),
         )
 
-        result["status"] = status
+        logger.info(
+            "=================================================="
+        )
+
         return result
+
+
+# ============================================================
+# PUBLIC API
+# ============================================================
+
+def run_faj_cycle(
+    db: Optional[FAJDatabase] = None,
+    match_id: Optional[int] = None,
+    round_id: Optional[int] = None,
+    season_id: Optional[int] = None,
+    force: bool = False,
+    run_predictions: bool = True,
+) -> Dict[str, Any]:
+    """
+    Публичная точка входа FAJ Cycle.
+    """
+
+    cycle = FAJCycle(
+        db=db
+    )
+
+    return cycle.run(
+        match_id=match_id,
+        round_id=round_id,
+        season_id=season_id,
+        force=force,
+        run_predictions=run_predictions,
+    )
 
 
 # ============================================================
@@ -889,44 +1367,62 @@ class FAJCycle:
 # ============================================================
 
 def main() -> None:
+
     parser = argparse.ArgumentParser(
-        description="FAJ Cycle — главный оркестратор FAJ Platform",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "FAJ Cycle — главный "
+            "оркестратор FAJ Platform"
+        ),
+        formatter_class=(
+            argparse.RawDescriptionHelpFormatter
+        ),
         epilog="""
 Примеры:
-    faj_cycle.py --match 123
-    faj_cycle.py --round 5
-    faj_cycle.py --season 1
-    faj_cycle.py --match 123 --force
-    faj_cycle.py --round 5 --force
+
+    python app/faj_cycle.py --match 123
+
+    python app/faj_cycle.py --round 5
+
+    python app/faj_cycle.py --season 1
+
+    python app/faj_cycle.py --match 123 --force
+
+    python app/faj_cycle.py --round 5 --no-predictions
+
         """,
     )
 
     parser.add_argument(
         "--match",
         type=int,
-        help="ID матча для обработки",
         dest="match_id",
+        help="ID матча",
     )
 
     parser.add_argument(
         "--round",
         type=int,
-        help="ID тура для обработки",
         dest="round_id",
+        help="ID тура",
     )
 
     parser.add_argument(
         "--season",
         type=int,
-        help="ID сезона для обработки",
         dest="season_id",
+        help="ID сезона",
     )
 
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Принудительный запуск даже при ошибках",
+        help="Продолжать ETC при частичных ошибках",
+    )
+
+    parser.add_argument(
+        "--no-predictions",
+        action="store_true",
+        help="Не запускать прогнозирование",
     )
 
     parser.add_argument(
@@ -938,57 +1434,141 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    # Настройка логирования
-    log_level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(
-        level=log_level,
-        format="%(asctime)s | %(levelname)s | %(message)s",
+        level=(
+            logging.DEBUG
+            if args.verbose
+            else logging.INFO
+        ),
+        format=(
+            "%(asctime)s | "
+            "%(levelname)s | "
+            "%(message)s"
+        ),
     )
 
-    # Запуск цикла
     cycle = FAJCycle()
+
     result = cycle.run(
         match_id=args.match_id,
         round_id=args.round_id,
         season_id=args.season_id,
         force=args.force,
+        run_predictions=(
+            not args.no_predictions
+        ),
     )
 
-    # Вывод результата
-    print("\n" + "=" * 70)
-    print("FAJ CYCLE — RESULT")
-    print("=" * 70)
+    print(
+        "\n" + "=" * 70
+    )
 
-    status = result.get("status", "unknown")
-    ready = result.get("ready", False)
+    print(
+        "FAJ CYCLE — RESULT"
+    )
 
-    print(f"Status: {status}")
-    print(f"Ready: {'✅' if ready else '❌'}")
-    print(f"Elapsed: {result.get('elapsed_seconds', 'N/A')} sec")
+    print(
+        "=" * 70
+    )
 
-    errors = result.get("errors", [])
+    print(
+        f"Status: {result.get('status', 'unknown')}"
+    )
+
+    print(
+        "Ready: "
+        + (
+            "✅"
+            if result.get("ready")
+            else "❌"
+        )
+    )
+
+    print(
+        "Elapsed: "
+        f"{result.get('elapsed_seconds', 'N/A')} sec"
+    )
+
+    errors = result.get(
+        "errors",
+        [],
+    )
+
     if errors:
+
         print("\nErrors:")
+
         for error in errors:
-            print(f"  ❌ {error}")
+            print(
+                f"  ❌ {error}"
+            )
 
     print("\nSections:")
-    for section in ["database", "matches", "results", "learning", "etc", "predictions"]:
-        data = result.get(section, {})
-        success = data.get("success", False)
-        skipped = data.get("skipped", False)
-        if success or skipped:
-            status_text = "✅" if success else "⏭️" if skipped else "❌"
-            print(f"  {status_text} {section}")
 
-    print("=" * 70)
+    for section in (
+        "database",
+        "matches",
+        "etc",
+        "predictions",
+    ):
+
+        data = result.get(
+            section,
+            {},
+        )
+
+        success = data.get(
+            "success",
+            False,
+        )
+
+        skipped = data.get(
+            "skipped",
+            False,
+        )
+
+        if success:
+
+            print(
+                f"  ✅ {section}"
+            )
+
+        elif skipped:
+
+            print(
+                f"  ⏭️ {section}"
+            )
+
+        else:
+
+            print(
+                f"  ❌ {section}"
+            )
+
+    print(
+        "=" * 70
+    )
 
     if args.verbose:
-        print("\nFull result:")
-        import json
-        print(json.dumps(result, indent=2, default=str, ensure_ascii=False))
 
-    sys.exit(0 if ready else 1)
+        print(
+            "\nFull result:"
+        )
+
+        print(
+            json.dumps(
+                result,
+                indent=2,
+                default=str,
+                ensure_ascii=False,
+            )
+        )
+
+    sys.exit(
+        0
+        if result.get("ready")
+        else 1
+    )
 
 
 # ============================================================
