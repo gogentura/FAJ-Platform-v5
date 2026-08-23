@@ -3077,8 +3077,7 @@ class FAJDatabase:
             cursor = conn.cursor()
             if include_history:
                 cursor.execute("""
-                    SELECT * FROM predictions
-                    WHERE match_id = ?
+                    SELECT * FROM predictions                    WHERE match_id = ?
                     ORDER BY prediction_version ASC, created_at ASC
                 """, (match_id,))
             else:
@@ -4435,6 +4434,119 @@ class FAJDatabase:
             """, (limit,))
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
+        finally:
+            conn.close()
+    
+    # ============================================================
+    # 🆕 НОВЫЙ МЕТОД: ADD LEARNING MEMORY — APPEND-ONLY
+    # ============================================================
+    
+    def add_learning_memory(self, data: Dict[str, Any]) -> int:
+        """
+        APPEND-ONLY запись события ETC в таблицу learning_memory.
+        
+        ВАЖНО:
+            - только INSERT;
+            - UPDATE отсутствует;
+            - DELETE отсутствует;
+            - существующая память не изменяется.
+        
+        Args:
+            data: словарь с полями learning_memory
+                - event_type: str
+                - object: str
+                - feature: str
+                - before_value: Any (будет преобразован в TEXT)
+                - after_value: Any (будет преобразован в TEXT)
+                - delta: Any (будет преобразован в TEXT)
+                - reason: str
+                - confidence: float
+                - impact: float
+                - algorithm: str
+                - model_version: str
+                - reference_id: int
+                - created_at: str (ISO формат)
+        
+        Returns:
+            int: ID созданной записи
+        
+        Raises:
+            RuntimeError: при ошибке INSERT
+        """
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Преобразуем значения в строки для TEXT полей
+            def to_text(value: Any) -> Optional[str]:
+                if value is None:
+                    return None
+                if isinstance(value, (dict, list)):
+                    return json.dumps(value, ensure_ascii=False)
+                return str(value)
+            
+            cursor.execute(
+                """
+                INSERT INTO learning_memory (
+                    event_type,
+                    object,
+                    feature,
+                    before_value,
+                    after_value,
+                    delta,
+                    reason,
+                    confidence,
+                    impact,
+                    algorithm,
+                    model_version,
+                    reference_id,
+                    created_at
+                )
+                VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
+                """,
+                (
+                    data.get("event_type"),
+                    data.get("object"),
+                    data.get("feature"),
+                    to_text(data.get("before_value")),
+                    to_text(data.get("after_value")),
+                    to_text(data.get("delta")),
+                    data.get("reason"),
+                    data.get("confidence", 1.0),
+                    data.get("impact", 1.0),
+                    data.get("algorithm", "ETC"),
+                    data.get("model_version", "v12.1"),
+                    data.get("reference_id"),
+                    data.get("created_at"),
+                ),
+            )
+            
+            memory_id = cursor.lastrowid
+            if memory_id is None:
+                raise RuntimeError(
+                    "Не удалось получить ID learning_memory."
+                )
+            
+            conn.commit()
+            logger.info(
+                "LEARNING MEMORY APPEND | id=%s | event=%s | object=%s",
+                memory_id,
+                data.get("event_type"),
+                data.get("object"),
+            )
+            return int(memory_id)
+            
+        except Exception as exc:
+            conn.rollback()
+            logger.error(
+                "Ошибка добавления learning_memory: %s",
+                exc
+            )
+            raise RuntimeError(
+                f"Ошибка добавления learning_memory: {exc}"
+            ) from exc
         finally:
             conn.close()
     
