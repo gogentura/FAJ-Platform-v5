@@ -122,6 +122,18 @@ MODEL PARAMETERS
     model_parameters
 
 ============================================================
+
+ИСПРАВЛЕНИЯ v2.1
+============================================================
+
+1. Добавлен mapping xg_overestimated / xg_underestimated → xg_scale.
+
+2. В calculate_delta() добавлена защита от duplicate evidence
+   (одинаковые match_id в одном сигнале).
+
+3. В run() добавлено логирование conflict detection.
+
+============================================================
 """
 
 from __future__ import annotations
@@ -134,7 +146,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-MODULE_VERSION = "2.0"
+MODULE_VERSION = "2.1"
 MODULE_NAME = "ETC Parameter Optimizer"
 
 
@@ -215,6 +227,9 @@ faj_rating:
     НЕ параметр optimizer.
 
 FAJ Rating обновляется club_rating_updater.py.
+
+ИСПРАВЛЕНИЕ v2.1:
+    Добавлен mapping xg_overestimated / xg_underestimated → xg_scale.
 """
 
 CAUSE_PARAMETER_MAP: Dict[str, str] = {
@@ -236,7 +251,7 @@ CAUSE_PARAMETER_MAP: Dict[str, str] = {
         "attack",
 
     # --------------------------------------------------------
-    # XG
+    # XG (v2.1)
     # --------------------------------------------------------
 
     "xg_overestimated":
@@ -489,6 +504,10 @@ class ParameterOptimizer:
 
         ETC не должен делать резкие изменения модели
         после нескольких матчей.
+
+        ИСПРАВЛЕНИЕ v2.1:
+            Добавлена защита от duplicate evidence.
+            Учитываются только уникальные match_id.
         """
 
         confidence = self._safe_float(
@@ -499,7 +518,19 @@ class ParameterOptimizer:
             signal.get("signal_strength")
         )
 
-        count = self._safe_int(
+        # Используем уникальные match_id для подсчета
+        # (защита от дублирования evidence)
+        matches = signal.get("matches", [])
+        if isinstance(matches, list):
+            unique_matches = len(set(
+                int(m) for m in matches if m is not None
+            ))
+        else:
+            unique_matches = self._safe_int(
+                signal.get("count")
+            )
+
+        count = unique_matches if unique_matches > 0 else self._safe_int(
             signal.get("count")
         )
 
@@ -1157,6 +1188,17 @@ class ParameterOptimizer:
                 proposal["status"] = (
                     "conflict_review"
                 )
+
+        # ----------------------------------------------------
+        # Логирование конфликтов (v2.1)
+        # ----------------------------------------------------
+
+        if conflicts:
+            logger.info(
+                "ETC Parameter Optimizer: "
+                "обнаружены конфликты по параметрам: %s",
+                [c["parameter_name"] for c in conflicts]
+            )
 
         result = {
             "module": MODULE_NAME,
