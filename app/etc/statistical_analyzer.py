@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-ETC — Statistical Analyzer v1.2
+ETC — Statistical Analyzer v1.3
 ============================================================
 
 app/etc/statistical_analyzer.py
@@ -47,7 +47,8 @@ Statistical Analyzer является чистым аналитическим с
     - удаляет данные;
     - записывает learning_memory;
     - запускает prediction pipeline;
-    - самостоятельно принимает решения об изменении модели.
+    - самостоятельно принимает решения об изменении модели;
+    - возвращает memory_events.
 
 МОДУЛЬ ТОЛЬКО:
 
@@ -88,6 +89,34 @@ ETC PRINCIPLE:
     MEMORY
 
 ============================================================
+
+ИСПРАВЛЕНИЯ v1.3
+============================================================
+
+1. Строгая обработка голов:
+
+   home_goals = _safe_int(home_goals_raw, default=-1)
+   away_goals = _safe_int(away_goals_raw, default=-1)
+   if home_goals < 0: return None
+   if away_goals < 0: return None
+
+   0:0 — валидный результат.
+   None — отсутствие факта, отклоняется.
+
+2. memory_events НЕ ДОБАВЛЯТЬ:
+
+   Analyzer не записывает LearningMemory.
+   memory_events создаёт только ETCLearningEngine.
+
+3. Частичная статистика разрешена:
+
+   if not home_stats and not away_stats:
+       return None
+
+   Если статистика есть хотя бы у одной команды,
+   матч принимается для анализа.
+
+============================================================
 """
 
 from __future__ import annotations
@@ -99,7 +128,7 @@ from app.database import FAJDatabase
 
 logger = logging.getLogger(__name__)
 
-ANALYZER_VERSION = "1.2"
+ANALYZER_VERSION = "1.3"
 ANALYZER_NAME = "FAJ ETC Statistical Analyzer"
 
 
@@ -133,6 +162,11 @@ def _safe_int(
 ) -> int:
     """
     Безопасное преобразование в int.
+
+    ВАЖНО:
+
+    Для голов используется default=-1,
+    чтобы отличить None от 0.
     """
 
     try:
@@ -498,6 +532,21 @@ class StatisticalAnalyzer:
     ) -> Optional[Dict[str, Any]]:
         """
         Собирает объективные факты одного матча.
+
+        ВАЖНОЕ ИСПРАВЛЕНИЕ v1.3:
+
+        Голы проверяются строго:
+
+            home_goals = _safe_int(home_goals_raw, default=-1)
+            away_goals = _safe_int(away_goals_raw, default=-1)
+
+            if home_goals < 0: return None
+            if away_goals < 0: return None
+
+        Это отличает:
+
+            0 — валидный результат
+            -1 — отсутствие факта
         """
 
         match_id = _safe_int(
@@ -540,19 +589,25 @@ class StatisticalAnalyzer:
             "away_goals"
         )
 
-        if home_goals_raw is None:
-            return None
-
-        if away_goals_raw is None:
-            return None
-
+        # ✅ ИСПРАВЛЕНО v1.3
+        # default=-1 чтобы отличить None от 0
         home_goals = _safe_int(
-            home_goals_raw
+            home_goals_raw,
+            default=-1,
         )
 
         away_goals = _safe_int(
-            away_goals_raw
+            away_goals_raw,
+            default=-1,
         )
+
+        # 0 — валидный результат
+        # -1 — отсутствие факта
+        if home_goals < 0:
+            return None
+
+        if away_goals < 0:
+            return None
 
         # ----------------------------------------------------
         # FACT STATISTICS
@@ -572,9 +627,10 @@ class StatisticalAnalyzer:
             )
         )
 
-        # Для ETC статистический анализ должен иметь
-        # хотя бы одну фактическую статистическую запись.
-
+        # ✅ ОСТАВЛЕНО v1.3
+        # Частичная статистика разрешена.
+        # Если статистика есть хотя бы у одной команды,
+        # матч принимается.
         if not home_stats and not away_stats:
             return None
 
@@ -603,9 +659,8 @@ class StatisticalAnalyzer:
                 "round_id"
             ),
 
-            # ================================================
-            # ИСПРАВЛЕНО: match_date с fallback на date
-            # ================================================
+            # ✅ ОСТАВЛЕНО v1.3
+            # match_date с fallback на date
             "match_date": (
                 match.get("match_date")
                 or match.get("date")
@@ -756,16 +811,21 @@ class StatisticalAnalyzer:
                 "finishing_overperformance": None,
             }
 
+        # ✅ ИСПРАВЛЕНО v1.3
+        # _safe_int с default=-1 для статистики
+        # Чтобы отличить отсутствие данных от 0
         xg = _safe_float(
             stats.get("xg")
         )
 
         shots = _safe_int(
-            stats.get("shots")
+            stats.get("shots"),
+            default=-1,
         )
 
         shots_on_target = _safe_int(
-            stats.get("shots_on_target")
+            stats.get("shots_on_target"),
+            default=-1,
         )
 
         possession = _safe_float(
@@ -773,31 +833,38 @@ class StatisticalAnalyzer:
         )
 
         corners = _safe_int(
-            stats.get("corners")
+            stats.get("corners"),
+            default=-1,
         )
 
         fouls = _safe_int(
-            stats.get("fouls")
+            stats.get("fouls"),
+            default=-1,
         )
 
         yellow_cards = _safe_int(
-            stats.get("yellow_cards")
+            stats.get("yellow_cards"),
+            default=-1,
         )
 
         red_cards = _safe_int(
-            stats.get("red_cards")
+            stats.get("red_cards"),
+            default=-1,
         )
 
         big_chances = _safe_int(
-            stats.get("big_chances")
+            stats.get("big_chances"),
+            default=-1,
         )
 
         saves = _safe_int(
-            stats.get("saves")
+            stats.get("saves"),
+            default=-1,
         )
 
         passes = _safe_int(
-            stats.get("passes")
+            stats.get("passes"),
+            default=-1,
         )
 
         pass_accuracy = _safe_float(
@@ -874,23 +941,23 @@ class StatisticalAnalyzer:
                 2,
             ),
 
-            "shots": shots,
+            "shots": shots if shots >= 0 else None,
 
-            "shots_on_target": shots_on_target,
+            "shots_on_target": shots_on_target if shots_on_target >= 0 else None,
 
-            "corners": corners,
+            "corners": corners if corners >= 0 else None,
 
-            "fouls": fouls,
+            "fouls": fouls if fouls >= 0 else None,
 
-            "yellow_cards": yellow_cards,
+            "yellow_cards": yellow_cards if yellow_cards >= 0 else None,
 
-            "red_cards": red_cards,
+            "red_cards": red_cards if red_cards >= 0 else None,
 
-            "big_chances": big_chances,
+            "big_chances": big_chances if big_chances >= 0 else None,
 
-            "saves": saves,
+            "saves": saves if saves >= 0 else None,
 
-            "passes": passes,
+            "passes": passes if passes >= 0 else None,
 
             "pass_accuracy": _round(
                 pass_accuracy,
@@ -1517,7 +1584,7 @@ class StatisticalAnalyzer:
         """
         Формирует объективные наблюдения для ETC.
 
-        ВАЖНО:
+        ВАЖНО v1.3:
 
         Это НЕ learning_memory.
 
@@ -1525,6 +1592,8 @@ class StatisticalAnalyzer:
 
         ETCLearningEngine сам решает, какие из них
         превращать в записи памяти.
+
+        memory_events здесь НЕ создаются.
         """
 
         observations: List[
@@ -1885,6 +1954,8 @@ def get_analyzer_status() -> Dict[str, Any]:
         "source_statistics": "match_statistics",
 
         "database_layer": "FAJDatabase",
+
+        "memory_events": False,
     }
 
 
