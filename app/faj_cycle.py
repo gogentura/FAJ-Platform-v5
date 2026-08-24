@@ -7,6 +7,9 @@ FAJ Platform v12.1
 FAJ CYCLE — Главный оркестратор
 ============================================================
 
+Файл:
+    app/faj_cycle.py
+
 НАЗНАЧЕНИЕ
 ----------
 
@@ -14,7 +17,7 @@ FAJ Cycle — верхний оркестратор жизненного цик�
 
 FAJ Cycle НЕ содержит математической логики модели.
 
-Его задача — правильно связать основные контуры платформы:
+Его задача — правильно связать:
 
     DATABASE
         ↓
@@ -28,79 +31,42 @@ FAJ Cycle НЕ содержит математической логики мод
 
 ============================================================
 
-АРХИТЕКТУРА ПОСЛЕ MATCH
------------------------
+ЖИЗНЕННЫЙ ЦИКЛ
+==============
 
     MATCH
       │
       ▼
-    ТУР СЫГРАН
+    MATCH RESULT / STATISTICS
       │
       ▼
-    ФАКТЫ ТУРА
+    SQLite
       │
-      ├── MATCH_RESULT
+      ▼
+    BatchController
       │
-      └── MATCH_STATISTICS
-              │
-              ▼
-             ETC
-              │
-              ├── BatchController
-              │
-              ├── StatisticalAnalyzer
-              │
-              └── ETC LearningEngine
-                       │
-                       ▼
-                  learning_memory
-                       │
-                       ▼
-                 NEXT PREDICTION
+      ▼
+    ETCController
+      │
+      ▼
+    ETCLearningEngine
+      │
+      ▼
+    StatisticalAnalyzer
+      │
+      ▼
+    LearningMemory
+      │
+      ▼
+    NEXT PREDICTION
+      │
+      ▼
+    PredictionManager
 
 ============================================================
 
-ВАЖНО
-------
-
-Старый:
-
-    app.learning_engine.py
-
-НЕ является частью FAJ Cycle.
-
-Он НЕ импортируется.
-Он НЕ запускается.
-Он НЕ конкурирует с ETC.
-
-Единственный контур эволюционного обучения:
-
-    app/etc/learning_engine.py
-
-ETC работает только с фактами, уже сохранёнными
-в SQLite.
-
-ETC НЕ получает статистику напрямую со страниц.
-
-Страницы:
-
-    ФАКТЫ ТУРА
-    ТУР СЫГРАН
-    другие match/facts UI
-
-сохраняют данные через FAJDatabase.
-
-После сохранения:
-
-    match_results
-    match_statistics
-
-становятся входом ETC.
-
-============================================================
-
-ПРИНЦИПЫ
----------
+АРХИТЕКТУРНЫЙ КОНТРАК
+======================
 
 1. SQLite only.
 
@@ -108,19 +74,44 @@ ETC НЕ получает статистику напрямую со стран�
 
 3. Исторические факты не удаляются.
 
-4. Старые predictions не переписываются.
+4. match_results не изменяются ETC.
 
-5. ETC не создаёт прогнозы.
+5. match_statistics не изменяются ETC.
 
-6. ETC не управляет календарём.
+6. Старые predictions не переписываются ETC.
 
-7. FAJ Cycle не содержит расчётов xG/Poisson/Monte Carlo.
+7. ETC не создаёт прогнозы.
 
-8. Ошибка одного матча не должна уничтожать остальные.
+8. ETC не управляет календарём.
 
-9. ETC обрабатывает только готовые факты.
+9. FAJ Cycle не содержит xG / Poisson /
+   Monte Carlo расчётов.
 
-10. app.learning_engine.py не запускается.
+10. Старый:
+
+        app.learning_engine.py
+
+    НЕ используется.
+
+11. Единственный learning pipeline:
+
+        app/etc/learning_engine.py
+
+12. BatchController является владельцем решения:
+
+        READY
+        WAIT
+        ALREADY_PROCESSED
+        UNKNOWN_LEAGUE
+
+13. ETCLearningEngine является владельцем
+    фактического обучения.
+
+14. LearningMemory остаётся владельцем
+    записи learning memory.
+
+15. Ошибка одного матча не должна уничтожать
+    уже успешно обработанные матчи.
 
 ============================================================
 """
@@ -131,13 +122,22 @@ import argparse
 import json
 import logging
 import sys
+
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+
 from app.database import FAJDatabase
+
 from app.match_manager import MatchManager
-from app.etc.etc_controller import run_etc
-from app.core.prediction_manager import get_prediction_manager
+
+from app.etc.etc_controller import (
+    run_etc,
+)
+
+from app.core.prediction_manager import (
+    get_prediction_manager,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -148,7 +148,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 APP_VERSION = "12.1"
-FAJ_CYCLE_VERSION = "2.0"
+FAJ_CYCLE_VERSION = "2.1"
 
 
 # ============================================================
@@ -156,7 +156,37 @@ FAJ_CYCLE_VERSION = "2.0"
 # ============================================================
 
 def _now() -> str:
+    """
+    Текущее локальное время.
+    """
     return datetime.now().isoformat()
+
+
+# ============================================================
+# SAFE HELPERS
+# ============================================================
+
+def _safe_int(
+    value: Any,
+    default: int = 0,
+) -> int:
+    """
+    Безопасное преобразование в int.
+    """
+
+    try:
+
+        if value is None:
+            return default
+
+        return int(value)
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        return default
 
 
 # ============================================================
@@ -167,7 +197,7 @@ class FAJCycle:
     """
     Главный оркестратор FAJ.
 
-    Новый жизненный цикл:
+    Контур:
 
         DATABASE
             ↓
@@ -179,7 +209,15 @@ class FAJCycle:
             ↓
         PREDICTIONS
 
-    Старый app.learning_engine.py здесь НЕ используется.
+    ВАЖНО:
+
+    FAJCycle НЕ реализует обучение.
+
+    FAJCycle только запускает ETC.
+
+    Единственный learning pipeline:
+
+        app/etc/learning_engine.py
     """
 
     def __init__(
@@ -208,24 +246,19 @@ class FAJCycle:
         run_predictions: bool = True,
     ) -> Dict[str, Any]:
         """
-        Запускает FAJ Cycle.
+        Запускает полный FAJ Cycle.
 
         Порядок:
 
             1. DATABASE
             2. MATCHES
-            3. FACTS / ETC
+            3. ETC
             4. PREDICTIONS
 
-        ВАЖНО:
+        Факты здесь не создаются.
 
-        Факты не загружаются здесь напрямую со страницы.
-
-        Они должны быть уже сохранены UI-контуром
-        в match_results / match_statistics.
-
-        ETC затем обнаруживает готовые факты через
-        BatchController.
+        ETC сам обнаруживает готовые факты
+        через BatchController.
         """
 
         started = _now()
@@ -259,6 +292,7 @@ class FAJCycle:
         if not self._check_database(
             result
         ):
+
             return self._finish(
                 result,
                 started,
@@ -274,6 +308,7 @@ class FAJCycle:
             round_id=round_id,
             season_id=season_id,
         ):
+
             return self._finish(
                 result,
                 started,
@@ -285,8 +320,10 @@ class FAJCycle:
 
         if not self._run_etc(
             result=result,
+            season_id=season_id,
             force=force,
         ):
+
             return self._finish(
                 result,
                 started,
@@ -302,6 +339,7 @@ class FAJCycle:
                 result=result,
                 round_id=round_id,
             ):
+
                 return self._finish(
                     result,
                     started,
@@ -315,7 +353,7 @@ class FAJCycle:
                 result,
                 "predictions",
                 "skipped",
-                "⏭️ Прогнозирование отключено для этого запуска.",
+                "⏭️ Прогнозирование отключено.",
             )
 
         # ====================================================
@@ -336,7 +374,7 @@ class FAJCycle:
         result: Dict[str, Any],
     ) -> bool:
         """
-        Проверка БД.
+        Проверяет доступность SQLite.
 
         Только read-only.
         """
@@ -351,6 +389,33 @@ class FAJCycle:
         try:
 
             status = self.db.get_status()
+
+            if not isinstance(
+                status,
+                dict,
+            ):
+
+                message = (
+                    "❌ FAJDatabase.get_status() "
+                    "вернул некорректный результат."
+                )
+
+                result["database"]["error"] = (
+                    message
+                )
+
+                result["errors"].append(
+                    message
+                )
+
+                self._add_step(
+                    result,
+                    "database",
+                    "error",
+                    message,
+                )
+
+                return False
 
             if status.get("status") == "online":
 
@@ -373,8 +438,13 @@ class FAJCycle:
                 f"{status.get('error', 'unknown error')}"
             )
 
-            result["database"]["error"] = message
-            result["errors"].append(message)
+            result["database"]["error"] = (
+                message
+            )
+
+            result["errors"].append(
+                message
+            )
 
             self._add_step(
                 result,
@@ -391,8 +461,13 @@ class FAJCycle:
                 f"❌ Ошибка проверки БД: {exc}"
             )
 
-            result["database"]["error"] = message
-            result["errors"].append(message)
+            result["database"]["error"] = (
+                message
+            )
+
+            result["errors"].append(
+                message
+            )
 
             self._add_step(
                 result,
@@ -419,11 +494,10 @@ class FAJCycle:
         season_id: Optional[int] = None,
     ) -> bool:
         """
-        Загружает календарные матчи.
+        Определяет область текущего запуска.
 
-        Никаких изменений результатов здесь нет.
-
-        Этот метод только определяет область текущего запуска.
+        Никаких изменений календаря или фактов
+        здесь не производится.
         """
 
         self._add_step(
@@ -437,9 +511,9 @@ class FAJCycle:
 
             matches: List[Any] = []
 
-            # ------------------------------------------------
+            # =================================================
             # SINGLE MATCH
-            # ------------------------------------------------
+            # =================================================
 
             if match_id is not None:
 
@@ -454,7 +528,10 @@ class FAJCycle:
                     )
 
                 if match:
-                    matches.append(match)
+
+                    matches.append(
+                        match
+                    )
 
                 else:
 
@@ -462,8 +539,13 @@ class FAJCycle:
                         f"Матч {match_id} не найден"
                     )
 
-                    result["matches"]["error"] = message
-                    result["errors"].append(message)
+                    result["matches"]["error"] = (
+                        message
+                    )
+
+                    result["errors"].append(
+                        message
+                    )
 
                     self._add_step(
                         result,
@@ -474,9 +556,9 @@ class FAJCycle:
 
                     return False
 
-            # ------------------------------------------------
+            # =================================================
             # ROUND
-            # ------------------------------------------------
+            # =================================================
 
             elif round_id is not None:
 
@@ -491,8 +573,13 @@ class FAJCycle:
                         "не найден или не содержит матчей"
                     )
 
-                    result["matches"]["error"] = message
-                    result["errors"].append(message)
+                    result["matches"]["error"] = (
+                        message
+                    )
+
+                    result["errors"].append(
+                        message
+                    )
 
                     self._add_step(
                         result,
@@ -503,9 +590,9 @@ class FAJCycle:
 
                     return False
 
-            # ------------------------------------------------
+            # =================================================
             # SEASON
-            # ------------------------------------------------
+            # =================================================
 
             elif season_id is not None:
 
@@ -535,6 +622,7 @@ class FAJCycle:
                     )
 
                     if round_matches:
+
                         matches.extend(
                             round_matches
                         )
@@ -546,8 +634,13 @@ class FAJCycle:
                         "не содержит матчей"
                     )
 
-                    result["matches"]["error"] = message
-                    result["errors"].append(message)
+                    result["matches"]["error"] = (
+                        message
+                    )
+
+                    result["errors"].append(
+                        message
+                    )
 
                     self._add_step(
                         result,
@@ -558,9 +651,9 @@ class FAJCycle:
 
                     return False
 
-            # ------------------------------------------------
+            # =================================================
             # ALL
-            # ------------------------------------------------
+            # =================================================
 
             else:
 
@@ -586,10 +679,17 @@ class FAJCycle:
 
                 return True
 
-            message = "Матчи не найдены"
+            message = (
+                "Матчи не найдены"
+            )
 
-            result["matches"]["error"] = message
-            result["errors"].append(message)
+            result["matches"]["error"] = (
+                message
+            )
+
+            result["errors"].append(
+                message
+            )
 
             self._add_step(
                 result,
@@ -606,8 +706,13 @@ class FAJCycle:
                 f"❌ Ошибка проверки матчей: {exc}"
             )
 
-            result["matches"]["error"] = message
-            result["errors"].append(message)
+            result["matches"]["error"] = (
+                message
+            )
+
+            result["errors"].append(
+                message
+            )
 
             self._add_step(
                 result,
@@ -629,26 +734,33 @@ class FAJCycle:
     def _run_etc(
         self,
         result: Dict[str, Any],
+        season_id: Optional[int] = None,
         force: bool = False,
     ) -> bool:
         """
         Запускает ETC.
 
-        ETC получает факты из SQLite.
+        КРИТИЧЕСКИ ВАЖНО:
 
-        FAJ Cycle НЕ передаёт ETC сырую статистику.
+        FAJ Cycle НЕ передаёт ETC факты.
 
-        Источник:
+        ETC самостоятельно получает их из SQLite
+        через BatchController.
 
-            match_results
-            match_statistics
+        Контур:
 
-        Определение готовых матчей выполняет
-        BatchController.
+            SQLite
+              ↓
+            BatchController
+              ↓
+            ETCController
+              ↓
+            ETCLearningEngine
+              ↓
+            LearningMemory
 
-        Единственный Learning Engine:
-
-            app/etc/learning_engine.py
+        Старый app.learning_engine.py
+        здесь не используется.
         """
 
         self._add_step(
@@ -664,6 +776,7 @@ class FAJCycle:
 
             etc_result = run_etc(
                 db=self.db,
+                season_id=season_id,
                 force=force,
             )
 
@@ -676,50 +789,58 @@ class FAJCycle:
                 dict,
             ):
 
-                result["etc"]["success"] = True
+                message = (
+                    "ETC вернул некорректный результат."
+                )
+
+                result["etc"]["errors"].append(
+                    message
+                )
+
+                result["errors"].append(
+                    message
+                )
 
                 self._add_step(
                     result,
                     "etc",
-                    "success",
-                    "✅ ETC завершён.",
+                    "error",
+                    f"❌ {message}",
                 )
 
-                return True
+                return False
 
-            status = (
-                etc_result.get(
-                    "status",
-                    "",
-                )
+            status = etc_result.get(
+                "status",
+                "",
             )
 
-            processed = int(
+            processed = _safe_int(
                 etc_result.get(
                     "processed",
                     0,
-                ) or 0
+                )
             )
 
-            analyzed = int(
+            analyzed = _safe_int(
                 etc_result.get(
                     "analyzed",
                     0,
-                ) or 0
+                )
             )
 
-            learned = int(
+            learned = _safe_int(
                 etc_result.get(
                     "learned",
                     0,
-                ) or 0
+                )
             )
 
-            errors = int(
+            errors = _safe_int(
                 etc_result.get(
                     "errors",
                     0,
-                ) or 0
+                )
             )
 
             result["etc"]["processed"] = (
@@ -738,9 +859,16 @@ class FAJCycle:
                 errors
             )
 
-            # ------------------------------------------------
-            # NOTHING
-            # ------------------------------------------------
+            result["etc"]["message"] = (
+                etc_result.get(
+                    "message",
+                    "",
+                )
+            )
+
+            # =================================================
+            # NOTHING TO PROCESS
+            # =================================================
 
             if status == "nothing_to_process":
 
@@ -753,15 +881,15 @@ class FAJCycle:
                     "skipped",
                     (
                         "⏭️ ETC: новых завершённых "
-                        "фактов для обработки нет."
+                        "фактов для обучения нет."
                     ),
                 )
 
                 return True
 
-            # ------------------------------------------------
+            # =================================================
             # COMPLETED
-            # ------------------------------------------------
+            # =================================================
 
             if (
                 status == "completed"
@@ -784,9 +912,9 @@ class FAJCycle:
 
                 return True
 
-            # ------------------------------------------------
+            # =================================================
             # PARTIAL
-            # ------------------------------------------------
+            # =================================================
 
             if status == "completed_with_errors":
 
@@ -811,18 +939,16 @@ class FAJCycle:
                     message,
                 )
 
-                # Важно:
-                # сам ETC уже сохранил успешно
-                # обработанные batch-записи.
+                # Уже успешно обработанные матчи
+                # ETC не откатывает.
                 #
-                # FAJ Cycle не пытается
-                # откатить их.
+                # FAJ Cycle также ничего не удаляет.
 
                 return False
 
-            # ------------------------------------------------
+            # =================================================
             # FAILED
-            # ------------------------------------------------
+            # =================================================
 
             if status == "failed":
 
@@ -849,9 +975,9 @@ class FAJCycle:
 
                 return False
 
-            # ------------------------------------------------
+            # =================================================
             # UNKNOWN
-            # ------------------------------------------------
+            # =================================================
 
             message = (
                 "❌ ETC вернул неизвестный статус: "
@@ -912,11 +1038,9 @@ class FAJCycle:
         round_id: Optional[int] = None,
     ) -> bool:
         """
-        Запускает прогнозирование.
+        Запускает PredictionManager.
 
-        ETC НЕ создаёт прогнозы.
-
-        PredictionManager остаётся отдельным контуром.
+        ETC не создаёт прогнозы.
         """
 
         self._add_step(
@@ -930,9 +1054,9 @@ class FAJCycle:
 
         try:
 
-            # ------------------------------------------------
+            # =================================================
             # ROUND
-            # ------------------------------------------------
+            # =================================================
 
             if round_id is not None:
 
@@ -971,9 +1095,9 @@ class FAJCycle:
                     )
                 )
 
-            # ------------------------------------------------
+            # =================================================
             # ALL
-            # ------------------------------------------------
+            # =================================================
 
             else:
 
@@ -997,39 +1121,37 @@ class FAJCycle:
 
                 return True
 
-            status = (
-                predictions_result.get(
-                    "status",
-                    "",
-                )
+            status = predictions_result.get(
+                "status",
+                "",
             )
 
-            total = int(
+            total = _safe_int(
                 predictions_result.get(
                     "total",
                     0,
-                ) or 0
+                )
             )
 
-            predicted = int(
+            predicted = _safe_int(
                 predictions_result.get(
                     "predicted",
                     0,
-                ) or 0
+                )
             )
 
-            errors = int(
+            errors = _safe_int(
                 predictions_result.get(
                     "errors",
                     0,
-                ) or 0
+                )
             )
 
-            skipped = int(
+            skipped = _safe_int(
                 predictions_result.get(
                     "skipped",
                     0,
-                ) or 0
+                )
             )
 
             result["predictions"]["total"] = (
@@ -1047,6 +1169,10 @@ class FAJCycle:
             result["predictions"]["skipped_count"] = (
                 skipped
             )
+
+            # =================================================
+            # COMPLETED
+            # =================================================
 
             if (
                 status == "completed"
@@ -1068,6 +1194,10 @@ class FAJCycle:
 
                 return True
 
+            # =================================================
+            # NOTHING
+            # =================================================
+
             if status == "nothing_to_predict":
 
                 result["predictions"]["success"] = True
@@ -1081,6 +1211,10 @@ class FAJCycle:
                 )
 
                 return True
+
+            # =================================================
+            # PARTIAL
+            # =================================================
 
             if status == "completed_with_errors":
 
@@ -1106,6 +1240,10 @@ class FAJCycle:
                 )
 
                 return False
+
+            # =================================================
+            # UNKNOWN
+            # =================================================
 
             message = (
                 "❌ Неизвестный статус "
@@ -1197,6 +1335,7 @@ class FAJCycle:
                 "started": False,
                 "success": False,
                 "skipped": False,
+
                 "result": None,
 
                 "analyzed": 0,
@@ -1235,6 +1374,9 @@ class FAJCycle:
         status: str,
         message: str,
     ) -> None:
+        """
+        Добавляет диагностический шаг.
+        """
 
         step = {
             "section": section,
@@ -1250,6 +1392,7 @@ class FAJCycle:
         if section in result:
 
             if "steps" not in result[section]:
+
                 result[section]["steps"] = []
 
             result[section]["steps"].append(
@@ -1265,6 +1408,9 @@ class FAJCycle:
         result: Dict[str, Any],
         started: str,
     ) -> Dict[str, Any]:
+        """
+        Финализирует цикл.
+        """
 
         finished_at = _now()
 
@@ -1274,16 +1420,12 @@ class FAJCycle:
 
         try:
 
-            started_dt = (
-                datetime.fromisoformat(
-                    started
-                )
+            started_dt = datetime.fromisoformat(
+                started
             )
 
-            finished_dt = (
-                datetime.fromisoformat(
-                    finished_at
-                )
+            finished_dt = datetime.fromisoformat(
+                finished_at
             )
 
             result["elapsed_seconds"] = round(
@@ -1296,6 +1438,10 @@ class FAJCycle:
         except Exception:
 
             result["elapsed_seconds"] = None
+
+        # =====================================================
+        # READY
+        # =====================================================
 
         result["ready"] = (
             result["database"]["ok"]
@@ -1496,14 +1642,19 @@ def main() -> None:
 
     if errors:
 
-        print("\nErrors:")
+        print(
+            "\nErrors:"
+        )
 
         for error in errors:
+
             print(
                 f"  ❌ {error}"
             )
 
-    print("\nSections:")
+    print(
+        "\nSections:"
+    )
 
     for section in (
         "database",
@@ -1576,4 +1727,5 @@ def main() -> None:
 # ============================================================
 
 if __name__ == "__main__":
+
     main()
