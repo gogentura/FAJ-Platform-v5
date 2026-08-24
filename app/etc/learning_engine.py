@@ -9,7 +9,7 @@ ETC — Evolution Training Center
 app/etc/learning_engine.py
 ============================================================
 
-ETC LEARNING ENGINE v1.4
+ETC LEARNING ENGINE v1.5
 ============================================================
 
 НАЗНАЧЕНИЕ
@@ -30,6 +30,7 @@ ETCLearningEngine — исполнитель ETC.
       │
       ├── WAIT
       ├── READY
+      ├── UNKNOWN_LEAGUE
       └── ALREADY_PROCESSED
               │
               ▼
@@ -86,7 +87,8 @@ ETCLearningEngine отвечает только за:
     3. вызов StatisticalAnalyzer;
     4. передачу analysis memory в LearningMemory;
     5. создание batch_learning marker;
-    6. возврат строгого результата.
+    6. создание batch_fingerprint;
+    7. возврат строгого результата.
 
 
 КОНТРАКТ MATCH
@@ -146,14 +148,18 @@ ETCLearningEngine не переопределяет это решение.
 ПОЛНЫЙ BATCH
 ------------
 
-Полный batch считается completed только если:
+Batch считается completed только если:
 
     processed == total
     failed == 0
 
-Только после этого может быть записан:
+и, если BatchController предоставил fingerprint:
 
-    batch_fingerprint
+    batch_fingerprint успешно записан.
+
+Только после этого:
+
+    success = True
 
 
 APPEND ONLY
@@ -182,8 +188,6 @@ ETCLearningEngine:
 Также предоставляется:
 
     process_analysis()
-
-как совместимая публичная точка.
 
 Основной ETC-контракт:
 
@@ -217,7 +221,11 @@ from app.etc.statistical_analyzer import (
 logger = logging.getLogger(__name__)
 
 
-MODULE_VERSION = "1.4"
+# ============================================================
+# MODULE
+# ============================================================
+
+MODULE_VERSION = "1.5"
 MODULE_NAME = "FAJ ETC Learning Engine"
 
 PROCESSED_EVENT_TYPE = "batch_learning"
@@ -245,12 +253,14 @@ def _safe_int(
     """
 
     try:
+
         if value is None:
             return default
 
         return int(value)
 
     except (TypeError, ValueError):
+
         return default
 
 
@@ -349,7 +359,7 @@ class ETCLearningEngine:
         }
 
         # ----------------------------------------------------
-        # VALIDATE MATCH ID
+        # VALIDATE
         # ----------------------------------------------------
 
         if (
@@ -357,7 +367,9 @@ class ETCLearningEngine:
             or safe_match_id <= 0
         ):
 
-            base_result["status"] = "invalid_match_id"
+            base_result["status"] = (
+                "invalid_match_id"
+            )
 
             base_result["error"] = (
                 "Некорректный match_id."
@@ -387,6 +399,7 @@ class ETCLearningEngine:
                 )
 
                 base_result["success"] = True
+
                 base_result["status"] = (
                     "already_processed"
                 )
@@ -438,7 +451,7 @@ class ETCLearningEngine:
             return base_result
 
         # ----------------------------------------------------
-        # EMPTY ANALYSIS
+        # EMPTY
         # ----------------------------------------------------
 
         if not analysis:
@@ -455,7 +468,7 @@ class ETCLearningEngine:
             return base_result
 
         # ----------------------------------------------------
-        # ANALYSIS MUST BE DICT
+        # TYPE
         # ----------------------------------------------------
 
         if not isinstance(
@@ -477,7 +490,7 @@ class ETCLearningEngine:
         base_result["analysis"] = analysis
 
         # ----------------------------------------------------
-        # ANALYSIS FAILED
+        # ANALYSIS STATUS
         # ----------------------------------------------------
 
         if not analysis.get(
@@ -537,7 +550,7 @@ class ETCLearningEngine:
 
             return base_result
 
-        base_result["memory_ids"] = (
+        base_result["memory_ids"] = list(
             memory_ids
         )
 
@@ -590,9 +603,7 @@ class ETCLearningEngine:
 
             return base_result
 
-        base_result["marker_id"] = (
-            marker_id
-        )
+        base_result["marker_id"] = marker_id
 
         base_result["memory_ids"].append(
             marker_id
@@ -603,12 +614,15 @@ class ETCLearningEngine:
         # ----------------------------------------------------
 
         base_result["success"] = True
-        base_result["status"] = "processed"
+
+        base_result["status"] = (
+            "processed"
+        )
 
         logger.info(
             "ETC match SUCCESS | "
             "match_id=%s | "
-            "memory_events=%s | "
+            "analysis_events=%s | "
             "marker_id=%s",
             safe_match_id,
             len(memory_ids),
@@ -618,7 +632,7 @@ class ETCLearningEngine:
         return base_result
 
     # ========================================================
-    # PROCESS ANALYSIS — COMPATIBILITY API
+    # PROCESS ANALYSIS
     # ========================================================
 
     def process_analysis(
@@ -632,10 +646,13 @@ class ETCLearningEngine:
         Совместимая публичная точка обработки analysis.
 
         Если analysis не передан:
+
             process_match()
 
-        Если analysis уже передан:
-            StatisticalAnalyzer повторно НЕ вызывается.
+        Если analysis передан:
+
+            StatisticalAnalyzer
+            повторно НЕ вызывается.
         """
 
         safe_match_id = _safe_int(
@@ -652,6 +669,7 @@ class ETCLearningEngine:
                 "status": "invalid_match_id",
                 "match_id": safe_match_id,
                 "memory_ids": [],
+                "learning_events": 0,
                 "marker_id": None,
                 "error": (
                     "Некорректный match_id."
@@ -660,7 +678,7 @@ class ETCLearningEngine:
             }
 
         # ----------------------------------------------------
-        # NO ANALYSIS PROVIDED
+        # NO ANALYSIS
         # ----------------------------------------------------
 
         if analysis is None:
@@ -685,6 +703,7 @@ class ETCLearningEngine:
                     "match_id": safe_match_id,
                     "analysis": analysis,
                     "memory_ids": [],
+                    "learning_events": 0,
                     "marker_id": None,
                     "created_at": _now(),
                 }
@@ -699,6 +718,7 @@ class ETCLearningEngine:
                 "match_id": safe_match_id,
                 "analysis": analysis,
                 "memory_ids": [],
+                "learning_events": 0,
                 "marker_id": None,
                 "error": str(exc),
                 "created_at": _now(),
@@ -718,6 +738,7 @@ class ETCLearningEngine:
                 "status": "invalid_analysis",
                 "match_id": safe_match_id,
                 "memory_ids": [],
+                "learning_events": 0,
                 "marker_id": None,
                 "error": (
                     "analysis должен быть dict."
@@ -736,6 +757,7 @@ class ETCLearningEngine:
                 "match_id": safe_match_id,
                 "analysis": analysis,
                 "memory_ids": [],
+                "learning_events": 0,
                 "marker_id": None,
                 "error": (
                     analysis.get(
@@ -770,6 +792,7 @@ class ETCLearningEngine:
                 "match_id": safe_match_id,
                 "analysis": analysis,
                 "memory_ids": [],
+                "learning_events": 0,
                 "marker_id": None,
                 "error": str(exc),
                 "created_at": _now(),
@@ -795,6 +818,9 @@ class ETCLearningEngine:
                 "match_id": safe_match_id,
                 "analysis": analysis,
                 "memory_ids": memory_ids,
+                "learning_events": len(
+                    memory_ids
+                ),
                 "marker_id": None,
                 "error": str(exc),
                 "created_at": _now(),
@@ -808,6 +834,9 @@ class ETCLearningEngine:
                 "match_id": safe_match_id,
                 "analysis": analysis,
                 "memory_ids": memory_ids,
+                "learning_events": len(
+                    memory_ids
+                ),
                 "marker_id": None,
                 "error": (
                     "batch_learning marker "
@@ -826,6 +855,9 @@ class ETCLearningEngine:
             "match_id": safe_match_id,
             "analysis": analysis,
             "memory_ids": memory_ids,
+            "learning_events": len(
+                memory_ids
+            ) - 1,
             "marker_id": marker_id,
             "created_at": _now(),
         }
@@ -845,15 +877,7 @@ class ETCLearningEngine:
         """
         Запускает один ETC batch.
 
-        Официальный ETCController передаёт:
-
-            batch=[...]
-
-        В этом режиме BatchController повторно
-        НЕ вызывается.
-
-        Автоматический режим остаётся совместимым,
-        но основной архитектурный путь:
+        Официальный путь:
 
             ETCController
                 ↓
@@ -862,6 +886,9 @@ class ETCLearningEngine:
             get_learning_batch()
                 ↓
             ETCLearningEngine.run_batch(batch=...)
+
+        Если batch передан напрямую,
+        BatchController повторно не вызывается.
         """
 
         started_at = _now()
@@ -878,7 +905,7 @@ class ETCLearningEngine:
         )
 
         # ====================================================
-        # DIRECT / OFFICIAL BATCH
+        # DIRECT BATCH
         # ====================================================
 
         if batch is not None:
@@ -887,9 +914,27 @@ class ETCLearningEngine:
                 batch
             )
 
+            match_ids = []
+
+            for item in selected_batch:
+
+                extracted_id = (
+                    self._extract_match_id(
+                        item
+                    )
+                )
+
+                if extracted_id is not None:
+
+                    match_ids.append(
+                        extracted_id
+                    )
+
             batch_check = {
                 "status": "DIRECT",
+
                 "league": league,
+
                 "season_id": season_id,
 
                 "required_matches": len(
@@ -900,15 +945,7 @@ class ETCLearningEngine:
                     selected_batch
                 ),
 
-                "match_ids": [
-                    self._extract_match_id(
-                        item
-                    )
-                    for item in selected_batch
-                    if self._extract_match_id(
-                        item
-                    ) is not None
-                ],
+                "match_ids": match_ids,
 
                 "batch_fingerprint": None,
             }
@@ -924,18 +961,15 @@ class ETCLearningEngine:
                 return {
                     "success": False,
                     "status": "league_required",
-
                     "league": None,
                     "season_id": season_id,
-
                     "processed": 0,
                     "failed": 0,
                     "total": 0,
-
+                    "learning_events": 0,
                     "memory_ids": [],
                     "processed_match_ids": [],
                     "batch_memory_ids": [],
-
                     "errors": [
                         (
                             "Для автоматического ETC "
@@ -943,7 +977,6 @@ class ETCLearningEngine:
                             "league."
                         )
                     ],
-
                     "created_at": _now(),
                 }
 
@@ -967,28 +1000,60 @@ class ETCLearningEngine:
                     "status": (
                         "batch_controller_error"
                     ),
-
                     "league": league,
                     "season_id": season_id,
-
                     "processed": 0,
                     "failed": 0,
                     "total": 0,
-
+                    "learning_events": 0,
                     "memory_ids": [],
                     "processed_match_ids": [],
                     "batch_memory_ids": [],
+                    "errors": [str(exc)],
+                    "created_at": _now(),
+                }
 
+            # ------------------------------------------------
+            # CONTROLLER RESULT MUST BE DICT
+            # ------------------------------------------------
+
+            if not isinstance(
+                batch_check,
+                dict,
+            ):
+
+                return {
+                    "success": False,
+                    "status": (
+                        "invalid_batch_controller_result"
+                    ),
+                    "league": league,
+                    "season_id": season_id,
+                    "processed": 0,
+                    "failed": 0,
+                    "total": 0,
+                    "learning_events": 0,
+                    "memory_ids": [],
+                    "processed_match_ids": [],
+                    "batch_memory_ids": [],
                     "errors": [
-                        str(exc)
+                        (
+                            "BatchController.check() "
+                            "вернул не-dict."
+                        )
                     ],
-
                     "created_at": _now(),
                 }
 
             controller_status = (
-                batch_check.get("status")
+                batch_check.get(
+                    "status"
+                )
             )
+
+            # ------------------------------------------------
+            # CONTROLLER IS AUTHORITY
+            # ------------------------------------------------
 
             if controller_status != STATUS_READY:
 
@@ -998,30 +1063,28 @@ class ETCLearningEngine:
                         controller_status
                         or "WAIT"
                     ),
-
                     "league": (
                         batch_check.get(
                             "league",
                             league,
                         )
                     ),
-
                     "season_id": season_id,
-
                     "processed": 0,
                     "failed": 0,
                     "total": 0,
-
+                    "learning_events": 0,
                     "memory_ids": [],
                     "processed_match_ids": [],
                     "batch_memory_ids": [],
-
                     "batch_check": batch_check,
-
                     "errors": [],
-
                     "created_at": _now(),
                 }
+
+            # ------------------------------------------------
+            # GET LEARNING BATCH
+            # ------------------------------------------------
 
             try:
 
@@ -1044,24 +1107,17 @@ class ETCLearningEngine:
                     "status": (
                         "batch_selection_error"
                     ),
-
                     "league": league,
                     "season_id": season_id,
-
                     "processed": 0,
                     "failed": 0,
                     "total": 0,
-
+                    "learning_events": 0,
                     "memory_ids": [],
                     "processed_match_ids": [],
                     "batch_memory_ids": [],
-
                     "batch_check": batch_check,
-
-                    "errors": [
-                        str(exc)
-                    ],
-
+                    "errors": [str(exc)],
                     "created_at": _now(),
                 }
 
@@ -1074,22 +1130,17 @@ class ETCLearningEngine:
             return {
                 "success": True,
                 "status": "empty",
-
                 "league": league,
                 "season_id": season_id,
-
                 "processed": 0,
                 "failed": 0,
                 "total": 0,
-
+                "learning_events": 0,
                 "memory_ids": [],
                 "processed_match_ids": [],
                 "batch_memory_ids": [],
-
                 "batch_check": batch_check,
-
                 "errors": [],
-
                 "created_at": _now(),
             }
 
@@ -1108,27 +1159,22 @@ class ETCLearningEngine:
             return {
                 "success": False,
                 "status": "invalid_batch",
-
                 "league": league,
                 "season_id": season_id,
-
                 "processed": 0,
                 "failed": 0,
                 "total": 0,
-
+                "learning_events": 0,
                 "memory_ids": [],
                 "processed_match_ids": [],
                 "batch_memory_ids": [],
-
                 "batch_check": batch_check,
-
                 "errors": [
                     (
                         "Batch не содержит "
                         "валидных match_id."
                     )
                 ],
-
                 "created_at": _now(),
             }
 
@@ -1138,7 +1184,7 @@ class ETCLearningEngine:
 
         processed = 0
         failed = 0
-        learning_events = 0  # ← ДОБАВЛЕНО
+        learning_events = 0
 
         memory_ids: List[int] = []
 
@@ -1181,12 +1227,20 @@ class ETCLearningEngine:
 
             except Exception as exc:
 
+                logger.exception(
+                    "ETC batch unexpected "
+                    "match exception | "
+                    "match_id=%s",
+                    match_id,
+                )
+
                 match_result = {
                     "success": False,
                     "status": "exception",
                     "match_id": match_id,
                     "error": str(exc),
                     "memory_ids": [],
+                    "learning_events": 0,
                 }
 
             # ------------------------------------------------
@@ -1235,15 +1289,27 @@ class ETCLearningEngine:
             )
 
             # ------------------------------------------------
-            # АГРЕГАЦИЯ LEARNING_EVENTS
+            # LEARNING EVENTS
             # ------------------------------------------------
 
-            learning_events += int(
-                match_result.get(
-                    "learning_events",
+            match_learning_events = (
+                _safe_int(
+                    match_result.get(
+                        "learning_events",
+                        0,
+                    ),
                     0,
                 )
+                or 0
             )
+
+            learning_events += (
+                match_learning_events
+            )
+
+            # ------------------------------------------------
+            # MEMORY IDS
+            # ------------------------------------------------
 
             result_memory_ids = (
                 match_result.get(
@@ -1261,8 +1327,14 @@ class ETCLearningEngine:
                     result_memory_ids
                 )
 
+            # ------------------------------------------------
+            # ALREADY PROCESSED LOG
+            # ------------------------------------------------
+
             if (
-                match_result.get("status")
+                match_result.get(
+                    "status"
+                )
                 == "already_processed"
             ):
 
@@ -1286,31 +1358,34 @@ class ETCLearningEngine:
             and failed == 0
         )
 
-        if batch_completed:
-
-            status = "completed"
-
-        elif processed > 0:
-
-            status = "partial"
-
-        else:
-
-            status = "failed"
-
         # ====================================================
         # BATCH FINGERPRINT
         # ====================================================
 
         batch_memory_ids: List[int] = []
 
-        if batch_completed:
+        fingerprint = None
+
+        if isinstance(
+            batch_check,
+            dict,
+        ):
 
             fingerprint = (
                 batch_check.get(
                     "batch_fingerprint"
                 )
             )
+
+        # ----------------------------------------------------
+        # FINGERPRINT IS PART OF COMPLETION
+        # ----------------------------------------------------
+
+        if batch_completed:
+
+            # ------------------------------------------------
+            # DIRECT BATCH WITHOUT FINGERPRINT
+            # ------------------------------------------------
 
             if fingerprint:
 
@@ -1324,6 +1399,8 @@ class ETCLearningEngine:
 
                 if fingerprint_id is None:
 
+                    batch_completed = False
+
                     errors.append(
                         {
                             "match_id": None,
@@ -1331,14 +1408,16 @@ class ETCLearningEngine:
                                 "batch_fingerprint"
                             ),
                             "error": (
-                                "Не удалось записать "
-                                "batch fingerprint."
+                                "Batch обработан, "
+                                "но batch fingerprint "
+                                "не удалось записать."
                             ),
                         }
                     )
 
                     logger.error(
-                        "ETC batch fingerprint "
+                        "ETC batch completion "
+                        "BLOCKED | fingerprint "
                         "was not recorded"
                     )
 
@@ -1352,12 +1431,40 @@ class ETCLearningEngine:
                         fingerprint_id
                     )
 
+            else:
+
+                logger.info(
+                    "ETC batch fingerprint "
+                    "not supplied | "
+                    "batch=%s | "
+                    "completion accepted",
+                    league,
+                )
+
+        # ====================================================
+        # FINAL STATUS
+        # ====================================================
+
+        if batch_completed:
+
+            status = "completed"
+
+        elif processed > 0:
+
+            status = "partial"
+
+        else:
+
+            status = "failed"
+
         # ====================================================
         # FINAL RESULT
         # ====================================================
 
         result = {
-            "success": batch_completed,
+            "success": (
+                batch_completed
+            ),
 
             "status": status,
 
@@ -1371,7 +1478,9 @@ class ETCLearningEngine:
 
             "total": total,
 
-            "learning_events": learning_events,  # ← ДОБАВЛЕНО
+            "learning_events": (
+                learning_events
+            ),
 
             "processed_match_ids": (
                 processed_match_ids
@@ -1391,6 +1500,8 @@ class ETCLearningEngine:
 
             "errors": errors,
 
+            "started_at": started_at,
+
             "created_at": _now(),
         }
 
@@ -1399,12 +1510,14 @@ class ETCLearningEngine:
             "status=%s | "
             "processed=%s/%s | "
             "failed=%s | "
-            "learning_events=%s",
+            "learning_events=%s | "
+            "batch_memory_events=%s",
             status,
             processed,
             total,
             failed,
-            learning_events,  # ← ДОБАВЛЕНО
+            learning_events,
+            len(batch_memory_ids),
         )
 
         logger.info(
@@ -1449,6 +1562,7 @@ class ETCLearningEngine:
                 item,
                 dict,
             ):
+
                 continue
 
             match_id = (
@@ -1459,9 +1573,11 @@ class ETCLearningEngine:
             )
 
             if match_id is None:
+
                 continue
 
             if match_id in seen:
+
                 continue
 
             seen.add(
@@ -1499,6 +1615,7 @@ class ETCLearningEngine:
         """
 
         if item is None:
+
             return None
 
         if isinstance(
@@ -1696,21 +1813,28 @@ class ETCLearningEngine:
         Сохраняет memory_events,
         сформированные StatisticalAnalyzer.
 
-        Если хотя бы один обязательный
-        memory event не записан —
-        исключение.
+        Если memory_events присутствуют,
+        каждый event обязан быть успешно записан.
 
-        batch_learning marker в таком случае
-        НЕ создаётся.
+        batch_learning marker создаётся только
+        после успешного завершения этого метода.
         """
 
         events = analysis.get(
             "memory_events"
         )
 
+        # ----------------------------------------------------
+        # NO MEMORY EVENTS
+        # ----------------------------------------------------
+
         if events is None:
 
             return []
+
+        # ----------------------------------------------------
+        # NORMALIZE
+        # ----------------------------------------------------
 
         if not isinstance(
             events,
@@ -1722,6 +1846,10 @@ class ETCLearningEngine:
             ]
 
         memory_ids: List[int] = []
+
+        # ----------------------------------------------------
+        # WRITE EVENTS
+        # ----------------------------------------------------
 
         for index, event in enumerate(
             events
@@ -1835,12 +1963,15 @@ class ETCLearningEngine:
         fingerprint: str,
     ) -> Optional[int]:
         """
-        Записывает диагностический fingerprint
-        полностью завершённого batch.
+        Записывает fingerprint полностью
+        завершённого batch.
 
         Это НЕ marker отдельного матча.
 
             reference_id = None
+
+        Запись выполняется только через
+        LearningMemory.record().
         """
 
         if not fingerprint:
@@ -1893,7 +2024,11 @@ class ETCLearningEngine:
 
             if memory_id is None:
 
-                return None
+                raise RuntimeError(
+                    "LearningMemory.record() "
+                    "не вернул memory_id "
+                    "для batch fingerprint."
+                )
 
             return int(
                 memory_id
@@ -1922,6 +2057,7 @@ class ETCLearningEngine:
 
         return {
             "module": MODULE_NAME,
+
             "version": MODULE_VERSION,
 
             "database": (
@@ -1977,6 +2113,18 @@ class ETCLearningEngine:
             ),
 
             "predictions_modified": (
+                False
+            ),
+
+            "calendar_modified": (
+                False
+            ),
+
+            "delete_operations": (
+                False
+            ),
+
+            "drop_operations": (
                 False
             ),
 
@@ -2051,10 +2199,23 @@ if __name__ == "__main__":
     )
 
     print("=" * 70)
-    print("FAJ Platform v12.1")
-    print("ETC — Evolution Training Center")
-    print("Learning Engine")
-    print(f"Version: {MODULE_VERSION}")
+
+    print(
+        "FAJ Platform v12.1"
+    )
+
+    print(
+        "ETC — Evolution Training Center"
+    )
+
+    print(
+        "Learning Engine"
+    )
+
+    print(
+        f"Version: {MODULE_VERSION}"
+    )
+
     print("=" * 70)
 
     try:
@@ -2064,7 +2225,10 @@ if __name__ == "__main__":
         status = engine.status()
 
         print()
-        print("ETC LEARNING ENGINE STATUS")
+        print(
+            "ETC LEARNING ENGINE STATUS"
+        )
+
         print("-" * 70)
 
         for key, value in status.items():
@@ -2074,6 +2238,7 @@ if __name__ == "__main__":
             )
 
         print()
+
         print(
             "ETCLearningEngine готов."
         )
@@ -2091,6 +2256,7 @@ if __name__ == "__main__":
         )
 
         print()
+
         print(
             "Основной контракт:"
         )
@@ -2102,19 +2268,53 @@ if __name__ == "__main__":
         )
 
         print()
+
         print(
-            "batch_learning создаётся "
-            "только после успешного анализа "
-            "и успешной записи memory."
+            "Для каждого нового матча:"
+        )
+
+        print(
+            "StatisticalAnalyzer → "
+            "analysis memory → "
+            "batch_learning marker"
         )
 
         print()
+
+        print(
+            "Полный batch:"
+        )
+
+        print(
+            "processed == total"
+        )
+
+        print(
+            "failed == 0"
+        )
+
+        print(
+            "и fingerprint записан, "
+            "если он предоставлен controller."
+        )
+
+        print()
+
+        print(
+            "batch_learning создаётся "
+            "только после успешного анализа "
+            "и успешной записи analysis memory."
+        )
+
+        print()
+
         print(
             "process_analysis() доступен "
             "как compatibility API."
         )
 
         print()
+
         print(
             "database.py НЕ изменяется."
         )
