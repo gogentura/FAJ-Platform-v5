@@ -35,27 +35,21 @@ BatchController НЕ записывает learning_memory.
 BatchController НЕ изменяет БД.
 
 ============================================================
-
-ОТВЕТСТВЕННОСТЬ
----------------
-
-BatchController отвечает только за:
-
-    1. размер batch;
-    2. поиск завершённых матчей;
-    3. чтение processed markers;
-    4. исключение уже обработанных матчей;
-    5. выбор следующего batch;
-    6. создание fingerprint;
-    7. решение READY / WAIT /
-       UNKNOWN_LEAGUE / ALREADY_PROCESSED;
-    8. совместимый API create_batch();
-    9. совместимый API mark_processed().
-
+ПУБЛИЧНЫЙ КОНТРАКТ
 ============================================================
 
-АРХИТЕКТУРНЫЙ КОНТРАК
-----------------------
+Разрешены только:
+
+    check()
+
+    get_learning_batch()
+
+Других публичных API BatchController
+для ETC-контракта нет.
+
+============================================================
+АРХИТЕКТУРНЫЙ КОНТРАКТ
+============================================================
 
 MATCH
   ↓
@@ -78,23 +72,21 @@ batch_learning marker
 следующий ETC batch
 
 ============================================================
-
 ВАЖНО
-------
+============================================================
 
 BatchController НЕ создаёт:
 
     event_type = 'batch_learning'
 
-Этот marker создаётся только после успешной
-обработки матча через ETCLearningEngine.
+Этот marker создаётся только после успешного
+обучения через ETCLearningEngine.
 
-BatchController только читает его.
+BatchController только читает marker.
 
 ============================================================
-
 DATABASE CONTRACT
------------------
+============================================================
 
 database.py v12.1 — единственный источник схемы.
 
@@ -108,31 +100,66 @@ database.py v12.1 — единственный источник схемы.
 
 Никаких:
 
-    DELETE
-    DROP
     INSERT
     UPDATE
+    DELETE
+    DROP
 
 ============================================================
+PROCESSED CONTRACT
+============================================================
 
+Единственный canonical processed marker:
+
+    learning_memory.event_type = 'batch_learning'
+
+Идентификатор матча:
+
+    learning_memory.reference_id = match_id
+
+Поле:
+
+    object
+
+НЕ используется.
+
+Fallback:
+
+    object = 'match:<id>'
+
+полностью запрещён.
+
+============================================================
+BATCH RULES
+============================================================
+
+РПЛ       → 5
+АПЛ       → 3
+Ла Лига   → 3
+ЛЧ        → 2
+
+============================================================
 FORCE
------
+============================================================
 
-force=False:
+BatchController не реализует force.
 
-    запускается только полный batch.
+Почему:
 
-force=True:
+    force — это orchestration policy,
 
-    разрешается обработать доступный неполный batch.
+а не правило выбора нормального ETC batch.
 
-НО:
+Неполный batch не является READY.
 
-    force НЕ отменяет processed marker.
+============================================================
+READ ONLY
+============================================================
 
-Уже обработанный матч никогда не возвращается
-в новый batch только из-за force=True.
+Все операции BatchController используют только SELECT
+через существующий FAJDatabase API.
 
+Никаких изменений базы данных.
 ============================================================
 """
 
@@ -151,7 +178,11 @@ from app.database import FAJDatabase
 logger = logging.getLogger(__name__)
 
 
-MODULE_VERSION = "1.2"
+# ============================================================
+# MODULE
+# ============================================================
+
+MODULE_VERSION = "1.3"
 MODULE_NAME = "ETC Batch Controller"
 
 
@@ -231,14 +262,14 @@ STATUS_ALREADY_PROCESSED = "ALREADY_PROCESSED"
 
 
 # ============================================================
-# ETC MEMORY CONTRACT
+# LEARNING MEMORY CONTRACT
 # ============================================================
 
 PROCESSED_EVENT_TYPE = "batch_learning"
 
 
 # ============================================================
-# HELPERS
+# INTERNAL HELPERS
 # ============================================================
 
 def _now() -> str:
@@ -254,7 +285,7 @@ def _safe_int(
     default: int = 0,
 ) -> int:
     """
-    Безопасное преобразование в int.
+    Безопасное преобразование значения в int.
     """
 
     try:
@@ -287,14 +318,6 @@ def _normalize_league(
 ) -> str:
     """
     Нормализует название турнира.
-
-    Например:
-
-        rpl
-        Russia Premier League
-        РПЛ
-
-    → РПЛ
     """
 
     if league is None:
@@ -326,16 +349,14 @@ class BatchController:
     """
     Контроллер ETC batch.
 
-    НЕ выполняет обучение.
+    ПУБЛИЧНЫЕ МЕТОДЫ:
 
-    НЕ пишет learning_memory.
+        check()
+        get_learning_batch()
 
-    Только определяет:
+    Всё остальное — внутренние implementation details.
 
-        можно ли запускать ETC;
-
-        какие матчи входят
-        в текущий batch.
+    Контроллер строго READ ONLY.
     """
 
     def __init__(
@@ -346,32 +367,7 @@ class BatchController:
         self.db = db or FAJDatabase()
 
     # ========================================================
-    # BATCH SIZE
-    # ========================================================
-
-    def get_batch_size(
-        self,
-        league: str,
-    ) -> int:
-        """
-        Возвращает требуемый размер batch.
-
-        Неизвестный турнир:
-
-            0
-        """
-
-        normalized = _normalize_league(
-            league
-        )
-
-        return BATCH_RULES.get(
-            normalized,
-            0,
-        )
-
-    # ========================================================
-    # CHECK
+    # PUBLIC API
     # ========================================================
 
     def check(
@@ -380,7 +376,7 @@ class BatchController:
         season_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
-        Проверяет готовность турнира к ETC.
+        Проверяет готовность следующего ETC batch.
 
         Возможные состояния:
 
@@ -390,6 +386,13 @@ class BatchController:
             ALREADY_PROCESSED
 
         Ничего в БД не изменяет.
+
+        ВАЖНО:
+
+        check() только проверяет состояние.
+
+        Он НЕ выполняет обучение.
+        Он НЕ создаёт marker.
         """
 
         normalized_league = _normalize_league(
@@ -448,7 +451,7 @@ class BatchController:
             return result
 
         # ----------------------------------------------------
-        # COMPLETED MATCHES
+        # READ COMPLETED MATCHES
         # ----------------------------------------------------
 
         completed = (
@@ -476,14 +479,11 @@ class BatchController:
             return result
 
         # ----------------------------------------------------
-        # PROCESSED
+        # READ PROCESSED MARKERS
         # ----------------------------------------------------
 
         processed_ids = (
-            self._get_processed_match_ids(
-                league=normalized_league,
-                season_id=season_id,
-            )
+            self._get_processed_match_ids()
         )
 
         result["processed_matches"] = len(
@@ -491,35 +491,26 @@ class BatchController:
         )
 
         # ----------------------------------------------------
-        # NEW
+        # FIND NEW MATCHES
         # ----------------------------------------------------
 
-        new_matches: List[
-            Dict[str, Any]
-        ] = []
-
-        for match in completed:
-
-            match_id = _safe_int(
+        new_matches = [
+            match
+            for match in completed
+            if _safe_int(
                 match.get("id")
-            )
-
-            if match_id <= 0:
-                continue
-
-            if match_id in processed_ids:
-                continue
-
-            new_matches.append(
-                match
-            )
+            ) > 0
+            and _safe_int(
+                match.get("id")
+            ) not in processed_ids
+        ]
 
         result["new_matches"] = len(
             new_matches
         )
 
         # ----------------------------------------------------
-        # NO NEW MATCHES
+        # NOTHING NEW
         # ----------------------------------------------------
 
         if not new_matches:
@@ -538,7 +529,7 @@ class BatchController:
             return result
 
         # ----------------------------------------------------
-        # NOT ENOUGH
+        # NOT ENOUGH FOR FULL BATCH
         # ----------------------------------------------------
 
         if len(new_matches) < required:
@@ -609,137 +600,73 @@ class BatchController:
         return result
 
     # ========================================================
-    # CREATE BATCH
-    # ========================================================
 
-    def create_batch(
+    def get_learning_batch(
         self,
-        limit: Optional[int] = None,
-        force: bool = False,
-        league: Optional[str] = None,
+        league: str,
         season_id: Optional[int] = None,
+        limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Совместимый контракт ETCController.
+        Возвращает следующий готовый ETC batch.
 
         ВАЖНО:
 
-        Если league не передан, BatchController пытается
-        определить единственный доступный турнир.
+        Метод НЕ вызывает check().
 
-        Однако основной ETC-контракт может передавать
-        league/season_id явно.
+        Все данные читаются один раз:
 
-        force=True:
+            matches
+            ↓
+            match_results
+            ↓
+            learning_memory
+            ↓
+            фильтрация
+            ↓
+            сортировка
+            ↓
+            limit
+            ↓
+            batch
 
-            разрешает неполный batch.
+        Это исключает двойной проход:
 
-        force НЕ:
+            check()
+                +
+            повторное чтение matches.
 
-            возвращает уже обработанные матчи.
+        Неполный обычный batch НЕ возвращается.
+
+        Если limit задан:
+
+            limit является только верхней границей
+            возвращаемого batch.
+
+        Основное правило турнира сохраняется.
+
+        Например:
+
+            РПЛ = 5
+
+        limit=3
+
+            максимум 3 матча.
+
+        limit=10
+
+            максимум 5 матчей.
         """
 
-        if league:
-
-            normalized_league = (
-                _normalize_league(
-                    league
-                )
-            )
-
-            return self._create_batch_for_league(
-                league=normalized_league,
-                season_id=season_id,
-                limit=limit,
-                force=force,
-            )
-
-        # ----------------------------------------------------
-        # Автоматический режим.
-        #
-        # Используем известные турниры.
-        # Берём первый READY.
-        #
-        # Это не меняет БД.
-        # ----------------------------------------------------
-
-        for known_league in BATCH_RULES:
-
-            selected = (
-                self._create_batch_for_league(
-                    league=known_league,
-                    season_id=season_id,
-                    limit=limit,
-                    force=force,
-                )
-            )
-
-            if selected:
-
-                return selected
-
-        return []
-
-    # ========================================================
-    # CREATE BATCH — INTERNAL
-    # ========================================================
-
-    def _create_batch_for_league(
-        self,
-        league: str,
-        season_id: Optional[int],
-        limit: Optional[int],
-        force: bool,
-    ) -> List[Dict[str, Any]]:
-        """
-        Формирует batch конкретного турнира.
-        """
-
-        required = self.get_batch_size(
+        normalized_league = _normalize_league(
             league
         )
 
+        required = self.get_batch_size(
+            normalized_league
+        )
+
         if required <= 0:
-            return []
-
-        completed = (
-            self._get_finished_matches(
-                league=league,
-                season_id=season_id,
-            )
-        )
-
-        if not completed:
-            return []
-
-        processed_ids = (
-            self._get_processed_match_ids(
-                league=league,
-                season_id=season_id,
-            )
-        )
-
-        new_matches: List[
-            Dict[str, Any]
-        ] = []
-
-        for match in completed:
-
-            match_id = _safe_int(
-                match.get("id")
-            )
-
-            if match_id <= 0:
-                continue
-
-            if match_id in processed_ids:
-                continue
-
-            new_matches.append(
-                match
-            )
-
-        if not new_matches:
             return []
 
         # ----------------------------------------------------
@@ -758,227 +685,114 @@ class BatchController:
                 return []
 
             target_size = min(
-                target_size,
+                required,
                 safe_limit,
             )
 
         # ----------------------------------------------------
-        # NORMAL MODE
+        # READ COMPLETED MATCHES
         # ----------------------------------------------------
 
-        if not force:
+        completed = (
+            self._get_finished_matches(
+                league=normalized_league,
+                season_id=season_id,
+            )
+        )
 
-            if len(new_matches) < target_size:
-
-                return []
+        if not completed:
+            return []
 
         # ----------------------------------------------------
-        # FORCE MODE
+        # READ PROCESSED MARKERS
+        # ----------------------------------------------------
+
+        processed_ids = (
+            self._get_processed_match_ids()
+        )
+
+        # ----------------------------------------------------
+        # FILTER NEW
+        # ----------------------------------------------------
+
+        new_matches = [
+            match
+            for match in completed
+            if _safe_int(
+                match.get("id")
+            ) > 0
+            and _safe_int(
+                match.get("id")
+            ) not in processed_ids
+        ]
+
+        # ----------------------------------------------------
+        # FULL BATCH READINESS
+        # ----------------------------------------------------
+
+        if len(new_matches) < required:
+
+            logger.info(
+                "ETC batch WAIT | "
+                "league=%s | season=%s | "
+                "available=%s | required=%s",
+                normalized_league,
+                season_id,
+                len(new_matches),
+                required,
+            )
+
+            return []
+
+        # ----------------------------------------------------
+        # DIRECT SELECTION
         # ----------------------------------------------------
 
         selected = new_matches[
             :target_size
         ]
 
-        if not selected:
-            return []
-
         logger.info(
-            "ETC batch created | "
+            "ETC learning batch selected | "
             "league=%s | season=%s | "
-            "size=%s | required=%s | force=%s",
-            league,
+            "size=%s | required=%s | limit=%s",
+            normalized_league,
             season_id,
             len(selected),
             required,
-            force,
+            limit,
         )
 
         return selected
 
     # ========================================================
-    # GET LEARNING BATCH
+    # INTERNAL — BATCH SIZE
     # ========================================================
 
-    def get_learning_batch(
+    def get_batch_size(
         self,
         league: str,
-        season_id: Optional[int] = None,
-        limit: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
-        """
-        Официальный контракт LearningEngine.
-
-        Возвращает только READY batch.
-
-        Если batch не готов:
-
-            []
-
-        Этот метод НЕ использует force.
-        """
-
-        check = self.check(
-            league=league,
-            season_id=season_id,
-        )
-
-        if check.get("status") != STATUS_READY:
-
-            return []
-
-        required = _safe_int(
-            check.get(
-                "required_matches"
-            )
-        )
-
-        if required <= 0:
-            return []
-
-        if limit is not None:
-
-            safe_limit = _safe_int(
-                limit
-            )
-
-            if safe_limit <= 0:
-                return []
-
-            required = min(
-                required,
-                safe_limit,
-            )
-
-        match_ids = check.get(
-            "match_ids",
-            [],
-        )
-
-        if not match_ids:
-            return []
-
-        selected_ids = {
-            _safe_int(match_id)
-            for match_id in match_ids
-        }
-
-        matches = (
-            self._get_finished_matches(
-                league=_normalize_league(
-                    league
-                ),
-                season_id=season_id,
-            )
-        )
-
-        selected: List[
-            Dict[str, Any]
-        ] = []
-
-        for match in matches:
-
-            match_id = _safe_int(
-                match.get("id")
-            )
-
-            if match_id not in selected_ids:
-                continue
-
-            selected.append(
-                match
-            )
-
-            if len(selected) >= required:
-                break
-
-        return selected
-
-    # ========================================================
-    # SELECT BATCH
-    # ========================================================
-
-    def select_batch(
-        self,
-        league: str,
-        season_id: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
-        """
-        Compatibility API.
-        """
-
-        return self.get_learning_batch(
-            league=league,
-            season_id=season_id,
-        )
-
-    # ========================================================
-    # MARK PROCESSED
-    # ========================================================
-
-    def mark_processed(
-        self,
-        items: List[Any],
     ) -> int:
         """
-        Совместимый API ETCController.
+        Внутреннее получение размера batch.
 
-        КРИТИЧЕСКОЕ ПРАВИЛО:
+        Метод технически публично доступен Python,
+        но не является ETC API.
 
-        BatchController НЕ пишет learning_memory.
-
-        Поэтому этот метод НЕ создаёт marker.
-
-        Marker уже должен быть создан
-        ETCLearningEngine после успешной обработки.
-
-        Метод только проверяет, сколько переданных
-        матчей действительно имеют processed marker.
-
-        Это позволяет ETCController использовать:
-
-            mark_processed(successful_items)
-
-        без двойной записи в learning_memory.
-
-        Возвращается количество матчей,
-        подтверждённых memory marker.
-
-        Никаких изменений БД.
+        Используется только самим контроллером.
         """
 
-        if not items:
-            return 0
-
-        processed_count = 0
-
-        for item in items:
-
-            match_id = (
-                self._extract_match_id(
-                    item
-                )
-            )
-
-            if match_id is None:
-                continue
-
-            if self._has_processed_marker(
-                match_id
-            ):
-                processed_count += 1
-
-        logger.info(
-            "ETC mark_processed verification | "
-            "requested=%s | confirmed=%s",
-            len(items),
-            processed_count,
+        normalized = _normalize_league(
+            league
         )
 
-        return processed_count
+        return BATCH_RULES.get(
+            normalized,
+            0,
+        )
 
     # ========================================================
-    # FINISHED MATCHES
+    # INTERNAL — FINISHED MATCHES
     # ========================================================
 
     def _get_finished_matches(
@@ -996,10 +810,6 @@ class BatchController:
         Источник факта:
 
             match_results
-
-        Фактический счёт читается через:
-
-            FAJDatabase.get_match_result()
 
         Никаких изменений БД.
         """
@@ -1078,8 +888,9 @@ class BatchController:
             )
 
             # ------------------------------------------------
-            # 0 — валидный счёт.
-            # None — факта нет.
+            # 0:0 является валидным результатом.
+            #
+            # None означает отсутствие факта.
             # ------------------------------------------------
 
             if (
@@ -1106,13 +917,19 @@ class BatchController:
 
         # ----------------------------------------------------
         # ДЕТЕРМИНИРОВАННЫЙ ПОРЯДОК
+        #
+        # ТОЛЬКО:
+        #
+        #     match_date
+        #     match_id
+        #
+        # Никаких date fallback.
         # ----------------------------------------------------
 
         finished.sort(
             key=lambda item: (
                 _safe_string(
-                    item.get("date")
-                    or item.get("match_date")
+                    item.get("match_date")
                 ),
                 _safe_int(
                     item.get("id")
@@ -1123,7 +940,7 @@ class BatchController:
         return finished
 
     # ========================================================
-    # LEAGUE / SEASON
+    # INTERNAL — LEAGUE / SEASON
     # ========================================================
 
     def _match_belongs_to_league(
@@ -1133,13 +950,15 @@ class BatchController:
         season_id: Optional[int],
     ) -> bool:
         """
-        Проверяет турнир и сезон.
+        Проверяет принадлежность матча
+        турниру и сезону.
 
         Если season_id указан,
-        отсутствие season_id у матча означает
-        НЕ принадлежит сезону.
+        отсутствие season_id у матча означает:
 
-        Это предотвращает смешивание сезонов.
+            матч НЕ принадлежит сезону.
+
+        Это запрещает смешивание сезонов.
         """
 
         normalized_league = (
@@ -1165,7 +984,6 @@ class BatchController:
                 )
 
             if possible_season is None:
-
                 return False
 
             if _safe_int(
@@ -1227,7 +1045,6 @@ class BatchController:
         # ----------------------------------------------------
 
         if not normalized_values:
-
             return False
 
         return (
@@ -1236,34 +1053,25 @@ class BatchController:
         )
 
     # ========================================================
-    # PROCESSED MATCH IDS
+    # INTERNAL — PROCESSED MARKERS
     # ========================================================
 
     def _get_processed_match_ids(
         self,
-        league: str,
-        season_id: Optional[int],
     ) -> Set[int]:
         """
-        Читает обработанные матчи из learning_memory.
+        Читает processed markers из learning_memory.
 
-        Контракт:
+        CANONICAL CONTRACT:
 
             event_type = 'batch_learning'
             reference_id = match_id
 
-        Дополнительный fallback:
+        Поле object НЕ используется.
 
-            object = 'match:<id>'
+        Fallback object=match:<id> отсутствует.
 
-        ВАЖНО:
-
-        Фильтрация league/season здесь НЕ производится
-        по memory, потому что canonical processed identity
-        — это match_id.
-
-        При этом сами кандидаты уже отфильтрованы
-        по league/season в _get_finished_matches().
+        Метод только читает БД.
         """
 
         processed: Set[int] = set()
@@ -1278,10 +1086,7 @@ class BatchController:
 
                 cursor.execute(
                     """
-                    SELECT
-                        event_type,
-                        object,
-                        reference_id
+                    SELECT reference_id
                     FROM learning_memory
                     WHERE event_type = ?
                     ORDER BY id ASC
@@ -1309,14 +1114,9 @@ class BatchController:
 
         for row in rows:
 
-            # ------------------------------------------------
-            # reference_id — canonical marker
-            # ------------------------------------------------
-
             reference_id = (
-                self._row_value(
-                    row,
-                    "reference_id",
+                self._row_reference_id(
+                    row
                 )
             )
 
@@ -1330,285 +1130,69 @@ class BatchController:
                     match_id
                 )
 
-                continue
-
-            # ------------------------------------------------
-            # fallback object=match:<id>
-            # ------------------------------------------------
-
-            object_value = (
-                self._row_value(
-                    row,
-                    "object",
-                )
-            )
-
-            object_value = _safe_string(
-                object_value
-            )
-
-            if object_value.startswith(
-                "match:"
-            ):
-
-                match_id = _safe_int(
-                    object_value[
-                        len("match:"):
-                    ]
-                )
-
-                if match_id > 0:
-
-                    processed.add(
-                        match_id
-                    )
-
         return processed
 
     # ========================================================
-    # HAS MARKER
-    # ========================================================
-
-    def _has_processed_marker(
-        self,
-        match_id: int,
-    ) -> bool:
-        """
-        Проверяет один processed marker.
-
-        Только SELECT.
-        """
-
-        try:
-
-            conn = self.db.get_connection()
-
-            try:
-
-                cursor = conn.cursor()
-
-                cursor.execute(
-                    """
-                    SELECT id
-                    FROM learning_memory
-                    WHERE event_type = ?
-                      AND reference_id = ?
-                    ORDER BY id ASC
-                    LIMIT 1
-                    """,
-                    (
-                        PROCESSED_EVENT_TYPE,
-                        match_id,
-                    ),
-                )
-
-                row = cursor.fetchone()
-
-                return row is not None
-
-            finally:
-
-                conn.close()
-
-        except Exception as exc:
-
-            logger.warning(
-                "Unable to verify processed "
-                "marker | match_id=%s | error=%s",
-                match_id,
-                exc,
-            )
-
-            return False
-
-    # ========================================================
-    # ROW VALUE
+    # INTERNAL — ROW REFERENCE ID
     # ========================================================
 
     @staticmethod
-    def _row_value(
+    def _row_reference_id(
         row: Any,
-        key: str,
     ) -> Any:
         """
-        Унифицированное чтение sqlite3.Row,
+        Извлекает reference_id из sqlite3.Row,
         dict или tuple-like результата.
+
+        SELECT содержит только reference_id,
+        поэтому tuple fallback использует индекс 0.
         """
 
         if row is None:
             return None
-
-        # dict
-        if isinstance(
-            row,
-            dict,
-        ):
-
-            return row.get(
-                key
-            )
-
-        # sqlite3.Row / mapping-like
-        try:
-
-            return row[key]
-
-        except Exception:
-            pass
-
-        # fallback tuple
-        if isinstance(
-            row,
-            (tuple, list),
-        ):
-
-            mapping = {
-                0: "event_type",
-                1: "object",
-                2: "reference_id",
-            }
-
-            index = None
-
-            for idx, name in mapping.items():
-
-                if name == key:
-
-                    index = idx
-                    break
-
-            if (
-                index is not None
-                and index < len(row)
-            ):
-
-                return row[index]
-
-        return None
-
-    # ========================================================
-    # MATCH ID
-    # ========================================================
-
-    @staticmethod
-    def _extract_match_id(
-        item: Any,
-    ) -> Optional[int]:
-        """
-        Унифицированное извлечение match_id.
-
-        Поддерживаются:
-
-            int
-            dict
-            sqlite3.Row / Mapping
-            object.match_id
-            object.id
-        """
-
-        if item is None:
-            return None
-
-        # ----------------------------------------------------
-        # INT
-        # ----------------------------------------------------
-
-        if isinstance(
-            item,
-            int,
-        ):
-
-            return (
-                item
-                if item > 0
-                else None
-            )
 
         # ----------------------------------------------------
         # DICT
         # ----------------------------------------------------
 
         if isinstance(
-            item,
+            row,
             dict,
         ):
 
-            value = item.get(
-                "match_id"
-            )
-
-            if value is None:
-
-                value = item.get(
-                    "id"
-                )
-
-            normalized = _safe_int(
-                value
-            )
-
-            return (
-                normalized
-                if normalized > 0
-                else None
+            return row.get(
+                "reference_id"
             )
 
         # ----------------------------------------------------
-        # MAPPING / SQLITE ROW
+        # SQLITE ROW / MAPPING
         # ----------------------------------------------------
 
-        for key in (
-            "match_id",
-            "id",
+        try:
+
+            return row[
+                "reference_id"
+            ]
+
+        except Exception:
+            pass
+
+        # ----------------------------------------------------
+        # TUPLE
+        # ----------------------------------------------------
+
+        if isinstance(
+            row,
+            (tuple, list),
         ):
 
-            try:
-
-                value = item[key]
-
-                normalized = _safe_int(
-                    value
-                )
-
-                if normalized > 0:
-
-                    return normalized
-
-            except Exception:
-                pass
-
-        # ----------------------------------------------------
-        # OBJECT ATTRIBUTE
-        # ----------------------------------------------------
-
-        for attribute in (
-            "match_id",
-            "id",
-        ):
-
-            try:
-
-                value = getattr(
-                    item,
-                    attribute,
-                    None,
-                )
-
-                normalized = _safe_int(
-                    value
-                )
-
-                if normalized > 0:
-
-                    return normalized
-
-            except Exception:
-                pass
+            if len(row) > 0:
+                return row[0]
 
         return None
 
     # ========================================================
-    # FINGERPRINT
+    # INTERNAL — FINGERPRINT
     # ========================================================
 
     @staticmethod
@@ -1629,7 +1213,8 @@ class BatchController:
             result_home_goals
             result_away_goals
 
-        Fingerprint не строится по всему турниру.
+        Fingerprint относится только
+        к выбранному batch.
         """
 
         rows: List[
@@ -1688,143 +1273,9 @@ class BatchController:
             )
         ).hexdigest()
 
-    # ========================================================
-    # BATCH INFO
-    # ========================================================
-
-    def get_batch_info(
-        self,
-        league: str,
-        season_id: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        """
-        Диагностическая информация
-        о текущем batch.
-
-        Ничего не изменяет.
-        """
-
-        check = self.check(
-            league=league,
-            season_id=season_id,
-        )
-
-        if check.get(
-            "status"
-        ) != STATUS_READY:
-
-            return check
-
-        batch = (
-            self.get_learning_batch(
-                league=league,
-                season_id=season_id,
-            )
-        )
-
-        result = dict(
-            check
-        )
-
-        result[
-            "selected_matches"
-        ] = len(
-            batch
-        )
-
-        result[
-            "selected_match_ids"
-        ] = [
-
-            _safe_int(
-                match.get("id")
-            )
-
-            for match in batch
-        ]
-
-        result[
-            "selected_batch_fingerprint"
-        ] = (
-
-            self._build_fingerprint(
-                batch
-            )
-
-            if batch
-
-            else None
-        )
-
-        return result
-
-    # ========================================================
-    # PENDING COUNT
-    # ========================================================
-
-    def get_pending_count(
-        self,
-        league: Optional[str] = None,
-        season_id: Optional[int] = None,
-    ) -> int:
-        """
-        Read-only количество новых завершённых матчей.
-
-        Если league не указан:
-
-            считается сумма по известным турнирам.
-
-        Этот метод нужен исключительно
-        для диагностики/status().
-        """
-
-        if league:
-
-            normalized = (
-                _normalize_league(
-                    league
-                )
-            )
-
-            completed = (
-                self._get_finished_matches(
-                    league=normalized,
-                    season_id=season_id,
-                )
-            )
-
-            processed = (
-                self._get_processed_match_ids(
-                    league=normalized,
-                    season_id=season_id,
-                )
-            )
-
-            return sum(
-                1
-                for match in completed
-                if _safe_int(
-                    match.get("id")
-                ) > 0
-                and _safe_int(
-                    match.get("id")
-                ) not in processed
-            )
-
-        total = 0
-
-        for known_league in BATCH_RULES:
-
-            total += self.get_pending_count(
-                league=known_league,
-                season_id=season_id,
-            )
-
-        return total
-
 
 # ============================================================
-# MODULE-LEVEL API
+# MODULE-LEVEL PUBLIC API
 # ============================================================
 
 def check_batch(
@@ -1833,7 +1284,9 @@ def check_batch(
     db: Optional[FAJDatabase] = None,
 ) -> Dict[str, Any]:
     """
-    Удобная функция проверки batch.
+    Удобная module-level обёртка для check().
+
+    Это не отдельная логика.
     """
 
     controller = BatchController(
@@ -1846,21 +1299,6 @@ def check_batch(
     )
 
 
-def get_batch_size(
-    league: str,
-) -> int:
-    """
-    Возвращает размер batch.
-    """
-
-    return BATCH_RULES.get(
-        _normalize_league(
-            league
-        ),
-        0,
-    )
-
-
 def get_learning_batch(
     league: str,
     season_id: Optional[int] = None,
@@ -1870,7 +1308,9 @@ def get_learning_batch(
     Dict[str, Any]
 ]:
     """
-    Официальный module-level API.
+    Module-level API для ETC Learning Engine.
+
+    Вся логика находится в BatchController.
     """
 
     controller = BatchController(
@@ -1881,50 +1321,6 @@ def get_learning_batch(
         league=league,
         season_id=season_id,
         limit=limit,
-    )
-
-
-def select_batch(
-    league: str,
-    season_id: Optional[int] = None,
-    db: Optional[FAJDatabase] = None,
-) -> List[
-    Dict[str, Any]
-]:
-    """
-    Compatibility API.
-    """
-
-    return get_learning_batch(
-        league=league,
-        season_id=season_id,
-        db=db,
-    )
-
-
-def create_batch(
-    limit: Optional[int] = None,
-    force: bool = False,
-    league: Optional[str] = None,
-    season_id: Optional[int] = None,
-    db: Optional[FAJDatabase] = None,
-) -> List[
-    Dict[str, Any]
-]:
-    """
-    Официальный module-level API
-    для ETCController.
-    """
-
-    controller = BatchController(
-        db=db
-    )
-
-    return controller.create_batch(
-        limit=limit,
-        force=force,
-        league=league,
-        season_id=season_id,
     )
 
 
@@ -1961,31 +1357,31 @@ if __name__ == "__main__":
         )
 
     print()
-    print("STATUS CONTRACT")
+    print("PUBLIC ETC API")
     print("-" * 70)
 
     print(
-        f"READY             = {STATUS_READY}"
+        "BatchController.check()"
     )
 
     print(
-        f"WAIT              = {STATUS_WAIT}"
-    )
-
-    print(
-        f"UNKNOWN_LEAGUE    = {STATUS_UNKNOWN_LEAGUE}"
-    )
-
-    print(
-        f"ALREADY_PROCESSED = {STATUS_ALREADY_PROCESSED}"
+        "BatchController.get_learning_batch()"
     )
 
     print()
-    print("PROCESSED EVENT")
+    print("PROCESSED MARKER")
     print("-" * 70)
 
     print(
         f"event_type = {PROCESSED_EVENT_TYPE}"
+    )
+
+    print(
+        "identity = learning_memory.reference_id"
+    )
+
+    print(
+        "object fallback = DISABLED"
     )
 
     print()
@@ -2010,6 +1406,10 @@ if __name__ == "__main__":
     )
 
     print(
+        "INSERT/UPDATE: отсутствуют"
+    )
+
+    print(
         "matches: не изменяются"
     )
 
@@ -2023,6 +1423,18 @@ if __name__ == "__main__":
 
     print(
         "database.py: не изменяется"
+    )
+
+    print()
+    print("SORT CONTRACT")
+    print("-" * 70)
+
+    print(
+        "1. match_date"
+    )
+
+    print(
+        "2. match_id"
     )
 
     print()
