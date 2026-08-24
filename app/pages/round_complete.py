@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-ROUND COMPLETE v1.5
+ROUND COMPLETE v1.6
 ============================================================
 
 Назначение:
@@ -20,7 +20,7 @@ ROUND COMPLETE v1.5
           ↓
     СРАВНЕНИЕ FAJ / ДИРЕКТОР / ФАКТ
           ↓
-    ТУРНИРНАЯ ТАБЛИЦА
+    ТУРНИРНАЯ ТАБЛИЦА (ВСЕ ТУРЫ ДО ТЕКУЩЕГО)
           ↓
     ETC (переход на страницу)
           ↓
@@ -37,6 +37,11 @@ ROUND COMPLETE v1.5
     Не создаёт календарь
     Не пересчитывает прогнозы
     Обучение запускается через ETC страницу
+
+ИСПРАВЛЕНИЯ v1.6:
+    - Турнирная таблица строится из ВСЕХ туров сезона до текущего
+    - А не только из матчей выбранного тура
+    - Динамическая таблица: Тур 1 → 1 тур, Тур 2 → 1+2 тура, и т.д.
 
 ОЦЕНКА ПРОГНОЗА:
 
@@ -77,7 +82,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 APP_VERSION = "12.1"
-ROUND_COMPLETE_VERSION = "1.5"
+ROUND_COMPLETE_VERSION = "1.6"
 
 DEFAULT_DB_PATH = "data/faj.db"
 
@@ -1351,7 +1356,7 @@ def build_match_report(
 
 
 # ============================================================
-# STANDINGS
+# STANDINGS — ИСПРАВЛЕНО v1.6
 # ============================================================
 
 def update_standing(
@@ -1411,92 +1416,181 @@ def update_standing(
 
 def build_standings(
     db: FAJDatabase,
-    matches: List[Dict[str, Any]],
+    season_id: int,
+    current_round_id: int,
 ) -> List[Dict[str, Any]]:
+    """
+    Динамическая турнирная таблица.
+
+    Для выбранного тура N учитываются ВСЕ
+    завершённые матчи сезона:
+        Тур 1
+        Тур 2
+        ...
+        Тур N
+
+    Источник фактов:
+        match_results
+
+    ВАЖНО:
+        - календарь не изменяется;
+        - результаты не изменяются;
+        - DELETE / DROP не используются;
+        - таблица строится заново из исторических FACTS;
+        - предыдущие туры НЕ теряются.
+
+    Это делает таблицу динамической:
+        после 1 тура -> таблица после 1 тура
+        после 2 тура -> таблица после 2 туров
+        после 3 тура -> таблица после 3 туров
+        и т.д.
+    """
 
     standings: Dict[
         int,
         Dict[str, Any]
     ] = {}
 
-    for match in matches:
+    # ========================================================
+    # 1. ОПРЕДЕЛЯЕМ НОМЕР ТЕКУЩЕГО ТУРА
+    # ========================================================
 
-        match_id = safe_int(
-            match.get("id")
+    current_round_number: Optional[int] = None
+
+    try:
+        all_rounds = db.get_rounds(
+            season_id
         )
+    except Exception as exc:
+        logger.exception(
+            "Ошибка получения туров сезона %s: %s",
+            season_id,
+            exc,
+        )
+        return []
 
-        if match_id is None:
+    for round_item in all_rounds or []:
+        data = object_to_dict(round_item)
+        round_id = safe_int(data.get("id"))
+        round_number = safe_int(data.get("round_number"))
+
+        if round_id == current_round_id and round_number is not None:
+            current_round_number = round_number
+            break
+
+    if current_round_number is None:
+        logger.warning(
+            "Не удалось определить номер текущего тура: %s",
+            current_round_id,
+        )
+        return []
+
+    # ========================================================
+    # 2. БЕРЁМ ВСЕ ТУРЫ СЕЗОНА ДО ТЕКУЩЕГО
+    # ========================================================
+
+    previous_rounds = []
+
+    for round_item in all_rounds or []:
+        data = object_to_dict(round_item)
+        round_id = safe_int(data.get("id"))
+        round_number = safe_int(data.get("round_number"))
+
+        if round_id is None or round_number is None:
             continue
 
-        result = get_match_result(
-            db,
-            match_id,
-        )
+        if round_number <= current_round_number:
+            previous_rounds.append({
+                "id": round_id,
+                "round_number": round_number,
+            })
 
-        if not result:
-            continue
+    previous_rounds.sort(key=lambda x: x["round_number"])
 
-        home_goals = safe_int(
-            result.get("home_goals")
-        )
+    # ========================================================
+    # 3. ПРОХОДИМ ПО ВСЕМ ТУРАМ ДО ТЕКУЩЕГО
+    # ========================================================
 
-        away_goals = safe_int(
-            result.get("away_goals")
-        )
+    for round_item in previous_rounds:
+        round_id = round_item["id"]
 
-        if (
-            home_goals is None
-            or away_goals is None
-        ):
-            continue
-
-        home_id = safe_int(
-            match.get(
-                "home_team_id"
+        try:
+            round_matches = get_round_matches(
+                db,
+                round_id,
             )
-        )
-
-        away_id = safe_int(
-            match.get(
-                "away_team_id"
+        except Exception as exc:
+            logger.warning(
+                "Ошибка получения матчей тура %s: %s",
+                round_id,
+                exc,
             )
-        )
-
-        if (
-            home_id is None
-            or away_id is None
-        ):
             continue
 
-        home_name = match.get(
-            "home_name",
-            "?"
-        )
+        # ====================================================
+        # 4. ОБРАБАТЫВАЕМ ФАКТЫ МАТЧЕЙ
+        # ====================================================
 
-        away_name = match.get(
-            "away_name",
-            "?"
-        )
+        for match in round_matches:
+            match_id = safe_int(match.get("id"))
 
-        update_standing(
-            standings,
-            home_id,
-            home_name,
-            home_goals,
-            away_goals,
-        )
+            if match_id is None:
+                continue
 
-        update_standing(
-            standings,
-            away_id,
-            away_name,
-            away_goals,
-            home_goals,
-        )
+            result = get_match_result(
+                db,
+                match_id,
+            )
 
-    rows = list(
-        standings.values()
-    )
+            if not result:
+                continue
+
+            home_goals = safe_int(
+                result.get("home_goals")
+            )
+
+            away_goals = safe_int(
+                result.get("away_goals")
+            )
+
+            if home_goals is None or away_goals is None:
+                continue
+
+            home_id = safe_int(
+                match.get("home_team_id")
+            )
+
+            away_id = safe_int(
+                match.get("away_team_id")
+            )
+
+            if home_id is None or away_id is None:
+                continue
+
+            home_name = match.get("home_name") or "?"
+            away_name = match.get("away_name") or "?"
+
+            update_standing(
+                standings,
+                home_id,
+                home_name,
+                home_goals,
+                away_goals,
+            )
+
+            update_standing(
+                standings,
+                away_id,
+                away_name,
+                away_goals,
+                home_goals,
+            )
+
+    # ========================================================
+    # 5. СОРТИРОВКА
+    # ========================================================
+
+    rows = list(standings.values())
 
     rows.sort(
         key=lambda x: (
@@ -1507,10 +1601,11 @@ def build_standings(
         )
     )
 
-    for index, row in enumerate(
-        rows,
-        start=1,
-    ):
+    # ========================================================
+    # 6. ПОЗИЦИИ
+    # ========================================================
+
+    for index, row in enumerate(rows, start=1):
         row["position"] = index
 
     return rows
@@ -1518,45 +1613,47 @@ def build_standings(
 
 def render_standings(
     db: FAJDatabase,
-    matches: List[Dict[str, Any]],
+    season_id: int,
+    round_id: int,
 ) -> None:
+    """
+    Рендерит турнирную таблицу на основе ВСЕХ туров до текущего.
 
-    st.subheader(
-        "🏆 Турнирная таблица"
-    )
+    Исправлено v1.6:
+        - Таблица строится из всех туров сезона до текущего
+        - А не только из матчей выбранного тура
+    """
+
+    st.subheader("🏆 Турнирная таблица")
 
     standings = build_standings(
         db,
-        matches,
+        season_id,
+        round_id,
     )
 
     if not standings:
-
         st.info(
             "Недостаточно фактических "
             "результатов для построения таблицы."
         )
-
         return
 
     table = []
 
     for row in standings:
-
-        table.append(
-            {
-                "#": row["position"],
-                "Команда": row["team"],
-                "И": row["played"],
-                "В": row["wins"],
-                "Н": row["draws"],
-                "П": row["losses"],
-                "ЗМ": row["gf"],
-                "ПМ": row["ga"],
-                "РМ": row["gd"],
-                "О": row["points"],
-            }
-        )
+        table.append({
+            "#": row["position"],
+            "Команда": row["team"],
+            "И": row["played"],
+            "В": row["wins"],
+            "Н": row["draws"],
+            "П": row["losses"],
+            "ЗМ": row["gf"],
+            "ПМ": row["ga"],
+            "РМ": row["gd"],
+            "О": row["points"],
+        })
 
     st.dataframe(
         table,
@@ -2327,12 +2424,13 @@ def main() -> None:
         )
 
         # ====================================================
-        # STANDINGS
+        # STANDINGS — ИСПРАВЛЕНО v1.6
         # ====================================================
 
         render_standings(
             db,
-            matches,
+            season_id,
+            round_id,
         )
 
         # ====================================================
