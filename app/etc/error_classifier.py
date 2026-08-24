@@ -107,6 +107,18 @@ OUTPUT:
 }
 
 ============================================================
+
+ИСПРАВЛЕНИЯ v2.1
+============================================================
+
+1. xg_error() возвращает None вместо 0.0, когда xG отсутствует.
+
+2. _classify_cause() сначала проверяет total xG ошибку,
+   затем home/away xG.
+
+3. _severity() — xG недоступен не влияет на severity.
+
+============================================================
 """
 
 from __future__ import annotations
@@ -118,8 +130,8 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 
-MODULE_VERSION = "2.0"
-MODULE_NAME = "FAJ ETC Error Classifier v2.0"
+MODULE_VERSION = "2.1"
+MODULE_NAME = "FAJ ETC Error Classifier v2.1"
 
 
 # ============================================================
@@ -265,7 +277,7 @@ class ErrorClassifier:
         predicted_away_xg: Any,
         actual_home_xg: Any,
         actual_away_xg: Any,
-    ) -> float:
+    ) -> Optional[float]:
         """
         Суммарная абсолютная ошибка xG.
 
@@ -273,6 +285,12 @@ class ErrorClassifier:
 
             |Pred Home xG - Observed Home xG|
           + |Pred Away xG - Observed Away xG|
+
+        ИСПРАВЛЕНИЕ v2.1:
+
+            Если любой из xG отсутствует,
+            возвращается None.
+            Это отличает "нет данных" от "ошибка = 0".
         """
 
         ph = _safe_float(predicted_home_xg)
@@ -287,7 +305,7 @@ class ErrorClassifier:
             ah,
             aa,
         ):
-            return 0.0
+            return None
 
         return round(
             abs(ph - ah)
@@ -555,9 +573,18 @@ class ErrorClassifier:
             ),
         )
 
-        result["error_xg"] = error_xg
+        result["error_xg"] = error_xg if error_xg is not None else 0.0
 
-        if error_xg > 0.25:
+        # Проверяем доступность xG
+        xg_available = (
+            prediction.get("predicted_home_xg") is not None
+            and prediction.get("predicted_away_xg") is not None
+            and fact.get("actual_home_xg") is not None
+            and fact.get("actual_away_xg") is not None
+        )
+
+        # Добавляем xg_miss только если xG доступен
+        if xg_available and error_xg is not None and error_xg > 0.25:
 
             result["errors"].append(
                 "xg_miss"
@@ -593,10 +620,11 @@ class ErrorClassifier:
             self._severity(
                 error_type=result["error_type"],
                 score_error=score_error,
-                error_xg=error_xg,
+                error_xg=error_xg if error_xg is not None else 0.0,
                 errors_count=len(
                     result["errors"]
                 ),
+                xg_available=xg_available,
             )
         )
 
@@ -688,6 +716,11 @@ class ErrorClassifier:
 
         Это диагностическая гипотеза,
         а не решение об изменении модели.
+
+        ИСПРАВЛЕНИЕ v2.1:
+
+        Сначала проверяется общая xG ошибка (total),
+        затем home/away xG, затем winner.
         """
 
         predicted_home_xg = _safe_float(
@@ -713,6 +746,35 @@ class ErrorClassifier:
                 "actual_away_xg"
             )
         )
+
+        # ----------------------------------------------------
+        # TOTAL xG ОШИБКА (v2.1)
+        # ----------------------------------------------------
+
+        if None not in (
+            predicted_home_xg,
+            predicted_away_xg,
+            actual_home_xg,
+            actual_away_xg,
+        ):
+
+            total_predicted = (
+                predicted_home_xg + predicted_away_xg
+            )
+
+            total_actual = (
+                actual_home_xg + actual_away_xg
+            )
+
+            total_diff = total_predicted - total_actual
+
+            if total_diff > 0.60:
+
+                return "xg_overestimated"
+
+            if total_diff < -0.60:
+
+                return "xg_underestimated"
 
         # ----------------------------------------------------
         # HOME xG
@@ -796,6 +858,7 @@ class ErrorClassifier:
         score_error: int,
         error_xg: float,
         errors_count: int,
+        xg_available: bool = False,
     ) -> int:
         """
         Шкала:
@@ -806,6 +869,10 @@ class ErrorClassifier:
             3 = serious
             4 = critical
             5 = catastrophic
+
+        ИСПРАВЛЕНИЕ v2.1:
+
+            Если xG недоступен, он не влияет на severity.
         """
 
         if error_type == "correct":
@@ -822,17 +889,20 @@ class ErrorClassifier:
 
             score += 1
 
-        if error_xg >= 1.50:
+        # xG влияет на severity только если доступен
+        if xg_available:
 
-            score += 3
+            if error_xg >= 1.50:
 
-        elif error_xg >= 1.00:
+                score += 3
 
-            score += 2
+            elif error_xg >= 1.00:
 
-        elif error_xg >= 0.50:
+                score += 2
 
-            score += 1
+            elif error_xg >= 0.50:
+
+                score += 1
 
         if errors_count >= 4:
 
