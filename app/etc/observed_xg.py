@@ -5,7 +5,7 @@
 ============================================================
 FAJ Platform v12.1
 ETC — Evolution Training Center
-Observed xG v1.1
+Observed xG v1.2
 ============================================================
 
 app/etc/observed_xg.py
@@ -73,24 +73,14 @@ FAJDatabase — единственный штатный объект досту�
 VERSION
 ============================================================
 
-v1.1
+v1.2
 
-Основные изменения относительно v1.0:
+Основные изменения относительно v1.1:
 
-    1. Чётко разделён source xG и fallback xG.
-    2. Добавлены xG source quality / confidence.
-    3. Добавлен флаг observed_xg_available.
-    4. Добавлен fallback_used.
-    5. Настоящий xG не смешивается с fallback.
-    6. Добавлена диагностическая информация.
-    7. Сохранена обратная совместимость основных ключей:
-           home_xg
-           away_xg
-           home_xg_source
-           away_xg_source
-           quality
-           errors
-    8. Модуль остаётся READ ONLY.
+    1. Улучшена формула fallback xG.
+    2. Добавлен флаг xg_calibration_available.
+    3. Улучшена обработка big_chances в fallback.
+
 ============================================================
 """
 
@@ -106,7 +96,7 @@ from app.database import FAJDatabase
 logger = logging.getLogger(__name__)
 
 
-OBSERVED_XG_VERSION = "1.1"
+OBSERVED_XG_VERSION = "1.2"
 MODULE_NAME = "FAJ ETC Observed xG"
 
 
@@ -241,6 +231,7 @@ class ObservedXG:
 
             observed_xg_available
             fallback_used
+            xg_calibration_available
 
         """
 
@@ -282,6 +273,7 @@ class ObservedXG:
 
             "observed_xg_available": False,
             "fallback_used": False,
+            "xg_calibration_available": False,
 
             # ------------------------------------------------
             # QUALITY
@@ -477,6 +469,11 @@ class ObservedXG:
             result["fallback_used"] = (
                 result["home_xg_fallback"]
                 or result["away_xg_fallback"]
+            )
+
+            result["xg_calibration_available"] = (
+                result["observed_xg_available"]
+                or result["fallback_used"]
             )
 
             # =================================================
@@ -765,11 +762,12 @@ class ObservedXG:
         не терял матч полностью при отсутствии
         xG у внешнего источника.
 
-        Формула:
+        Формула (улучшена в v1.2):
 
             shots * 0.04
-          + shots_on_target * 0.10
-          + big_chances * 0.20
+          + shots_on_target * 0.12
+          + big_chances * 0.25
+          + (shots_on_target / max(shots, 1)) * 0.10
 
         Голы намеренно НЕ используются.
 
@@ -831,14 +829,22 @@ class ObservedXG:
             return None
 
         # ----------------------------------------------------
-        # Fallback formula
+        # Fallback formula (v1.2)
         # ----------------------------------------------------
 
-        estimate = (
-            shots * 0.04
-            + shots_on_target * 0.10
-            + big_chances * 0.20
-        )
+        # Базовый вклад от ударов
+        estimate = shots * 0.04
+
+        # Вклад от ударов в створ (увеличен с 0.10 до 0.12)
+        estimate += shots_on_target * 0.12
+
+        # Вклад от больших моментов (увеличен с 0.20 до 0.25)
+        estimate += big_chances * 0.25
+
+        # Бонус за эффективность ударов
+        if shots > 0:
+            shot_accuracy = shots_on_target / shots
+            estimate += shot_accuracy * 0.10
 
         estimate = _clamp(
             estimate,
@@ -1083,6 +1089,11 @@ if __name__ == "__main__":
     print(
         f"Observed available:"
         f" {data['observed_xg_available']}"
+    )
+
+    print(
+        f"XG Calibration avail:"
+        f" {data['xg_calibration_available']}"
     )
 
     print(
