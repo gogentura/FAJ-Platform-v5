@@ -118,6 +118,21 @@ LearningAnalyzer обнаруживает:
 согласно общему ETC pipeline.
 
 ============================================================
+
+ИСПРАВЛЕНИЯ v2.1
+============================================================
+
+1. Извлечение error_xg из поля delta или after_value
+   в normalize_memory().
+
+2. Структурированное извлечение cause_type из reason
+   с поддержкой формата "cause_type: описание".
+
+3. Реальный подсчет xG ошибок в xg_statistics().
+
+4. Передача xG данных в ErrorPattern.
+
+============================================================
 """
 
 from __future__ import annotations
@@ -132,7 +147,7 @@ from app.database import FAJDatabase
 
 logger = logging.getLogger(__name__)
 
-MODULE_VERSION = "2.0"
+MODULE_VERSION = "2.1"
 MODULE_NAME = "ETC Learning Analyzer"
 
 
@@ -423,6 +438,11 @@ class LearningAnalyzer:
 
         Только prediction_error является
         непосредственным событием ошибки прогноза.
+
+        ИСПРАВЛЕНИЕ v2.1:
+
+        error_xg извлекается из поля delta или after_value.
+        cause_type извлекается структурированно из reason.
         """
 
         result: List[Dict[str, Any]] = []
@@ -487,23 +507,34 @@ class LearningAnalyzer:
                 0,
             )
 
-            # ------------------------------------------------
-            # CAUSE
-            # ------------------------------------------------
-            #
-            # LearningMemory record_prediction_error()
-            # сохраняет:
-            #
-            #     cause_type: reason
-            #
-            # поэтому пытаемся восстановить cause_type
-            # из начала reason.
-            #
+            # ================================================
+            # ИЗВЛЕЧЕНИЕ error_xg (v2.1)
+            # ================================================
+
+            error_xg = _safe_float(
+                row.get("delta"),
+                0.0,
+            )
+
+            # Если delta нет, пробуем из after_value
+            if error_xg == 0.0:
+                if isinstance(after_value, (int, float)):
+                    error_xg = _safe_float(after_value, 0.0)
+
+            # ================================================
+            # ИЗВЛЕЧЕНИЕ cause_type (v2.1)
+            # ================================================
+
             cause_type = "unknown"
 
-            if ":" in reason:
+            # Пробуем извлечь из поля feature
+            if feature and feature != "unknown":
+                cause_type = feature
 
-                possible_cause, _, _ = (
+            # Если feature не дал результат, пробуем из reason
+            if cause_type == "unknown" and ":" in reason:
+
+                possible_cause, _, rest = (
                     reason.partition(":")
                 )
 
@@ -520,7 +551,7 @@ class LearningAnalyzer:
                     "error_type": feature,
                     "cause_type": cause_type,
                     "error_severity": severity,
-                    "error_xg": 0.0,
+                    "error_xg": error_xg,
                     "confidence": confidence,
                     "impact": impact,
                     "recommendation": reason,
@@ -728,6 +759,7 @@ class LearningAnalyzer:
                     )
                 )
                 for item in group
+                if item.get("error_xg") is not None
             ]
 
             confidences = [
@@ -1018,8 +1050,8 @@ class LearningAnalyzer:
         """
         Статистика ошибок xG.
 
-        Если источник learning_memory не содержит
-        отдельного error_xg, значение остаётся 0.
+        ИСПРАВЛЕНИЕ v2.1:
+        Реальный подсчет xG ошибок из данных.
         """
 
         values = [
@@ -1031,6 +1063,7 @@ class LearningAnalyzer:
             for record in records
             if record.get("error_xg")
             is not None
+            and record.get("error_xg") != 0.0
         ]
 
         if not values:
@@ -1039,6 +1072,7 @@ class LearningAnalyzer:
                 "count": 0,
                 "average": 0.0,
                 "max": 0.0,
+                "has_xg_data": False,
             }
 
         return {
@@ -1049,6 +1083,7 @@ class LearningAnalyzer:
                 4,
             ),
             "max": max(values),
+            "has_xg_data": True,
         }
 
     # ========================================================
