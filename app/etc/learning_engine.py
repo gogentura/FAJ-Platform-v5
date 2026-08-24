@@ -9,7 +9,7 @@ ETC — Evolution Training Center
 app/etc/learning_engine.py
 ============================================================
 
-ETC LEARNING ENGINE v1.3
+ETC LEARNING ENGINE v1.4
 ============================================================
 
 НАЗНАЧЕНИЕ
@@ -107,7 +107,7 @@ ETCLearningEngine отвечает только за:
 КОНТРАКТ PROCESSED
 ------------------
 
-Для каждого успешно обработанного матча создаётся:
+Для каждого успешно обработанного нового матча создаётся:
 
     event_type = 'batch_learning'
     reference_id = match_id
@@ -183,8 +183,9 @@ ETCLearningEngine:
 
     process_analysis()
 
-как совместимая публичная точка,
-но основной ETC-контракт остаётся:
+как совместимая публичная точка.
+
+Основной ETC-контракт:
 
     process_match()
 ============================================================
@@ -216,7 +217,7 @@ from app.etc.statistical_analyzer import (
 logger = logging.getLogger(__name__)
 
 
-MODULE_VERSION = "1.3"
+MODULE_VERSION = "1.4"
 MODULE_NAME = "FAJ ETC Learning Engine"
 
 PROCESSED_EVENT_TYPE = "batch_learning"
@@ -319,6 +320,8 @@ class ETCLearningEngine:
 
             validate
                 ↓
+            processed check
+                ↓
             StatisticalAnalyzer
                 ↓
             analysis memory
@@ -327,18 +330,11 @@ class ETCLearningEngine:
                 ↓
             success
 
-        Если любой обязательный этап завершается
-        ошибкой — success=False.
-
-        ВАЖНО:
-
         batch_learning создаётся только после
         успешной записи analysis memory.
         """
 
-        safe_match_id = _safe_int(
-            match_id
-        )
+        safe_match_id = _safe_int(match_id)
 
         base_result: Dict[str, Any] = {
             "success": False,
@@ -361,9 +357,7 @@ class ETCLearningEngine:
             or safe_match_id <= 0
         ):
 
-            base_result["status"] = (
-                "invalid_match_id"
-            )
+            base_result["status"] = "invalid_match_id"
 
             base_result["error"] = (
                 "Некорректный match_id."
@@ -579,7 +573,9 @@ class ETCLearningEngine:
 
             return base_result
 
-        # Marker обязателен.
+        # ----------------------------------------------------
+        # MARKER MUST EXIST
+        # ----------------------------------------------------
 
         if marker_id is None:
 
@@ -607,9 +603,7 @@ class ETCLearningEngine:
         # ----------------------------------------------------
 
         base_result["success"] = True
-        base_result["status"] = (
-            "processed"
-        )
+        base_result["status"] = "processed"
 
         logger.info(
             "ETC match SUCCESS | "
@@ -637,28 +631,11 @@ class ETCLearningEngine:
         """
         Совместимая публичная точка обработки analysis.
 
-        Основной путь ETC:
-
+        Если analysis не передан:
             process_match()
 
-        Если analysis не передан,
-        метод делегирует в process_match().
-
-        Если analysis уже передан,
-        повторный StatisticalAnalyzer НЕ вызывается.
-
-        Это важно для архитектуры:
-
-            анализ уже выполнен
-                  ↓
-            process_analysis()
-                  ↓
-            memory
-                  ↓
-            batch_learning
-
-        Таким образом предотвращается
-        двойной анализ одного матча.
+        Если analysis уже передан:
+            StatisticalAnalyzer повторно НЕ вызывается.
         """
 
         safe_match_id = _safe_int(
@@ -704,9 +681,7 @@ class ETCLearningEngine:
 
                 return {
                     "success": True,
-                    "status": (
-                        "already_processed"
-                    ),
+                    "status": "already_processed",
                     "match_id": safe_match_id,
                     "analysis": analysis,
                     "memory_ids": [],
@@ -870,21 +845,23 @@ class ETCLearningEngine:
         """
         Запускает один ETC batch.
 
-        Автоматический режим:
+        Официальный ETCController передаёт:
 
-            run_batch(
-                league="РПЛ",
-                season_id=...
-            )
+            batch=[...]
 
-        Ручной режим:
+        В этом режиме BatchController повторно
+        НЕ вызывается.
 
-            run_batch(
-                batch=[...]
-            )
+        Автоматический режим остаётся совместимым,
+        но основной архитектурный путь:
 
-        BatchController остаётся единственным
-        владельцем выбора batch.
+            ETCController
+                ↓
+            BatchController
+                ↓
+            get_learning_batch()
+                ↓
+            ETCLearningEngine.run_batch(batch=...)
         """
 
         started_at = _now()
@@ -901,7 +878,7 @@ class ETCLearningEngine:
         )
 
         # ====================================================
-        # DIRECT BATCH
+        # DIRECT / OFFICIAL BATCH
         # ====================================================
 
         if batch is not None:
@@ -970,10 +947,6 @@ class ETCLearningEngine:
                     "created_at": _now(),
                 }
 
-            # ------------------------------------------------
-            # CHECK BATCH
-            # ------------------------------------------------
-
             try:
 
                 batch_check = (
@@ -1014,14 +987,8 @@ class ETCLearningEngine:
                 }
 
             controller_status = (
-                batch_check.get(
-                    "status"
-                )
+                batch_check.get("status")
             )
-
-            # ------------------------------------------------
-            # NOT READY
-            # ------------------------------------------------
 
             if controller_status != STATUS_READY:
 
@@ -1055,10 +1022,6 @@ class ETCLearningEngine:
 
                     "created_at": _now(),
                 }
-
-            # ------------------------------------------------
-            # GET OFFICIAL BATCH
-            # ------------------------------------------------
 
             try:
 
@@ -1209,7 +1172,7 @@ class ETCLearningEngine:
 
             try:
 
-                result = (
+                match_result = (
                     self.process_match(
                         match_id=match_id
                     )
@@ -1217,7 +1180,7 @@ class ETCLearningEngine:
 
             except Exception as exc:
 
-                result = {
+                match_result = {
                     "success": False,
                     "status": "exception",
                     "match_id": match_id,
@@ -1229,7 +1192,7 @@ class ETCLearningEngine:
             # FAILED
             # ------------------------------------------------
 
-            if not result.get(
+            if not match_result.get(
                 "success",
                 False,
             ):
@@ -1239,10 +1202,10 @@ class ETCLearningEngine:
                 errors.append(
                     {
                         "match_id": match_id,
-                        "status": result.get(
+                        "status": match_result.get(
                             "status"
                         ),
-                        "error": result.get(
+                        "error": match_result.get(
                             "error",
                             "processing_failed",
                         ),
@@ -1253,18 +1216,15 @@ class ETCLearningEngine:
                     "ETC batch match FAILED | "
                     "match_id=%s | status=%s",
                     match_id,
-                    result.get(
+                    match_result.get(
                         "status"
                     ),
                 )
 
-                # Ошибка одного матча
-                # не останавливает batch.
-
                 continue
 
             # ------------------------------------------------
-            # SUCCESS
+            # SUCCESS / ALREADY PROCESSED
             # ------------------------------------------------
 
             processed += 1
@@ -1274,7 +1234,7 @@ class ETCLearningEngine:
             )
 
             result_memory_ids = (
-                result.get(
+                match_result.get(
                     "memory_ids",
                     [],
                 )
@@ -1287,6 +1247,17 @@ class ETCLearningEngine:
 
                 memory_ids.extend(
                     result_memory_ids
+                )
+
+            if (
+                match_result.get("status")
+                == "already_processed"
+            ):
+
+                logger.info(
+                    "ETC batch match already "
+                    "processed | match_id=%s",
+                    match_id,
                 )
 
         # ====================================================
@@ -1340,14 +1311,6 @@ class ETCLearningEngine:
                 )
 
                 if fingerprint_id is None:
-
-                    # Сам batch уже обработан,
-                    # но диагностический fingerprint
-                    # не записался.
-                    #
-                    # Это не должно превращать
-                    # успешно обработанные матчи
-                    # в необработанные.
 
                     errors.append(
                         {
@@ -1449,10 +1412,10 @@ class ETCLearningEngine:
         """
         Нормализует batch.
 
-        Удаляет из рабочего списка:
+        Удаляет:
 
             - не-dict;
-            - элементы без ID;
+            - элементы без match_id;
             - дубликаты match_id.
 
         БД не изменяется.
@@ -1508,11 +1471,11 @@ class ETCLearningEngine:
 
         Поддерживает:
 
+            int
+
             {
                 "match_id": 123
             }
-
-        и:
 
             {
                 "id": 123
@@ -1717,17 +1680,12 @@ class ETCLearningEngine:
         Сохраняет memory_events,
         сформированные StatisticalAnalyzer.
 
-        КРИТИЧЕСКОЕ ПРАВИЛО:
-
-        Если хотя бы один обязательный memory event
-        не удалось записать — метод выбрасывает
+        Если хотя бы один обязательный
+        memory event не записан —
         исключение.
 
-        В этом случае batch_learning marker
+        batch_learning marker в таком случае
         НЕ создаётся.
-
-        Запись выполняется только через
-        LearningMemory.record().
         """
 
         events = analysis.get(
@@ -1866,8 +1824,6 @@ class ETCLearningEngine:
 
         Это НЕ marker отдельного матча.
 
-        Поэтому:
-
             reference_id = None
         """
 
@@ -1920,6 +1876,7 @@ class ETCLearningEngine:
             )
 
             if memory_id is None:
+
                 return None
 
             return int(
@@ -2125,7 +2082,7 @@ if __name__ == "__main__":
         print(
             "BatchController → "
             "get_learning_batch() → "
-            "process_match()"
+            "ETCLearningEngine.run_batch()"
         )
 
         print()
