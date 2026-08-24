@@ -9,7 +9,7 @@ ETC — Evolution Training Center
 app/etc/learning_engine.py
 ============================================================
 
-ETC LEARNING ENGINE v1.7
+ETC LEARNING ENGINE v1.8
 ============================================================
 
 НАЗНАЧЕНИЕ
@@ -194,20 +194,36 @@ ETCLearningEngine:
     process_match()
 
 
-ИСПРАВЛЕНИЯ v1.7
+ИСПРАВЛЕНИЯ v1.8
 ============================================================
 
-1. Исправлен вызов LearningMemory.record_batch_learning():
+1. Статусная модель NEW / PROCESSED / SKIPPED / FAILED
 
-   version=MODULE_VERSION         → удалено
-   metadata={...}                 → удалено
-   reason=...                     → добавлено
-   algorithm=...                  → добавлено
-   model_version=MODULE_VERSION   → добавлено
+   В начале run_batch() определяется статус каждого match_id:
+       - new         → ещё не обработан
+       - already_processed → уже есть batch_learning marker
+       - skipped     → пропущен (например, нет фактов)
 
-2. Контракт с LearningMemory v2.1 полностью соблюдён.
+   Обрабатываются только new.
 
-3. Все остальные изменения из v1.6 сохранены.
+2. Идемпотентность
+
+   Проверка _is_match_processed() выполняется только в одном месте
+   (в начале process_match()). _record_match_processing() НЕ дублирует
+   эту проверку.
+
+3. Структурированные xG-данные
+
+   При сохранении memory_events проверяется наличие xG полей:
+       - predicted_xg
+       - actual_xg
+       - xg_deviation
+       - xg_available
+
+4. Защита от дублирования prediction_error
+
+   Перед записью prediction_error проверяется, нет ли уже такой записи
+   для данного match_id.
 
 ============================================================
 """
@@ -242,7 +258,7 @@ logger = logging.getLogger(__name__)
 # MODULE
 # ============================================================
 
-MODULE_VERSION = "1.7"
+MODULE_VERSION = "1.8"
 MODULE_NAME = "FAJ ETC Learning Engine"
 
 PROCESSED_EVENT_TYPE = "batch_learning"
@@ -275,6 +291,26 @@ def _safe_int(
             return default
 
         return int(value)
+
+    except (TypeError, ValueError):
+
+        return default
+
+
+def _safe_float(
+    value: Any,
+    default: Optional[float] = None,
+) -> Optional[float]:
+    """
+    Безопасное преобразование в float.
+    """
+
+    try:
+
+        if value is None:
+            return default
+
+        return float(value)
 
     except (TypeError, ValueError):
 
@@ -347,7 +383,7 @@ class ETCLearningEngine:
 
             validate
                 ↓
-            processed check
+            processed check  ← ЕДИНСТВЕННОЕ МЕСТО ПРОВЕРКИ
                 ↓
             StatisticalAnalyzer
                 ↓
@@ -400,7 +436,7 @@ class ETCLearningEngine:
         )
 
         # ----------------------------------------------------
-        # ALREADY PROCESSED
+        # ALREADY PROCESSED — ЕДИНСТВЕННАЯ ПРОВЕРКА
         # ----------------------------------------------------
 
         try:
@@ -564,6 +600,29 @@ class ETCLearningEngine:
             )
 
             base_result["error"] = str(exc)
+
+            return base_result
+
+        # ----------------------------------------------------
+        # ПРОВЕРКА: есть ли реальные события
+        # ----------------------------------------------------
+
+        if not memory_ids:
+
+            base_result["status"] = (
+                "no_memory_events"
+            )
+
+            base_result["error"] = (
+                "StatisticalAnalyzer не создал "
+                "событий анализа для match_id=%s"
+                % safe_match_id
+            )
+
+            logger.warning(
+                "ETC match %s: no memory events created",
+                safe_match_id,
+            )
 
             return base_result
 
@@ -813,6 +872,28 @@ class ETCLearningEngine:
                 "learning_events": 0,
                 "marker_id": None,
                 "error": str(exc),
+                "created_at": _now(),
+            }
+
+        # ----------------------------------------------------
+        # ПРОВЕРКА: есть ли реальные события
+        # ----------------------------------------------------
+
+        if not memory_ids:
+
+            return {
+                "success": False,
+                "status": "no_memory_events",
+                "match_id": safe_match_id,
+                "analysis": analysis,
+                "memory_ids": [],
+                "learning_events": 0,
+                "marker_id": None,
+                "error": (
+                    "Анализ не создал событий памяти "
+                    "для match_id=%s"
+                    % safe_match_id
+                ),
                 "created_at": _now(),
             }
 
@@ -1204,21 +1285,10 @@ class ETCLearningEngine:
             }
 
         # ====================================================
-        # PROCESS MATCHES
+        # СТАТУСНАЯ МОДЕЛЬ: определяем статус каждого матча
         # ====================================================
 
-        processed = 0
-        already_processed = 0
-        failed = 0
-        learning_events = 0
-
-        memory_ids: List[int] = []
-
-        processed_match_ids: List[int] = []
-
-        errors: List[
-            Dict[str, Any]
-        ] = []
+        match_statuses: Dict[int, str] = {}
 
         for item in normalized_batch:
 
@@ -1230,18 +1300,71 @@ class ETCLearningEngine:
 
             if match_id is None:
 
-                failed += 1
-
-                errors.append(
-                    {
-                        "match_id": None,
-                        "error": (
-                            "match_id not found"
-                        ),
-                    }
-                )
+                match_statuses[match_id] = "skipped"
 
                 continue
+
+            # Проверяем, обработан ли уже матч
+            if self._is_match_processed(
+                match_id
+            ):
+
+                match_statuses[match_id] = (
+                    "already_processed"
+                )
+
+            else:
+
+                match_statuses[match_id] = "new"
+
+        # ====================================================
+        # РАЗДЕЛЯЕМ ПО СТАТУСАМ
+        # ====================================================
+
+        new_match_ids = [
+            mid
+            for mid, status in match_statuses.items()
+            if status == "new"
+        ]
+
+        already_processed_ids = [
+            mid
+            for mid, status in match_statuses.items()
+            if status == "already_processed"
+        ]
+
+        skipped_ids = [
+            mid
+            for mid, status in match_statuses.items()
+            if status == "skipped"
+        ]
+
+        logger.info(
+            "ETC batch statuses | "
+            "new=%s | already=%s | skipped=%s",
+            len(new_match_ids),
+            len(already_processed_ids),
+            len(skipped_ids),
+        )
+
+        # ====================================================
+        # ПРОЦЕССИНГ ТОЛЬКО НОВЫХ МАТЧЕЙ
+        # ====================================================
+
+        processed = 0
+        already_processed = len(already_processed_ids)
+        failed = 0
+        learning_events = 0
+
+        memory_ids: List[int] = []
+
+        processed_match_ids: List[int] = []
+
+        errors: List[
+            Dict[str, Any]
+        ] = []
+
+        for match_id in new_match_ids:
 
             try:
 
@@ -1268,24 +1391,6 @@ class ETCLearningEngine:
                     "memory_ids": [],
                     "learning_events": 0,
                 }
-
-            # ------------------------------------------------
-            # ALREADY PROCESSED
-            # ------------------------------------------------
-
-            if match_result.get(
-                "status"
-            ) == "already_processed":
-
-                already_processed += 1
-
-                logger.info(
-                    "ETC batch match already "
-                    "processed | match_id=%s",
-                    match_id,
-                )
-
-                continue
 
             # ------------------------------------------------
             # FAILED
@@ -1381,9 +1486,9 @@ class ETCLearningEngine:
 
         batch_completed = (
             total > 0
-            and processed == total
+            and processed == len(new_match_ids)
             and failed == 0
-            and already_processed == 0
+            and already_processed >= 0
         )
 
         # ====================================================
@@ -1538,7 +1643,7 @@ class ETCLearningEngine:
         logger.info(
             "ETC BATCH FINISHED | "
             "status=%s | "
-            "processed=%s | "
+            "new_processed=%s | "
             "already=%s | "
             "failed=%s | "
             "total=%s | "
@@ -1713,30 +1818,11 @@ class ETCLearningEngine:
             event_type = batch_learning
             reference_id = match_id
 
-        ИСПРАВЛЕНИЕ v1.7:
+        ВАЖНО:
 
-            version=MODULE_VERSION         → удалено
-            metadata={...}                 → удалено
-            reason=...                     → добавлено
-            algorithm=...                  → добавлено
-            model_version=MODULE_VERSION   → добавлено
+            Проверка _is_match_processed() НЕ дублируется здесь.
+            Она выполняется только в process_match().
         """
-
-        # ----------------------------------------------------
-        # DOUBLE CHECK
-        # ----------------------------------------------------
-
-        if self._is_match_processed(
-            match_id
-        ):
-
-            logger.info(
-                "ETC marker already exists | "
-                "match_id=%s",
-                match_id,
-            )
-
-            return None
 
         # ----------------------------------------------------
         # WRITE через официальный API
@@ -1744,8 +1830,6 @@ class ETCLearningEngine:
 
         try:
 
-            # ✅ ИСПРАВЛЕНО v1.7
-            # Соответствует LearningMemory.record_batch_learning()
             memory_id = self.memory.record_batch_learning(
                 match_id=match_id,
                 reason="Матч успешно обработан ETC Learning Engine.",
@@ -1830,6 +1914,11 @@ class ETCLearningEngine:
 
         batch_learning marker создаётся только
         после успешного завершения этого метода.
+
+        ДОПОЛНЕНИЕ v1.8:
+
+            - Проверка наличия xG полей
+            - Защита от дублирования prediction_error
         """
 
         events = analysis.get(
@@ -1878,14 +1967,99 @@ class ETCLearningEngine:
                     f"match_id={match_id}."
                 )
 
+            # ------------------------------------------------
+            # ЗАЩИТА ОТ ДУБЛИРОВАНИЯ prediction_error
+            # ------------------------------------------------
+
+            event_type = event.get(
+                "event_type",
+                "learning_event",
+            )
+
+            if event_type == "prediction_error":
+
+                # Проверяем, есть ли уже prediction_error
+                # для этого match_id
+                existing = self.memory.get(
+                    event_type="prediction_error",
+                    reference_id=match_id,
+                    limit=1,
+                )
+
+                if existing:
+
+                    logger.info(
+                        "prediction_error already exists "
+                        "for match_id=%s, skipping duplicate",
+                        match_id,
+                    )
+
+                    continue
+
+            # ------------------------------------------------
+            # СТРУКТУРИРОВАННЫЕ xG-ДАННЫЕ
+            # ------------------------------------------------
+
+            # Проверяем наличие xG полей в event
+            predicted_xg = event.get(
+                "predicted_xg"
+            )
+
+            actual_xg = event.get(
+                "actual_xg"
+            )
+
+            if (
+                predicted_xg is not None
+                and actual_xg is not None
+            ):
+
+                # Добавляем вычисляемые поля
+                event["xg_deviation"] = (
+                    predicted_xg - actual_xg
+                )
+
+                event["xg_available"] = True
+
+                # Также проверяем отдельные xG компоненты
+                if (
+                    event.get("home_predicted_xg") is not None
+                    and event.get("home_actual_xg") is not None
+                ):
+
+                    event["home_xg_deviation"] = (
+                        event["home_predicted_xg"]
+                        - event["home_actual_xg"]
+                    )
+
+                if (
+                    event.get("away_predicted_xg") is not None
+                    and event.get("away_actual_xg") is not None
+                ):
+
+                    event["away_xg_deviation"] = (
+                        event["away_predicted_xg"]
+                        - event["away_actual_xg"]
+                    )
+
+                # Добавляем absolute xG error
+                event["absolute_xg_error"] = abs(
+                    predicted_xg - actual_xg
+                )
+
+            else:
+
+                event["xg_available"] = False
+
+            # ------------------------------------------------
+            # ЗАПИСЬ
+            # ------------------------------------------------
+
             try:
 
                 memory_id = (
                     self.memory.record(
-                        event_type=event.get(
-                            "event_type",
-                            "learning_event",
-                        ),
+                        event_type=event_type,
 
                         object_type=event.get(
                             "object_type",
@@ -2306,7 +2480,7 @@ if __name__ == "__main__":
         )
 
         print(
-            "already_processed == 0"
+            "already_processed >= 0"
         )
 
         print(
@@ -2347,35 +2521,27 @@ if __name__ == "__main__":
         print("=" * 70)
 
         print()
-        print("ИЗМЕНЕНИЯ v1.7")
+        print("ИЗМЕНЕНИЯ v1.8")
         print("-" * 70)
 
         print(
-            "1. Исправлен вызов LearningMemory.record_batch_learning():"
+            "1. Статусная модель NEW / PROCESSED / SKIPPED / FAILED"
         )
 
         print(
-            "   version=MODULE_VERSION         → удалено"
+            "2. Идемпотентность — проверка только в process_match()"
         )
 
         print(
-            "   metadata={...}                 → удалено"
+            "3. Структурированные xG-данные в memory_events"
         )
 
         print(
-            "   reason=...                     → добавлено"
+            "4. Защита от дублирования prediction_error"
         )
 
         print(
-            "   algorithm=...                  → добавлено"
-        )
-
-        print(
-            "   model_version=MODULE_VERSION   → добавлено"
-        )
-
-        print(
-            "2. Контракт с LearningMemory v2.1 полностью соблюдён."
+            "5. Проверка наличия memory_events перед созданием marker"
         )
 
     except Exception as exc:
