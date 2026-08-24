@@ -9,7 +9,7 @@ ETC — Evolution Training Center
 app/etc/xg_calibration.py
 ============================================================
 
-XG CALIBRATION v2.0
+XG CALIBRATION v2.1
 ============================================================
 
 НАЗНАЧЕНИЕ
@@ -123,6 +123,16 @@ Sample size:
     Predictive xG ↔ Observed xG.
 
 ============================================================
+
+ИСПРАВЛЕНИЯ v2.1
+============================================================
+
+1. Добавлена константа CALIBRATION_VERSION = "2.1"
+   (ранее была не объявлена, что вызывало NameError).
+
+2. Все ссылки на CALIBRATION_VERSION теперь корректны.
+
+============================================================
 """
 
 from __future__ import annotations
@@ -137,7 +147,8 @@ from app.etc.observed_xg import ObservedXG
 logger = logging.getLogger(__name__)
 
 
-MODULE_VERSION = "2.0"
+MODULE_VERSION = "2.1"
+CALIBRATION_VERSION = "2.1"
 MODULE_NAME = "FAJ ETC XG Calibration"
 
 
