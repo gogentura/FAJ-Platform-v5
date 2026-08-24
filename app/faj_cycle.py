@@ -89,7 +89,7 @@ FAJ Cycle НЕ содержит математической логики мод
 
 10. Старый:
 
-        app.learning_engine.py
+        app/learning_engine.py
 
     НЕ используется.
 
@@ -148,7 +148,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 APP_VERSION = "12.1"
-FAJ_CYCLE_VERSION = "2.1"
+FAJ_CYCLE_VERSION = "2.2"
 
 
 # ============================================================
@@ -829,19 +829,27 @@ class FAJCycle:
                 )
             )
 
+            # ============================================================
+            # ИСПРАВЛЕНО: learning_events с fallback на learned
+            # ============================================================
             learned = _safe_int(
                 etc_result.get(
-                    "learned",
-                    0,
+                    "learning_events",
+                    etc_result.get(
+                        "learned",
+                        0,
+                    ),
                 )
             )
 
-            errors = _safe_int(
-                etc_result.get(
-                    "errors",
-                    0,
-                )
-            )
+            # ============================================================
+            # ИСПРАВЛЕНО: errors — может быть list/dict
+            # ============================================================
+            raw_errors = etc_result.get("errors", 0)
+            if isinstance(raw_errors, (list, dict)):
+                errors = len(raw_errors)
+            else:
+                errors = _safe_int(raw_errors, 0)
 
             result["etc"]["processed"] = (
                 processed
