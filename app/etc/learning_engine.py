@@ -1138,6 +1138,7 @@ class ETCLearningEngine:
 
         processed = 0
         failed = 0
+        learning_events = 0  # ← ДОБАВЛЕНО
 
         memory_ids: List[int] = []
 
@@ -1231,6 +1232,17 @@ class ETCLearningEngine:
 
             processed_match_ids.append(
                 match_id
+            )
+
+            # ------------------------------------------------
+            # АГРЕГАЦИЯ LEARNING_EVENTS
+            # ------------------------------------------------
+
+            learning_events += int(
+                match_result.get(
+                    "learning_events",
+                    0,
+                )
             )
 
             result_memory_ids = (
@@ -1359,6 +1371,8 @@ class ETCLearningEngine:
 
             "total": total,
 
+            "learning_events": learning_events,  # ← ДОБАВЛЕНО
+
             "processed_match_ids": (
                 processed_match_ids
             ),
@@ -1384,11 +1398,13 @@ class ETCLearningEngine:
             "ETC BATCH FINISHED | "
             "status=%s | "
             "processed=%s/%s | "
-            "failed=%s",
+            "failed=%s | "
+            "learning_events=%s",
             status,
             processed,
             total,
             failed,
+            learning_events,  # ← ДОБАВЛЕНО
         )
 
         logger.info(
