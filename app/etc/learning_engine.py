@@ -9,7 +9,7 @@ ETC — Evolution Training Center
 app/etc/learning_engine.py
 ============================================================
 
-ETC LEARNING ENGINE v1.6
+ETC LEARNING ENGINE v1.7
 ============================================================
 
 НАЗНАЧЕНИЕ
@@ -194,37 +194,20 @@ ETCLearningEngine:
     process_match()
 
 
-ИСПРАВЛЕНИЯ v1.6
+ИСПРАВЛЕНИЯ v1.7
 ============================================================
 
-1. Использование LearningMemory.record_batch_learning()
+1. Исправлен вызов LearningMemory.record_batch_learning():
 
-   Вместо ручного формирования marker через record()
-   используется официальный API:
+   version=MODULE_VERSION         → удалено
+   metadata={...}                 → удалено
+   reason=...                     → добавлено
+   algorithm=...                  → добавлено
+   model_version=MODULE_VERSION   → добавлено
 
-       self.memory.record_batch_learning(
-           match_id=match_id,
-           version=MODULE_VERSION,
-           metadata={"source": "ETCLearningEngine"}
-       )
+2. Контракт с LearningMemory v2.1 полностью соблюдён.
 
-2. Четкое разделение счетчиков:
-
-   processed     — новые успешно обработанные матчи
-   already_processed — уже были в learning_memory
-   failed        — ошибки обработки
-
-3. Контракт с StatisticalAnalyzer v1.2:
-
-   analysis["success"]
-   analysis["memory_events"]
-   analysis["errors"]
-   analysis["status"]
-   analysis["match_id"]
-
-4. batch_learning создаётся ТОЛЬКО через:
-
-   LearningMemory.record_batch_learning()
+3. Все остальные изменения из v1.6 сохранены.
 
 ============================================================
 """
@@ -259,7 +242,7 @@ logger = logging.getLogger(__name__)
 # MODULE
 # ============================================================
 
-MODULE_VERSION = "1.6"
+MODULE_VERSION = "1.7"
 MODULE_NAME = "FAJ ETC Learning Engine"
 
 PROCESSED_EVENT_TYPE = "batch_learning"
@@ -524,7 +507,7 @@ class ETCLearningEngine:
         base_result["analysis"] = analysis
 
         # ----------------------------------------------------
-        # ANALYSIS STATUS (v1.2 контракт)
+        # ANALYSIS STATUS (v1.3 контракт)
         # ----------------------------------------------------
 
         if not analysis.get(
@@ -760,7 +743,7 @@ class ETCLearningEngine:
             }
 
         # ----------------------------------------------------
-        # VALIDATE ANALYSIS (v1.2 контракт)
+        # VALIDATE ANALYSIS (v1.3 контракт)
         # ----------------------------------------------------
 
         if not isinstance(
@@ -1729,6 +1712,14 @@ class ETCLearningEngine:
 
             event_type = batch_learning
             reference_id = match_id
+
+        ИСПРАВЛЕНИЕ v1.7:
+
+            version=MODULE_VERSION         → удалено
+            metadata={...}                 → удалено
+            reason=...                     → добавлено
+            algorithm=...                  → добавлено
+            model_version=MODULE_VERSION   → добавлено
         """
 
         # ----------------------------------------------------
@@ -1753,14 +1744,13 @@ class ETCLearningEngine:
 
         try:
 
+            # ✅ ИСПРАВЛЕНО v1.7
+            # Соответствует LearningMemory.record_batch_learning()
             memory_id = self.memory.record_batch_learning(
                 match_id=match_id,
-                version=MODULE_VERSION,
-                metadata={
-                    "source": "ETCLearningEngine",
-                    "algorithm": "ETC.LearningEngine",
-                    "reason": "Матч успешно обработан ETC Learning Engine."
-                }
+                reason="Матч успешно обработан ETC Learning Engine.",
+                algorithm="ETC.LearningEngine",
+                model_version=MODULE_VERSION,
             )
 
             if memory_id is None:
@@ -2357,23 +2347,35 @@ if __name__ == "__main__":
         print("=" * 70)
 
         print()
-        print("ИЗМЕНЕНИЯ v1.6")
+        print("ИЗМЕНЕНИЯ v1.7")
         print("-" * 70)
 
         print(
-            "1. Использование LearningMemory.record_batch_learning()"
+            "1. Исправлен вызов LearningMemory.record_batch_learning():"
         )
 
         print(
-            "2. Четкое разделение processed / already_processed / failed"
+            "   version=MODULE_VERSION         → удалено"
         )
 
         print(
-            "3. Контракт с StatisticalAnalyzer v1.2"
+            "   metadata={...}                 → удалено"
         )
 
         print(
-            "4. batch_completed = processed == total and failed == 0 and already_processed == 0"
+            "   reason=...                     → добавлено"
+        )
+
+        print(
+            "   algorithm=...                  → добавлено"
+        )
+
+        print(
+            "   model_version=MODULE_VERSION   → добавлено"
+        )
+
+        print(
+            "2. Контракт с LearningMemory v2.1 полностью соблюдён."
         )
 
     except Exception as exc:
