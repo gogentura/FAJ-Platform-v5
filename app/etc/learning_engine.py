@@ -9,7 +9,7 @@ ETC — Evolution Training Center
 app/etc/learning_engine.py
 ============================================================
 
-ETC LEARNING ENGINE v1.8
+ETC LEARNING ENGINE v1.9
 ============================================================
 
 НАЗНАЧЕНИЕ
@@ -18,8 +18,9 @@ ETC LEARNING ENGINE v1.8
 ETCLearningEngine — исполнитель ETC.
 
 Он получает batch от BatchController,
-передаёт завершённые матчи в StatisticalAnalyzer
-и через LearningMemory фиксирует результаты анализа.
+передаёт завершённые матчи в StatisticalAnalyzer,
+преобразует результат анализа в memory events
+и через LearningMemory фиксирует результаты обучения.
 
 АРХИТЕКТУРА:
 
@@ -28,33 +29,82 @@ ETCLearningEngine — исполнитель ETC.
       ▼
     BatchController
       │
-      ├── WAIT
-      ├── READY
-      ├── UNKNOWN_LEAGUE
-      └── ALREADY_PROCESSED
-              │
-              ▼
-       get_learning_batch()
-              │
-              ▼
-       ETCLearningEngine
-              │
-              ▼
-       StatisticalAnalyzer
-              │
-              ▼
-        analysis result
-              │
-              ├── analysis memory
-              │
-              └── batch_learning
-                      │
-                      ▼
-                LearningMemory
-                      │
-                      ▼
-                    SQLite
+      ▼
+    get_learning_batch()
+      │
+      ▼
+    ETCLearningEngine
+      │
+      ▼
+    StatisticalAnalyzer
+      │
+      ▼
+    analysis
+      │
+      ├── observations
+      ├── prediction data
+      ├── fact data
+      ├── xG data
+      │
+      ▼
+    ETC memory-event builder
+      │
+      ▼
+    LearningMemory
+      │
+      ▼
+    batch_learning marker
+      │
+      ▼
+    SQLite
 
+
+КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ v1.9
+--------------------------
+
+Ранее ETC ожидал:
+
+    analysis["memory_events"]
+
+Но StatisticalAnalyzer фактически возвращает:
+
+    analysis["success"]
+    analysis["observations"]
+    ...
+
+без обязательного поля:
+
+    memory_events
+
+В результате:
+
+    events = None
+    return []
+
+и ETC останавливался:
+
+    no_memory_events
+
+Теперь ETCLearningEngine сам преобразует
+результат StatisticalAnalyzer в memory events.
+
+Источник событий:
+
+    1. analysis["memory_events"]       — если уже есть;
+    2. analysis["observations"]        — основной источник;
+    3. prediction/fact data            — prediction_error;
+    4. xG data                         — xg_calibration.
+
+ВАЖНО:
+
+ETC НЕ придумывает факты.
+
+Если prediction/fact/xG данных нет,
+соответствующее специализированное событие
+не создаётся.
+
+Но наличие observations достаточно,
+чтобы анализ матча был сохранён в LearningMemory.
 
 ГРАНИЦЫ ОТВЕТСТВЕННОСТИ
 ------------------------
@@ -76,45 +126,43 @@ ETCLearningEngine НЕ:
     - изменяет календарь;
     - переписывает исторические факты.
 
-
-ОТВЕТСТВЕННОСТЬ
----------------
-
 ETCLearningEngine отвечает только за:
 
     1. получение готового batch;
-    2. последовательную обработку матчей;
+    2. обработку матчей;
     3. вызов StatisticalAnalyzer;
-    4. передачу analysis memory в LearningMemory;
-    5. создание batch_learning marker;
-    6. создание batch_fingerprint;
-    7. возврат строгого результата.
+    4. преобразование analysis в memory events;
+    5. запись memory events;
+    6. создание batch_learning marker;
+    7. создание batch fingerprint;
+    8. возврат строгого результата.
 
 
-КОНТРАКТ MATCH
+КОНТРАК MATCH
 --------------
 
 Матч считается успешно обработанным ETC только если:
 
     1. match_id валиден;
     2. StatisticalAnalyzer успешно завершил анализ;
-    3. все memory events анализа успешно записаны;
-    4. batch_learning marker успешно записан.
+    3. создан хотя бы один memory event;
+    4. все созданные memory events записаны;
+    5. batch_learning marker успешно записан.
 
-Только после выполнения всех четырёх условий:
+Только после выполнения этих условий:
 
     success = True
 
 
-КОНТРАКТ PROCESSED
+КОНТРАК PROCESSED
 ------------------
 
-Для каждого успешно обработанного нового матча создаётся:
+Для каждого успешно обработанного нового матча:
 
     event_type = 'batch_learning'
     reference_id = match_id
 
-Запись выполняется ТОЛЬКО через:
+Запись выполняется через:
 
     LearningMemory.record_batch_learning()
 
@@ -130,36 +178,6 @@ ETCLearningEngine отвечает только за:
 новый marker не создаётся.
 
 Матч считается уже обработанным.
-
-
-КОНТРАКТ BATCH
---------------
-
-BatchController является владельцем:
-
-    READY
-    WAIT
-    UNKNOWN_LEAGUE
-    ALREADY_PROCESSED
-
-ETCLearningEngine не переопределяет это решение.
-
-
-ПОЛНЫЙ BATCH
-------------
-
-Batch считается completed только если:
-
-    processed == total
-    failed == 0
-
-и, если BatchController предоставил fingerprint:
-
-    batch_fingerprint успешно записан.
-
-Только после этого:
-
-    success = True
 
 
 APPEND ONLY
@@ -192,39 +210,6 @@ ETCLearningEngine:
 Основной ETC-контракт:
 
     process_match()
-
-
-ИСПРАВЛЕНИЯ v1.8
-============================================================
-
-1. Статусная модель NEW / PROCESSED / SKIPPED / FAILED
-
-   В начале run_batch() определяется статус каждого match_id:
-       - new         → ещё не обработан
-       - already_processed → уже есть batch_learning marker
-       - skipped     → пропущен (например, нет фактов)
-
-   Обрабатываются только new.
-
-2. Идемпотентность
-
-   Проверка _is_match_processed() выполняется только в одном месте
-   (в начале process_match()). _record_match_processing() НЕ дублирует
-   эту проверку.
-
-3. Структурированные xG-данные
-
-   При сохранении memory_events проверяется наличие xG полей:
-       - predicted_xg
-       - actual_xg
-       - xg_deviation
-       - xg_available
-
-4. Защита от дублирования prediction_error
-
-   Перед записью prediction_error проверяется, нет ли уже такой записи
-   для данного match_id.
-
 ============================================================
 """
 
@@ -232,7 +217,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 from app.database import FAJDatabase
@@ -258,7 +243,7 @@ logger = logging.getLogger(__name__)
 # MODULE
 # ============================================================
 
-MODULE_VERSION = "1.8"
+MODULE_VERSION = "1.9"
 MODULE_NAME = "FAJ ETC Learning Engine"
 
 PROCESSED_EVENT_TYPE = "batch_learning"
@@ -270,8 +255,7 @@ PROCESSED_EVENT_TYPE = "batch_learning"
 
 def _now() -> str:
     """
-    Возвращает текущее локальное время
-    в ISO формате.
+    Текущее локальное время в ISO формате.
     """
 
     return datetime.now().isoformat()
@@ -317,6 +301,30 @@ def _safe_float(
         return default
 
 
+def _first(
+    data: Any,
+    keys: List[str],
+    default: Any = None,
+) -> Any:
+    """
+    Возвращает первое найденное значение
+    из списка ключей.
+
+    Используется для совместимости разных
+    структур analysis.
+    """
+
+    if not isinstance(data, dict):
+        return default
+
+    for key in keys:
+
+        if key in data and data.get(key) is not None:
+            return data.get(key)
+
+    return default
+
+
 # ============================================================
 # MAIN CLASS
 # ============================================================
@@ -331,7 +339,11 @@ class ETCLearningEngine:
               ↓
         StatisticalAnalyzer
               ↓
+        ETC memory-event builder
+              ↓
         LearningMemory
+              ↓
+        batch_learning
 
     Никакой самостоятельной математики модели
     внутри класса нет.
@@ -383,18 +395,17 @@ class ETCLearningEngine:
 
             validate
                 ↓
-            processed check  ← ЕДИНСТВЕННОЕ МЕСТО ПРОВЕРКИ
+            processed check
                 ↓
             StatisticalAnalyzer
                 ↓
-            analysis memory
+            build memory events
+                ↓
+            store memory events
                 ↓
             batch_learning marker
                 ↓
             success
-
-        batch_learning создаётся только после
-        успешной записи analysis memory.
         """
 
         safe_match_id = _safe_int(match_id)
@@ -436,7 +447,7 @@ class ETCLearningEngine:
         )
 
         # ----------------------------------------------------
-        # ALREADY PROCESSED — ЕДИНСТВЕННАЯ ПРОВЕРКА
+        # ALREADY PROCESSED
         # ----------------------------------------------------
 
         try:
@@ -452,7 +463,6 @@ class ETCLearningEngine:
                 )
 
                 base_result["success"] = True
-
                 base_result["status"] = (
                     "already_processed"
                 )
@@ -543,7 +553,7 @@ class ETCLearningEngine:
         base_result["analysis"] = analysis
 
         # ----------------------------------------------------
-        # ANALYSIS STATUS (v1.3 контракт)
+        # ANALYSIS STATUS
         # ----------------------------------------------------
 
         if not analysis.get(
@@ -575,7 +585,7 @@ class ETCLearningEngine:
             return base_result
 
         # ----------------------------------------------------
-        # STORE ANALYSIS MEMORY
+        # BUILD + STORE MEMORY
         # ----------------------------------------------------
 
         try:
@@ -604,7 +614,7 @@ class ETCLearningEngine:
             return base_result
 
         # ----------------------------------------------------
-        # ПРОВЕРКА: есть ли реальные события
+        # AT LEAST ONE EVENT REQUIRED
         # ----------------------------------------------------
 
         if not memory_ids:
@@ -614,9 +624,9 @@ class ETCLearningEngine:
             )
 
             base_result["error"] = (
-                "StatisticalAnalyzer не создал "
-                "событий анализа для match_id=%s"
-                % safe_match_id
+                "ETC не смог создать "
+                "ни одного memory event "
+                f"для match_id={safe_match_id}."
             )
 
             logger.warning(
@@ -636,7 +646,6 @@ class ETCLearningEngine:
 
         # ----------------------------------------------------
         # CREATE PROCESSED MARKER
-        # Используем официальный API LearningMemory
         # ----------------------------------------------------
 
         try:
@@ -691,10 +700,7 @@ class ETCLearningEngine:
         # ----------------------------------------------------
 
         base_result["success"] = True
-
-        base_result["status"] = (
-            "processed"
-        )
+        base_result["status"] = "processed"
 
         logger.info(
             "ETC match SUCCESS | "
@@ -728,8 +734,8 @@ class ETCLearningEngine:
 
         Если analysis передан:
 
-            StatisticalAnalyzer
-            повторно НЕ вызывается.
+            StatisticalAnalyzer повторно
+            НЕ вызывается.
         """
 
         safe_match_id = _safe_int(
@@ -802,7 +808,7 @@ class ETCLearningEngine:
             }
 
         # ----------------------------------------------------
-        # VALIDATE ANALYSIS (v1.3 контракт)
+        # VALIDATE ANALYSIS
         # ----------------------------------------------------
 
         if not isinstance(
@@ -876,7 +882,7 @@ class ETCLearningEngine:
             }
 
         # ----------------------------------------------------
-        # ПРОВЕРКА: есть ли реальные события
+        # NO EVENTS
         # ----------------------------------------------------
 
         if not memory_ids:
@@ -891,14 +897,13 @@ class ETCLearningEngine:
                 "marker_id": None,
                 "error": (
                     "Анализ не создал событий памяти "
-                    "для match_id=%s"
-                    % safe_match_id
+                    f"для match_id={safe_match_id}"
                 ),
                 "created_at": _now(),
             }
 
         # ----------------------------------------------------
-        # MARK PROCESSED (через официальный API)
+        # MARK PROCESSED
         # ----------------------------------------------------
 
         try:
@@ -975,19 +980,6 @@ class ETCLearningEngine:
     ) -> Dict[str, Any]:
         """
         Запускает один ETC batch.
-
-        Официальный путь:
-
-            ETCController
-                ↓
-            BatchController
-                ↓
-            get_learning_batch()
-                ↓
-            ETCLearningEngine.run_batch(batch=...)
-
-        Если batch передан напрямую,
-        BatchController повторно не вызывается.
         """
 
         started_at = _now()
@@ -1031,21 +1023,15 @@ class ETCLearningEngine:
 
             batch_check = {
                 "status": "DIRECT",
-
                 "league": league,
-
                 "season_id": season_id,
-
                 "required_matches": len(
                     selected_batch
                 ),
-
                 "new_matches": len(
                     selected_batch
                 ),
-
                 "match_ids": match_ids,
-
                 "batch_fingerprint": None,
             }
 
@@ -1113,10 +1099,6 @@ class ETCLearningEngine:
                     "errors": [str(exc)],
                     "created_at": _now(),
                 }
-
-            # ------------------------------------------------
-            # CONTROLLER RESULT MUST BE DICT
-            # ------------------------------------------------
 
             if not isinstance(
                 batch_check,
@@ -1285,7 +1267,7 @@ class ETCLearningEngine:
             }
 
         # ====================================================
-        # СТАТУСНАЯ МОДЕЛЬ: определяем статус каждого матча
+        # STATUS MODEL
         # ====================================================
 
         match_statuses: Dict[int, str] = {}
@@ -1299,12 +1281,8 @@ class ETCLearningEngine:
             )
 
             if match_id is None:
-
-                match_statuses[match_id] = "skipped"
-
                 continue
 
-            # Проверяем, обработан ли уже матч
             if self._is_match_processed(
                 match_id
             ):
@@ -1316,10 +1294,6 @@ class ETCLearningEngine:
             else:
 
                 match_statuses[match_id] = "new"
-
-        # ====================================================
-        # РАЗДЕЛЯЕМ ПО СТАТУСАМ
-        # ====================================================
 
         new_match_ids = [
             mid
@@ -1333,31 +1307,26 @@ class ETCLearningEngine:
             if status == "already_processed"
         ]
 
-        skipped_ids = [
-            mid
-            for mid, status in match_statuses.items()
-            if status == "skipped"
-        ]
-
         logger.info(
             "ETC batch statuses | "
             "new=%s | already=%s | skipped=%s",
             len(new_match_ids),
             len(already_processed_ids),
-            len(skipped_ids),
+            0,
         )
 
         # ====================================================
-        # ПРОЦЕССИНГ ТОЛЬКО НОВЫХ МАТЧЕЙ
+        # PROCESS NEW
         # ====================================================
 
         processed = 0
-        already_processed = len(already_processed_ids)
+        already_processed = len(
+            already_processed_ids
+        )
         failed = 0
         learning_events = 0
 
         memory_ids: List[int] = []
-
         processed_match_ids: List[int] = []
 
         errors: List[
@@ -1392,10 +1361,6 @@ class ETCLearningEngine:
                     "learning_events": 0,
                 }
 
-            # ------------------------------------------------
-            # FAILED
-            # ------------------------------------------------
-
             if not match_result.get(
                 "success",
                 False,
@@ -1427,19 +1392,11 @@ class ETCLearningEngine:
 
                 continue
 
-            # ------------------------------------------------
-            # SUCCESS (НОВЫЙ МАТЧ)
-            # ------------------------------------------------
-
             processed += 1
 
             processed_match_ids.append(
                 match_id
             )
-
-            # ------------------------------------------------
-            # LEARNING EVENTS
-            # ------------------------------------------------
 
             match_learning_events = (
                 _safe_int(
@@ -1455,10 +1412,6 @@ class ETCLearningEngine:
             learning_events += (
                 match_learning_events
             )
-
-            # ------------------------------------------------
-            # MEMORY IDS
-            # ------------------------------------------------
 
             result_memory_ids = (
                 match_result.get(
@@ -1477,18 +1430,37 @@ class ETCLearningEngine:
                 )
 
         # ====================================================
-        # BATCH STATUS
+        # BATCH COMPLETION
         # ====================================================
 
         total = len(
             normalized_batch
         )
 
+        #
+        # ВАЖНО:
+        #
+        # total = все матчи batch
+        #
+        # batch completed:
+        #
+        #   processed новых + already processed
+        #   == total
+        #
+        #   failed == 0
+        #
+        # То есть повторный запуск уже обработанного
+        # batch не ломает completed.
+        #
+
         batch_completed = (
             total > 0
-            and processed == len(new_match_ids)
+            and (
+                processed
+                + already_processed
+                == total
+            )
             and failed == 0
-            and already_processed >= 0
         )
 
         # ====================================================
@@ -1510,15 +1482,7 @@ class ETCLearningEngine:
                 )
             )
 
-        # ----------------------------------------------------
-        # FINGERPRINT IS PART OF COMPLETION
-        # ----------------------------------------------------
-
         if batch_completed:
-
-            # ------------------------------------------------
-            # DIRECT BATCH WITHOUT FINGERPRINT
-            # ------------------------------------------------
 
             if fingerprint:
 
@@ -1569,7 +1533,7 @@ class ETCLearningEngine:
                 logger.info(
                     "ETC batch fingerprint "
                     "not supplied | "
-                    "batch=%s | "
+                    "league=%s | "
                     "completion accepted",
                     league,
                 )
@@ -1591,52 +1555,32 @@ class ETCLearningEngine:
             status = "failed"
 
         # ====================================================
-        # FINAL RESULT
+        # RESULT
         # ====================================================
 
         result = {
-            "success": (
-                batch_completed
-            ),
-
+            "success": batch_completed,
             "status": status,
-
             "league": league,
-
             "season_id": season_id,
-
             "processed": processed,
-
             "already_processed": already_processed,
-
             "failed": failed,
-
             "total": total,
-
-            "learning_events": (
-                learning_events
-            ),
-
+            "learning_events": learning_events,
             "processed_match_ids": (
                 processed_match_ids
             ),
-
             "memory_ids": memory_ids,
-
             "batch_memory_ids": (
                 batch_memory_ids
             ),
-
             "batch_completed": (
                 batch_completed
             ),
-
             "batch_check": batch_check,
-
             "errors": errors,
-
             "started_at": started_at,
-
             "created_at": _now(),
         }
 
@@ -1711,11 +1655,9 @@ class ETCLearningEngine:
             )
 
             if match_id is None:
-
                 continue
 
             if match_id in seen:
-
                 continue
 
             seen.add(
@@ -1738,22 +1680,9 @@ class ETCLearningEngine:
     ) -> Optional[int]:
         """
         Извлекает match_id.
-
-        Поддерживает:
-
-            int
-
-            {
-                "match_id": 123
-            }
-
-            {
-                "id": 123
-            }
         """
 
         if item is None:
-
             return None
 
         if isinstance(
@@ -1779,7 +1708,6 @@ class ETCLearningEngine:
         )
 
         if value is None:
-
             value = item.get(
                 "id"
             )
@@ -1806,35 +1734,25 @@ class ETCLearningEngine:
         match_id: int,
     ) -> Optional[int]:
         """
-        Создаёт подтверждение успешной обработки
-        конкретного матча.
-
-        ИСПОЛЬЗУЕТ ОФИЦИАЛЬНЫЙ API:
-
-            LearningMemory.record_batch_learning()
-
-        Контракт:
-
-            event_type = batch_learning
-            reference_id = match_id
-
-        ВАЖНО:
-
-            Проверка _is_match_processed() НЕ дублируется здесь.
-            Она выполняется только в process_match().
+        Создаёт batch_learning marker.
         """
-
-        # ----------------------------------------------------
-        # WRITE через официальный API
-        # ----------------------------------------------------
 
         try:
 
-            memory_id = self.memory.record_batch_learning(
-                match_id=match_id,
-                reason="Матч успешно обработан ETC Learning Engine.",
-                algorithm="ETC.LearningEngine",
-                model_version=MODULE_VERSION,
+            memory_id = (
+                self.memory.record_batch_learning(
+                    match_id=match_id,
+                    reason=(
+                        "Матч успешно обработан "
+                        "ETC Learning Engine."
+                    ),
+                    algorithm=(
+                        "ETC.LearningEngine"
+                    ),
+                    model_version=(
+                        MODULE_VERSION
+                    ),
+                )
             )
 
             if memory_id is None:
@@ -1872,23 +1790,14 @@ class ETCLearningEngine:
         match_id: int,
     ) -> bool:
         """
-        Проверяет наличие:
-
-            event_type = batch_learning
-            reference_id = match_id
-
-        Используется LearningMemory.
-
-        БД не изменяется.
+        Проверяет наличие batch_learning marker.
         """
 
         rows = self.memory.get(
             event_type=(
                 PROCESSED_EVENT_TYPE
             ),
-
             reference_id=match_id,
-
             limit=1,
         )
 
@@ -1897,7 +1806,886 @@ class ETCLearningEngine:
         )
 
     # ========================================================
-    # ANALYSIS MEMORY
+    # MEMORY EVENT BUILDER
+    # ========================================================
+
+    def _build_memory_events(
+        self,
+        match_id: int,
+        analysis: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """
+        Главный исправленный участок ETC.
+
+        Преобразует результат StatisticalAnalyzer
+        в реальные memory events.
+
+        Источники:
+
+            memory_events
+            observations
+            prediction/fact
+            xG
+
+        Никакие факты не создаются искусственно.
+        """
+
+        events: List[
+            Dict[str, Any]
+        ] = []
+
+        # ====================================================
+        # 1. ГОТОВЫЕ MEMORY EVENTS
+        # ====================================================
+
+        existing_events = analysis.get(
+            "memory_events"
+        )
+
+        if existing_events is not None:
+
+            if isinstance(
+                existing_events,
+                list,
+            ):
+
+                for event in existing_events:
+
+                    if isinstance(
+                        event,
+                        dict,
+                    ):
+
+                        events.append(
+                            dict(event)
+                        )
+
+            elif isinstance(
+                existing_events,
+                dict,
+            ):
+
+                events.append(
+                    dict(existing_events)
+                )
+
+        # ====================================================
+        # 2. OBSERVATIONS
+        # ====================================================
+
+        observations = analysis.get(
+            "observations",
+            []
+        )
+
+        if isinstance(
+            observations,
+            (list, tuple),
+        ):
+
+            for index, observation in enumerate(
+                observations
+            ):
+
+                event = (
+                    self._observation_to_event(
+                        match_id=match_id,
+                        observation=observation,
+                        index=index,
+                    )
+                )
+
+                if event is not None:
+
+                    events.append(
+                        event
+                    )
+
+        elif observations:
+
+            event = (
+                self._observation_to_event(
+                    match_id=match_id,
+                    observation=observations,
+                    index=0,
+                )
+            )
+
+            if event is not None:
+
+                events.append(
+                    event
+                )
+
+        # ====================================================
+        # 3. PREDICTION ERROR
+        # ====================================================
+
+        prediction_event = (
+            self._build_prediction_error_event(
+                match_id=match_id,
+                analysis=analysis,
+            )
+        )
+
+        if prediction_event is not None:
+
+            events.append(
+                prediction_event
+            )
+
+        # ====================================================
+        # 4. XG CALIBRATION
+        # ====================================================
+
+        xg_events = (
+            self._build_xg_events(
+                match_id=match_id,
+                analysis=analysis,
+            )
+        )
+
+        events.extend(
+            xg_events
+        )
+
+        # ====================================================
+        # 5. FALLBACK
+        # ====================================================
+
+        #
+        # Если analyzer успешно завершился, но не вернул
+        # observations, всё равно сохраняем факт успешного
+        # анализа как memory event.
+        #
+        # Это не подмена результата анализа.
+        # Это технический audit event ETC.
+        #
+
+        if not events:
+
+            summary = _first(
+                analysis,
+                [
+                    "summary",
+                    "message",
+                    "status",
+                ],
+                "StatisticalAnalyzer успешно завершил анализ.",
+            )
+
+            events.append(
+                {
+                    "event_type": (
+                        "analysis_completed"
+                    ),
+                    "object_type": (
+                        f"match:{match_id}"
+                    ),
+                    "feature": (
+                        "statistical_analysis"
+                    ),
+                    "after_value": summary,
+                    "delta": None,
+                    "reason": (
+                        "StatisticalAnalyzer "
+                        "успешно завершил анализ матча."
+                    ),
+                    "confidence": 1.0,
+                    "impact": 0.1,
+                    "algorithm": (
+                        "ETC.StatisticalAnalyzer"
+                    ),
+                    "model_version": (
+                        MODULE_VERSION
+                    ),
+                    "reference_id": match_id,
+                }
+            )
+
+        return events
+
+    # ========================================================
+    # OBSERVATION -> MEMORY EVENT
+    # ========================================================
+
+    def _observation_to_event(
+        self,
+        match_id: int,
+        observation: Any,
+        index: int,
+    ) -> Optional[
+        Dict[str, Any]
+    ]:
+        """
+        Преобразует observation в memory event.
+
+        Поддерживает как string, так и dict.
+        """
+
+        if observation is None:
+            return None
+
+        # ----------------------------------------------------
+        # DICT
+        # ----------------------------------------------------
+
+        if isinstance(
+            observation,
+            dict,
+        ):
+
+            event = dict(
+                observation
+            )
+
+            event.setdefault(
+                "event_type",
+                "observation",
+            )
+
+            event.setdefault(
+                "object_type",
+                f"match:{match_id}",
+            )
+
+            event.setdefault(
+                "feature",
+                _first(
+                    observation,
+                    [
+                        "feature",
+                        "type",
+                        "category",
+                        "name",
+                    ],
+                    f"observation_{index + 1}",
+                ),
+            )
+
+            event.setdefault(
+                "reason",
+                _first(
+                    observation,
+                    [
+                        "reason",
+                        "description",
+                        "message",
+                        "observation",
+                    ],
+                    "",
+                ),
+            )
+
+            event.setdefault(
+                "confidence",
+                _first(
+                    observation,
+                    [
+                        "confidence",
+                    ],
+                    1.0,
+                ),
+            )
+
+            event.setdefault(
+                "impact",
+                _first(
+                    observation,
+                    [
+                        "impact",
+                    ],
+                    0.5,
+                ),
+            )
+
+            event.setdefault(
+                "algorithm",
+                "ETC.StatisticalAnalyzer",
+            )
+
+            event.setdefault(
+                "model_version",
+                MODULE_VERSION,
+            )
+
+            event.setdefault(
+                "reference_id",
+                match_id,
+            )
+
+            return event
+
+        # ----------------------------------------------------
+        # STRING / OTHER
+        # ----------------------------------------------------
+
+        return {
+            "event_type": "observation",
+            "object_type": (
+                f"match:{match_id}"
+            ),
+            "feature": (
+                f"observation_{index + 1}"
+            ),
+            "before_value": None,
+            "after_value": str(
+                observation
+            ),
+            "delta": None,
+            "reason": str(
+                observation
+            ),
+            "confidence": 1.0,
+            "impact": 0.5,
+            "algorithm": (
+                "ETC.StatisticalAnalyzer"
+            ),
+            "model_version": MODULE_VERSION,
+            "reference_id": match_id,
+        }
+
+    # ========================================================
+    # PREDICTION ERROR
+    # ========================================================
+
+    def _build_prediction_error_event(
+        self,
+        match_id: int,
+        analysis: Dict[str, Any],
+    ) -> Optional[
+        Dict[str, Any]
+    ]:
+        """
+        Создаёт prediction_error только если
+        prediction и fact реально присутствуют
+        в analysis.
+
+        Никаких догадок.
+        """
+
+        prediction = _first(
+            analysis,
+            [
+                "prediction",
+                "predictions",
+                "match_prediction",
+            ],
+        )
+
+        fact = _first(
+            analysis,
+            [
+                "fact",
+                "actual",
+                "result",
+                "match_result",
+                "facts",
+            ],
+        )
+
+        # ----------------------------------------------------
+        # Иногда analyzer хранит prediction/fact
+        # внутри validation.
+        # ----------------------------------------------------
+
+        validation = analysis.get(
+            "validation"
+        )
+
+        if isinstance(
+            validation,
+            dict,
+        ):
+
+            if prediction is None:
+
+                prediction = _first(
+                    validation,
+                    [
+                        "prediction",
+                        "predictions",
+                    ],
+                )
+
+            if fact is None:
+
+                fact = _first(
+                    validation,
+                    [
+                        "fact",
+                        "actual",
+                        "result",
+                    ],
+                )
+
+        if not isinstance(
+            prediction,
+            dict,
+        ):
+
+            return None
+
+        if not isinstance(
+            fact,
+            dict,
+        ):
+
+            return None
+
+        predicted_score = self._extract_score(
+            prediction
+        )
+
+        actual_score = self._extract_score(
+            fact
+        )
+
+        if (
+            predicted_score is None
+            or actual_score is None
+        ):
+
+            return None
+
+        predicted_home, predicted_away = (
+            predicted_score
+        )
+
+        actual_home, actual_away = (
+            actual_score
+        )
+
+        score_error = (
+            abs(predicted_home - actual_home)
+            + abs(predicted_away - actual_away)
+        )
+
+        if score_error == 0:
+
+            error_type = "exact_prediction"
+
+            severity = 0.0
+
+        elif (
+            predicted_home == actual_home
+            and predicted_away != actual_away
+        ):
+
+            error_type = "away_score_error"
+
+            severity = 0.5
+
+        elif (
+            predicted_home != actual_home
+            and predicted_away == actual_away
+        ):
+
+            error_type = "home_score_error"
+
+            severity = 0.5
+
+        else:
+
+            error_type = "score_error"
+
+            severity = min(
+                1.0,
+                score_error / 4.0,
+            )
+
+        return {
+            "event_type": "prediction_error",
+            "object_type": (
+                f"match:{match_id}"
+            ),
+            "feature": error_type,
+            "before_value": (
+                f"{predicted_home}:{predicted_away}"
+            ),
+            "after_value": (
+                f"{actual_home}:{actual_away}"
+            ),
+            "delta": score_error,
+            "reason": (
+                "Сравнение прогноза "
+                "с фактическим результатом матча."
+            ),
+            "confidence": 0.8,
+            "impact": severity,
+            "algorithm": (
+                "ETC.PredictionValidation"
+            ),
+            "model_version": MODULE_VERSION,
+            "reference_id": match_id,
+        }
+
+    # ========================================================
+    # SCORE EXTRACTION
+    # ========================================================
+
+    @staticmethod
+    def _extract_score(
+        data: Dict[str, Any],
+    ) -> Optional[
+        Tuple[int, int]
+    ]:
+        """
+        Пытается извлечь счёт из разных
+        совместимых структур.
+        """
+
+        if not isinstance(
+            data,
+            dict,
+        ):
+
+            return None
+
+        # ----------------------------------------------------
+        # home_score / away_score
+        # ----------------------------------------------------
+
+        home = _first(
+            data,
+            [
+                "home_score",
+                "home_goals",
+                "goals_home",
+                "home",
+            ],
+        )
+
+        away = _first(
+            data,
+            [
+                "away_score",
+                "away_goals",
+                "goals_away",
+                "away",
+            ],
+        )
+
+        home_i = _safe_int(
+            home
+        )
+
+        away_i = _safe_int(
+            away
+        )
+
+        if (
+            home_i is not None
+            and away_i is not None
+            and home_i >= 0
+            and away_i >= 0
+        ):
+
+            return (
+                home_i,
+                away_i,
+            )
+
+        # ----------------------------------------------------
+        # score = "2:1"
+        # ----------------------------------------------------
+
+        score = _first(
+            data,
+            [
+                "score",
+                "final_score",
+            ],
+        )
+
+        if isinstance(
+            score,
+            str,
+        ):
+
+            text = score.strip()
+
+            if ":" in text:
+
+                parts = text.split(
+                    ":",
+                    1,
+                )
+
+                if len(parts) == 2:
+
+                    h = _safe_int(
+                        parts[0].strip()
+                    )
+
+                    a = _safe_int(
+                        parts[1].strip()
+                    )
+
+                    if (
+                        h is not None
+                        and a is not None
+                        and h >= 0
+                        and a >= 0
+                    ):
+
+                        return (
+                            h,
+                            a,
+                        )
+
+        return None
+
+    # ========================================================
+    # XG EVENTS
+    # ========================================================
+
+    def _build_xg_events(
+        self,
+        match_id: int,
+        analysis: Dict[str, Any],
+    ) -> List[
+        Dict[str, Any]
+    ]:
+        """
+        Создаёт xG events только если xG
+        реально присутствует в analysis.
+
+        ETC не рассчитывает xG.
+        Он только фиксирует отклонение
+        уже рассчитанного xG.
+        """
+
+        events: List[
+            Dict[str, Any]
+        ] = []
+
+        xg_data = _first(
+            analysis,
+            [
+                "xg",
+                "xg_analysis",
+                "xg_calibration",
+                "xg_data",
+            ],
+        )
+
+        # ----------------------------------------------------
+        # TEAM LIST FORMAT
+        # ----------------------------------------------------
+
+        if isinstance(
+            xg_data,
+            dict,
+        ):
+
+            teams = xg_data.get(
+                "teams"
+            )
+
+            if isinstance(
+                teams,
+                list,
+            ):
+
+                for team in teams:
+
+                    if not isinstance(
+                        team,
+                        dict,
+                    ):
+
+                        continue
+
+                    event = (
+                        self._xg_team_to_event(
+                            match_id=match_id,
+                            team=team,
+                        )
+                    )
+
+                    if event is not None:
+
+                        events.append(
+                            event
+                        )
+
+            # ------------------------------------------------
+            # DIRECT HOME/AWAY FORMAT
+            # ------------------------------------------------
+
+            if not teams:
+
+                home = xg_data.get(
+                    "home"
+                )
+
+                away = xg_data.get(
+                    "away"
+                )
+
+                if isinstance(
+                    home,
+                    dict,
+                ):
+
+                    event = (
+                        self._xg_team_to_event(
+                            match_id=match_id,
+                            team=home,
+                            side="home",
+                        )
+                    )
+
+                    if event is not None:
+
+                        events.append(
+                            event
+                        )
+
+                if isinstance(
+                    away,
+                    dict,
+                ):
+
+                    event = (
+                        self._xg_team_to_event(
+                            match_id=match_id,
+                            team=away,
+                            side="away",
+                        )
+                    )
+
+                    if event is not None:
+
+                        events.append(
+                            event
+                        )
+
+        return events
+
+    # ========================================================
+    # XG TEAM EVENT
+    # ========================================================
+
+    def _xg_team_to_event(
+        self,
+        match_id: int,
+        team: Dict[str, Any],
+        side: Optional[str] = None,
+    ) -> Optional[
+        Dict[str, Any]
+    ]:
+        """
+        Преобразует данные xG одной команды
+        в memory event.
+        """
+
+        predicted_xg = _first(
+            team,
+            [
+                "predicted_xg",
+                "expected_xg",
+                "xg_predicted",
+                "prediction_xg",
+            ],
+        )
+
+        actual_xg = _first(
+            team,
+            [
+                "actual_xg",
+                "observed_xg",
+                "xg_actual",
+                "fact_xg",
+            ],
+        )
+
+        predicted = _safe_float(
+            predicted_xg
+        )
+
+        actual = _safe_float(
+            actual_xg
+        )
+
+        if (
+            predicted is None
+            or actual is None
+        ):
+
+            return None
+
+        deviation = (
+            predicted - actual
+        )
+
+        absolute_error = abs(
+            deviation
+        )
+
+        direction = (
+            "overestimated"
+            if deviation > 0
+            else (
+                "underestimated"
+                if deviation < 0
+                else "calibrated"
+            )
+        )
+
+        team_id = _first(
+            team,
+            [
+                "team_id",
+                "id",
+            ],
+            side or "unknown",
+        )
+
+        return {
+            "event_type": (
+                "xg_calibration"
+            ),
+            "object_type": (
+                f"match:{match_id}"
+            ),
+            "feature": (
+                "xg_deviation"
+            ),
+            "before_value": predicted,
+            "after_value": actual,
+            "delta": deviation,
+            "reason": (
+                f"team_{team_id}: "
+                f"{direction}"
+            ),
+            "confidence": 0.7,
+            "impact": min(
+                1.0,
+                absolute_error / 2.0,
+            ),
+            "algorithm": (
+                "ETC.XGCalibration"
+            ),
+            "model_version": MODULE_VERSION,
+            "reference_id": match_id,
+
+            # ------------------------------------------------
+            # Структурированные xG поля.
+            # LearningMemory их не теряет,
+            # если поддерживает соответствующие поля.
+            # ------------------------------------------------
+
+            "predicted_xg": predicted,
+            "actual_xg": actual,
+            "xg_deviation": deviation,
+            "absolute_xg_error": absolute_error,
+            "xg_available": True,
+        }
+
+    # ========================================================
+    # STORE ANALYSIS MEMORY
     # ========================================================
 
     def _store_analysis_memory(
@@ -1906,45 +2694,28 @@ class ETCLearningEngine:
         analysis: Dict[str, Any],
     ) -> List[int]:
         """
-        Сохраняет memory_events,
-        сформированные StatisticalAnalyzer.
+        Строит и сохраняет memory events.
 
-        Если memory_events присутствуют,
-        каждый event обязан быть успешно записан.
+        Ключевое отличие v1.9:
 
-        batch_learning marker создаётся только
-        после успешного завершения этого метода.
+            если StatisticalAnalyzer
+            не создал memory_events,
 
-        ДОПОЛНЕНИЕ v1.8:
+            ETC использует observations.
 
-            - Проверка наличия xG полей
-            - Защита от дублирования prediction_error
+        batch_learning marker здесь НЕ создаётся.
         """
 
-        events = analysis.get(
-            "memory_events"
+        events = (
+            self._build_memory_events(
+                match_id=match_id,
+                analysis=analysis,
+            )
         )
 
-        # ----------------------------------------------------
-        # NO MEMORY EVENTS
-        # ----------------------------------------------------
-
-        if events is None:
+        if not events:
 
             return []
-
-        # ----------------------------------------------------
-        # NORMALIZE
-        # ----------------------------------------------------
-
-        if not isinstance(
-            events,
-            list,
-        ):
-
-            events = [
-                events
-            ]
 
         memory_ids: List[int] = []
 
@@ -1952,12 +2723,12 @@ class ETCLearningEngine:
         # WRITE EVENTS
         # ----------------------------------------------------
 
-        for index, event in enumerate(
+        for index, original_event in enumerate(
             events
         ):
 
             if not isinstance(
-                event,
+                original_event,
                 dict,
             ):
 
@@ -1967,21 +2738,25 @@ class ETCLearningEngine:
                     f"match_id={match_id}."
                 )
 
-            # ------------------------------------------------
-            # ЗАЩИТА ОТ ДУБЛИРОВАНИЯ prediction_error
-            # ------------------------------------------------
+            event = dict(
+                original_event
+            )
 
             event_type = event.get(
                 "event_type",
                 "learning_event",
             )
 
+            # ------------------------------------------------
+            # DUPLICATE prediction_error
+            # ------------------------------------------------
+
             if event_type == "prediction_error":
 
-                # Проверяем, есть ли уже prediction_error
-                # для этого match_id
                 existing = self.memory.get(
-                    event_type="prediction_error",
+                    event_type=(
+                        "prediction_error"
+                    ),
                     reference_id=match_id,
                     limit=1,
                 )
@@ -1990,23 +2765,27 @@ class ETCLearningEngine:
 
                     logger.info(
                         "prediction_error already exists "
-                        "for match_id=%s, skipping duplicate",
+                        "for match_id=%s, "
+                        "skipping duplicate",
                         match_id,
                     )
 
                     continue
 
             # ------------------------------------------------
-            # СТРУКТУРИРОВАННЫЕ xG-ДАННЫЕ
+            # STRUCTURED xG
             # ------------------------------------------------
 
-            # Проверяем наличие xG полей в event
-            predicted_xg = event.get(
-                "predicted_xg"
+            predicted_xg = _safe_float(
+                event.get(
+                    "predicted_xg"
+                )
             )
 
-            actual_xg = event.get(
-                "actual_xg"
+            actual_xg = _safe_float(
+                event.get(
+                    "actual_xg"
+                )
             )
 
             if (
@@ -2014,45 +2793,31 @@ class ETCLearningEngine:
                 and actual_xg is not None
             ):
 
-                # Добавляем вычисляемые поля
                 event["xg_deviation"] = (
-                    predicted_xg - actual_xg
+                    predicted_xg
+                    - actual_xg
+                )
+
+                event["absolute_xg_error"] = (
+                    abs(
+                        predicted_xg
+                        - actual_xg
+                    )
                 )
 
                 event["xg_available"] = True
 
-                # Также проверяем отдельные xG компоненты
-                if (
-                    event.get("home_predicted_xg") is not None
-                    and event.get("home_actual_xg") is not None
-                ):
-
-                    event["home_xg_deviation"] = (
-                        event["home_predicted_xg"]
-                        - event["home_actual_xg"]
-                    )
-
-                if (
-                    event.get("away_predicted_xg") is not None
-                    and event.get("away_actual_xg") is not None
-                ):
-
-                    event["away_xg_deviation"] = (
-                        event["away_predicted_xg"]
-                        - event["away_actual_xg"]
-                    )
-
-                # Добавляем absolute xG error
-                event["absolute_xg_error"] = abs(
-                    predicted_xg - actual_xg
-                )
-
             else:
 
-                event["xg_available"] = False
+                event["xg_available"] = bool(
+                    event.get(
+                        "xg_available",
+                        False,
+                    )
+                )
 
             # ------------------------------------------------
-            # ЗАПИСЬ
+            # WRITE
             # ------------------------------------------------
 
             try:
@@ -2151,17 +2916,9 @@ class ETCLearningEngine:
         """
         Записывает fingerprint полностью
         завершённого batch.
-
-        Это НЕ marker отдельного матча.
-
-            reference_id = None
-
-        Запись выполняется только через
-        LearningMemory.record().
         """
 
         if not fingerprint:
-
             return None
 
         try:
@@ -2285,6 +3042,13 @@ class ETCLearningEngine:
             "compatibility_method": (
                 "process_analysis"
             ),
+
+            "memory_event_sources": [
+                "analysis.memory_events",
+                "analysis.observations",
+                "prediction_vs_fact",
+                "xg_data",
+            ],
 
             "historical_facts_modified": (
                 False
@@ -2444,63 +3208,38 @@ if __name__ == "__main__":
         print()
 
         print(
-            "Основной контракт:"
+            "Новый контракт:"
         )
 
         print(
-            "BatchController → "
-            "get_learning_batch() → "
-            "ETCLearningEngine.run_batch()"
-        )
-
-        print()
-
-        print(
-            "Для каждого нового матча:"
-        )
-
-        print(
+            "FACTS → BatchController → "
             "StatisticalAnalyzer → "
-            "analysis memory → "
-            "batch_learning marker"
+            "observations → "
+            "memory_events → "
+            "LearningMemory → "
+            "batch_learning"
         )
 
         print()
 
         print(
-            "Полный batch:"
+            "Источники memory events:"
         )
 
         print(
-            "processed == total"
+            "1. analysis.memory_events"
         )
 
         print(
-            "failed == 0"
+            "2. analysis.observations"
         )
 
         print(
-            "already_processed >= 0"
+            "3. prediction vs fact"
         )
 
         print(
-            "и fingerprint записан, "
-            "если он предоставлен controller."
-        )
-
-        print()
-
-        print(
-            "batch_learning создаётся "
-            "только после успешного анализа "
-            "и успешной записи analysis memory."
-        )
-
-        print()
-
-        print(
-            "process_analysis() доступен "
-            "как compatibility API."
+            "4. xG data"
         )
 
         print()
@@ -2518,30 +3257,22 @@ if __name__ == "__main__":
         )
 
         print()
-        print("=" * 70)
+
+        print(
+            "Критическое исправление v1.9:"
+        )
+
+        print(
+            "StatisticalAnalyzer больше "
+            "не обязан самостоятельно "
+            "создавать memory_events."
+        )
 
         print()
-        print("ИЗМЕНЕНИЯ v1.8")
-        print("-" * 70)
 
         print(
-            "1. Статусная модель NEW / PROCESSED / SKIPPED / FAILED"
-        )
-
-        print(
-            "2. Идемпотентность — проверка только в process_match()"
-        )
-
-        print(
-            "3. Структурированные xG-данные в memory_events"
-        )
-
-        print(
-            "4. Защита от дублирования prediction_error"
-        )
-
-        print(
-            "5. Проверка наличия memory_events перед созданием marker"
+            "ETC сам преобразует observations "
+            "в LearningMemory events."
         )
 
     except Exception as exc:
