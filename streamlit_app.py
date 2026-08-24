@@ -21,7 +21,8 @@ MAIN APPLICATION
     └── round_complete              ├── etc
                                      ├── system
                                      ├── diagnostic
-                                     ├── parser_diagnostic  ← НОВОЕ
+                                     ├── parser_diagnostic
+                                     ├── data_audit        ← НОВОЕ
                                      └── reset_data
 
 СИСТЕМА:
@@ -500,7 +501,7 @@ with st.sidebar:
         navigate("diagnostic")
 
     # ========================================================
-    # PARSER DIAGNOSTIC — НОВАЯ КНОПКА
+    # PARSER DIAGNOSTIC
     # ========================================================
 
     if st.button(
@@ -508,6 +509,16 @@ with st.sidebar:
         use_container_width=True,
     ):
         navigate("parser_diagnostic")
+
+    # ========================================================
+    # DATA AUDIT — НОВАЯ КНОПКА
+    # ========================================================
+
+    if st.button(
+        "🔍 Аудит данных FAJ",
+        use_container_width=True,
+    ):
+        navigate("data_audit")
 
     st.divider()
 
@@ -1127,6 +1138,165 @@ elif st.session_state.page == "parser_diagnostic":
 
         with st.expander("Техническая ошибка"):
             st.exception(exc)
+
+
+# ============================================================
+# DATA AUDIT — АУДИТ ДАННЫХ (НОВЫЙ БЛОК)
+# ============================================================
+
+elif st.session_state.page == "data_audit":
+
+    st.title("🔍 Аудит данных FAJ")
+
+    st.caption(
+        "Проверка данных, необходимых для Evolution Report"
+    )
+
+    st.divider()
+
+    # --------------------------------------------------------
+    # ИНФОРМАЦИЯ
+    # --------------------------------------------------------
+
+    st.info(
+        "Аудит проверяет наличие критических данных для "
+        "построения эволюционного отчета FAJ:\n\n"
+        "• Прогнозы (predictions)\n"
+        "• Фактические результаты (match_results)\n"
+        "• Learning Memory (learning_memory)\n"
+        "• Параметры модели (model_parameters)\n"
+        "• Связи между данными"
+    )
+
+    # --------------------------------------------------------
+    # КНОПКА ЗАПУСКА
+    # --------------------------------------------------------
+
+    if st.button(
+        "🔍 ЗАПУСТИТЬ АУДИТ",
+        type="primary",
+        use_container_width=True,
+    ):
+
+        try:
+
+            import subprocess
+
+            script_path = os.path.join(
+                ROOT_DIR,
+                "scripts",
+                "audit_faj_data.py",
+            )
+
+            if not os.path.exists(script_path):
+
+                st.error(
+                    f"❌ Скрипт аудита не найден: {script_path}\n\n"
+                    "Создайте файл `scripts/audit_faj_data.py`"
+                )
+
+            else:
+
+                with st.spinner(
+                    "🔍 Выполняется аудит базы FAJ..."
+                ):
+
+                    result = subprocess.run(
+                        [
+                            sys.executable,
+                            script_path,
+                        ],
+                        cwd=ROOT_DIR,
+                        capture_output=True,
+                        text=True,
+                    )
+
+                # --------------------------------------------
+                # ВЫВОД АУДИТА
+                # --------------------------------------------
+
+                if result.stdout:
+
+                    st.code(
+                        result.stdout,
+                        language="text",
+                    )
+
+                if result.stderr:
+
+                    with st.expander(
+                        "⚠️ Технический вывод"
+                    ):
+
+                        st.code(
+                            result.stderr,
+                            language="text",
+                        )
+
+                # --------------------------------------------
+                # РЕЗУЛЬТАТ
+                # --------------------------------------------
+
+                if result.returncode == 0:
+
+                    st.success(
+                        "✅ Аудит завершён. "
+                        "Критические данные присутствуют."
+                    )
+
+                else:
+
+                    st.warning(
+                        "⚠️ Аудит завершён. "
+                        "Обнаружены недостающие данные.\n\n"
+                        "Проверьте вывод выше, чтобы определить, "
+                        "каких данных не хватает для Evolution Report."
+                    )
+
+        except Exception as exc:
+
+            st.error(
+                f"❌ Ошибка запуска аудита: {exc}"
+            )
+
+            with st.expander(
+                "Техническая ошибка"
+            ):
+
+                st.exception(exc)
+
+    # --------------------------------------------------------
+    # ИНСТРУКЦИЯ
+    # --------------------------------------------------------
+
+    with st.expander(
+        "📖 Как интерпретировать результаты аудита"
+    ):
+
+        st.markdown("""
+        **✅ Что должно быть:**
+
+        | Данные | Что проверяет |
+        |--------|---------------|
+        | `predictions` | Прогнозы FAJ |
+        | `prediction_scores` | Точные счета прогнозов |
+        | `match_results` | Фактические результаты |
+        | `learning_memory` | Память обучения ETC |
+        | `model_parameters` | Параметры модели (исторически) |
+        | `team_passports` | Паспорта команд |
+
+        **❌ Чего не хватает для Evolution Report:**
+
+        - Нет исторических параметров модели → нельзя показать "было → стало"
+        - Нет `match_snapshots` → нельзя восстановить состояние модели
+        - Нет `prediction_error` в learning_memory → нет связи обучение → ошибка
+        - Нет xG в match_results → нельзя сравнить прогнозный и фактический xG
+
+        **📌 Что делать:**
+
+        1. Если данных нет → добавить сохранение
+        2. Если данные есть → перейти к Evolution Report
+        """)
 
 
 # ============================================================
