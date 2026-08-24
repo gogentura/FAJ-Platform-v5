@@ -4,26 +4,22 @@
 """
 ============================================================
 FAJ Platform v12.1
-ETC — Club Rating Updater v2.0
+ETC — Club Rating Updater v2.1
 ============================================================
 
 ФАЙЛ:
     app/etc/club_rating_updater.py
 
 НАЗНАЧЕНИЕ:
-    Контролируемое изменение FAJ Club Rating после
-    завершённого матча.
+    Контролируемое пост-матчевое изменение FAJ Club Rating.
 
 АРХИТЕКТУРА:
 
     MATCH_RESULT
           │
           ├── Actual Score
-          │
           ├── Observed xG
-          │
           ├── Predicted xG
-          │
           └── Prediction Error
                   │
                   ▼
@@ -41,6 +37,7 @@ ETC — Club Rating Updater v2.0
                  ETC
 
 ПРИНЦИПЫ:
+
     1. SQLite only.
     2. database.py — единый источник схемы.
     3. match_results НЕ изменяется.
@@ -53,9 +50,30 @@ ETC — Club Rating Updater v2.0
     9. Модуль НЕ обучает model_parameters.
    10. Модуль НЕ рассчитывает xG.
    11. Модуль НЕ запускает ETC.
-   12. Модуль только применяет уже рассчитанную
-       ETC-коррекцию рейтинга.
-   13. Каждое изменение должно быть объяснимым.
+   12. Модуль применяет пост-матчевую ETC
+       rating-коррекцию.
+   13. Каждое изменение объяснимо.
+   14. Запись одной ETC-операции атомарна.
+   15. Частичная запись home/away запрещена.
+   16. При ошибке транзакция откатывается.
+   17. Повторный запуск уже обработанного матча
+       не изменяет рейтинг повторно.
+
+ВАЖНО:
+
+    Этот модуль не является Prediction Model.
+
+    Он работает ПОСЛЕ MATCH RESULT.
+
+    Prediction:
+        XG → Poisson → Monte Carlo → Prediction
+
+    ETC:
+        Prediction + Fact
+              ↓
+        Rating correction
+              ↓
+        Passport / History / Learning Memory
 
 ============================================================
 """
@@ -63,7 +81,8 @@ ETC — Club Rating Updater v2.0
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
+
 
 from app.database import FAJDatabase
 from app.etc.learning_memory import LearningMemory
@@ -76,8 +95,8 @@ logger = logging.getLogger(__name__)
 # MODULE
 # ============================================================
 
-UPDATER_VERSION = "2.0"
-UPDATER_NAME = "FAJ ETC Club Rating Updater v2.0"
+UPDATER_VERSION = "2.1"
+UPDATER_NAME = "FAJ ETC Club Rating Updater v2.1"
 
 
 # ============================================================
@@ -114,13 +133,19 @@ def _safe_float(
     value: Any,
     default: float = 0.0,
 ) -> float:
+    """
+    Безопасное преобразование значения в float.
+    """
+
     try:
+
         if value is None:
             return default
 
         return float(value)
 
     except (TypeError, ValueError):
+
         return default
 
 
@@ -128,13 +153,19 @@ def _safe_int(
     value: Any,
     default: int = 0,
 ) -> int:
+    """
+    Безопасное преобразование значения в int.
+    """
+
     try:
+
         if value is None:
             return default
 
         return int(value)
 
     except (TypeError, ValueError):
+
         return default
 
 
@@ -143,9 +174,16 @@ def _clamp(
     minimum: float,
     maximum: float,
 ) -> float:
+    """
+    Ограничение значения диапазоном.
+    """
+
     return max(
         minimum,
-        min(maximum, value),
+        min(
+            maximum,
+            value,
+        ),
     )
 
 
@@ -156,9 +194,14 @@ def _result_score(
     """
     Результат с точки зрения команды.
 
-    Победа  = 1.0
-    Ничья   = 0.5
-    Поражение = 0.0
+    Победа:
+        1.0
+
+    Ничья:
+        0.5
+
+    Поражение:
+        0.0
     """
 
     if goals_for > goals_against:
@@ -176,14 +219,30 @@ def _result_score(
 
 class ClubRatingUpdater:
     """
-    Исполнитель изменения FAJ Club Rating.
+    Исполнитель пост-матчевого изменения FAJ Club Rating.
 
     ВАЖНО:
 
-        Этот класс НЕ является обучающим движком.
+        Этот класс не изменяет факты матча.
 
-    Он получает уже известные факты матча и рассчитывает
-    только допустимую коррекцию Club Rating.
+        Он не изменяет:
+            match_results
+            predictions
+
+        Он только создаёт новую версию рейтинга
+        и связанные исторические записи.
+
+    Расчёт коррекции:
+
+        RESULT
+            +
+        XG ERROR
+            ↓
+        Rating Delta
+            ↓
+        Passport
+        Team History
+        Learning Memory
     """
 
     def __init__(
@@ -211,14 +270,24 @@ class ClubRatingUpdater:
         away_predicted_xg: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
-        Применяет одну ETC rating-коррекцию к матчу.
+        Применяет одну ETC rating-коррекцию к завершённому матчу.
 
-        Никаких изменений фактов матча не выполняется.
+        Вся операция выполняется атомарно.
+
+        При любой ошибке:
+
+            Passport
+            Team History
+            Learning Memory
+
+        не должны остаться в частично изменённом состоянии.
         """
 
         response: Dict[str, Any] = {
             "success": False,
+
             "version": UPDATER_VERSION,
+
             "updater": UPDATER_NAME,
 
             "match_id": None,
@@ -226,16 +295,33 @@ class ClubRatingUpdater:
             "already_processed": False,
 
             "home": {},
+
             "away": {},
 
             "errors": [],
         }
 
+        conn = None
+
         try:
 
-            # ------------------------------------------------
-            # IDENTIFIERS
-            # ------------------------------------------------
+            # =================================================
+            # 1. VALIDATE MATCH
+            # =================================================
+
+            if not isinstance(match, dict):
+                raise ValueError(
+                    "ClubRatingUpdater: match должен быть dict."
+                )
+
+            if not isinstance(result, dict):
+                raise ValueError(
+                    "ClubRatingUpdater: result должен быть dict."
+                )
+
+            # =================================================
+            # 2. IDENTIFIERS
+            # =================================================
 
             match_id = _safe_int(
                 match.get("id")
@@ -249,8 +335,8 @@ class ClubRatingUpdater:
                 match.get("away_team_id")
             )
 
-            season_id = match.get(
-                "season_id"
+            season_id = _safe_int(
+                match.get("season_id")
             )
 
             response["match_id"] = match_id
@@ -270,14 +356,20 @@ class ClubRatingUpdater:
                     "ClubRatingUpdater: отсутствует away_team_id."
                 )
 
-            if season_id is None:
+            if not season_id:
                 raise ValueError(
                     "ClubRatingUpdater: отсутствует season_id."
                 )
 
-            # ------------------------------------------------
-            # RESULT
-            # ------------------------------------------------
+            if home_team_id == away_team_id:
+                raise ValueError(
+                    "ClubRatingUpdater: home_team_id "
+                    "и away_team_id совпадают."
+                )
+
+            # =================================================
+            # 3. RESULT
+            # =================================================
 
             home_goals = _safe_int(
                 result.get("home_goals")
@@ -287,18 +379,36 @@ class ClubRatingUpdater:
                 result.get("away_goals")
             )
 
-            # ------------------------------------------------
-            # IDEMPOTENCY
-            # ------------------------------------------------
+            if home_goals < 0:
+                raise ValueError(
+                    "home_goals не может быть отрицательным."
+                )
+
+            if away_goals < 0:
+                raise ValueError(
+                    "away_goals не может быть отрицательным."
+                )
+
+            # =================================================
+            # 4. CONNECTION
+            # =================================================
+
+            conn = self.db.get_connection()
+
+            # =================================================
+            # 5. IDEMPOTENCY
+            # =================================================
 
             if self._already_processed(
                 match_id=match_id,
                 season_id=season_id,
                 home_team_id=home_team_id,
                 away_team_id=away_team_id,
+                conn=conn,
             ):
 
                 response["success"] = True
+
                 response["already_processed"] = True
 
                 response["home"] = {
@@ -319,22 +429,24 @@ class ClubRatingUpdater:
 
                 return response
 
-            # ------------------------------------------------
-            # PASSPORTS
-            # ------------------------------------------------
+            # =================================================
+            # 6. BEGIN TRANSACTION
+            # =================================================
 
-            home_passport = (
-                self.db.get_team_passport(
-                    home_team_id,
-                    season_id,
-                )
+            self._begin_transaction(conn)
+
+            # =================================================
+            # 7. PASSPORTS
+            # =================================================
+
+            home_passport = self.db.get_team_passport(
+                home_team_id,
+                season_id,
             )
 
-            away_passport = (
-                self.db.get_team_passport(
-                    away_team_id,
-                    season_id,
-                )
+            away_passport = self.db.get_team_passport(
+                away_team_id,
+                season_id,
             )
 
             if not home_passport:
@@ -351,23 +463,39 @@ class ClubRatingUpdater:
                     f"season_id={season_id}"
                 )
 
-            # ------------------------------------------------
-            # CURRENT RATINGS
-            # ------------------------------------------------
+            # =================================================
+            # 8. CURRENT RATINGS
+            # =================================================
 
             home_old_rating = _safe_float(
-                home_passport.get("faj_rating"),
+                home_passport.get(
+                    "faj_rating"
+                ),
                 DEFAULT_RATING,
             )
 
             away_old_rating = _safe_float(
-                away_passport.get("faj_rating"),
+                away_passport.get(
+                    "faj_rating"
+                ),
                 DEFAULT_RATING,
             )
 
-            # ------------------------------------------------
-            # EXPECTED RESULT
-            # ------------------------------------------------
+            home_old_rating = _clamp(
+                home_old_rating,
+                MIN_RATING,
+                MAX_RATING,
+            )
+
+            away_old_rating = _clamp(
+                away_old_rating,
+                MIN_RATING,
+                MAX_RATING,
+            )
+
+            # =================================================
+            # 9. EXPECTED RESULT
+            # =================================================
 
             expected_home = self._expected_result(
                 home_old_rating,
@@ -378,9 +506,9 @@ class ClubRatingUpdater:
                 1.0 - expected_home
             )
 
-            # ------------------------------------------------
-            # ACTUAL RESULT
-            # ------------------------------------------------
+            # =================================================
+            # 10. ACTUAL RESULT
+            # =================================================
 
             actual_home = _result_score(
                 home_goals,
@@ -391,9 +519,9 @@ class ClubRatingUpdater:
                 1.0 - actual_home
             )
 
-            # ------------------------------------------------
-            # RESULT COMPONENT
-            # ------------------------------------------------
+            # =================================================
+            # 11. RESULT COMPONENT
+            # =================================================
 
             home_result_component = (
                 actual_home
@@ -405,9 +533,9 @@ class ClubRatingUpdater:
                 - expected_away
             )
 
-            # ------------------------------------------------
-            # XG COMPONENT
-            # ------------------------------------------------
+            # =================================================
+            # 12. XG COMPONENT
+            # =================================================
 
             home_xg_component = (
                 self._calculate_xg_component(
@@ -423,9 +551,9 @@ class ClubRatingUpdater:
                 )
             )
 
-            # ------------------------------------------------
-            # RAW DELTA
-            # ------------------------------------------------
+            # =================================================
+            # 13. RAW DELTA
+            # =================================================
 
             home_raw_delta = (
                 home_result_component
@@ -451,9 +579,9 @@ class ClubRatingUpdater:
                 * XG_WEIGHT
             )
 
-            # ------------------------------------------------
-            # ZERO-SUM NORMALIZATION
-            # ------------------------------------------------
+            # =================================================
+            # 14. ZERO-SUM NORMALIZATION
+            # =================================================
 
             rating_delta = (
                 home_raw_delta
@@ -466,9 +594,9 @@ class ClubRatingUpdater:
                 MAX_MATCH_DELTA,
             )
 
-            # ------------------------------------------------
-            # NEW RATINGS
-            # ------------------------------------------------
+            # =================================================
+            # 15. NEW RATINGS
+            # =================================================
 
             home_new_rating = _clamp(
                 home_old_rating
@@ -494,9 +622,9 @@ class ClubRatingUpdater:
                 - away_old_rating
             )
 
-            # ------------------------------------------------
-            # SAVE HOME
-            # ------------------------------------------------
+            # =================================================
+            # 16. SAVE HOME
+            # =================================================
 
             self._save_rating(
                 team_id=home_team_id,
@@ -512,11 +640,12 @@ class ClubRatingUpdater:
                 predicted_xg=home_predicted_xg,
                 expected_result=expected_home,
                 actual_result=actual_home,
+                conn=conn,
             )
 
-            # ------------------------------------------------
-            # SAVE AWAY
-            # ------------------------------------------------
+            # =================================================
+            # 17. SAVE AWAY
+            # =================================================
 
             self._save_rating(
                 team_id=away_team_id,
@@ -532,11 +661,18 @@ class ClubRatingUpdater:
                 predicted_xg=away_predicted_xg,
                 expected_result=expected_away,
                 actual_result=actual_away,
+                conn=conn,
             )
 
-            # ------------------------------------------------
-            # RESPONSE
-            # ------------------------------------------------
+            # =================================================
+            # 18. COMMIT
+            # =================================================
+
+            conn.commit()
+
+            # =================================================
+            # 19. RESPONSE
+            # =================================================
 
             response["home"] = {
                 "team_id": home_team_id,
@@ -634,6 +770,17 @@ class ClubRatingUpdater:
 
         except Exception as exc:
 
+            if conn is not None:
+
+                try:
+                    conn.rollback()
+
+                except Exception:
+                    logger.exception(
+                        "ETC rollback failed: match=%s",
+                        response.get("match_id"),
+                    )
+
             logger.exception(
                 "ETC Club Rating update failed: "
                 "match=%s",
@@ -646,6 +793,60 @@ class ClubRatingUpdater:
 
             return response
 
+        finally:
+
+            if conn is not None:
+
+                try:
+                    conn.close()
+
+                except Exception:
+                    logger.exception(
+                        "ETC connection close failed."
+                    )
+
+    # ========================================================
+    # TRANSACTION
+    # ========================================================
+
+    @staticmethod
+    def _begin_transaction(
+        conn: Any,
+    ) -> None:
+        """
+        Явное начало SQLite-транзакции.
+
+        Если соединение уже находится внутри
+        транзакции, новый BEGIN не выполняется.
+        """
+
+        try:
+
+            if getattr(
+                conn,
+                "in_transaction",
+                False,
+            ):
+                return
+
+        except Exception:
+            pass
+
+        cursor = conn.cursor()
+
+        try:
+
+            cursor.execute(
+                "BEGIN"
+            )
+
+        finally:
+
+            try:
+                cursor.close()
+            except Exception:
+                pass
+
     # ========================================================
     # IDEMPOTENCY
     # ========================================================
@@ -656,30 +857,50 @@ class ClubRatingUpdater:
         season_id: int,
         home_team_id: int,
         away_team_id: int,
+        conn: Optional[Any] = None,
     ) -> bool:
         """
         Проверяет, применялось ли ETC-изменение рейтинга
         к данному матчу.
 
-        Проверка выполняется через team_history.
+        Для валидной завершённой операции должны существовать
+        две записи team_history:
 
-        Никаких DELETE/UPDATE истории здесь нет.
+            home
+            away
+
+        Если существует только одна запись, операция считается
+        незавершённой и может быть повторена.
+
+        Это необходимо для защиты от старого состояния,
+        когда одна сторона была записана, а вторая нет.
         """
 
-        conn = self.db.get_connection()
+        connection = conn
+
+        own_connection = False
+
+        if connection is None:
+
+            connection = self.db.get_connection()
+
+            own_connection = True
 
         try:
 
-            cursor = conn.cursor()
+            cursor = connection.cursor()
 
             cursor.execute(
                 """
-                SELECT COUNT(*) AS cnt
+                SELECT
+                    team_id,
+                    COUNT(*) AS cnt
                 FROM team_history
                 WHERE reference_match_id = ?
                   AND source = 'ETC'
                   AND field = 'faj_rating'
                   AND team_id IN (?, ?)
+                GROUP BY team_id
                 """,
                 (
                     match_id,
@@ -688,21 +909,44 @@ class ClubRatingUpdater:
                 ),
             )
 
-            row = cursor.fetchone()
+            rows = cursor.fetchall()
 
-            if not row:
-                return False
+            teams_processed = set()
 
-            count = _safe_int(
-                row["cnt"]
-                if hasattr(row, "keys")
-                else row[0]
+            for row in rows:
+
+                try:
+
+                    team_id = _safe_int(
+                        row["team_id"]
+                    )
+
+                except (KeyError, TypeError):
+
+                    team_id = _safe_int(
+                        row[0]
+                    )
+
+                if team_id in (
+                    home_team_id,
+                    away_team_id,
+                ):
+
+                    teams_processed.add(
+                        team_id
+                    )
+
+            return (
+                home_team_id in teams_processed
+                and
+                away_team_id in teams_processed
             )
 
-            return count >= 2
-
         finally:
-            conn.close()
+
+            if own_connection:
+
+                connection.close()
 
     # ========================================================
     # EXPECTED RESULT
@@ -784,7 +1028,8 @@ class ClubRatingUpdater:
         )
 
         difference = (
-            observed - predicted
+            observed
+            - predicted
         )
 
         return _clamp(
@@ -812,6 +1057,7 @@ class ClubRatingUpdater:
         predicted_xg: Optional[float],
         expected_result: float,
         actual_result: float,
+        conn: Optional[Any] = None,
     ) -> None:
         """
         Сохраняет:
@@ -821,6 +1067,9 @@ class ClubRatingUpdater:
             3. запись learning_memory.
 
         Старые записи не удаляются.
+
+        Все операции выполняются в транзакции,
+        открытой update_after_match().
         """
 
         delta = (
@@ -829,16 +1078,18 @@ class ClubRatingUpdater:
         )
 
         # ----------------------------------------------------
-        # Нет изменения — ничего не сохраняем.
+        # НЕТ ИЗМЕНЕНИЯ
         # ----------------------------------------------------
 
         if abs(delta) < 0.000001:
+
             logger.info(
                 "ETC Club Rating unchanged: "
                 "team=%s match=%s",
                 team_id,
                 match_id,
             )
+
             return
 
         # ----------------------------------------------------
@@ -954,9 +1205,6 @@ class ClubRatingUpdater:
         """
         Confidence записи ETC.
 
-        Если есть и predicted xG, и observed xG,
-        событие считается более информативным.
-
         Это НЕ вероятность результата матча.
         """
 
@@ -964,9 +1212,11 @@ class ClubRatingUpdater:
             observed_xg is not None
             and predicted_xg is not None
         ):
+
             return 1.0
 
         if observed_xg is not None:
+
             return 0.85
 
         return 0.70
@@ -986,6 +1236,7 @@ class ClubRatingUpdater:
             v2.3 -> v2.4
 
         Если формат неизвестен:
+
             <version>.etc
         """
 
@@ -995,6 +1246,7 @@ class ClubRatingUpdater:
                 version,
                 str,
             ):
+
                 return "v1.0"
 
             if version.startswith("v"):
@@ -1015,6 +1267,7 @@ class ClubRatingUpdater:
             ValueError,
             AttributeError,
         ):
+
             pass
 
         return f"{version}.etc"
@@ -1067,21 +1320,33 @@ if __name__ == "__main__":
     )
 
     print("=" * 70)
+
     print(
         "FAJ ETC — Club Rating Updater"
     )
+
     print(
         f"Version: {UPDATER_VERSION}"
     )
+
     print("=" * 70)
+
     print(
         "Модуль предназначен для применения "
         "пост-матчевой коррекции Club Rating."
     )
+
     print(
         "Исторические факты не изменяются."
     )
+
     print(
         "Learning Memory ведётся append-only."
     )
+
+    print(
+        "Операция Passport + History + Learning Memory "
+        "выполняется атомарно."
+    )
+
     print("=" * 70)
