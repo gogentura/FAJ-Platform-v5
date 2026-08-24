@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-IMPORT FACTS v4.7.0
+IMPORT FACTS v4.7.1
 ============================================================
 
 НАЗНАЧЕНИЕ
@@ -90,7 +90,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 APP_VERSION = "12.1"
-IMPORT_FACTS_VERSION = "4.7.0"
+IMPORT_FACTS_VERSION = "4.7.1"
 MODEL_VERSION = "v12.1"
 
 DEFAULT_DB_PATH = "data/faj.db"
@@ -2616,11 +2616,20 @@ def render_match_card(
                 f"{api_home}:{api_away}"
             )
 
+    # ========================================================
+    # ✅ ИСПРАВЛЕНО v4.7.1
+    # Нормализация locked перед использованием в disabled
+    # ========================================================
+
+    score_locked = bool(
+        saved.get("locked", False)
+    )
+
     score_input = st.text_input(
         "Счёт (X:Y)",
         value=initial_score,
         key=f"{key_prefix}_score_input",
-        disabled=saved["locked"],
+        disabled=score_locked,
         placeholder="Например: 2:1",
     )
 
@@ -2653,7 +2662,7 @@ def render_match_card(
             "💾 Сохранить счёт",
             key=f"{key_prefix}_fix_score",
             disabled=(
-                saved["locked"]
+                score_locked
                 or current_home is None
                 or current_away is None
             ),
@@ -2867,7 +2876,7 @@ def render_match_card(
         value=current_url,
         key=f"{key_prefix}_soccer365_url",
         placeholder="https://soccer365.ru/games/...",
-        disabled=saved["locked"],
+        disabled=score_locked,
     )
 
     st.caption(
@@ -2885,7 +2894,7 @@ def render_match_card(
         "📥 Загрузить / перепроверить статистику Soccer365",
         key=f"{key_prefix}_soccer365_fetch",
         disabled=(
-            saved["locked"]
+            score_locked
             or not soccer365_url.strip()
         ),
         use_container_width=True,
@@ -3198,7 +3207,7 @@ def render_match_card(
         value=existing_expert_score,
         key=f"{key_prefix}_expert_score",
         placeholder="Например: 2:1",
-        disabled=saved["locked"],
+        disabled=score_locked,
     )
 
     expert_comment = st.text_area(
@@ -3212,7 +3221,7 @@ def render_match_card(
             else ""
         ),
         key=f"{key_prefix}_expert_comment",
-        disabled=saved["locked"],
+        disabled=score_locked,
     )
 
     existing_confidence = 50
@@ -3241,7 +3250,7 @@ def render_match_card(
         max_value=100,
         value=existing_confidence,
         key=f"{key_prefix}_expert_confidence",
-        disabled=saved["locked"],
+        disabled=score_locked,
     )
 
     # ========================================================
@@ -3306,7 +3315,7 @@ def render_match_card(
     # ========================================================
 
     can_save = (
-        not saved["locked"]
+        not score_locked
         and statuses["score"]
         and statuses["stats"]
         and statuses["xg"]
@@ -3316,7 +3325,7 @@ def render_match_card(
     # SAVE BUTTON
     # ========================================================
 
-    if saved["locked"]:
+    if score_locked:
 
         st.info(
             "🔒 Сохранение не требуется: "
