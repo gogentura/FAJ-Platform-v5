@@ -581,6 +581,7 @@ class ETCController:
                         "processed_match_ids",
                         [],
                     )
+                    or []
                 )
 
                 result["failed_matches"].extend(
@@ -588,6 +589,7 @@ class ETCController:
                         "failed_matches",
                         [],
                     )
+                    or []
                 )
 
             # =================================================
@@ -620,7 +622,7 @@ class ETCController:
             # NOTHING READY
             # -------------------------------------------------
 
-            if all(
+            if statuses and all(
                 status in {
                     STATUS_WAIT,
                     STATUS_ALREADY_PROCESSED,
@@ -641,7 +643,7 @@ class ETCController:
             # ALL COMPLETED
             # -------------------------------------------------
 
-            elif all(successful):
+            elif statuses and all(successful):
 
                 result["status"] = "completed"
 
@@ -803,6 +805,30 @@ class ETCController:
 
             return result
 
+        # -----------------------------------------------------
+        # Защита от неожиданного типа ответа
+        # -----------------------------------------------------
+
+        if not isinstance(
+            batch_check,
+            dict,
+        ):
+
+            result["status"] = "failed"
+            result["errors"] = 1
+            result["message"] = (
+                "BatchController.check() "
+                "вернул не-dict."
+            )
+
+            logger.error(
+                "ETC CONTRACT ERROR | "
+                "BatchController.check() returned %s",
+                type(batch_check).__name__,
+            )
+
+            return result
+
         controller_status = batch_check.get(
             "status"
         )
@@ -875,7 +901,8 @@ class ETCController:
 
             result["message"] = (
                 "BatchController сообщил READY, "
-                "но get_learning_batch() вернул пустой batch."
+                "но get_learning_batch() вернул "
+                "пустой batch."
             )
 
             result["errors"] = 1
@@ -893,10 +920,12 @@ class ETCController:
         )
 
         result["selected_match_ids"] = [
-            self._extract_match_id(item)
-            for item in selected_batch
-            if self._extract_match_id(item)
-            is not None
+            match_id
+            for match_id in (
+                self._extract_match_id(item)
+                for item in selected_batch
+            )
+            if match_id is not None
         ]
 
         logger.info(
@@ -945,6 +974,30 @@ class ETCController:
 
             return result
 
+        # -----------------------------------------------------
+        # Защита контракта
+        # -----------------------------------------------------
+
+        if not isinstance(
+            learning_result,
+            dict,
+        ):
+
+            result["status"] = "failed"
+            result["errors"] = 1
+            result["message"] = (
+                "ETCLearningEngine.run_batch() "
+                "вернул не-dict."
+            )
+
+            logger.error(
+                "ETC CONTRACT ERROR | "
+                "LearningEngine returned %s",
+                type(learning_result).__name__,
+            )
+
+            return result
+
         # =====================================================
         # AGGREGATE LEARNING RESULT
         # =====================================================
@@ -970,13 +1023,26 @@ class ETCController:
             )
         )
 
-        result["memory_events"] = len(
+        memory_ids = (
             learning_result.get(
                 "memory_ids",
                 [],
             )
             or []
         )
+
+        if isinstance(
+            memory_ids,
+            list,
+        ):
+
+            result["memory_events"] = len(
+                memory_ids
+            )
+
+        else:
+
+            result["memory_events"] = 0
 
         result["learning_events"] = _safe_count(
             learning_result.get(
@@ -985,13 +1051,26 @@ class ETCController:
             )
         )
 
-        result["processed_match_ids"] = (
+        processed_match_ids = (
             learning_result.get(
                 "processed_match_ids",
                 [],
             )
             or []
         )
+
+        if isinstance(
+            processed_match_ids,
+            list,
+        ):
+
+            result["processed_match_ids"] = (
+                processed_match_ids
+            )
+
+        else:
+
+            result["processed_match_ids"] = []
 
         learning_errors = (
             learning_result.get(
@@ -1001,15 +1080,72 @@ class ETCController:
             or []
         )
 
+        # -----------------------------------------------------
+        # Нормализация errors.
+        #
+        # LearningEngine может вернуть:
+        #
+        #   list
+        #   int
+        #   string
+        #
+        # ETCController приводит это к единому виду.
+        # -----------------------------------------------------
+
+        if isinstance(
+            learning_errors,
+            list,
+        ):
+
+            normalized_errors = (
+                learning_errors
+            )
+
+        elif isinstance(
+            learning_errors,
+            int,
+        ):
+
+            normalized_errors = []
+
+            if learning_errors > 0:
+
+                normalized_errors = [
+                    {
+                        "match_id": None,
+                        "stage": "learning",
+                        "error": (
+                            f"{learning_errors} "
+                            "learning errors"
+                        ),
+                    }
+                ]
+
+        elif learning_errors:
+
+            normalized_errors = [
+                {
+                    "match_id": None,
+                    "stage": "learning",
+                    "error": str(
+                        learning_errors
+                    ),
+                }
+            ]
+
+        else:
+
+            normalized_errors = []
+
         result["errors"] = len(
-            learning_errors
+            normalized_errors
         )
 
         # =====================================================
         # FAILED MATCHES
         # =====================================================
 
-        for error in learning_errors:
+        for error in normalized_errors:
 
             if isinstance(
                 error,
@@ -1083,20 +1219,40 @@ class ETCController:
 
         else:
 
-            result["status"] = (
-                "failed"
-            )
+            result["status"] = "failed"
 
             if not result["message"]:
 
-                result["message"] = (
+                # ------------------------------------------------
+                # ИСПРАВЛЕНИЕ SYNTAX ERROR:
+                #
+                # Не используем вложенный f-string.
+                # Сначала безопасно получаем текст ошибки.
+                # ------------------------------------------------
+
+                learning_error = (
                     learning_result.get(
-                        "errors",
-                        learning_result.get(
-                            "status",
-                            "ETC learning failed.",
-                        ),
+                        "error"
                     )
+                )
+
+                if not learning_error:
+
+                    learning_error = (
+                        learning_result.get(
+                            "status"
+                        )
+                    )
+
+                if not learning_error:
+
+                    learning_error = (
+                        "processing_failed"
+                    )
+
+                result["message"] = (
+                    f"ETC learning failed: "
+                    f"{learning_error}"
                 )
 
         logger.info(
@@ -1202,11 +1358,33 @@ class ETCController:
                 False,
             ):
 
+                # ------------------------------------------------
+                # ИСПРАВЛЕННАЯ ОБРАБОТКА ОШИБКИ
+                # ------------------------------------------------
+
+                learning_error = (
+                    learning.get(
+                        "error"
+                    )
+                )
+
+                if not learning_error:
+
+                    learning_error = (
+                        learning.get(
+                            "status"
+                        )
+                    )
+
+                if not learning_error:
+
+                    learning_error = (
+                        "processing_failed"
+                    )
+
                 raise ValueError(
                     "LearningEngine неуспешен: "
-                    f"{learning.get('error', "
-                    f"learning.get('status', "
-                    f"'processing_failed'"))}"
+                    f"{learning_error}"
                 )
 
             result["status"] = (
