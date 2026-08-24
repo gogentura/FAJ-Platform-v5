@@ -10,41 +10,33 @@ ETC — Evolution Training Center
 ФАЙЛ:
     app/pages/etc.py
 
-ETC PAGE v3.0
+ETC PAGE v3.1
 ============================================================
 
 НАЗНАЧЕНИЕ
 -----------
 
-Полноценная Streamlit-страница ETC.
+Streamlit Dashboard Evolution Training Center.
 
-Страница является UI-слоем над ETCController.
+Страница отображает:
 
-АРХИТЕКТУРА:
-
-    Streamlit
-        │
-        ▼
-    ETC PAGE
-        │
-        ▼
-    ETCController
-        │
-        ├── BatchController
-        │       │
-        │       ├── check()
-        │       └── get_learning_batch()
-        │
-        └── ETCLearningEngine
-                │
-                ├── process_match()
-                └── run_batch()
-                        │
-                        ▼
-                    SQLite
+    • состояние ETC;
+    • запуск batch обучения;
+    • результат последнего batch;
+    • Learning Events;
+    • Memory Events;
+    • обработанные матчи;
+    • ошибки;
+    • статистику batch;
+    • графики обучения;
+    • динамику Learning Events;
+    • структуру batch;
+    • evolution metrics;
+    • pipeline;
+    • архитектурный контракт;
+    • diagnostics.
 
 ============================================================
-
 ЖЁСТКИЙ UI CONTRACT
 ============================================================
 
@@ -56,55 +48,18 @@ ETC PAGE v3.0
     - изменяет match_results;
     - изменяет match_statistics;
     - изменяет matches;
-    - изменяет rounds;
     - изменяет predictions;
-    - создаёт прогнозы;
-    - пишет learning_memory;
+    - пишет learning_memory напрямую;
     - изменяет model_parameters;
     - изменяет team_passports;
-    - изменяет team_history;
-    - вызывает BatchController напрямую;
-    - вызывает ETCLearningEngine напрямую.
+    - запускает ETCLearningEngine напрямую.
 
-Страница вызывает только:
+Вся бизнес-логика принадлежит ETCController.
+
+UI взаимодействует с ETC только через:
 
     ETCController.status()
-    ETCController.run()
-    ETCController.process_match()
-
-============================================================
-
-ВАЖНО
-============================================================
-
-ETCController является единственной точкой входа
-для UI.
-
-Страница НЕ должна придумывать API, которого нет
-в ETCController.
-
-Поэтому:
-
-    get_learning_memory()
-    get_xg_calibration()
-    get_evolution_statistics()
-
-НЕ вызываются страницей напрямую.
-
-Если соответствующая аналитика понадобится в UI,
-она сначала должна быть опубликована через официальный
-API ETCController.
-
-============================================================
-
-ENTRY POINT
-============================================================
-
-    main()
-
-Совместимый импорт:
-
-    from app.pages.etc import main
+    ETCController.run(...)
 
 ============================================================
 """
@@ -113,20 +68,15 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 from app.database import FAJDatabase
 from app.etc.etc_controller import ETCController
-from app.etc.batch_controller import (
-    BATCH_RULES,
-    STATUS_ALREADY_PROCESSED,
-    STATUS_READY,
-    STATUS_UNKNOWN_LEAGUE,
-    STATUS_WAIT,
-)
 
 
 # ============================================================
@@ -134,7 +84,7 @@ from app.etc.batch_controller import (
 # ============================================================
 
 APP_VERSION = "12.1"
-ETC_PAGE_VERSION = "3.0"
+ETC_PAGE_VERSION = "3.1"
 
 PAGE_TITLE = "FAJ ETC"
 PAGE_ICON = "🧠"
@@ -150,35 +100,31 @@ MAX_BATCH_LIMIT = 1000
 def _configure_page() -> None:
     """
     Настройка Streamlit page.
-
-    Вызывается безопасно при запуске страницы.
     """
 
     try:
-
         st.set_page_config(
             page_title=PAGE_TITLE,
             page_icon=PAGE_ICON,
             layout="wide",
             initial_sidebar_state="expanded",
         )
-
     except Exception:
-        # set_page_config может быть уже вызван
-        # внешним entrypoint.
         pass
 
 
 # ============================================================
-# DATABASE / CONTROLLER
+# CONTROLLER
 # ============================================================
 
 @st.cache_resource
 def get_etc_controller() -> ETCController:
     """
-    Создаёт единый ETCController для Streamlit session.
+    Создаёт ETCController.
 
-    UI не работает с SQLite напрямую.
+    ВАЖНО:
+
+    Страница не работает с SQLite напрямую.
     """
 
     db = FAJDatabase()
@@ -268,17 +214,6 @@ def _safe_float(
 def _error_count(
     value: Any,
 ) -> int:
-    """
-    Нормализует errors из Controller.
-
-    Controller может вернуть:
-
-        []
-        [error, error]
-        0
-        2
-        "error"
-    """
 
     if isinstance(
         value,
@@ -297,23 +232,16 @@ def _error_count(
             value,
         )
 
-    if value:
-
-        return 1
-
-    return 0
+    return 1 if value else 0
 
 
 # ============================================================
-# EXTRACT RESULT DATA
+# RESULT NORMALIZATION
 # ============================================================
 
 def _extract_processed_ids(
     result: Dict[str, Any],
 ) -> List[int]:
-    """
-    Извлекает processed_match_ids.
-    """
 
     raw = result.get(
         "processed_match_ids",
@@ -327,27 +255,26 @@ def _extract_processed_ids(
 
         return []
 
-    ids: List[int] = []
+    output = []
 
     for value in raw:
 
         match_id = _safe_int(
             value,
-            default=0,
+            0,
         )
 
         if match_id > 0:
-            ids.append(match_id)
+            output.append(
+                match_id
+            )
 
-    return ids
+    return output
 
 
 def _extract_failed_matches(
     result: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    """
-    Нормализует failed_matches.
-    """
 
     raw = result.get(
         "failed_matches",
@@ -361,7 +288,7 @@ def _extract_failed_matches(
 
         return []
 
-    rows: List[Dict[str, Any]] = []
+    rows = []
 
     for item in raw:
 
@@ -390,10 +317,6 @@ def _extract_failed_matches(
 def _extract_batch_rows(
     result: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    """
-    Извлекает результаты отдельных лиг из
-    ETCController.run().
-    """
 
     batches = result.get(
         "batches",
@@ -407,7 +330,7 @@ def _extract_batch_rows(
 
         return []
 
-    rows: List[Dict[str, Any]] = []
+    rows = []
 
     for batch in batches:
 
@@ -459,10 +382,6 @@ def _extract_batch_rows(
                         0,
                     )
                 ),
-                "message": batch.get(
-                    "message",
-                    "",
-                ),
             }
         )
 
@@ -475,24 +394,30 @@ def _extract_batch_rows(
 
 def _render_header() -> None:
 
-    st.title(
-        "🧠 FAJ ETC"
+    col1, col2 = st.columns(
+        [1, 5]
     )
 
-    st.subheader(
-        "Evolution Training Center"
-    )
+    with col1:
 
-    st.caption(
-        "Постматчевый анализ, пакетное обучение "
-        "и контролируемая эволюция FAJ."
-    )
+        st.markdown(
+            "# 🧠"
+        )
 
-    st.info(
-        "ETC работает только с завершёнными фактами. "
-        "Исторические факты, календарь и существующие "
-        "прогнозы не являются объектами изменения ETC."
-    )
+    with col2:
+
+        st.title(
+            "FAJ ETC"
+        )
+
+        st.subheader(
+            "Evolution Training Center"
+        )
+
+        st.caption(
+            "Постматчевый анализ, пакетное обучение "
+            "и контролируемая эволюция FAJ."
+        )
 
     st.divider()
 
@@ -518,8 +443,7 @@ def _render_status(
     except Exception as exc:
 
         st.error(
-            "❌ Не удалось получить состояние ETC.\n\n"
-            f"{exc}"
+            f"❌ Не удалось получить состояние ETC: {exc}"
         )
 
         return {}
@@ -531,16 +455,23 @@ def _render_status(
         "UNKNOWN",
     )
 
-    if status_value == "ready":
+    if status_value.lower() in (
+        "ready",
+        "ok",
+        "healthy",
+    ):
 
         st.success(
-            "🟢 ETC API готов к работе."
+            "🟢 ETC готов к работе."
         )
 
-    elif status_value == "degraded":
+    elif status_value.lower() in (
+        "degraded",
+        "warning",
+    ):
 
         st.warning(
-            "🟡 ETC API находится в degraded state."
+            "🟡 ETC находится в degraded state."
         )
 
     else:
@@ -549,28 +480,24 @@ def _render_status(
             f"🔴 ETC status: {status_value}"
         )
 
-    api_contract = _safe_dict(
-        status.get(
-            "api_contract"
-        )
+    col1, col2, col3, col4, col5 = st.columns(
+        5
     )
-
-    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
 
         st.metric(
-            "ETC",
+            "Статус",
             status_value,
         )
 
     with col2:
 
         st.metric(
-            "Controller",
+            "Ожидает",
             _safe_string(
                 status.get(
-                    "batch_controller"
+                    "pending_matches"
                 )
             ),
         )
@@ -578,10 +505,10 @@ def _render_status(
     with col3:
 
         st.metric(
-            "Learning Engine",
+            "Обработано",
             _safe_string(
                 status.get(
-                    "learning_engine"
+                    "processed_matches"
                 )
             ),
         )
@@ -589,7 +516,18 @@ def _render_status(
     with col4:
 
         st.metric(
-            "Version",
+            "Learning Events",
+            _safe_string(
+                status.get(
+                    "learning_events"
+                )
+            ),
+        )
+
+    with col5:
+
+        st.metric(
+            "Версия",
             _safe_string(
                 status.get(
                     "version"
@@ -598,48 +536,39 @@ def _render_status(
             ),
         )
 
-    st.markdown(
-        "#### API Contract"
-    )
-
-    api_rows = []
-
-    for name, available in api_contract.items():
-
-        api_rows.append(
-            {
-                "API": name,
-                "Status": (
-                    "available"
-                    if bool(available)
-                    else "missing"
-                ),
-            }
-        )
-
-    if api_rows:
-
-        st.dataframe(
-            pd.DataFrame(api_rows),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    missing_api = _safe_list(
+    api_contract = _safe_dict(
         status.get(
-            "missing_api"
+            "api_contract"
         )
     )
 
-    if missing_api:
+    if api_contract:
 
-        st.error(
-            "Отсутствует обязательный API ETC:\n\n"
-            + "\n".join(
-                f"- {item}"
-                for item in missing_api
+        with st.expander(
+            "🔌 ETC API Contract",
+            expanded=False,
+        ):
+
+            rows = []
+
+            for key, value in api_contract.items():
+
+                rows.append(
+                    {
+                        "API": key,
+                        "Status": (
+                            "✅"
+                            if value
+                            else "❌"
+                        ),
+                    }
+                )
+
+            st.dataframe(
+                pd.DataFrame(rows),
+                use_container_width=True,
+                hide_index=True,
             )
-        )
 
     st.divider()
 
@@ -658,33 +587,14 @@ def _render_control_panel(
         "### ⚙️ Управление ETC"
     )
 
-    st.caption(
-        "Запуск выполняется только через ETCController.run()."
+    col1, col2 = st.columns(
+        2
     )
-
-    available_leagues = list(
-        BATCH_RULES.keys()
-    )
-
-    league_options = [
-        "ALL"
-    ] + available_leagues
-
-    col1, col2, col3 = st.columns(3)
 
     with col1:
 
-        selected_league = st.selectbox(
-            "Турнир",
-            options=league_options,
-            index=0,
-            key="etc_league",
-        )
-
-    with col2:
-
         limit = st.number_input(
-            "Максимум матчей",
+            "Максимум матчей за batch",
             min_value=1,
             max_value=MAX_BATCH_LIMIT,
             value=DEFAULT_BATCH_LIMIT,
@@ -692,27 +602,17 @@ def _render_control_panel(
             key="etc_batch_limit",
         )
 
-    with col3:
+    with col2:
 
         force = st.checkbox(
             "Force mode",
             value=False,
             key="etc_force_mode",
             help=(
-                "Передаётся ETCController. "
-                "Ошибки отдельных матчей не должны "
-                "превращать успешно обработанные матчи "
-                "в ошибочные."
+                "Продолжать обработку batch "
+                "при ошибке отдельного матча."
             ),
         )
-
-    if selected_league == "ALL":
-
-        league_value: Optional[str] = None
-
-    else:
-
-        league_value = selected_league
 
     if st.button(
         "🧠 ЗАПУСТИТЬ ОБУЧЕНИЕ ETC",
@@ -730,22 +630,44 @@ def _render_control_panel(
             try:
 
                 result = controller.run(
-                    league=league_value,
-                    limit=int(limit),
-                    force=bool(force),
+                    limit=int(
+                        limit
+                    ),
+                    force=bool(
+                        force
+                    ),
                 )
+
+            except TypeError:
+
+                # Совместимость с Controller,
+                # который может принимать только limit/force
+                try:
+
+                    result = controller.run(
+                        int(limit),
+                        bool(force),
+                    )
+
+                except Exception as exc:
+
+                    st.error(
+                        f"❌ Ошибка ETC: {exc}"
+                    )
+
+                    return
 
             except Exception as exc:
 
                 st.error(
-                    "❌ Критическая ошибка ETC:\n\n"
-                    f"{exc}"
+                    f"❌ Критическая ошибка ETC: {exc}"
                 )
 
                 return
 
         elapsed = (
-            datetime.now() - started
+            datetime.now()
+            - started
         ).total_seconds()
 
         st.session_state[
@@ -766,251 +688,444 @@ def _render_control_panel(
 
 
 # ============================================================
-# LAST RESULT
+# MAIN DASHBOARD
 # ============================================================
 
-def _render_last_result() -> None:
+def _render_learning_dashboard(
+    result: Dict[str, Any],
+) -> None:
 
-    result = st.session_state.get(
-        "etc_last_result"
+    batches = result.get(
+        "batches",
+        [],
     )
 
     if not isinstance(
-        result,
-        dict,
-    ):
+        batches,
+        list,
+    ) or not batches:
+
+        st.info(
+            "Нет batch-данных для построения графиков."
+        )
 
         return
 
     st.divider()
 
     st.markdown(
-        "### 📊 Последний запуск ETC"
+        "## 📊 ETC Learning Dashboard"
     )
 
-    status = _safe_string(
+    # --------------------------------------------------------
+    # TOTALS
+    # --------------------------------------------------------
+
+    total_learning = _safe_int(
         result.get(
-            "status"
-        ),
-        "unknown",
+            "learning_events"
+        )
     )
 
-    if status == "completed":
-
-        st.success(
-            "✅ ETC успешно обработал доступные batch."
+    total_memory = _safe_int(
+        result.get(
+            "memory_events"
         )
+    )
 
-    elif status == "nothing_to_process":
-
-        st.info(
-            "⏭️ Нового готового batch нет."
+    total_processed = _safe_int(
+        result.get(
+            "processed"
         )
+    )
 
-    elif status in (
-        "empty",
-        STATUS_WAIT,
-        STATUS_ALREADY_PROCESSED,
-        STATUS_UNKNOWN_LEAGUE,
-    ):
-
-        st.info(
-            f"ℹ️ ETC: {status}"
-        )
-
-    elif status in (
-        "partial",
-        "completed_with_errors",
-    ):
-
-        st.warning(
-            "⚠️ ETC завершил обработку с ошибками."
-        )
-
-    elif status == "failed":
-
-        st.error(
-            "❌ ETC завершился с ошибкой."
-        )
-
-    else:
-
-        st.warning(
-            f"⚠️ ETC status: {status}"
-        )
-
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
-
-    with col1:
-
-        st.metric(
-            "Batch",
-            _safe_int(
-                result.get(
-                    "batch_size"
-                )
-            ),
-        )
-
-    with col2:
-
-        st.metric(
-            "Analyzed",
-            _safe_int(
-                result.get(
-                    "analyzed"
-                )
-            ),
-        )
-
-    with col3:
-
-        st.metric(
-            "Learned",
-            _safe_int(
-                result.get(
-                    "learned"
-                )
-            ),
-        )
-
-    with col4:
-
-        st.metric(
-            "Processed",
-            _safe_int(
-                result.get(
-                    "processed"
-                )
-            ),
-        )
-
-    with col5:
-
-        st.metric(
-            "Learning Events",
-            _safe_int(
-                result.get(
-                    "learning_events"
-                )
-            ),
-        )
-
-    with col6:
-
-        st.metric(
-            "Memory Events",
-            _safe_int(
-                result.get(
-                    "memory_events"
-                )
-            ),
-        )
-
-    errors_count = _error_count(
+    total_errors = _error_count(
         result.get(
             "errors"
         )
     )
 
-    if errors_count > 0:
-
-        st.error(
-            f"❌ Ошибок: {errors_count}"
+    total_batch_size = _safe_int(
+        result.get(
+            "batch_size"
         )
-
-    elapsed = st.session_state.get(
-        "etc_last_elapsed"
     )
 
-    if elapsed is not None:
-
-        st.caption(
-            f"⏱ Время выполнения: "
-            f"{float(elapsed):.2f} сек."
-        )
-
-    processed_ids = _extract_processed_ids(
-        result
+    col1, col2, col3, col4, col5, col6 = st.columns(
+        6
     )
 
-    if processed_ids:
+    with col1:
 
-        with st.expander(
-            f"✅ Обработанные матчи ({len(processed_ids)})",
-            expanded=False,
-        ):
+        st.metric(
+            "📦 Batch Size",
+            total_batch_size,
+        )
 
-            st.dataframe(
-                pd.DataFrame(
-                    {
-                        "match_id": processed_ids
-                    }
-                ),
-                use_container_width=True,
-                hide_index=True,
+    with col2:
+
+        st.metric(
+            "📊 Обработано",
+            total_processed,
+        )
+
+    with col3:
+
+        st.metric(
+            "🧠 Learning Events",
+            total_learning,
+        )
+
+    with col4:
+
+        st.metric(
+            "💾 Memory Events",
+            total_memory,
+        )
+
+    with col5:
+
+        st.metric(
+            "❌ Ошибки",
+            total_errors,
+        )
+
+    with col6:
+
+        if total_processed:
+
+            ratio = (
+                total_learning
+                / total_processed
             )
 
-    failed_matches = _extract_failed_matches(
-        result
-    )
-
-    if failed_matches:
-
-        with st.expander(
-            f"❌ Неуспешные матчи ({len(failed_matches)})",
-            expanded=True,
-        ):
-
-            st.dataframe(
-                pd.DataFrame(
-                    failed_matches
-                ),
-                use_container_width=True,
-                hide_index=True,
+            st.metric(
+                "📈 Events / Match",
+                f"{ratio:.2f}",
             )
 
-    batch_rows = _extract_batch_rows(
-        result
+        else:
+
+            st.metric(
+                "📈 Events / Match",
+                "—",
+            )
+
+    st.markdown(
+        "---"
     )
 
-    if batch_rows:
+    # --------------------------------------------------------
+    # LEARNING EVENTS BY LEAGUE
+    # --------------------------------------------------------
 
-        st.markdown(
-            "#### Batch по турнирам"
+    league_data = []
+
+    for batch in batches:
+
+        if not isinstance(
+            batch,
+            dict,
+        ):
+
+            continue
+
+        league_data.append(
+            {
+                "Лига": _safe_string(
+                    batch.get(
+                        "league"
+                    ),
+                    "Unknown",
+                ),
+                "Learning Events": _safe_int(
+                    batch.get(
+                        "learning_events"
+                    )
+                ),
+            }
         )
 
-        st.dataframe(
-            pd.DataFrame(batch_rows),
+    if league_data:
+
+        df = pd.DataFrame(
+            league_data
+        )
+
+        fig = px.bar(
+            df,
+            x="Лига",
+            y="Learning Events",
+            title="🧠 Learning Events по лигам",
+            text_auto=True,
+        )
+
+        fig.update_layout(
+            height=350,
+            showlegend=False,
+        )
+
+        st.plotly_chart(
+            fig,
             use_container_width=True,
-            hide_index=True,
         )
 
-    message = result.get(
-        "message"
+    # --------------------------------------------------------
+    # MEMORY EVENTS BY LEAGUE
+    # --------------------------------------------------------
+
+    memory_data = []
+
+    for batch in batches:
+
+        if not isinstance(
+            batch,
+            dict,
+        ):
+
+            continue
+
+        memory_data.append(
+            {
+                "Лига": _safe_string(
+                    batch.get(
+                        "league"
+                    ),
+                    "Unknown",
+                ),
+                "Memory Events": _safe_int(
+                    batch.get(
+                        "memory_events"
+                    )
+                ),
+            }
+        )
+
+    if memory_data:
+
+        df = pd.DataFrame(
+            memory_data
+        )
+
+        fig = px.bar(
+            df,
+            x="Лига",
+            y="Memory Events",
+            title="💾 Memory Events по лигам",
+            text_auto=True,
+        )
+
+        fig.update_layout(
+            height=350,
+            showlegend=False,
+        )
+
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+        )
+
+    # --------------------------------------------------------
+    # STATUS + ERRORS
+    # --------------------------------------------------------
+
+    col1, col2 = st.columns(
+        2
     )
 
-    if message:
+    with col1:
 
-        st.caption(
-            f"ETC: {message}"
+        status_values = []
+
+        for batch in batches:
+
+            if not isinstance(
+                batch,
+                dict,
+            ):
+
+                continue
+
+            status_values.append(
+                _safe_string(
+                    batch.get(
+                        "status"
+                    ),
+                    "unknown",
+                )
+            )
+
+        if status_values:
+
+            counts = Counter(
+                status_values
+            )
+
+            df = pd.DataFrame(
+                {
+                    "Status": list(
+                        counts.keys()
+                    ),
+                    "Count": list(
+                        counts.values()
+                    ),
+                }
+            )
+
+            fig = px.pie(
+                df,
+                values="Count",
+                names="Status",
+                title="📊 Структура статусов batch",
+            )
+
+            fig.update_layout(
+                height=350
+            )
+
+            st.plotly_chart(
+                fig,
+                use_container_width=True,
+            )
+
+    with col2:
+
+        processed_error_data = []
+
+        for batch in batches:
+
+            if not isinstance(
+                batch,
+                dict,
+            ):
+
+                continue
+
+            processed_error_data.append(
+                {
+                    "Лига": _safe_string(
+                        batch.get(
+                            "league"
+                        ),
+                        "Unknown",
+                    ),
+                    "Обработано": _safe_int(
+                        batch.get(
+                            "processed"
+                        )
+                    ),
+                    "Ошибки": _error_count(
+                        batch.get(
+                            "errors"
+                        )
+                    ),
+                }
+            )
+
+        if processed_error_data:
+
+            df = pd.DataFrame(
+                processed_error_data
+            )
+
+            df = df.melt(
+                id_vars=["Лига"],
+                var_name="Тип",
+                value_name="Количество",
+            )
+
+            fig = px.bar(
+                df,
+                x="Лига",
+                y="Количество",
+                color="Тип",
+                barmode="group",
+                title="⚖️ Обработано vs ошибки",
+            )
+
+            fig.update_layout(
+                height=350
+            )
+
+            st.plotly_chart(
+                fig,
+                use_container_width=True,
+            )
+
+    # --------------------------------------------------------
+    # LEARNING VS MEMORY
+    # --------------------------------------------------------
+
+    comparison_data = []
+
+    for batch in batches:
+
+        if not isinstance(
+            batch,
+            dict,
+        ):
+
+            continue
+
+        comparison_data.append(
+            {
+                "Лига": _safe_string(
+                    batch.get(
+                        "league"
+                    ),
+                    "Unknown",
+                ),
+                "Learning Events": _safe_int(
+                    batch.get(
+                        "learning_events"
+                    )
+                ),
+                "Memory Events": _safe_int(
+                    batch.get(
+                        "memory_events"
+                    )
+                ),
+            }
+        )
+
+    if comparison_data:
+
+        df = pd.DataFrame(
+            comparison_data
+        )
+
+        df = df.melt(
+            id_vars=["Лига"],
+            var_name="Тип",
+            value_name="Количество",
+        )
+
+        fig = px.bar(
+            df,
+            x="Лига",
+            y="Количество",
+            color="Тип",
+            barmode="group",
+            title="⚡ Learning Events vs Memory Events",
+        )
+
+        fig.update_layout(
+            height=350
+        )
+
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
         )
 
 
 # ============================================================
-# BATCH STATUS
+# EVOLUTION METRICS
 # ============================================================
 
-def _render_batch_status(
-    result: Optional[Dict[str, Any]],
+def _render_evolution_metrics(
+    result: Dict[str, Any],
 ) -> None:
-
-    if not isinstance(
-        result,
-        dict,
-    ):
-
-        return
 
     batches = result.get(
         "batches",
@@ -1024,409 +1139,189 @@ def _render_batch_status(
 
         return
 
-    st.divider()
-
-    st.markdown(
-        "### 📦 Состояние batch"
-    )
-
-    rows = []
-
-    for batch in batches:
-
-        if not isinstance(
-            batch,
-            dict,
-        ):
-
-            continue
-
-        rows.append(
-            {
-                "Лига": batch.get(
-                    "league",
-                    "—",
-                ),
-                "Season": batch.get(
-                    "season_id",
-                    "—",
-                ),
-                "Status": batch.get(
-                    "status",
-                    "—",
-                ),
-                "Batch": _safe_int(
-                    batch.get(
-                        "batch_size"
-                    )
-                ),
-                "Analyzed": _safe_int(
-                    batch.get(
-                        "analyzed"
-                    )
-                ),
-                "Learned": _safe_int(
-                    batch.get(
-                        "learned"
-                    )
-                ),
-                "Processed": _safe_int(
-                    batch.get(
-                        "processed"
-                    )
-                ),
-                "Learning Events": _safe_int(
-                    batch.get(
-                        "learning_events"
-                    )
-                ),
-                "Memory Events": _safe_int(
-                    batch.get(
-                        "memory_events"
-                    )
-                ),
-                "Errors": _error_count(
-                    batch.get(
-                        "errors"
-                    )
-                ),
-            }
-        )
-
-    if rows:
-
-        st.dataframe(
-            pd.DataFrame(rows),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-
-# ============================================================
-# LEARNING RESULT DETAILS
-# ============================================================
-
-def _render_learning_details(
-    result: Optional[Dict[str, Any]],
-) -> None:
-
-    if not isinstance(
-        result,
-        dict,
-    ):
-
-        return
-
-    batches = result.get(
-        "batches",
-        [],
-    )
-
-    if not isinstance(
-        batches,
-        list,
-    ):
-
-        return
-
-    st.divider()
-
-    st.markdown(
-        "### 🧠 Детали Learning Engine"
-    )
-
-    for index, batch in enumerate(
-        batches,
-        start=1,
-    ):
-
-        if not isinstance(
-            batch,
-            dict,
-        ):
-
-            continue
-
-        league = _safe_string(
+    total_learning = sum(
+        _safe_int(
             batch.get(
-                "league"
-            ),
-            f"Batch {index}",
+                "learning_events"
+            )
         )
-
-        learning_result = batch.get(
-            "learning_result"
-        )
-
-        if not isinstance(
-            learning_result,
+        for batch in batches
+        if isinstance(
+            batch,
             dict,
-        ):
-
-            continue
-
-        with st.expander(
-            f"🧠 {league} — Learning Engine",
-            expanded=False,
-        ):
-
-            status = _safe_string(
-                learning_result.get(
-                    "status"
-                ),
-                "unknown",
-            )
-
-            st.write(
-                f"**Status:** `{status}`"
-            )
-
-            metric_col1, metric_col2, metric_col3 = st.columns(3)
-
-            with metric_col1:
-
-                st.metric(
-                    "Processed",
-                    _safe_int(
-                        learning_result.get(
-                            "processed"
-                        )
-                    ),
-                )
-
-            with metric_col2:
-
-                st.metric(
-                    "Learning Events",
-                    _safe_int(
-                        learning_result.get(
-                            "learning_events"
-                        )
-                    ),
-                )
-
-            with metric_col3:
-
-                memory_ids = learning_result.get(
-                    "memory_ids",
-                    [],
-                )
-
-                memory_count = (
-                    len(memory_ids)
-                    if isinstance(
-                        memory_ids,
-                        list,
-                    )
-                    else _safe_int(
-                        learning_result.get(
-                            "memory_events"
-                        )
-                    )
-                )
-
-                st.metric(
-                    "Memory Events",
-                    memory_count,
-                )
-
-            processed_ids = learning_result.get(
-                "processed_match_ids",
-                [],
-            )
-
-            if isinstance(
-                processed_ids,
-                list,
-            ) and processed_ids:
-
-                st.markdown(
-                    "##### Обработанные match_id"
-                )
-
-                st.dataframe(
-                    pd.DataFrame(
-                        {
-                            "match_id": processed_ids
-                        }
-                    ),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-            errors = learning_result.get(
-                "errors",
-                [],
-            )
-
-            if errors:
-
-                st.markdown(
-                    "##### Ошибки Learning Engine"
-                )
-
-                if isinstance(
-                    errors,
-                    list,
-                ):
-
-                    error_rows = []
-
-                    for error in errors:
-
-                        if isinstance(
-                            error,
-                            dict,
-                        ):
-
-                            error_rows.append(
-                                error
-                            )
-
-                        else:
-
-                            error_rows.append(
-                                {
-                                    "error": str(
-                                        error
-                                    )
-                                }
-                            )
-
-                    if error_rows:
-
-                        st.dataframe(
-                            pd.DataFrame(
-                                error_rows
-                            ),
-                            use_container_width=True,
-                            hide_index=True,
-                        )
-
-                else:
-
-                    st.error(
-                        str(errors)
-                    )
-
-
-# ============================================================
-# LEARNING EVENTS SUMMARY
-# ============================================================
-
-def _render_learning_events_summary(
-    result: Optional[Dict[str, Any]],
-) -> None:
-
-    if not isinstance(
-        result,
-        dict,
-    ):
-
-        return
-
-    batches = result.get(
-        "batches",
-        [],
-    )
-
-    if not isinstance(
-        batches,
-        list,
-    ):
-
-        return
-
-    total_events = _safe_int(
-        result.get(
-            "learning_events"
         )
     )
 
-    total_memory = _safe_int(
-        result.get(
-            "memory_events"
+    total_memory = sum(
+        _safe_int(
+            batch.get(
+                "memory_events"
+            )
+        )
+        for batch in batches
+        if isinstance(
+            batch,
+            dict,
         )
     )
 
-    processed = _safe_int(
-        result.get(
-            "processed"
+    total_processed = sum(
+        _safe_int(
+            batch.get(
+                "processed"
+            )
+        )
+        for batch in batches
+        if isinstance(
+            batch,
+            dict,
         )
     )
 
-    if (
-        total_events == 0
-        and total_memory == 0
-        and processed == 0
+    total_errors = sum(
+        _error_count(
+            batch.get(
+                "errors"
+            )
+        )
+        for batch in batches
+        if isinstance(
+            batch,
+            dict,
+        )
+    )
+
+    total_batches = len(
+        batches
+    )
+
+    if not (
+        total_learning
+        or total_memory
+        or total_processed
     ):
+
+        st.info(
+            "Нет данных для evolution metrics."
+        )
 
         return
 
     st.divider()
 
     st.markdown(
-        "### 🧬 Результат эволюционного обучения"
+        "### 🧬 Evolution Metrics"
     )
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2 = st.columns(
+        2
+    )
+
+    with col1:
+
+        fig = go.Figure()
+
+        fig.add_trace(
+            go.Bar(
+                x=[
+                    "Learning Events",
+                    "Memory Events",
+                ],
+                y=[
+                    total_learning,
+                    total_memory,
+                ],
+                text=[
+                    total_learning,
+                    total_memory,
+                ],
+                textposition="outside",
+            )
+        )
+
+        fig.update_layout(
+            title="🧬 Learning vs Memory",
+            height=320,
+            showlegend=False,
+        )
+
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+        )
+
+    with col2:
+
+        fig = go.Figure()
+
+        fig.add_trace(
+            go.Bar(
+                x=[
+                    "Processed",
+                    "Errors",
+                ],
+                y=[
+                    total_processed,
+                    total_errors,
+                ],
+                text=[
+                    total_processed,
+                    total_errors,
+                ],
+                textposition="outside",
+            )
+        )
+
+        fig.update_layout(
+            title="⚖️ Processed vs Errors",
+            height=320,
+            showlegend=False,
+        )
+
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+        )
+
+    col1, col2, col3 = st.columns(
+        3
+    )
 
     with col1:
 
         st.metric(
-            "Матчи обработаны",
-            processed,
+            "Средний Learning Events / batch",
+            f"{total_learning / total_batches:.2f}"
+            if total_batches
+            else "—",
         )
 
     with col2:
 
         st.metric(
-            "Learning Events",
-            total_events,
+            "Средний Memory Events / batch",
+            f"{total_memory / total_batches:.2f}"
+            if total_batches
+            else "—",
         )
 
     with col3:
 
         st.metric(
-            "Memory Events",
-            total_memory,
+            "Средний Processed / batch",
+            f"{total_processed / total_batches:.2f}"
+            if total_batches
+            else "—",
         )
 
-    with col4:
-
-        if processed > 0:
-
-            events_per_match = (
-                total_events / processed
-            )
-
-            st.metric(
-                "Events / match",
-                f"{events_per_match:.2f}",
-            )
-
-        else:
-
-            st.metric(
-                "Events / match",
-                "—",
-            )
-
 
 # ============================================================
-# PROCESSED MATCHES
+# MATCH LEARNING
 # ============================================================
 
-def _render_processed_matches(
-    result: Optional[Dict[str, Any]],
+def _render_match_learning(
+    result: Dict[str, Any],
 ) -> None:
-
-    if not isinstance(
-        result,
-        dict,
-    ):
-
-        return
 
     processed_ids = _extract_processed_ids(
         result
@@ -1439,7 +1334,7 @@ def _render_processed_matches(
     st.divider()
 
     st.markdown(
-        "### ⚽ Обработанные матчи"
+        "### ⚽ Обучение по матчам"
     )
 
     counts = Counter(
@@ -1459,7 +1354,65 @@ def _render_processed_matches(
     )
 
     df = df.sort_values(
-        "match_id"
+        "learning_runs",
+        ascending=False,
+    ).head(20)
+
+    fig = px.bar(
+        df,
+        x="match_id",
+        y="learning_runs",
+        title="Топ-20 матчей по learning runs",
+        text_auto=True,
+    )
+
+    fig.update_layout(
+        height=350,
+        xaxis_title="Match ID",
+        yaxis_title="Learning Runs",
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+    )
+
+    with st.expander(
+        "📋 Матчи",
+        expanded=False,
+    ):
+
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+# ============================================================
+# BATCH STATUS
+# ============================================================
+
+def _render_batch_status(
+    result: Dict[str, Any],
+) -> None:
+
+    rows = _extract_batch_rows(
+        result
+    )
+
+    if not rows:
+
+        return
+
+    st.divider()
+
+    st.markdown(
+        "### 📊 Batch Status"
+    )
+
+    df = pd.DataFrame(
+        rows
     )
 
     st.dataframe(
@@ -1468,84 +1421,508 @@ def _render_processed_matches(
         hide_index=True,
     )
 
+    if "league" not in df.columns:
+
+        return
+
+    fig = px.bar(
+        df,
+        x="league",
+        y="batch_size",
+        color="status",
+        title="Размер batch по лигам",
+        text_auto=True,
+    )
+
+    fig.update_layout(
+        height=350
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+    )
+
 
 # ============================================================
-# ERROR PANEL
+# TIMELINE
 # ============================================================
 
-def _render_error_panel(
-    result: Optional[Dict[str, Any]],
+def _render_learning_timeline(
+    result: Dict[str, Any],
 ) -> None:
 
+    batches = result.get(
+        "batches",
+        [],
+    )
+
     if not isinstance(
-        result,
-        dict,
+        batches,
+        list,
     ):
 
         return
 
-    failed_matches = _extract_failed_matches(
-        result
-    )
+    timeline_data = []
 
-    if not failed_matches:
+    for batch in batches:
+
+        if not isinstance(
+            batch,
+            dict,
+        ):
+
+            continue
+
+        learning_result = batch.get(
+            "learning_result",
+            {},
+        )
+
+        if not isinstance(
+            learning_result,
+            dict,
+        ):
+
+            continue
+
+        created_at = learning_result.get(
+            "created_at"
+        )
+
+        if not created_at:
+
+            continue
+
+        try:
+
+            date_value = pd.to_datetime(
+                created_at
+            )
+
+        except Exception:
+
+            continue
+
+        events = _safe_int(
+            learning_result.get(
+                "learning_events"
+            )
+        )
+
+        if events <= 0:
+
+            continue
+
+        timeline_data.append(
+            {
+                "Дата": date_value,
+                "Learning Events": events,
+                "Лига": _safe_string(
+                    batch.get(
+                        "league"
+                    ),
+                    "Unknown",
+                ),
+            }
+        )
+
+    if not timeline_data:
 
         return
 
     st.divider()
 
     st.markdown(
-        "### 🚨 Ошибки ETC"
+        "### 📈 Динамика обучения"
     )
 
-    for index, error in enumerate(
-        failed_matches,
-        start=1,
-    ):
+    df = pd.DataFrame(
+        timeline_data
+    )
 
-        match_id = error.get(
-            "match_id",
-            "unknown",
-        )
+    df = df.sort_values(
+        "Дата"
+    )
 
-        stage = error.get(
-            "stage",
-            "unknown",
-        )
+    fig = px.line(
+        df,
+        x="Дата",
+        y="Learning Events",
+        color="Лига",
+        markers=True,
+        title="Динамика Learning Events",
+    )
 
-        message = (
-            error.get(
-                "error"
-            )
-            or error.get(
-                "message"
-            )
-            or str(error)
-        )
+    fig.update_layout(
+        height=400,
+        xaxis_title="Дата",
+        yaxis_title="Learning Events",
+    )
 
-        st.error(
-            f"{index}. match_id={match_id} | "
-            f"stage={stage} | {message}"
-        )
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+    )
 
 
 # ============================================================
-# SESSION STATE
+# LEARNING STRUCTURE
 # ============================================================
 
-def _render_session_info() -> None:
+def _render_learning_structure(
+    result: Dict[str, Any],
+) -> None:
 
-    refresh_value = st.session_state.get(
-        "etc_refresh"
+    batches = result.get(
+        "batches",
+        [],
     )
 
-    if not refresh_value:
+    if not isinstance(
+        batches,
+        list,
+    ) or not batches:
 
         return
 
-    st.caption(
-        f"Последнее обновление UI: {refresh_value}"
+    statuses = []
+
+    for batch in batches:
+
+        if not isinstance(
+            batch,
+            dict,
+        ):
+
+            continue
+
+        status = batch.get(
+            "status"
+        )
+
+        if status:
+
+            statuses.append(
+                str(status)
+            )
+
+    if not statuses:
+
+        return
+
+    counts = Counter(
+        statuses
     )
+
+    df = pd.DataFrame(
+        {
+            "Тип": list(
+                counts.keys()
+            ),
+            "Количество": list(
+                counts.values()
+            ),
+        }
+    )
+
+    st.divider()
+
+    st.markdown(
+        "### 🧩 Структура обучения"
+    )
+
+    fig = px.pie(
+        df,
+        values="Количество",
+        names="Тип",
+        title="Структура batch по статусам",
+    )
+
+    fig.update_layout(
+        height=350
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+    )
+
+
+# ============================================================
+# MEMORY IDS
+# ============================================================
+
+def _render_learning_memory(
+    result: Dict[str, Any],
+) -> None:
+
+    batches = result.get(
+        "batches",
+        [],
+    )
+
+    if not isinstance(
+        batches,
+        list,
+    ):
+
+        return
+
+    memory_events = []
+
+    for batch in batches:
+
+        if not isinstance(
+            batch,
+            dict,
+        ):
+
+            continue
+
+        learning_result = batch.get(
+            "learning_result",
+            {},
+        )
+
+        if not isinstance(
+            learning_result,
+            dict,
+        ):
+
+            continue
+
+        memory_ids = learning_result.get(
+            "memory_ids",
+            [],
+        )
+
+        if not isinstance(
+            memory_ids,
+            list,
+        ):
+
+            continue
+
+        for memory_id in memory_ids:
+
+            memory_events.append(
+                {
+                    "memory_id": memory_id,
+                    "league": batch.get(
+                        "league"
+                    ),
+                }
+            )
+
+    if not memory_events:
+
+        return
+
+    st.divider()
+
+    with st.expander(
+        "💾 Learning Memory IDs",
+        expanded=False,
+    ):
+
+        st.dataframe(
+            pd.DataFrame(
+                memory_events
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+# ============================================================
+# FAILED MATCHES
+# ============================================================
+
+def _render_failed_matches(
+    result: Dict[str, Any],
+) -> None:
+
+    rows = _extract_failed_matches(
+        result
+    )
+
+    if not rows:
+
+        return
+
+    st.divider()
+
+    st.markdown(
+        "### ❌ Ошибки матчей"
+    )
+
+    st.dataframe(
+        pd.DataFrame(rows),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+# ============================================================
+# LAST RESULT
+# ============================================================
+
+def _render_last_result() -> None:
+
+    result = st.session_state.get(
+        "etc_last_result"
+    )
+
+    if not isinstance(
+        result,
+        dict,
+    ):
+
+        st.info(
+            "ETC ещё не запускался. "
+            "После первого batch здесь появится аналитика."
+        )
+
+        return
+
+    status = _safe_string(
+        result.get(
+            "status"
+        ),
+        "unknown",
+    )
+
+    st.divider()
+
+    st.markdown(
+        "## 📊 Последний ETC Batch"
+    )
+
+    if status == "completed":
+
+        st.success(
+            "✅ ETC batch успешно завершён."
+        )
+
+    elif status in (
+        "nothing_to_process",
+        "empty",
+    ):
+
+        st.info(
+            "⏭️ Новых готовых матчей для обучения нет."
+        )
+
+    elif status in (
+        "partial",
+        "completed_with_errors",
+    ):
+
+        st.warning(
+            "⚠️ Batch завершён частично, "
+            "есть ошибки."
+        )
+
+    elif status in (
+        "failed",
+        "error",
+        "failure",
+    ):
+
+        st.error(
+            "❌ ETC завершился ошибкой."
+        )
+
+    else:
+
+        st.warning(
+            f"⚠️ ETC status: {status}"
+        )
+
+    _render_learning_dashboard(
+        result
+    )
+
+    _render_learning_structure(
+        result
+    )
+
+    _render_evolution_metrics(
+        result
+    )
+
+    _render_match_learning(
+        result
+    )
+
+    _render_batch_status(
+        result
+    )
+
+    _render_learning_timeline(
+        result
+    )
+
+    _render_learning_memory(
+        result
+    )
+
+    _render_failed_matches(
+        result
+    )
+
+    elapsed = st.session_state.get(
+        "etc_last_elapsed"
+    )
+
+    if elapsed is not None:
+
+        st.caption(
+            f"⏱ Время выполнения: "
+            f"{float(elapsed):.2f} сек."
+        )
+
+    errors = result.get(
+        "errors"
+    )
+
+    if errors:
+
+        with st.expander(
+            "❌ Общие ошибки batch",
+            expanded=False,
+        ):
+
+            if isinstance(
+                errors,
+                list,
+            ):
+
+                for index, error in enumerate(
+                    errors,
+                    start=1,
+                ):
+
+                    st.error(
+                        f"{index}. {error}"
+                    )
+
+            else:
+
+                st.error(
+                    str(errors)
+                )
+
+    with st.expander(
+        "🧾 Полный результат ETC",
+        expanded=False,
+    ):
+
+        st.json(
+            result
+        )
 
 
 # ============================================================
@@ -1563,54 +1940,55 @@ def _render_pipeline() -> None:
 
         st.code(
             """
-                    MATCH
-                      │
-                      ▼
-                IMPORT FACTS
-                      │
-                      ▼
-                   SQLite
-                      │
-                      ▼
-              BatchController
-                      │
-          ┌───────────┼───────────┐
-          │           │           │
-        WAIT        READY      ALREADY
-                      │
-                      ▼
-          get_learning_batch()
-                      │
-                      ▼
-               ETCController
-                      │
-                      ▼
-            ETCLearningEngine
-                      │
-              ┌───────┴───────┐
-              │               │
-              ▼               ▼
-        process_match()   run_batch()
-                              │
-                              ▼
-                    Statistical Analysis
-                              │
-                              ▼
-                       Learning Memory
-                              │
-                              ▼
-                           SQLite
-                              │
-                              ▼
-                         NEXT BATCH
+MATCH
+  │
+  ▼
+IMPORT FACTS
+  │
+  ▼
+match_results
+  │
+  ▼
+BatchController
+  │
+  ├── WAIT
+  ├── READY
+  ├── UNKNOWN_LEAGUE
+  └── ALREADY_PROCESSED
+          │
+          ▼
+  get_learning_batch()
+          │
+          ▼
+     ETCController
+          │
+          ▼
+  ETCLearningEngine
+          │
+          ▼
+ Statistical Analysis
+          │
+          ├── Prediction Error
+          ├── Observed xG
+          ├── Calibration
+          └── Team / Club Learning
+                  │
+                  ▼
+           Learning Memory
+                  │
+                  ▼
+               SQLite
+                  │
+                  ▼
+             NEXT BATCH
             """,
             language="text",
         )
 
         st.caption(
-            "ETC является постматчевым обучающим контуром. "
-            "Факты матча являются входом, а не объектом "
-            "модификации."
+            "ETC работает только с завершёнными "
+            "фактами матчей. Исторические факты "
+            "не переписываются."
         )
 
 
@@ -1629,49 +2007,44 @@ def _render_architecture() -> None:
 
         st.code(
             """
-                         FAJ
-                          │
-                          ▼
-                     MATCH FACTS
-                          │
-                          ▼
-                    ETCController
-                          │
-             ┌────────────┴────────────┐
-             │                         │
-             ▼                         ▼
-       BatchController          ETCLearningEngine
-             │                         │
-       ┌─────┴─────┐          ┌────────┼────────┐
-       │           │          │        │        │
-      check()   get_batch()   Analysis Memory  Events
-             │                         │
-             └────────────┬────────────┘
-                          ▼
-                      FAJDatabase
-                          │
-                          ▼
-                        SQLite
+                 FAJ
+                  │
+                  ▼
+             MATCH FACTS
+                  │
+                  ▼
+           ETCController
+                  │
+        ┌─────────┴─────────┐
+        │                   │
+        ▼                   ▼
+ BatchController     ETCLearningEngine
+                            │
+                ┌───────────┼───────────┐
+                │           │           │
+                ▼           ▼           ▼
+           Statistical   Prediction   Learning
+             Analysis      Error       Memory
+                │           │           │
+                └───────────┼───────────┘
+                            ▼
+                       FAJDatabase
+                            │
+                            ▼
+                          SQLite
             """,
             language="text",
         )
 
-        st.markdown(
-            """
-**Границы ETC**
-
-- `BatchController` определяет готовность batch.
-- `ETCController` оркестрирует выполнение.
-- `ETCLearningEngine` выполняет обучение.
-- `LearningMemory` принадлежит обучающему слою.
-- SQLite остаётся единственным хранилищем.
-- UI не является частью бизнес-логики.
-            """
+        st.caption(
+            "ETC Page является UI-слоем. "
+            "Бизнес-логика находится внутри ETCController "
+            "и ETCLearningEngine."
         )
 
 
 # ============================================================
-# CONTROLLER DIAGNOSTICS
+# DIAGNOSTICS
 # ============================================================
 
 def _render_diagnostics(
@@ -1685,19 +2058,14 @@ def _render_diagnostics(
         expanded=False,
     ):
 
-        st.markdown(
-            "#### Публичный API Controller"
-        )
-
-        public_methods = [
+        methods = [
             "status",
             "run",
-            "process_match",
         ]
 
         rows = []
 
-        for method_name in public_methods:
+        for method_name in methods:
 
             attribute = getattr(
                 controller,
@@ -1722,84 +2090,9 @@ def _render_diagnostics(
             hide_index=True,
         )
 
-        st.markdown(
-            "#### Внутренние компоненты"
-        )
-
-        component_rows = [
-            {
-                "Component": "BatchController",
-                "Class": controller.batch_controller.__class__.__name__,
-            },
-            {
-                "Component": "ETCLearningEngine",
-                "Class": controller.learning_engine.__class__.__name__,
-            },
-            {
-                "Component": "Database",
-                "Class": controller.db.__class__.__name__,
-            },
-        ]
-
-        st.dataframe(
-            pd.DataFrame(component_rows),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-        st.markdown(
-            "#### Legacy API"
-        )
-
-        st.success(
-            "create_batch() и mark_processed() "
-            "не используются ETCController."
-        )
-
-        st.markdown(
-            "#### Запрещённые операции UI"
-        )
-
-        forbidden = [
-            "SQL напрямую",
-            "DELETE",
-            "DROP",
-            "изменение match_results",
-            "изменение match_statistics",
-            "изменение predictions",
-            "изменение календаря",
-            "прямая запись learning_memory",
-        ]
-
-        for item in forbidden:
-
-            st.write(
-                f"🚫 {item}"
-            )
-
-
-# ============================================================
-# RAW LAST RESULT
-# ============================================================
-
-def _render_raw_result(
-    result: Optional[Dict[str, Any]],
-) -> None:
-
-    if not isinstance(
-        result,
-        dict,
-    ):
-
-        return
-
-    with st.expander(
-        "🧾 Полный результат ETCController.run()",
-        expanded=False,
-    ):
-
-        st.json(
-            result
+        st.caption(
+            "UI намеренно проверяет только "
+            "публичный ETCController API."
         )
 
 
@@ -1825,14 +2118,14 @@ def _render_footer() -> None:
 
 def main() -> None:
     """
-    Главная точка страницы ETC.
+    Главная точка входа страницы ETC.
+
+    Совместимый импорт:
+
+        from app.pages.etc import main
     """
 
     _configure_page()
-
-    # --------------------------------------------------------
-    # HEADER
-    # --------------------------------------------------------
 
     _render_header()
 
@@ -1857,15 +2150,9 @@ def main() -> None:
     # STATUS
     # --------------------------------------------------------
 
-    status = _render_status(
+    _render_status(
         controller
     )
-
-    if not status:
-
-        st.warning(
-            "ETC status недоступен."
-        )
 
     # --------------------------------------------------------
     # CONTROL
@@ -1879,60 +2166,13 @@ def main() -> None:
     # LAST RESULT
     # --------------------------------------------------------
 
-    last_result = st.session_state.get(
-        "etc_last_result"
-    )
-
-    if isinstance(
-        last_result,
-        dict,
-    ):
-
-        _render_last_result()
-
-        _render_batch_status(
-            last_result
-        )
-
-        _render_learning_events_summary(
-            last_result
-        )
-
-        _render_processed_matches(
-            last_result
-        )
-
-        _render_learning_details(
-            last_result
-        )
-
-        _render_error_panel(
-            last_result
-        )
-
-        _render_raw_result(
-            last_result
-        )
-
-    else:
-
-        st.divider()
-
-        st.info(
-            "ETC ещё не запускался из этого интерфейса. "
-            "После запуска здесь появится полный результат "
-            "Controller."
-        )
-
-    # --------------------------------------------------------
-    # PIPELINE
-    # --------------------------------------------------------
-
-    _render_pipeline()
+    _render_last_result()
 
     # --------------------------------------------------------
     # ARCHITECTURE
     # --------------------------------------------------------
+
+    _render_pipeline()
 
     _render_architecture()
 
@@ -1943,12 +2183,6 @@ def main() -> None:
     _render_diagnostics(
         controller
     )
-
-    # --------------------------------------------------------
-    # SESSION
-    # --------------------------------------------------------
-
-    _render_session_info()
 
     # --------------------------------------------------------
     # FOOTER
