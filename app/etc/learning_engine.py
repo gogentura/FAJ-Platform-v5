@@ -9,7 +9,7 @@ ETC — Evolution Training Center
 app/etc/learning_engine.py
 ============================================================
 
-ETC LEARNING ENGINE v1.5
+ETC LEARNING ENGINE v1.6
 ============================================================
 
 НАЗНАЧЕНИЕ
@@ -116,7 +116,7 @@ ETCLearningEngine отвечает только за:
 
 Запись выполняется ТОЛЬКО через:
 
-    LearningMemory.record()
+    LearningMemory.record_batch_learning()
 
 
 ПОВТОРНАЯ ОБРАБОТКА
@@ -192,6 +192,40 @@ ETCLearningEngine:
 Основной ETC-контракт:
 
     process_match()
+
+
+ИСПРАВЛЕНИЯ v1.6
+============================================================
+
+1. Использование LearningMemory.record_batch_learning()
+
+   Вместо ручного формирования marker через record()
+   используется официальный API:
+
+       self.memory.record_batch_learning(
+           match_id=match_id,
+           version=MODULE_VERSION,
+           metadata={"source": "ETCLearningEngine"}
+       )
+
+2. Четкое разделение счетчиков:
+
+   processed     — новые успешно обработанные матчи
+   already_processed — уже были в learning_memory
+   failed        — ошибки обработки
+
+3. Контракт с StatisticalAnalyzer v1.2:
+
+   analysis["success"]
+   analysis["memory_events"]
+   analysis["errors"]
+   analysis["status"]
+   analysis["match_id"]
+
+4. batch_learning создаётся ТОЛЬКО через:
+
+   LearningMemory.record_batch_learning()
+
 ============================================================
 """
 
@@ -225,7 +259,7 @@ logger = logging.getLogger(__name__)
 # MODULE
 # ============================================================
 
-MODULE_VERSION = "1.5"
+MODULE_VERSION = "1.6"
 MODULE_NAME = "FAJ ETC Learning Engine"
 
 PROCESSED_EVENT_TYPE = "batch_learning"
@@ -490,7 +524,7 @@ class ETCLearningEngine:
         base_result["analysis"] = analysis
 
         # ----------------------------------------------------
-        # ANALYSIS STATUS
+        # ANALYSIS STATUS (v1.2 контракт)
         # ----------------------------------------------------
 
         if not analysis.get(
@@ -560,6 +594,7 @@ class ETCLearningEngine:
 
         # ----------------------------------------------------
         # CREATE PROCESSED MARKER
+        # Используем официальный API LearningMemory
         # ----------------------------------------------------
 
         try:
@@ -725,7 +760,7 @@ class ETCLearningEngine:
             }
 
         # ----------------------------------------------------
-        # VALIDATE ANALYSIS
+        # VALIDATE ANALYSIS (v1.2 контракт)
         # ----------------------------------------------------
 
         if not isinstance(
@@ -799,7 +834,7 @@ class ETCLearningEngine:
             }
 
         # ----------------------------------------------------
-        # MARK PROCESSED
+        # MARK PROCESSED (через официальный API)
         # ----------------------------------------------------
 
         try:
@@ -964,6 +999,7 @@ class ETCLearningEngine:
                     "league": None,
                     "season_id": season_id,
                     "processed": 0,
+                    "already_processed": 0,
                     "failed": 0,
                     "total": 0,
                     "learning_events": 0,
@@ -1003,6 +1039,7 @@ class ETCLearningEngine:
                     "league": league,
                     "season_id": season_id,
                     "processed": 0,
+                    "already_processed": 0,
                     "failed": 0,
                     "total": 0,
                     "learning_events": 0,
@@ -1030,6 +1067,7 @@ class ETCLearningEngine:
                     "league": league,
                     "season_id": season_id,
                     "processed": 0,
+                    "already_processed": 0,
                     "failed": 0,
                     "total": 0,
                     "learning_events": 0,
@@ -1071,6 +1109,7 @@ class ETCLearningEngine:
                     ),
                     "season_id": season_id,
                     "processed": 0,
+                    "already_processed": 0,
                     "failed": 0,
                     "total": 0,
                     "learning_events": 0,
@@ -1110,6 +1149,7 @@ class ETCLearningEngine:
                     "league": league,
                     "season_id": season_id,
                     "processed": 0,
+                    "already_processed": 0,
                     "failed": 0,
                     "total": 0,
                     "learning_events": 0,
@@ -1133,6 +1173,7 @@ class ETCLearningEngine:
                 "league": league,
                 "season_id": season_id,
                 "processed": 0,
+                "already_processed": 0,
                 "failed": 0,
                 "total": 0,
                 "learning_events": 0,
@@ -1162,6 +1203,7 @@ class ETCLearningEngine:
                 "league": league,
                 "season_id": season_id,
                 "processed": 0,
+                "already_processed": 0,
                 "failed": 0,
                 "total": 0,
                 "learning_events": 0,
@@ -1183,6 +1225,7 @@ class ETCLearningEngine:
         # ====================================================
 
         processed = 0
+        already_processed = 0
         failed = 0
         learning_events = 0
 
@@ -1244,6 +1287,24 @@ class ETCLearningEngine:
                 }
 
             # ------------------------------------------------
+            # ALREADY PROCESSED
+            # ------------------------------------------------
+
+            if match_result.get(
+                "status"
+            ) == "already_processed":
+
+                already_processed += 1
+
+                logger.info(
+                    "ETC batch match already "
+                    "processed | match_id=%s",
+                    match_id,
+                )
+
+                continue
+
+            # ------------------------------------------------
             # FAILED
             # ------------------------------------------------
 
@@ -1279,7 +1340,7 @@ class ETCLearningEngine:
                 continue
 
             # ------------------------------------------------
-            # SUCCESS / ALREADY PROCESSED
+            # SUCCESS (НОВЫЙ МАТЧ)
             # ------------------------------------------------
 
             processed += 1
@@ -1327,23 +1388,6 @@ class ETCLearningEngine:
                     result_memory_ids
                 )
 
-            # ------------------------------------------------
-            # ALREADY PROCESSED LOG
-            # ------------------------------------------------
-
-            if (
-                match_result.get(
-                    "status"
-                )
-                == "already_processed"
-            ):
-
-                logger.info(
-                    "ETC batch match already "
-                    "processed | match_id=%s",
-                    match_id,
-                )
-
         # ====================================================
         # BATCH STATUS
         # ====================================================
@@ -1356,6 +1400,7 @@ class ETCLearningEngine:
             total > 0
             and processed == total
             and failed == 0
+            and already_processed == 0
         )
 
         # ====================================================
@@ -1449,7 +1494,7 @@ class ETCLearningEngine:
 
             status = "completed"
 
-        elif processed > 0:
+        elif processed > 0 or already_processed > 0:
 
             status = "partial"
 
@@ -1473,6 +1518,8 @@ class ETCLearningEngine:
             "season_id": season_id,
 
             "processed": processed,
+
+            "already_processed": already_processed,
 
             "failed": failed,
 
@@ -1508,14 +1555,17 @@ class ETCLearningEngine:
         logger.info(
             "ETC BATCH FINISHED | "
             "status=%s | "
-            "processed=%s/%s | "
+            "processed=%s | "
+            "already=%s | "
             "failed=%s | "
+            "total=%s | "
             "learning_events=%s | "
             "batch_memory_events=%s",
             status,
             processed,
-            total,
+            already_processed,
             failed,
+            total,
             learning_events,
             len(batch_memory_ids),
         )
@@ -1671,13 +1721,14 @@ class ETCLearningEngine:
         Создаёт подтверждение успешной обработки
         конкретного матча.
 
+        ИСПОЛЬЗУЕТ ОФИЦИАЛЬНЫЙ API:
+
+            LearningMemory.record_batch_learning()
+
         Контракт:
 
             event_type = batch_learning
             reference_id = match_id
-
-        Запись выполняется только через
-        LearningMemory.record().
         """
 
         # ----------------------------------------------------
@@ -1697,54 +1748,25 @@ class ETCLearningEngine:
             return None
 
         # ----------------------------------------------------
-        # WRITE
+        # WRITE через официальный API
         # ----------------------------------------------------
 
         try:
 
-            memory_id = self.memory.record(
-                event_type=(
-                    PROCESSED_EVENT_TYPE
-                ),
-
-                object_type=(
-                    f"match:{match_id}"
-                ),
-
-                feature=(
-                    "etc_batch_processed"
-                ),
-
-                before_value=None,
-
-                after_value="processed",
-
-                delta=None,
-
-                reason=(
-                    "Матч успешно обработан "
-                    "ETC Learning Engine."
-                ),
-
-                confidence=1.0,
-
-                impact=0.0,
-
-                algorithm=(
-                    "ETC.LearningEngine"
-                ),
-
-                model_version=(
-                    MODULE_VERSION
-                ),
-
-                reference_id=match_id,
+            memory_id = self.memory.record_batch_learning(
+                match_id=match_id,
+                version=MODULE_VERSION,
+                metadata={
+                    "source": "ETCLearningEngine",
+                    "algorithm": "ETC.LearningEngine",
+                    "reason": "Матч успешно обработан ETC Learning Engine."
+                }
             )
 
             if memory_id is None:
 
                 raise RuntimeError(
-                    "LearningMemory.record() "
+                    "LearningMemory.record_batch_learning() "
                     "не вернул memory_id."
                 )
 
@@ -2294,6 +2316,10 @@ if __name__ == "__main__":
         )
 
         print(
+            "already_processed == 0"
+        )
+
+        print(
             "и fingerprint записан, "
             "если он предоставлен controller."
         )
@@ -2325,6 +2351,29 @@ if __name__ == "__main__":
 
         print(
             "DELETE/DROP отсутствуют."
+        )
+
+        print()
+        print("=" * 70)
+
+        print()
+        print("ИЗМЕНЕНИЯ v1.6")
+        print("-" * 70)
+
+        print(
+            "1. Использование LearningMemory.record_batch_learning()"
+        )
+
+        print(
+            "2. Четкое разделение processed / already_processed / failed"
+        )
+
+        print(
+            "3. Контракт с StatisticalAnalyzer v1.2"
+        )
+
+        print(
+            "4. batch_completed = processed == total and failed == 0 and already_processed == 0"
         )
 
     except Exception as exc:
