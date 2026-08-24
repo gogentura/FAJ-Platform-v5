@@ -10,60 +10,95 @@ ETC — Evolution Training Center
 ФАЙЛ:
     app/pages/etc.py
 
-НАЗНАЧЕНИЕ:
-    Streamlit UI для Evolution Training Center.
+ETC PAGE v2.0
+============================================================
 
-АРХИТЕКТУРНЫЙ КОНТРАК:
+НАЗНАЧЕНИЕ
+-----------
 
-    Streamlit
-        │
-        ▼
-    ETCController
-        │
-        ▼
-    ETCLearningEngine
-        │
-        ├── BatchController
-        ├── StatisticalAnalyzer
-        ├── ObservedXG
-        ├── PredictionErrorAnalyzer
-        ├── XGCalibration
-        ├── ClubRatingUpdater
-        └── LearningMemory
-                │
-                ▼
-            FAJDatabase
-                │
-                ▼
-               SQLite
+Полноценный Streamlit Dashboard Evolution Training Center.
+
+UI показывает:
+
+    • состояние ETC;
+    • запуск обучения;
+    • последний batch;
+    • Learning Events;
+    • Memory Events;
+    • обработанные матчи;
+    • ошибки;
+    • Learning Memory;
+    • типы learning events;
+    • динамику обучения;
+    • xG calibration;
+    • evolution statistics;
+    • pipeline;
+    • architecture;
+    • diagnostics.
+
+АРХИТЕКТУРНЫЙ КОНТРАК
+----------------------
+
+Streamlit
+    │
+    ▼
+ETCController
+    │
+    ▼
+ETCLearningEngine
+    │
+    ├── BatchController
+    ├── StatisticalAnalyzer
+    ├── PredictionErrorAnalyzer
+    ├── ObservedXG
+    ├── XGCalibration
+    ├── ClubRatingUpdater
+    └── LearningMemory
+            │
+            ▼
+        FAJDatabase
+            │
+            ▼
+           SQLite
 
 
-ВАЖНО:
+ВАЖНО
+------
 
-    Эта страница является ТОЛЬКО UI.
+Эта страница:
 
-    Страница НЕ:
+    НЕ выполняет SQL;
 
-        - выполняет SQL;
-        - изменяет database.py;
-        - изменяет match_results;
-        - изменяет predictions;
-        - изменяет календарь;
-        - создаёт прогнозы;
-        - самостоятельно запускает обучение;
-        - самостоятельно изменяет model_parameters;
-        - самостоятельно изменяет team_passports;
-        - самостоятельно пишет team_history;
-        - самостоятельно пишет learning_memory.
+    НЕ изменяет database.py;
 
-    Вся бизнес-логика находится внутри ETCController
-    и его внутренних компонентов.
+    НЕ изменяет match_results;
 
-ENTRY POINT:
+    НЕ изменяет predictions;
+
+    НЕ изменяет календарь;
+
+    НЕ создаёт прогнозы;
+
+    НЕ запускает обучение напрямую;
+
+    НЕ пишет learning_memory напрямую;
+
+    НЕ изменяет model_parameters;
+
+    НЕ изменяет team_passports;
+
+    НЕ изменяет team_history.
+
+Вся бизнес-логика принадлежит ETCController
+и внутренним компонентам ETC.
+
+
+ENTRY POINT
+-----------
 
     main()
 
-Основной загрузчик FAJ может использовать:
+Совместимый импорт:
 
     from app.pages.etc import main
 
@@ -72,9 +107,11 @@ ENTRY POINT:
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+import pandas as pd
 import streamlit as st
 
 from app.database import FAJDatabase
@@ -86,7 +123,7 @@ from app.etc.etc_controller import ETCController
 # ============================================================
 
 APP_VERSION = "12.1"
-ETC_PAGE_VERSION = "1.2"
+ETC_PAGE_VERSION = "2.0"
 
 PAGE_TITLE = "FAJ ETC"
 PAGE_ICON = "🧠"
@@ -99,12 +136,9 @@ PAGE_ICON = "🧠"
 @st.cache_resource
 def get_etc_controller() -> ETCController:
     """
-    Создаёт один экземпляр ETCController.
+    Создаёт ETCController.
 
-    UI передаёт database в controller один раз.
-
-    Вся дальнейшая работа с БД выполняется
-    внутренними компонентами ETC.
+    UI не работает с SQLite напрямую.
     """
 
     db = FAJDatabase()
@@ -121,9 +155,6 @@ def get_etc_controller() -> ETCController:
 def _safe_dict(
     value: Any,
 ) -> Dict[str, Any]:
-    """
-    Безопасное преобразование в dict.
-    """
 
     if isinstance(value, dict):
         return value
@@ -134,9 +165,6 @@ def _safe_dict(
 def _safe_list(
     value: Any,
 ) -> List[Any]:
-    """
-    Безопасное преобразование в list.
-    """
 
     if isinstance(value, list):
         return value
@@ -144,35 +172,145 @@ def _safe_list(
     return []
 
 
-def _safe_number(
+def _number(
     value: Any,
-    default: Any = 0,
-) -> Any:
-    """
-    Безопасное отображение числового значения.
-    """
+    default: float = 0,
+) -> float:
 
-    if value is None:
+    try:
+
+        if value is None:
+            return default
+
+        return float(value)
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
         return default
 
-    return value
 
+def _int(
+    value: Any,
+    default: int = 0,
+) -> int:
 
-def _get_status_value(
-    status: Dict[str, Any],
-    key: str,
-    default: Any = None,
-) -> Any:
-    """
-    Безопасное получение значения статуса.
-    """
+    try:
 
-    value = status.get(key)
+        if value is None:
+            return default
 
-    if value is None:
+        return int(value)
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
         return default
 
-    return value
+
+def _call_public_api(
+    controller: ETCController,
+    names: List[str],
+    **kwargs: Any,
+) -> Any:
+    """
+    Безопасно вызывает первый существующий
+    публичный метод ETCController.
+
+    UI не зависит от конкретной внутренней
+    реализации Controller.
+    """
+
+    for name in names:
+
+        method = getattr(
+            controller,
+            name,
+            None,
+        )
+
+        if not callable(method):
+            continue
+
+        try:
+
+            return method(
+                **kwargs
+            )
+
+        except TypeError:
+
+            try:
+
+                return method()
+
+            except Exception:
+                continue
+
+        except Exception:
+
+            continue
+
+    return None
+
+
+def _extract_rows(
+    value: Any,
+) -> List[Dict[str, Any]]:
+    """
+    Нормализует различные формы ответа Controller.
+    """
+
+    if isinstance(
+        value,
+        list,
+    ):
+
+        return [
+            item
+            for item in value
+            if isinstance(
+                item,
+                dict,
+            )
+        ]
+
+    if isinstance(
+        value,
+        dict,
+    ):
+
+        for key in (
+            "rows",
+            "data",
+            "memory",
+            "events",
+            "history",
+            "items",
+            "records",
+        ):
+
+            rows = value.get(key)
+
+            if isinstance(
+                rows,
+                list,
+            ):
+
+                return [
+                    item
+                    for item in rows
+                    if isinstance(
+                        item,
+                        dict,
+                    )
+                ]
+
+    return []
 
 
 # ============================================================
@@ -180,9 +318,6 @@ def _get_status_value(
 # ============================================================
 
 def _render_header() -> None:
-    """
-    Заголовок страницы ETC.
-    """
 
     st.title("🧠 FAJ ETC")
 
@@ -191,8 +326,8 @@ def _render_header() -> None:
     )
 
     st.caption(
-        "Постматчевый анализ, обучение и "
-        "контролируемая эволюция модели FAJ."
+        "Центр постматчевого анализа, "
+        "обучения и контролируемой эволюции FAJ."
     )
 
     st.divider()
@@ -204,12 +339,7 @@ def _render_header() -> None:
 
 def _render_status(
     controller: ETCController,
-) -> None:
-    """
-    Отображает состояние ETC.
-
-    Используется только публичный API controller.status().
-    """
+) -> Dict[str, Any]:
 
     st.markdown(
         "### 📡 Состояние ETC"
@@ -217,96 +347,77 @@ def _render_status(
 
     try:
 
-        status = controller.status()
-
-        status = _safe_dict(status)
+        status = _safe_dict(
+            controller.status()
+        )
 
     except Exception as exc:
 
         st.error(
-            "❌ Ошибка получения состояния ETC:\n\n"
-            f"{exc}"
+            f"❌ Ошибка получения состояния ETC: {exc}"
         )
 
-        st.divider()
+        return {}
 
-        return
-
-    col1, col2, col3, col4 = st.columns(4)
-
-    # --------------------------------------------------------
-    # STATUS
-    # --------------------------------------------------------
+    col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
 
-        status_value = _get_status_value(
-            status,
-            "status",
-            "UNKNOWN",
-        )
-
         st.metric(
             "Статус",
-            str(status_value),
+            str(
+                status.get(
+                    "status",
+                    "UNKNOWN",
+                )
+            ),
         )
-
-    # --------------------------------------------------------
-    # PENDING
-    # --------------------------------------------------------
 
     with col2:
 
-        pending = _get_status_value(
-            status,
-            "pending_matches",
-        )
-
         st.metric(
-            "Ожидает обучения",
-            _safe_number(
-                pending,
+            "Ожидает",
+            status.get(
+                "pending_matches",
                 "—",
             ),
         )
 
-    # --------------------------------------------------------
-    # VERSION
-    # --------------------------------------------------------
-
     with col3:
-
-        version = _get_status_value(
-            status,
-            "version",
-            ETC_PAGE_VERSION,
-        )
-
-        st.metric(
-            "Версия ETC",
-            str(version),
-        )
-
-    # --------------------------------------------------------
-    # PROCESSED
-    # --------------------------------------------------------
-
-    with col4:
-
-        processed = _get_status_value(
-            status,
-            "processed_matches",
-        )
 
         st.metric(
             "Обработано",
-            _safe_number(
-                processed,
+            status.get(
+                "processed_matches",
                 "—",
+            ),
+        )
+
+    with col4:
+
+        st.metric(
+            "Learning Events",
+            status.get(
+                "learning_events",
+                "—",
+            ),
+        )
+
+    with col5:
+
+        st.metric(
+            "ETC version",
+            str(
+                status.get(
+                    "version",
+                    ETC_PAGE_VERSION,
+                )
             ),
         )
 
     st.divider()
+
+    return status
 
 
 # ============================================================
@@ -316,13 +427,6 @@ def _render_status(
 def _render_control_panel(
     controller: ETCController,
 ) -> None:
-    """
-    Панель запуска ETC.
-
-    UI только передаёт параметры в ETCController.
-
-    Никаких внутренних ETC-операций здесь нет.
-    """
 
     st.markdown(
         "### ⚙️ Управление ETC"
@@ -330,24 +434,16 @@ def _render_control_panel(
 
     col1, col2 = st.columns(2)
 
-    # --------------------------------------------------------
-    # BATCH LIMIT
-    # --------------------------------------------------------
-
     with col1:
 
         limit = st.number_input(
-            "Максимум матчей за один batch",
+            "Максимум матчей за batch",
             min_value=1,
             max_value=1000,
             value=50,
             step=1,
             key="etc_batch_limit",
         )
-
-    # --------------------------------------------------------
-    # FORCE
-    # --------------------------------------------------------
 
     with col2:
 
@@ -361,14 +457,8 @@ def _render_control_panel(
             ),
         )
 
-    st.markdown("")
-
-    # --------------------------------------------------------
-    # RUN
-    # --------------------------------------------------------
-
     if st.button(
-        "🧠 Запустить ETC",
+        "🧠 ЗАПУСТИТЬ ОБУЧЕНИЕ ETC",
         type="primary",
         use_container_width=True,
         key="etc_run_button",
@@ -396,15 +486,9 @@ def _render_control_panel(
 
                 return
 
-        finished = datetime.now()
-
         elapsed = (
-            finished - started
+            datetime.now() - started
         ).total_seconds()
-
-        # ----------------------------------------------------
-        # STORE LAST RESULT
-        # ----------------------------------------------------
 
         st.session_state[
             "etc_last_result"
@@ -414,9 +498,9 @@ def _render_control_panel(
             "etc_last_elapsed"
         ] = elapsed
 
-        # ----------------------------------------------------
-        # REFRESH
-        # ----------------------------------------------------
+        st.session_state[
+            "etc_refresh"
+        ] = datetime.now().isoformat()
 
         st.rerun()
 
@@ -426,83 +510,83 @@ def _render_control_panel(
 # ============================================================
 
 def _render_last_result() -> None:
-    """
-    Отображает результат последнего запуска ETC.
-    """
 
     result = st.session_state.get(
         "etc_last_result"
     )
 
-    if not isinstance(result, dict):
+    if not isinstance(
+        result,
+        dict,
+    ):
         return
 
     st.divider()
 
     st.markdown(
-        "### 📊 Последний ETC-run"
+        "### 📊 Последний ETC Batch"
     )
 
-    status_value = result.get(
-        "status",
-        "unknown",
+    status = str(
+        result.get(
+            "status",
+            "unknown",
+        )
     )
 
-    # --------------------------------------------------------
-    # STATUS
-    # --------------------------------------------------------
-
-    if status_value == "completed":
+    if status == "completed":
 
         st.success(
-            "✅ ETC успешно завершён."
+            "✅ ETC batch полностью завершён."
         )
 
-    elif status_value == "nothing_to_process":
+    elif status in (
+        "nothing_to_process",
+        "empty",
+    ):
 
         st.info(
-            "⏭️ Нет новых завершённых матчей "
-            "для обучения."
+            "⏭️ Новых матчей для обучения нет."
         )
 
-    elif status_value == "completed_with_errors":
+    elif status in (
+        "completed_with_errors",
+        "partial",
+    ):
 
         st.warning(
-            "⚠️ ETC завершён с ошибками."
+            "⚠️ Batch завершён частично."
         )
 
-    elif status_value in (
-        "error",
+    elif status in (
         "failed",
+        "error",
         "failure",
     ):
 
         st.error(
-            f"❌ ETC завершился ошибкой: "
-            f"{status_value}"
+            f"❌ ETC завершился ошибкой: {status}"
         )
 
     else:
 
         st.warning(
-            f"⚠️ ETC вернул статус: "
-            f"{status_value}"
+            f"⚠️ ETC status: {status}"
         )
 
-    # --------------------------------------------------------
-    # MAIN METRICS
-    # --------------------------------------------------------
-
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
 
         st.metric(
             "Batch",
-            _safe_number(
+            _int(
                 result.get(
                     "batch_size",
-                    0,
+                    result.get(
+                        "total",
+                        0,
+                    ),
                 )
             ),
         )
@@ -511,7 +595,7 @@ def _render_last_result() -> None:
 
         st.metric(
             "Обработано",
-            _safe_number(
+            _int(
                 result.get(
                     "processed",
                     0,
@@ -522,10 +606,20 @@ def _render_last_result() -> None:
     with col3:
 
         st.metric(
-            "Learning events",
-            _safe_number(
+            "Ошибки",
+            len(
                 result.get(
-                    "learning_events",
+                    "errors",
+                    [],
+                )
+            )
+            if isinstance(
+                result.get("errors", []),
+                list,
+            )
+            else _int(
+                result.get(
+                    "errors",
                     0,
                 )
             ),
@@ -534,112 +628,65 @@ def _render_last_result() -> None:
     with col4:
 
         st.metric(
-            "Memory events",
-            _safe_number(
+            "Learning Events",
+            _int(
                 result.get(
-                    "memory_events",
+                    "learning_events",
                     0,
                 )
             ),
         )
 
-    # --------------------------------------------------------
-    # OPTIONAL METRICS
-    # --------------------------------------------------------
+    with col5:
 
-    optional_metrics = (
-        (
-            "Ошибки",
-            "errors",
-        ),
-        (
-            "xG calibration",
-            "xg_calibrations",
-        ),
-        (
-            "Proposals",
-            "proposals_created",
-        ),
-        (
-            "Rating updates",
-            "rating_updates",
-        ),
+        st.metric(
+            "Memory Events",
+            _int(
+                result.get(
+                    "memory_events",
+                    len(
+                        result.get(
+                            "memory_ids",
+                            [],
+                        )
+                    )
+                    if isinstance(
+                        result.get(
+                            "memory_ids",
+                            [],
+                        ),
+                        list,
+                    )
+                    else 0,
+                )
+            ),
+        )
+
+    elapsed = st.session_state.get(
+        "etc_last_elapsed"
     )
 
-    available_metrics = []
+    if elapsed is not None:
 
-    for label, key in optional_metrics:
-
-        if key not in result:
-            continue
-
-        value = result.get(
-            key,
-            0,
+        st.caption(
+            f"⏱ Время выполнения: "
+            f"{float(elapsed):.2f} сек."
         )
-
-        # errors может быть list
-        if key == "errors" and isinstance(
-            value,
-            list,
-        ):
-            value = len(value)
-
-        available_metrics.append(
-            (
-                label,
-                value,
-            )
-        )
-
-    if available_metrics:
-
-        st.markdown(
-            "#### Дополнительные показатели"
-        )
-
-        columns = st.columns(
-            len(available_metrics)
-        )
-
-        for column, (
-            label,
-            value,
-        ) in zip(
-            columns,
-            available_metrics,
-        ):
-
-            with column:
-
-                st.metric(
-                    label,
-                    value,
-                )
-
-    # --------------------------------------------------------
-    # ERRORS
-    # --------------------------------------------------------
 
     errors = result.get(
         "errors"
     )
 
-    if isinstance(errors, list):
+    if errors:
 
-        errors = _safe_list(
-            errors
-        )
+        with st.expander(
+            "❌ Ошибки batch",
+            expanded=False,
+        ):
 
-        if errors:
-
-            st.warning(
-                f"⚠️ Ошибок: {len(errors)}"
-            )
-
-            with st.expander(
-                "Показать ошибки",
-                expanded=False,
+            if isinstance(
+                errors,
+                list,
             ):
 
                 for index, error in enumerate(
@@ -651,225 +698,747 @@ def _render_last_result() -> None:
                         f"{index}. {error}"
                     )
 
-    elif errors:
+            else:
 
-        st.warning(
-            f"⚠️ Ошибок: {errors}"
-        )
-
-    # --------------------------------------------------------
-    # MESSAGE
-    # --------------------------------------------------------
-
-    message = result.get(
-        "message"
-    )
-
-    if message:
-
-        st.caption(
-            str(message)
-        )
-
-    # --------------------------------------------------------
-    # REFERENCE
-    # --------------------------------------------------------
-
-    reference_id = result.get(
-        "reference_id"
-    )
-
-    if reference_id:
-
-        st.caption(
-            f"Reference ID: {reference_id}"
-        )
-
-    # --------------------------------------------------------
-    # EXECUTION TIME
-    # --------------------------------------------------------
-
-    elapsed = st.session_state.get(
-        "etc_last_elapsed"
-    )
-
-    if elapsed is not None:
-
-        try:
-
-            elapsed_value = float(
-                elapsed
-            )
-
-            st.caption(
-                f"⏱ Время выполнения: "
-                f"{elapsed_value:.2f} сек."
-            )
-
-        except (
-            TypeError,
-            ValueError,
-        ):
-            pass
+                st.error(
+                    str(errors)
+                )
 
 
 # ============================================================
-# LEARNING MEMORY
+# LOAD LEARNING MEMORY
 # ============================================================
 
 def _get_learning_memory(
     controller: ETCController,
-    limit: int = 50,
+    limit: int = 500,
 ) -> List[Dict[str, Any]]:
     """
-    Получает Learning Memory только через ETCController.
-
-    Страница НЕ обращается к SQLite напрямую.
+    Только публичный API ETCController.
     """
 
-    methods = (
-        "get_learning_memory",
-        "learning_memory",
-        "memory",
+    result = _call_public_api(
+        controller,
+        [
+            "get_learning_memory",
+            "learning_memory",
+            "memory",
+        ],
+        limit=limit,
     )
 
-    for method_name in methods:
+    return _extract_rows(
+        result
+    )
 
-        method = getattr(
-            controller,
-            method_name,
-            None,
-        )
 
-        if not callable(method):
-            continue
-
-        # ----------------------------------------------------
-        # TRY limit API
-        # ----------------------------------------------------
-
-        try:
-
-            result = method(
-                limit=limit
-            )
-
-        except TypeError:
-
-            # ------------------------------------------------
-            # TRY no-argument API
-            # ------------------------------------------------
-
-            try:
-
-                result = method()
-
-            except Exception:
-
-                continue
-
-        except Exception:
-
-            continue
-
-        # ----------------------------------------------------
-        # LIST
-        # ----------------------------------------------------
-
-        if isinstance(
-            result,
-            list,
-        ):
-
-            return [
-                row
-                for row in result
-                if isinstance(
-                    row,
-                    dict,
-                )
-            ]
-
-        # ----------------------------------------------------
-        # DICT WRAPPER
-        # ----------------------------------------------------
-
-        if isinstance(
-            result,
-            dict,
-        ):
-
-            rows = result.get(
-                "rows",
-                result.get(
-                    "memory",
-                    result.get(
-                        "data",
-                        [],
-                    ),
-                ),
-            )
-
-            if isinstance(
-                rows,
-                list,
-            ):
-
-                return [
-                    row
-                    for row in rows
-                    if isinstance(
-                        row,
-                        dict,
-                    )
-                ]
-
-    return []
-
+# ============================================================
+# LEARNING MEMORY TABLE
+# ============================================================
 
 def _render_learning_memory(
-    controller: ETCController,
+    rows: List[Dict[str, Any]],
 ) -> None:
-    """
-    Отображает последние записи Learning Memory.
-    """
-
-    st.divider()
 
     st.markdown(
         "### 🧠 Learning Memory"
     )
 
-    rows = _get_learning_memory(
-        controller=controller,
-        limit=50,
-    )
-
     if not rows:
 
         st.info(
-            "Learning Memory пока пуста "
-            "или публичный API памяти "
-            "не подключён к ETCController."
+            "Learning Memory пока не содержит "
+            "доступных для отображения событий."
         )
 
         return
 
+    df = pd.DataFrame(
+        rows
+    )
+
+    st.caption(
+        f"Доступно событий: {len(df)}"
+    )
+
     st.dataframe(
-        rows,
+        df,
         use_container_width=True,
         hide_index=True,
     )
 
 
 # ============================================================
-# ETC PIPELINE
+# LEARNING EVENTS DISTRIBUTION
+# ============================================================
+
+def _render_event_distribution(
+    rows: List[Dict[str, Any]],
+) -> None:
+
+    st.markdown(
+        "### 🧩 Структура обучения"
+    )
+
+    if not rows:
+
+        st.info(
+            "Нет данных для построения графика."
+        )
+
+        return
+
+    event_types = []
+
+    for row in rows:
+
+        event_type = (
+            row.get(
+                "event_type"
+            )
+            or row.get(
+                "feature"
+            )
+            or row.get(
+                "type"
+            )
+            or "unknown"
+        )
+
+        event_types.append(
+            str(event_type)
+        )
+
+    counts = Counter(
+        event_types
+    )
+
+    if not counts:
+        return
+
+    df = pd.DataFrame(
+        {
+            "Event": list(
+                counts.keys()
+            ),
+            "Count": list(
+                counts.values()
+            ),
+        }
+    )
+
+    df = df.sort_values(
+        "Count",
+        ascending=False,
+    )
+
+    st.bar_chart(
+        df.set_index(
+            "Event"
+        )
+    )
+
+
+# ============================================================
+# LEARNING TIMELINE
+# ============================================================
+
+def _render_learning_timeline(
+    rows: List[Dict[str, Any]],
+) -> None:
+
+    st.markdown(
+        "### 📈 Динамика обучения"
+    )
+
+    if not rows:
+
+        st.info(
+            "Недостаточно данных для динамики."
+        )
+
+        return
+
+    timestamp_keys = (
+        "created_at",
+        "timestamp",
+        "event_time",
+        "date",
+    )
+
+    timestamp_key = None
+
+    for key in timestamp_keys:
+
+        if any(
+            key in row
+            for row in rows
+        ):
+
+            timestamp_key = key
+            break
+
+    if timestamp_key is None:
+
+        st.info(
+            "У Learning Memory нет временной "
+            "метки для построения timeline."
+        )
+
+        return
+
+    data = []
+
+    for row in rows:
+
+        raw_date = row.get(
+            timestamp_key
+        )
+
+        if not raw_date:
+            continue
+
+        try:
+
+            date_value = pd.to_datetime(
+                raw_date
+            )
+
+        except Exception:
+
+            continue
+
+        data.append(
+            {
+                "date": date_value,
+            }
+        )
+
+    if not data:
+
+        st.info(
+            "Временные данные обучения "
+            "не удалось распознать."
+        )
+
+        return
+
+    df = pd.DataFrame(
+        data
+    )
+
+    timeline = (
+        df.groupby(
+            df["date"].dt.date
+        )
+        .size()
+        .rename(
+            "learning_events"
+        )
+        .to_frame()
+    )
+
+    st.line_chart(
+        timeline
+    )
+
+
+# ============================================================
+# EVOLUTION METRICS
+# ============================================================
+
+def _render_evolution_metrics(
+    rows: List[Dict[str, Any]],
+) -> None:
+
+    st.markdown(
+        "### 🧬 Метрики эволюции модели"
+    )
+
+    if not rows:
+
+        st.info(
+            "Нет learning events."
+        )
+
+        return
+
+    impacts = []
+    confidences = []
+    deltas = []
+
+    for row in rows:
+
+        if row.get(
+            "impact"
+        ) is not None:
+
+            impacts.append(
+                _number(
+                    row.get(
+                        "impact"
+                    )
+                )
+            )
+
+        if row.get(
+            "confidence"
+        ) is not None:
+
+            confidences.append(
+                _number(
+                    row.get(
+                        "confidence"
+                    )
+                )
+            )
+
+        if row.get(
+            "delta"
+        ) is not None:
+
+            deltas.append(
+                _number(
+                    row.get(
+                        "delta"
+                    )
+                )
+            )
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+
+        st.metric(
+            "Learning Events",
+            len(rows),
+        )
+
+    with col2:
+
+        st.metric(
+            "Средний impact",
+            (
+                f"{sum(impacts) / len(impacts):.4f}"
+                if impacts
+                else "—"
+            ),
+        )
+
+    with col3:
+
+        st.metric(
+            "Средняя confidence",
+            (
+                f"{sum(confidences) / len(confidences):.4f}"
+                if confidences
+                else "—"
+            ),
+        )
+
+    with col4:
+
+        st.metric(
+            "Изменений delta",
+            len(deltas),
+        )
+
+    if deltas:
+
+        df = pd.DataFrame(
+            {
+                "delta": deltas
+            }
+        )
+
+        st.line_chart(
+            df
+        )
+
+
+# ============================================================
+# MATCH LEARNING
+# ============================================================
+
+def _render_match_learning(
+    rows: List[Dict[str, Any]],
+) -> None:
+
+    st.markdown(
+        "### ⚽ Обучение по матчам"
+    )
+
+    if not rows:
+
+        st.info(
+            "Нет данных."
+        )
+
+        return
+
+    match_ids = []
+
+    for row in rows:
+
+        reference = row.get(
+            "reference_id"
+        )
+
+        if reference is None:
+            continue
+
+        try:
+
+            match_ids.append(
+                int(reference)
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+
+            continue
+
+    if not match_ids:
+
+        st.info(
+            "В памяти нет reference_id матчей."
+        )
+
+        return
+
+    counts = Counter(
+        match_ids
+    )
+
+    df = pd.DataFrame(
+        {
+            "match_id": list(
+                counts.keys()
+            ),
+            "events": list(
+                counts.values()
+            ),
+        }
+    )
+
+    df = df.sort_values(
+        "events",
+        ascending=False,
+    )
+
+    st.bar_chart(
+        df.set_index(
+            "match_id"
+        )
+    )
+
+
+# ============================================================
+# XG / CALIBRATION
+# ============================================================
+
+def _get_calibration_data(
+    controller: ETCController,
+) -> List[Dict[str, Any]]:
+
+    result = _call_public_api(
+        controller,
+        [
+            "get_xg_calibration",
+            "get_calibration",
+            "xg_calibration",
+            "calibration",
+        ],
+        limit=500,
+    )
+
+    return _extract_rows(
+        result
+    )
+
+
+def _render_xg_calibration(
+    controller: ETCController,
+) -> None:
+
+    st.markdown(
+        "### 🎯 xG Calibration"
+    )
+
+    rows = _get_calibration_data(
+        controller
+    )
+
+    if not rows:
+
+        st.info(
+            "xG calibration пока не опубликован "
+            "через ETCController или данных ещё нет."
+        )
+
+        return
+
+    df = pd.DataFrame(
+        rows
+    )
+
+    numeric_columns = []
+
+    for column in df.columns:
+
+        converted = pd.to_numeric(
+            df[column],
+            errors="coerce",
+        )
+
+        if converted.notna().sum() >= 2:
+
+            df[column] = converted
+
+            numeric_columns.append(
+                column
+            )
+
+    if len(
+        numeric_columns
+    ) >= 2:
+
+        st.line_chart(
+            df[
+                numeric_columns[:4]
+            ]
+        )
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+# ============================================================
+# GENERIC EVOLUTION DATA
+# ============================================================
+
+def _get_evolution_data(
+    controller: ETCController,
+) -> List[Dict[str, Any]]:
+
+    result = _call_public_api(
+        controller,
+        [
+            "get_evolution_statistics",
+            "get_evolution_stats",
+            "evolution_statistics",
+            "evolution_stats",
+        ],
+        limit=500,
+    )
+
+    return _extract_rows(
+        result
+    )
+
+
+def _render_evolution_chart(
+    controller: ETCController,
+) -> None:
+
+    st.markdown(
+        "### 🧬 Evolution Statistics"
+    )
+
+    rows = _get_evolution_data(
+        controller
+    )
+
+    if not rows:
+
+        st.info(
+            "Evolution Statistics пока не опубликована "
+            "через ETCController."
+        )
+
+        return
+
+    df = pd.DataFrame(
+        rows
+    )
+
+    numeric = []
+
+    for column in df.columns:
+
+        values = pd.to_numeric(
+            df[column],
+            errors="coerce",
+        )
+
+        if values.notna().sum() >= 2:
+
+            df[column] = values
+
+            numeric.append(
+                column
+            )
+
+    if not numeric:
+
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        return
+
+    st.line_chart(
+        df[
+            numeric[:6]
+        ]
+    )
+
+    with st.expander(
+        "Показать evolution data",
+        expanded=False,
+    ):
+
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+# ============================================================
+# DASHBOARD
+# ============================================================
+
+def _render_dashboard(
+    controller: ETCController,
+    memory_rows: List[Dict[str, Any]],
+) -> None:
+
+    st.divider()
+
+    st.markdown(
+        "## 📊 ETC Learning Dashboard"
+    )
+
+    # --------------------------------------------------------
+    # ROW 1
+    # --------------------------------------------------------
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+
+        _render_learning_timeline(
+            memory_rows
+        )
+
+    with col2:
+
+        _render_event_distribution(
+            memory_rows
+        )
+
+    # --------------------------------------------------------
+    # ROW 2
+    # --------------------------------------------------------
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+
+        _render_evolution_metrics(
+            memory_rows
+        )
+
+    with col2:
+
+        _render_match_learning(
+            memory_rows
+        )
+
+    # --------------------------------------------------------
+    # XG
+    # --------------------------------------------------------
+
+    st.divider()
+
+    _render_xg_calibration(
+        controller
+    )
+
+    # --------------------------------------------------------
+    # EVOLUTION
+    # --------------------------------------------------------
+
+    st.divider()
+
+    _render_evolution_chart(
+        controller
+    )
+
+
+# ============================================================
+# MEMORY FILTERS
+# ============================================================
+
+def _render_memory_filters(
+    rows: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+
+    if not rows:
+
+        return []
+
+    st.markdown(
+        "### 🔍 Фильтр Learning Memory"
+    )
+
+    event_types = sorted(
+        {
+            str(
+                row.get(
+                    "event_type",
+                    "unknown",
+                )
+            )
+            for row in rows
+        }
+    )
+
+    selected = st.multiselect(
+        "Тип события",
+        options=event_types,
+        default=event_types,
+        key="etc_memory_event_filter",
+    )
+
+    filtered = [
+        row
+        for row in rows
+        if str(
+            row.get(
+                "event_type",
+                "unknown",
+            )
+        )
+        in selected
+    ]
+
+    return filtered
+
+
+# ============================================================
+# PIPELINE
 # ============================================================
 
 def _render_pipeline() -> None:
-    """
-    Показывает фактический логический цикл ETC.
-    """
 
     st.divider()
 
@@ -885,36 +1454,47 @@ MATCH_RESULT
      ▼
 BatchController
      │
-     ▼
-ETCController
-     │
-     ▼
-ETCLearningEngine
-     │
-     ├── StatisticalAnalyzer
-     │
-     ├── PredictionErrorAnalyzer
-     │
-     ├── ObservedXG
-     │
-     ├── XGCalibration
-     │
-     └── ClubRatingUpdater
+     ├── WAIT
+     ├── READY
+     ├── UNKNOWN_LEAGUE
+     └── ALREADY_PROCESSED
               │
-              ├── Team Passport revision
-              ├── Team History
-              └── Learning Memory
-                       │
-                       ▼
-                  NEXT BATCH
+              ▼
+      get_learning_batch()
+              │
+              ▼
+        ETCController
+              │
+              ▼
+      ETCLearningEngine
+              │
+              ▼
+      StatisticalAnalyzer
+              │
+       ┌──────┼──────────────┐
+       ▼      ▼              ▼
+    Error   ObservedXG   Prediction Error
+    Analysis              Analysis
+       │      │              │
+       └──────┼──────────────┘
+              ▼
+        XG Calibration
+              │
+              ▼
+      Club Rating Updater
+              │
+              ▼
+       Learning Memory
+              │
+              ▼
+          NEXT BATCH
             """,
             language="text",
         )
 
         st.caption(
-            "ETC работает только с завершёнными матчами. "
-            "Исторические факты и сохранённые прогнозы "
-            "не переписываются."
+            "ETC обучается только на завершённых фактах. "
+            "Исторические факты не переписываются."
         )
 
 
@@ -923,11 +1503,6 @@ ETCLearningEngine
 # ============================================================
 
 def _render_architecture() -> None:
-    """
-    Архитектурная схема ETC.
-
-    Это информационный блок UI.
-    """
 
     st.divider()
 
@@ -938,43 +1513,41 @@ def _render_architecture() -> None:
 
         st.code(
             """
-                 Streamlit ETC Page
-                         │
-                         ▼
-                  ETCController
-                         │
-                         ▼
-                ETCLearningEngine
-                         │
-          ┌──────────────┼──────────────┐
-          │              │              │
-          ▼              ▼              ▼
-   BatchController  Statistical    Error Analysis
-                       Analyzer
-          │              │              │
-          └──────────────┼──────────────┘
-                         │
-             ┌───────────┼────────────┐
-             ▼           ▼            ▼
-          ObservedXG  XGCalibration  ClubRating
-                                      Updater
-                                         │
-                                         ▼
-                                  LearningMemory
-                                         │
-                                         ▼
-                                    FAJDatabase
-                                         │
-                                         ▼
-                                       SQLite
+                 FAJ STREAMLIT
+                       │
+                       ▼
+                 ETC PAGE
+                       │
+                       ▼
+                 ETCController
+                       │
+                       ▼
+               ETCLearningEngine
+                       │
+        ┌──────────────┼──────────────┐
+        │              │              │
+        ▼              ▼              ▼
+ BatchController  Statistical    LearningMemory
+                  Analyzer            │
+        │              │              │
+        │       ┌──────┼──────┐       │
+        │       ▼      ▼      ▼       │
+        │    Error   Observed  XG     │
+        │   Analysis   XG    Calib.    │
+        │              │              │
+        └──────────────┼──────────────┘
+                       ▼
+                  FAJDatabase
+                       │
+                       ▼
+                     SQLite
             """,
             language="text",
         )
 
         st.caption(
-            "ETC UI не содержит бизнес-логики. "
-            "Все изменения выполняются ETCController "
-            "и его внутренними компонентами."
+            "UI является read-only представлением "
+            "ETC и вызывает только публичный API Controller."
         )
 
 
@@ -985,12 +1558,6 @@ def _render_architecture() -> None:
 def _render_diagnostics(
     controller: ETCController,
 ) -> None:
-    """
-    Безопасная диагностика публичного API ETCController.
-
-    Не пытается проверять внутренние реализации
-    и не выполняет никаких операций.
-    """
 
     st.divider()
 
@@ -999,13 +1566,17 @@ def _render_diagnostics(
         expanded=False,
     ):
 
-        public_methods = (
+        public_methods = [
             "status",
             "run",
             "get_learning_memory",
             "learning_memory",
             "memory",
-        )
+            "get_xg_calibration",
+            "get_calibration",
+            "get_evolution_statistics",
+            "get_evolution_stats",
+        ]
 
         rows = []
 
@@ -1040,9 +1611,8 @@ def _render_diagnostics(
 # ============================================================
 
 def _render_footer() -> None:
-    """
-    Footer страницы.
-    """
+
+    st.divider()
 
     st.caption(
         f"FAJ Platform v{APP_VERSION} • "
@@ -1058,16 +1628,8 @@ def _render_footer() -> None:
 
 def main() -> None:
     """
-    Главная функция страницы ETC.
-
-    Основной загрузчик FAJ:
-
-        from app.pages.etc import main
+    Главная точка страницы ETC.
     """
-
-    # --------------------------------------------------------
-    # HEADER
-    # --------------------------------------------------------
 
     _render_header()
 
@@ -1097,7 +1659,7 @@ def main() -> None:
     )
 
     # --------------------------------------------------------
-    # CONTROL PANEL
+    # CONTROL
     # --------------------------------------------------------
 
     _render_control_panel(
@@ -1105,7 +1667,7 @@ def main() -> None:
     )
 
     # --------------------------------------------------------
-    # LAST RESULT
+    # LAST RUN
     # --------------------------------------------------------
 
     _render_last_result()
@@ -1114,8 +1676,30 @@ def main() -> None:
     # MEMORY
     # --------------------------------------------------------
 
+    memory_rows = _get_learning_memory(
+        controller,
+        limit=500,
+    )
+
+    # --------------------------------------------------------
+    # DASHBOARD
+    # --------------------------------------------------------
+
+    _render_dashboard(
+        controller,
+        memory_rows,
+    )
+
+    # --------------------------------------------------------
+    # FILTERED MEMORY
+    # --------------------------------------------------------
+
+    filtered_rows = _render_memory_filters(
+        memory_rows
+    )
+
     _render_learning_memory(
-        controller
+        filtered_rows
     )
 
     # --------------------------------------------------------
