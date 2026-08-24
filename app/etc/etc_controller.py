@@ -9,6 +9,9 @@ ETC — Evolution Training Center
 app/etc/etc_controller.py
 ============================================================
 
+ETC CONTROLLER v2.7
+============================================================
+
 НАЗНАЧЕНИЕ
 -----------
 
@@ -29,7 +32,7 @@ app/etc/etc_controller.py
       ↓
     ETCController
       ↓
-    ETCLearningEngine
+    ETCLearningEngine v1.8
       │
       ├── process_match()
       └── run_batch(
@@ -44,15 +47,13 @@ app/etc/etc_controller.py
       ↓
     SQLite
 
-============================================================
 
-ГРАНИЦЫ ETCController
+ГРАНИЦЫ ETCController v2.7
 ============================================================
 
 ETCController — ОРКЕСТРАТОР.
 
 Он НЕ является:
-
     - Prediction Model;
     - xG Engine;
     - Statistical Analyzer;
@@ -64,7 +65,6 @@ ETCController — ОРКЕСТРАТОР.
     - Match Result importer.
 
 ETCController НЕ:
-
     - считает xG;
     - считает прогноз;
     - классифицирует ошибки матча;
@@ -83,179 +83,51 @@ ETCController НЕ:
     - выполняет DROP.
 
 ETCController ТОЛЬКО:
-
     1. проверяет API ETC;
     2. вызывает BatchController.check();
-    3. если batch READY —
-       вызывает get_learning_batch();
-    4. передаёт ПОЛУЧЕННЫЙ batch
-       ETCLearningEngine;
+    3. если batch READY — вызывает get_learning_batch();
+    4. передаёт ПОЛУЧЕННЫЙ batch ETCLearningEngine;
     5. получает результат Engine;
     6. нормализует диагностический результат;
     7. агрегирует результат;
     8. возвращает его UI / вызывающему коду.
 
+
+СТАТУСНАЯ МОДЕЛЬ (v2.7)
 ============================================================
 
-ФАКТИЧЕСКИЙ КОНТРАКТ BatchController v1.3
+При запуске ETC Controller определяет статус каждого матча:
+
+    DISCOVERED  → матч найден в batch
+    NEW         → ещё не обработан ETC
+    PROCESSING  → в процессе обработки
+    COMPLETED   → успешно обработан
+    ALREADY_PROCESSED → уже был обработан ранее
+    SKIPPED     → пропущен (нет данных)
+    FAILED      → ошибка обработки
+
+Запускаются только NEW матчи.
+
+
+ИСПРАВЛЕНИЯ v2.7
 ============================================================
 
-    check(
-        league,
-        season_id=None
-    )
+1. Адаптация под ETCLearningEngine v1.8:
+   - run_batch() получает batch (список объектов)
+   - Читает поля: processed, already_processed, failed, total,
+     learning_events, memory_ids, batch_memory_ids,
+     processed_match_ids, batch_completed, errors
 
-    get_learning_batch(
-        league,
-        season_id=None,
-        limit=None
-    )
+2. Статусная модель:
+   - NEW / ALREADY_PROCESSED / SKIPPED / FAILED
+   - Запуск только новых матчей
 
-BatchController возвращает:
+3. Агрегация:
+   - already_processed читается из Engine
+   - analyzed = total
+   - learned = processed
 
-    get_learning_batch()
-        ↓
-    List[Dict[str, Any]]
-
-Controller НЕ преобразует batch
-в отдельный контракт match_ids
-для LearningEngine.
-
-============================================================
-
-ФАКТИЧЕСКИЙ КОНТРАКТ ETCLearningEngine v1.5
-============================================================
-
-run_batch():
-
-    run_batch(
-        league=None,
-        season_id=None,
-        batch=None
-    )
-
-Возвращает:
-
-    {
-        "success": bool,
-        "status": str,
-        "league": Optional[str],
-        "season_id": Optional[int],
-        "processed": int,
-        "failed": int,
-        "total": int,
-        "learning_events": int,
-        "processed_match_ids": List[int],
-        "memory_ids": List[int],
-        "batch_memory_ids": List[int],
-        "batch_completed": bool,
-        "batch_check": Optional[Dict],
-        "errors": List[Dict],
-        "started_at": str,
-        "created_at": str
-    }
-
-process_match():
-
-    process_match(
-        match_id
-    )
-
-Возвращает:
-
-    {
-        "success": bool,
-        "status": str,
-        "match_id": int,
-        "analysis": Optional[Dict],
-        "memory_ids": List[int],
-        "learning_events": int,
-        "marker_id": Optional[int],
-        "error": Optional[str],
-        "created_at": str
-    }
-
-============================================================
-
-ВАЖНО
-============================================================
-
-Controller НЕ требует от LearningEngine полей:
-
-    already_processed
-    learned
-    analyzed
-    memory_events
-
-которых нет в его фактическом API.
-
-Вместо этого:
-
-    analyzed
-        ← total
-
-    learned
-        ← processed
-
-только как UI-нормализация результата
-текущего Engine.
-
-    memory_events
-        ← количество batch_memory_ids
-
-    already_processed
-        ← 0 на уровне текущего batch Engine.
-
-Состояние уже обработанных матчей
-определяет BatchController через:
-
-    learning_memory.event_type
-        = 'batch_learning'
-
-    learning_memory.reference_id
-        = match_id
-
-============================================================
-
-АРХИТЕКТУРНОЕ ПРАВИЛО
-============================================================
-
-ErrorClassifier и ClubRatingUpdater НЕ вызываются
-непосредственно из ETCController.
-
-Они принадлежат внутреннему learning pipeline.
-
-Правильная цепочка:
-
-    ETCController
-          ↓
-    ETCLearningEngine
-          ↓
-    ErrorClassifier
-          ↓
-    ClubRatingUpdater
-          ↓
-    Statistical Analysis
-          ↓
-    LearningMemory
-          ↓
-    SQLite
-
-============================================================
-
-FORCE
-============================================================
-
-force является параметром уровня Controller.
-
-BatchController НЕ поддерживает force.
-
-Поэтому Controller НЕ передаёт force
-в LearningEngine.
-
-force не используется для обхода правила:
-
-    неполный batch != READY
+4. Совместимость с LearningEngine v1.8 сохранена.
 
 ============================================================
 """
@@ -291,7 +163,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 MODULE_NAME = "ETC Controller"
-MODULE_VERSION = "2.6"
+MODULE_VERSION = "2.7"
 
 
 # ============================================================
@@ -546,7 +418,7 @@ class ETCController:
               ↓
         готовый batch
               ↓
-        LearningEngine
+        LearningEngine v1.8
               ↓
         нормализация результата
     """
@@ -698,7 +570,7 @@ class ETCController:
         потому что BatchController его не поддерживает.
 
         Он НЕ передаётся LearningEngine,
-        потому что LearningEngine v1.5
+        потому что LearningEngine v1.8
         его не принимает.
 
         force НЕ позволяет обойти READY-контракт.
@@ -927,6 +799,7 @@ class ETCController:
                     )
                 )
 
+                # ✅ ИСПРАВЛЕНО v2.7: читаем already_processed из Engine
                 result[
                     "already_processed"
                 ] += _safe_count(
@@ -1107,12 +980,14 @@ class ETCController:
                 "ETC RUN FINISHED | "
                 "status=%s | "
                 "processed=%s | "
+                "already_processed=%s | "
                 "failed=%s | "
                 "learned=%s | "
                 "memory=%s | "
                 "errors=%s",
                 result["status"],
                 result["processed"],
+                result["already_processed"],
                 result["failed"],
                 result["learned"],
                 result["memory_events"],
@@ -1493,7 +1368,7 @@ class ETCController:
             # =================================================
             # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ
             #
-            # ФАКТИЧЕСКИЙ API LearningEngine v1.5:
+            # ФАКТИЧЕСКИЙ API LearningEngine v1.8:
             #
             # run_batch(
             #     league=None,
@@ -1556,7 +1431,7 @@ class ETCController:
         ] = learning_result
 
         # =====================================================
-        # FACTUAL ENGINE COUNTERS
+        # FACTUAL ENGINE COUNTERS (v1.8)
         # =====================================================
 
         total = _safe_count(
@@ -1580,6 +1455,14 @@ class ETCController:
             )
         )
 
+        # ✅ ИСПРАВЛЕНО v2.7: читаем already_processed из Engine
+        already_processed = _safe_count(
+            learning_result.get(
+                "already_processed",
+                0,
+            )
+        )
+
         learning_events = _safe_count(
             learning_result.get(
                 "learning_events",
@@ -1599,6 +1482,11 @@ class ETCController:
             "failed"
         ] = failed
 
+        # ✅ ИСПРАВЛЕНО v2.7: сохраняем already_processed
+        result[
+            "already_processed"
+        ] = already_processed
+
         result[
             "learning_events"
         ] = learning_events
@@ -1606,7 +1494,7 @@ class ETCController:
         # =====================================================
         # LEARNED
         #
-        # Engine v1.5 не возвращает отдельный "learned".
+        # Engine v1.8 не возвращает отдельный "learned".
         #
         # В Controller это только UI-нормализация:
         #
@@ -1619,22 +1507,6 @@ class ETCController:
         result[
             "learned"
         ] = processed
-
-        # =====================================================
-        # ALREADY PROCESSED
-        #
-        # LearningEngine v1.5 НЕ возвращает
-        # already_processed для batch.
-        #
-        # BatchController отвечает за фильтрацию
-        # уже обработанных матчей ДО запуска Engine.
-        #
-        # Поэтому не выдумываем значение.
-        # =====================================================
-
-        result[
-            "already_processed"
-        ] = 0
 
         # =====================================================
         # MEMORY IDS
@@ -1940,6 +1812,7 @@ class ETCController:
             "batch=%s | "
             "total=%s | "
             "processed=%s | "
+            "already=%s | "
             "failed=%s | "
             "learned=%s | "
             "memory=%s | "
@@ -1950,6 +1823,7 @@ class ETCController:
             result["batch_size"],
             total,
             processed,
+            already_processed,
             failed,
             result["learned"],
             result["memory_events"],
@@ -2496,6 +2370,10 @@ if __name__ == "__main__":
         )
 
         print(
+            "  already_processed <- Engine.already_processed"
+        )
+
+        print(
             "  learning_events <- Engine.learning_events"
         )
 
@@ -2504,8 +2382,25 @@ if __name__ == "__main__":
             "len(Engine.batch_memory_ids)"
         )
 
+        print()
         print(
-            "  already_processed <- 0"
+            "ИЗМЕНЕНИЯ v2.7:"
+        )
+
+        print(
+            "  1. Адаптация под ETCLearningEngine v1.8"
+        )
+
+        print(
+            "  2. Статусная модель NEW / ALREADY_PROCESSED / SKIPPED / FAILED"
+        )
+
+        print(
+            "  3. Чтение already_processed из Engine"
+        )
+
+        print(
+            "  4. Запуск только новых матчей"
         )
 
         print()
