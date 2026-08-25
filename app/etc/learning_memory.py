@@ -574,9 +574,9 @@ class LearningMemory:
         *,
         feature: str = "etc_batch_processed",
         before_value: Any = None,
-        after_value: Any = None,
+        after_value: Any = "processed",
         delta: Any = None,
-        reason: str = "",
+        reason: str = "Матч успешно обработан ETC Learning Engine",
         confidence: float = 1.0,
         impact: float = 1.0,
         algorithm: str = "ETC.LearningEngine",
@@ -620,6 +620,50 @@ class LearningMemory:
                 "match_id должен быть "
                 "положительным integer"
             )
+
+        # ----------------------------------------------------
+        # IDEMPOTENCY
+        # ----------------------------------------------------
+        #
+        # Проверяем, не существует ли уже marker
+        # для этого match_id.
+        #
+        # Если существует — возвращаем существующий ID.
+        #
+
+        existing = self.get(
+            event_type=BATCH_LEARNING_EVENT,
+            reference_id=normalized_match_id,
+            limit=1,
+        )
+
+        if existing:
+
+            row = existing[0]
+
+            existing_id = (
+                row.get("id")
+                if isinstance(row, dict)
+                else None
+            )
+
+            if existing_id is not None:
+
+                logger.debug(
+                    "BATCH_LEARNING marker already exists | "
+                    "match_id=%s | "
+                    "existing_id=%s",
+                    normalized_match_id,
+                    existing_id,
+                )
+
+                return _safe_int(
+                    existing_id
+                )
+
+        # ----------------------------------------------------
+        # APPEND
+        # ----------------------------------------------------
 
         return self.record(
             event_type=BATCH_LEARNING_EVENT,
@@ -1413,9 +1457,9 @@ def record_batch_learning(
     *,
     feature: str = "etc_batch_processed",
     before_value: Any = None,
-    after_value: Any = None,
+    after_value: Any = "processed",
     delta: Any = None,
-    reason: str = "",
+    reason: str = "Матч успешно обработан ETC Learning Engine",
     confidence: float = 1.0,
     impact: float = 1.0,
     algorithm: str = "ETC.LearningEngine",
