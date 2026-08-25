@@ -173,6 +173,7 @@ from typing import Any, Dict, List, Optional, Set
 
 
 from app.database import FAJDatabase
+from app.etc.learning_memory import LearningMemory
 
 
 logger = logging.getLogger(__name__)
@@ -182,7 +183,7 @@ logger = logging.getLogger(__name__)
 # MODULE
 # ============================================================
 
-MODULE_VERSION = "1.3"
+MODULE_VERSION = "2.0"
 MODULE_NAME = "ETC Batch Controller"
 
 
@@ -362,9 +363,11 @@ class BatchController:
     def __init__(
         self,
         db: Optional[FAJDatabase] = None,
+        learning_memory: Optional[LearningMemory] = None,
     ) -> None:
 
         self.db = db or FAJDatabase()
+        self.learning_memory = learning_memory or LearningMemory(self.db)
 
     # ========================================================
     # PUBLIC API
@@ -399,7 +402,7 @@ class BatchController:
             league
         )
 
-        required = self.get_batch_size(
+        required = self._get_batch_size(
             normalized_league
         )
 
@@ -638,31 +641,18 @@ class BatchController:
 
         Неполный обычный batch НЕ возвращается.
 
-        Если limit задан:
+        limit:
 
-            limit является только верхней границей
-            возвращаемого batch.
+            Может быть None или >= required.
 
-        Основное правило турнира сохраняется.
-
-        Например:
-
-            РПЛ = 5
-
-        limit=3
-
-            максимум 3 матча.
-
-        limit=10
-
-            максимум 5 матчей.
+            Если limit < required → возвращается [].
         """
 
         normalized_league = _normalize_league(
             league
         )
 
-        required = self.get_batch_size(
+        required = self._get_batch_size(
             normalized_league
         )
 
@@ -670,10 +660,22 @@ class BatchController:
             return []
 
         # ----------------------------------------------------
-        # LIMIT
+        # LIMIT ВАЛИДАЦИЯ
         # ----------------------------------------------------
-
-        target_size = required
+        #
+        # Правило: limit НЕ может быть меньше required.
+        #
+        # Если limit < required → INVALID.
+        #
+        # Это защищает batch-контракт:
+        #
+        #     РПЛ → required=5
+        #     limit=3 → []
+        #     limit=5 → 5 матчей
+        #     limit=10 → 5 матчей
+        #     limit=None → 5 матчей
+        #
+        # ----------------------------------------------------
 
         if limit is not None:
 
@@ -684,10 +686,27 @@ class BatchController:
             if safe_limit <= 0:
                 return []
 
+            if safe_limit < required:
+
+                logger.warning(
+                    "ETC batch limit INVALID | "
+                    "league=%s | required=%s | limit=%s | "
+                    "limit cannot be less than required",
+                    normalized_league,
+                    required,
+                    safe_limit,
+                )
+
+                return []
+
             target_size = min(
                 required,
                 safe_limit,
             )
+
+        else:
+
+            target_size = required
 
         # ----------------------------------------------------
         # READ COMPLETED MATCHES
@@ -729,6 +748,13 @@ class BatchController:
         # ----------------------------------------------------
         # FULL BATCH READINESS
         # ----------------------------------------------------
+        #
+        # Для нормального ETC batch требуется
+        # полное количество матчей (required).
+        #
+        # Неполный batch НЕ возвращается.
+        #
+        # ----------------------------------------------------
 
         if len(new_matches) < required:
 
@@ -766,20 +792,17 @@ class BatchController:
         return selected
 
     # ========================================================
-    # INTERNAL — BATCH SIZE
+    # INTERNAL — BATCH SIZE (PRIVATE)
     # ========================================================
 
-    def get_batch_size(
+    def _get_batch_size(
         self,
         league: str,
     ) -> int:
         """
         Внутреннее получение размера batch.
 
-        Метод технически публично доступен Python,
-        но не является ETC API.
-
-        Используется только самим контроллером.
+        Приватный метод.
         """
 
         normalized = _normalize_league(
@@ -1056,6 +1079,54 @@ class BatchController:
     # INTERNAL — PROCESSED MARKERS
     # ========================================================
 
+    def _is_match_processed(
+        self,
+        match_id: int,
+    ) -> bool:
+        """
+        Проверяет, был ли матч уже успешно обработан ETC.
+
+        Единственный authoritative marker:
+
+            event_type = batch_learning
+            reference_id = match_id
+
+        Использует LearningMemory.get().
+        """
+
+        normalized_match_id = _safe_int(
+            match_id
+        )
+
+        if normalized_match_id <= 0:
+
+            return False
+
+        try:
+
+            rows = self.learning_memory.get(
+                event_type=PROCESSED_EVENT_TYPE,
+                reference_id=normalized_match_id,
+                limit=1,
+            )
+
+            return bool(rows)
+
+        except Exception as exc:
+
+            logger.exception(
+                "BatchController processed check failed | "
+                "match_id=%s",
+                match_id,
+            )
+
+            raise RuntimeError(
+                f"Не удалось проверить ETC marker "
+                f"для match_id={match_id}: {exc}"
+            ) from exc
+
+    # ========================================================
+
     def _get_processed_match_ids(
         self,
     ) -> Set[int]:
@@ -1078,29 +1149,10 @@ class BatchController:
 
         try:
 
-            conn = self.db.get_connection()
-
-            try:
-
-                cursor = conn.cursor()
-
-                cursor.execute(
-                    """
-                    SELECT reference_id
-                    FROM learning_memory
-                    WHERE event_type = ?
-                    ORDER BY id ASC
-                    """,
-                    (
-                        PROCESSED_EVENT_TYPE,
-                    ),
-                )
-
-                rows = cursor.fetchall()
-
-            finally:
-
-                conn.close()
+            rows = self.learning_memory.get(
+                event_type=PROCESSED_EVENT_TYPE,
+                limit=10000,
+            )
 
         except Exception as exc:
 
@@ -1114,10 +1166,14 @@ class BatchController:
 
         for row in rows:
 
-            reference_id = (
-                self._row_reference_id(
-                    row
-                )
+            if not isinstance(
+                row,
+                dict,
+            ):
+                continue
+
+            reference_id = row.get(
+                "reference_id"
             )
 
             match_id = _safe_int(
@@ -1131,65 +1187,6 @@ class BatchController:
                 )
 
         return processed
-
-    # ========================================================
-    # INTERNAL — ROW REFERENCE ID
-    # ========================================================
-
-    @staticmethod
-    def _row_reference_id(
-        row: Any,
-    ) -> Any:
-        """
-        Извлекает reference_id из sqlite3.Row,
-        dict или tuple-like результата.
-
-        SELECT содержит только reference_id,
-        поэтому tuple fallback использует индекс 0.
-        """
-
-        if row is None:
-            return None
-
-        # ----------------------------------------------------
-        # DICT
-        # ----------------------------------------------------
-
-        if isinstance(
-            row,
-            dict,
-        ):
-
-            return row.get(
-                "reference_id"
-            )
-
-        # ----------------------------------------------------
-        # SQLITE ROW / MAPPING
-        # ----------------------------------------------------
-
-        try:
-
-            return row[
-                "reference_id"
-            ]
-
-        except Exception:
-            pass
-
-        # ----------------------------------------------------
-        # TUPLE
-        # ----------------------------------------------------
-
-        if isinstance(
-            row,
-            (tuple, list),
-        ):
-
-            if len(row) > 0:
-                return row[0]
-
-        return None
 
     # ========================================================
     # INTERNAL — FINGERPRINT
