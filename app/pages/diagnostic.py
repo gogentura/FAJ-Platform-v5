@@ -4,55 +4,69 @@
 """
 ============================================================
 FAJ Platform v12.1
-FAJ DATABASE DIAGNOSTIC
+DIAGNOSTIC — READ ONLY
 ============================================================
 
-READ-ONLY.
+Назначение:
+    Диагностика реального состояния FAJ SQLite.
 
-Ничего не изменяет:
-    INSERT
-    UPDATE
-    DELETE
-    ALTER
-    DROP
+КРИТИЧЕСКИ ВАЖНО:
 
-Главная задача:
-    НЕ УГАДЫВАТЬ, ГДЕ ЛЕЖИТ ФАКТИЧЕСКИЙ xG.
+    Фактическая статистика приходит из NB-BET parser.
 
-Диагностика сама исследует реальную SQLite-схему:
+    NB-BET parser формирует:
 
-    ВСЕ ТАБЛИЦЫ
-        ↓
-    ВСЕ КОЛОНКИ
-        ↓
-    КОЛОНКИ, СОДЕРЖАЩИЕ xG
-        ↓
-    КОЛОНКИ С match_id
-        ↓
-    ФАКТИЧЕСКИЕ ЗАПИСИ
-        ↓
-    СВЯЗЬ С match_results
-        ↓
-    PREDICTION
-        ↓
-    VALIDATION
-        ↓
-    GOLD
+        home_xg
+        away_xg
 
-Новые таблицы НЕ создаются.
-Схема НЕ изменяется.
+    Источник:
+        match_statistics
+
+    Диагностика НЕ изменяет БД.
+
+    НЕ:
+        INSERT
+        UPDATE
+        DELETE
+        ALTER
+        DROP
 """
 
-import streamlit as st
 import os
 from datetime import datetime
+
+import streamlit as st
 
 from app.database import FAJDatabase, DB_FILE
 
 
 # ============================================================
-# HELPERS
+# DATABASE HELPERS
 # ============================================================
+
+def get_db():
+    return FAJDatabase()
+
+
+def get_columns(db, table_name):
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            f"PRAGMA table_info({table_name})"
+        )
+
+        rows = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return [row[1] for row in rows]
+
+    except Exception:
+        return []
+
 
 def table_exists(db, table_name):
     try:
@@ -61,11 +75,10 @@ def table_exists(db, table_name):
 
         cursor.execute(
             """
-            SELECT 1
+            SELECT name
             FROM sqlite_master
-            WHERE type = 'table'
-              AND name = ?
-            LIMIT 1
+            WHERE type='table'
+              AND name=?
             """,
             (table_name,),
         )
@@ -81,52 +94,7 @@ def table_exists(db, table_name):
         return False
 
 
-def get_tables(db):
-    try:
-        conn = db.get_connection()
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
-            SELECT name
-            FROM sqlite_master
-            WHERE type = 'table'
-            ORDER BY name
-            """
-        )
-
-        rows = cursor.fetchall()
-
-        cursor.close()
-        conn.close()
-
-        return [row[0] for row in rows]
-
-    except Exception:
-        return []
-
-
-def get_columns(db, table_name):
-    try:
-        conn = db.get_connection()
-        cursor = conn.cursor()
-
-        cursor.execute(
-            f"PRAGMA table_info([{table_name}])"
-        )
-
-        rows = cursor.fetchall()
-
-        cursor.close()
-        conn.close()
-
-        return [row[1] for row in rows]
-
-    except Exception:
-        return []
-
-
-def get_table_count(db, table_name):
+def count_rows(db, table_name):
     if not table_exists(db, table_name):
         return 0
 
@@ -135,25 +103,21 @@ def get_table_count(db, table_name):
         cursor = conn.cursor()
 
         cursor.execute(
-            f"SELECT COUNT(*) FROM [{table_name}]"
+            f"SELECT COUNT(*) FROM {table_name}"
         )
 
-        value = cursor.fetchone()[0]
+        result = cursor.fetchone()[0]
 
         cursor.close()
         conn.close()
 
-        return int(value or 0)
+        return int(result)
 
     except Exception:
         return 0
 
 
-def read_rows(db, sql, params=()):
-    """
-    Только SELECT.
-    """
-
+def select_rows(db, sql, params=()):
     conn = db.get_connection()
     cursor = conn.cursor()
 
@@ -165,75 +129,14 @@ def read_rows(db, sql, params=()):
         conn.close()
 
 
-def quote_identifier(name):
-    """
-    Безопасное quoting имени SQLite-таблицы/колонки.
-    """
+def row_to_dict(row, columns):
+    if hasattr(row, "keys"):
+        return dict(row)
 
-    return "[" + str(name).replace("]", "]]") + "]"
-
-
-# ============================================================
-# XG DISCOVERY
-# ============================================================
-
-def discover_xg_columns(db):
-    """
-    Ищет xG НЕ по заранее известным названиям,
-    а по реальной схеме всей БД.
-
-    Любая колонка, в имени которой присутствует:
-        xg
-        XG
-        Xg
-
-    будет найдена.
-    """
-
-    found = []
-
-    tables = get_tables(db)
-
-    for table in tables:
-
-        columns = get_columns(db, table)
-
-        for column in columns:
-
-            if "xg" in column.lower():
-
-                found.append(
-                    {
-                        "table": table,
-                        "column": column,
-                        "has_match_id": "match_id" in columns,
-                        "rows": get_table_count(db, table),
-                    }
-                )
-
-    return found
-
-
-def get_xg_population(db, table, column):
-    """
-    Сколько реально заполненных значений находится
-    в конкретной xG-колонке.
-    """
-
-    try:
-
-        sql = f"""
-            SELECT COUNT(*)
-            FROM {quote_identifier(table)}
-            WHERE {quote_identifier(column)} IS NOT NULL
-        """
-
-        rows = read_rows(db, sql)
-
-        return int(rows[0][0] or 0)
-
-    except Exception:
-        return 0
+    return {
+        columns[i]: row[i]
+        for i in range(min(len(columns), len(row)))
+    }
 
 
 # ============================================================
@@ -245,11 +148,8 @@ def main():
     st.title("🔧 Диагностика FAJ")
 
     st.caption(
-        "READ-ONLY. Диагностика исследует реальную SQLite-схему "
-        "и не изменяет faj.db."
+        "READ-ONLY. База данных не изменяется."
     )
-
-    st.divider()
 
     # ========================================================
     # 1. DATABASE
@@ -257,40 +157,28 @@ def main():
 
     st.subheader("📁 1. База данных")
 
-    col1, col2, col3 = st.columns(3)
+    c1, c2, c3 = st.columns(3)
 
-    with col1:
+    with c1:
         st.metric(
-            "Путь",
-            DB_FILE,
+            "Файл",
+            "✅ существует"
+            if os.path.exists(DB_FILE)
+            else "❌ отсутствует",
         )
 
-    with col2:
-
+    with c2:
         if os.path.exists(DB_FILE):
-
-            size_mb = (
-                os.path.getsize(DB_FILE)
-                / 1024
-                / 1024
-            )
-
+            size = os.path.getsize(DB_FILE) / 1024 / 1024
             st.metric(
                 "Размер",
-                f"{size_mb:.2f} MB",
+                f"{size:.2f} MB",
             )
-
         else:
+            st.metric("Размер", "—")
 
-            st.metric(
-                "Размер",
-                "❌ Файл отсутствует",
-            )
-
-    with col3:
-
+    with c3:
         if os.path.exists(DB_FILE):
-
             mtime = os.path.getmtime(DB_FILE)
 
             st.metric(
@@ -299,13 +187,10 @@ def main():
                     mtime
                 ).strftime("%d.%m %H:%M"),
             )
-
         else:
+            st.metric("Изменён", "—")
 
-            st.metric(
-                "Изменён",
-                "—",
-            )
+    st.code(DB_FILE)
 
     st.divider()
 
@@ -313,27 +198,27 @@ def main():
     # 2. INITIALIZATION
     # ========================================================
 
-    st.subheader("🚀 2. Инициализация")
+    st.subheader("🚀 2. Проверка инициализации")
 
     try:
 
-        db = FAJDatabase()
+        db = get_db()
 
         status = db.get_status()
 
         st.success(
-            f"✅ Database initialized: "
-            f"{status.get('status', 'unknown')}"
+            f"Database initialized: {status.get('status')}"
         )
 
-        with st.expander("Реальный статус БД"):
-
+        with st.expander(
+            "Показать структуру SQLite"
+        ):
             st.json(status)
 
     except Exception as exc:
 
         st.error(
-            f"❌ Ошибка инициализации: {exc}"
+            f"❌ Ошибка Database: {exc}"
         )
 
         return
@@ -341,894 +226,654 @@ def main():
     st.divider()
 
     # ========================================================
-    # 3. REAL SCHEMA
+    # 3. MATCH LIFECYCLE
     # ========================================================
 
-    st.subheader("🗄️ 3. Реальная схема SQLite")
+    st.subheader("📋 3. Жизненный цикл")
 
-    try:
+    matches = count_rows(db, "matches")
+    predictions = count_rows(db, "predictions")
+    results = count_rows(db, "match_results")
+    statistics = count_rows(db, "match_statistics")
+    validation = count_rows(db, "prediction_validation")
+    gold = count_rows(db, "gold_dataset")
 
-        tables = get_tables(db)
+    c1, c2, c3 = st.columns(3)
 
-        st.metric(
-            "Таблиц",
-            len(tables),
-        )
+    with c1:
+        st.metric("Матчи", matches)
 
-        for table in tables:
+    with c2:
+        st.metric("Прогнозы", predictions)
 
-            columns = get_columns(
-                db,
-                table,
-            )
+    with c3:
+        st.metric("Результаты", results)
 
-            count = get_table_count(
-                db,
-                table,
-            )
+    c1, c2, c3 = st.columns(3)
 
-            with st.expander(
-                f"📦 {table} — {count} строк"
-            ):
+    with c1:
+        st.metric("Статистика", statistics)
 
-                st.write(
-                    f"Количество колонок: {len(columns)}"
-                )
+    with c2:
+        st.metric("Валидация", validation)
 
-                st.code(
-                    ", ".join(columns)
-                )
-
-    except Exception as exc:
-
-        st.error(
-            f"❌ Ошибка чтения схемы: {exc}"
-        )
+    with c3:
+        st.metric("Gold", gold)
 
     st.divider()
 
     # ========================================================
-    # 4. MATCH LIFECYCLE
+    # 4. FACTUAL xG
     # ========================================================
 
     st.subheader(
-        "🔗 4. MATCH → PREDICTION → RESULT → VALIDATION → GOLD"
-    )
-
-    lifecycle_tables = [
-        ("matches", "Матчи"),
-        ("predictions", "Прогнозы"),
-        ("match_results", "Фактические результаты"),
-        ("prediction_validation", "Валидация"),
-        ("gold_dataset", "Gold"),
-    ]
-
-    lifecycle_counts = {}
-
-    for table, label in lifecycle_tables:
-
-        count = get_table_count(
-            db,
-            table,
-        )
-
-        lifecycle_counts[table] = count
-
-        st.write(
-            f"{'✅' if count > 0 else '⚪'} "
-            f"**{label}** (`{table}`): {count}"
-        )
-
-    # --------------------------------------------------------
-    # MATCH -> RESULT
-    # --------------------------------------------------------
-
-    st.markdown("### Связь MATCH → RESULT")
-
-    if (
-        table_exists(db, "matches")
-        and table_exists(db, "match_results")
-    ):
-
-        match_columns = get_columns(
-            db,
-            "matches",
-        )
-
-        result_columns = get_columns(
-            db,
-            "match_results",
-        )
-
-        if (
-            "id" in match_columns
-            and "match_id" in result_columns
-        ):
-
-            rows = read_rows(
-                db,
-                """
-                SELECT COUNT(DISTINCT m.id)
-                FROM matches m
-                JOIN match_results mr
-                  ON mr.match_id = m.id
-                """,
-            )
-
-            linked = rows[0][0] if rows else 0
-
-            st.success(
-                f"✅ MATCH → RESULT: {linked}"
-            )
-
-        else:
-
-            st.warning(
-                "⚠️ Не найдены стандартные ID-поля "
-                "для MATCH → RESULT."
-            )
-
-    st.divider()
-
-    # ========================================================
-    # 5. FACTUAL xG — DYNAMIC DISCOVERY
-    # ========================================================
-
-    st.subheader(
-        "🎯 5. ФАКТИЧЕСКИЙ xG — АВТОМАТИЧЕСКИЙ ПОИСК"
+        "🎯 4. ФАКТИЧЕСКИЙ xG"
     )
 
     st.info(
-        "Здесь FAJ больше ничего не предполагает заранее. "
-        "Система проходит по ВСЕЙ реальной схеме SQLite "
-        "и показывает каждую колонку, в имени которой есть xG."
+        """
+        Здесь мы НЕ ищем отдельную таблицу Result xG.
+
+        Реальный поток такой:
+
+            NB-BET
+               ↓
+            home_xg / away_xg
+               ↓
+            match_statistics
+               ↓
+            ETC / Learning
+
+        NB-BET parser действительно формирует
+        home_xg и away_xg.
+        """
     )
 
-    try:
-
-        xg_columns = discover_xg_columns(db)
-
-        if not xg_columns:
-
-            st.error(
-                "❌ В реальной SQLite-схеме не обнаружено "
-                "ни одной колонки с 'xg' в названии."
-            )
-
-        else:
-
-            st.success(
-                f"✅ Найдено xG-колонок: {len(xg_columns)}"
-            )
-
-            for item in xg_columns:
-
-                table = item["table"]
-                column = item["column"]
-
-                population = get_xg_population(
-                    db,
-                    table,
-                    column,
-                )
-
-                match_id_status = (
-                    "✅ есть match_id"
-                    if item["has_match_id"]
-                    else "⚪ нет match_id"
-                )
-
-                st.write(
-                    f"**{table}.{column}** — "
-                    f"{population} заполненных значений — "
-                    f"{match_id_status}"
-                )
-
-    except Exception as exc:
+    if not table_exists(db, "match_statistics"):
 
         st.error(
-            f"❌ Ошибка автоматического поиска xG: {exc}"
+            "❌ Таблица match_statistics отсутствует."
         )
 
-    st.divider()
+    else:
 
-    # ========================================================
-    # 6. XG TABLE DETAILS
-    # ========================================================
+        stats_columns = get_columns(
+            db,
+            "match_statistics",
+        )
 
-    st.subheader(
-        "🔬 6. ДЕТАЛЬНО: ВСЕ РЕАЛЬНЫЕ xG-ИСТОЧНИКИ"
-    )
+        st.write(
+            "### Реальные колонки `match_statistics`"
+        )
 
-    try:
+        st.code(
+            "\n".join(stats_columns)
+        )
 
-        xg_columns = discover_xg_columns(db)
+        # ----------------------------------------------------
+        # XG COLUMNS
+        # ----------------------------------------------------
+
+        xg_columns = [
+            column
+            for column in stats_columns
+            if "xg" in column.lower()
+        ]
+
+        st.write(
+            "### xG-колонки"
+        )
 
         if xg_columns:
 
-            for item in xg_columns:
+            st.success(
+                "Найдены: "
+                + ", ".join(xg_columns)
+            )
 
-                table = item["table"]
-                column = item["column"]
+        else:
 
-                with st.expander(
-                    f"📊 {table}.{column}"
-                ):
+            st.error(
+                "❌ В match_statistics вообще нет "
+                "колонок с xG."
+            )
 
-                    columns = get_columns(
-                        db,
-                        table,
-                    )
+        # ----------------------------------------------------
+        # EXACT HOME/AWAY XG
+        # ----------------------------------------------------
 
-                    st.write(
-                        "**Колонки таблицы:**"
-                    )
+        has_home_xg = "home_xg" in stats_columns
+        has_away_xg = "away_xg" in stats_columns
 
-                    st.code(
-                        ", ".join(columns)
-                    )
+        c1, c2 = st.columns(2)
 
-                    population = get_xg_population(
-                        db,
-                        table,
-                        column,
-                    )
+        with c1:
+            st.metric(
+                "home_xg",
+                "✅ есть"
+                if has_home_xg
+                else "❌ нет",
+            )
 
-                    st.metric(
-                        "Заполненных xG",
-                        population,
-                    )
+        with c2:
+            st.metric(
+                "away_xg",
+                "✅ есть"
+                if has_away_xg
+                else "❌ нет",
+            )
 
-                    # ------------------------------------------------
-                    # Если есть match_id — показываем реальные строки
-                    # ------------------------------------------------
+        # ----------------------------------------------------
+        # COUNTS
+        # ----------------------------------------------------
 
-                    if "match_id" in columns:
+        factual_xg_count = 0
 
-                        select_columns = [
-                            "match_id",
-                            column,
-                        ]
+        if has_home_xg and has_away_xg:
 
-                        # Добавляем полезные поля,
-                        # только если они реально существуют.
-
-                        for candidate in [
-                            "id",
-                            "home_goals",
-                            "away_goals",
-                            "home_team_id",
-                            "away_team_id",
-                            "created_at",
-                            "updated_at",
-                        ]:
-
-                            if (
-                                candidate in columns
-                                and candidate not in select_columns
-                            ):
-
-                                select_columns.append(
-                                    candidate
-                                )
-
-                        sql = (
-                            "SELECT "
-                            + ", ".join(
-                                quote_identifier(c)
-                                for c in select_columns
-                            )
-                            + f" FROM {quote_identifier(table)} "
-                            + f"WHERE {quote_identifier(column)} IS NOT NULL "
-                            + "ORDER BY rowid DESC "
-                            + "LIMIT 30"
-                        )
-
-                        rows = read_rows(
-                            db,
-                            sql,
-                        )
-
-                        if rows:
-
-                            data = []
-
-                            for row in rows:
-
-                                data.append(
-                                    {
-                                        select_columns[i]:
-                                            row[i]
-                                        for i in range(
-                                            len(select_columns)
-                                        )
-                                    }
-                                )
-
-                            st.dataframe(
-                                data,
-                                use_container_width=True,
-                            )
-
-                        else:
-
-                            st.warning(
-                                "xG-колонка существует, "
-                                "но заполненных строк нет."
-                            )
-
-                    else:
-
-                        st.warning(
-                            "У этой xG-таблицы нет match_id. "
-                            "Она может быть памятью/агрегатом, "
-                            "но напрямую связать её с матчем "
-                            "сейчас нельзя."
-                        )
-
-    except Exception as exc:
-
-        st.error(
-            f"❌ Ошибка детализации xG: {exc}"
-        )
-
-    st.divider()
-
-    # ========================================================
-    # 7. RESULT + FACTUAL xG
-    # ========================================================
-
-    st.subheader(
-        "🏁 7. RESULT + ФАКТИЧЕСКИЙ xG"
-    )
-
-    st.info(
-        "Ищем не конкретную таблицу и не конкретное имя поля, "
-        "а реально существующую xG-колонку, которую можно "
-        "связать через match_id с match_results."
-    )
-
-    try:
-
-        result_columns = get_columns(
-            db,
-            "match_results",
-        )
-
-        xg_sources = discover_xg_columns(
-            db
-        )
-
-        found_links = []
-
-        if (
-            "match_id" in result_columns
-            and xg_sources
-        ):
-
-            for source in xg_sources:
-
-                table = source["table"]
-                column = source["column"]
-
-                if not source["has_match_id"]:
-                    continue
-
-                if table == "match_results":
-                    continue
-
-                sql = f"""
-                    SELECT COUNT(*)
-                    FROM match_results mr
-                    JOIN {quote_identifier(table)} x
-                      ON x.match_id = mr.match_id
-                    WHERE mr.home_goals IS NOT NULL
-                      AND mr.away_goals IS NOT NULL
-                      AND x.{quote_identifier(column)} IS NOT NULL
+            rows = select_rows(
+                db,
                 """
+                SELECT COUNT(*)
+                FROM match_statistics
+                WHERE home_xg IS NOT NULL
+                  AND away_xg IS NOT NULL
+                """,
+            )
 
-                try:
+            factual_xg_count = rows[0][0]
 
-                    rows = read_rows(
-                        db,
-                        sql,
-                    )
+            st.metric(
+                "Матчей с ПОЛНЫМ фактическим xG",
+                factual_xg_count,
+            )
 
-                    linked = (
-                        int(rows[0][0])
-                        if rows
-                        else 0
-                    )
+        # ----------------------------------------------------
+        # SHOW ACTUAL DATA
+        # ----------------------------------------------------
 
-                    found_links.append(
-                        {
-                            "source":
-                                f"{table}.{column}",
-                            "linked_matches":
-                                linked,
-                        }
-                    )
+        st.write(
+            "### 🔎 Фактические значения xG"
+        )
 
-                except Exception:
-                    pass
+        if has_home_xg and has_away_xg:
 
-        if found_links:
+            optional_columns = [
+                "id",
+                "match_id",
+                "home_xg",
+                "away_xg",
+                "source",
+                "created_at",
+                "updated_at",
+            ]
 
-            for item in found_links:
+            selected = [
+                column
+                for column in optional_columns
+                if column in stats_columns
+            ]
 
-                if item["linked_matches"] > 0:
+            if "match_id" not in selected:
+
+                st.error(
+                    "❌ В match_statistics нет match_id. "
+                    "Невозможно связать xG с матчем."
+                )
+
+            else:
+
+                sql = (
+                    "SELECT "
+                    + ", ".join(selected)
+                    + """
+                    FROM match_statistics
+                    WHERE home_xg IS NOT NULL
+                      AND away_xg IS NOT NULL
+                    ORDER BY rowid DESC
+                    LIMIT 50
+                    """
+                )
+
+                rows = select_rows(
+                    db,
+                    sql,
+                )
+
+                if rows:
+
+                    data = [
+                        row_to_dict(
+                            row,
+                            selected,
+                        )
+                        for row in rows
+                    ]
 
                     st.success(
-                        f"✅ {item['source']} → "
-                        f"match_results: "
-                        f"{item['linked_matches']} матчей"
+                        f"Найдено записей: {len(data)}"
+                    )
+
+                    st.dataframe(
+                        data,
+                        use_container_width=True,
                     )
 
                 else:
 
                     st.warning(
-                        f"⚪ {item['source']} → "
-                        f"match_results: 0 связанных матчей"
+                        """
+                        Колонки home_xg и away_xg существуют,
+                        но фактических значений в них сейчас нет.
+                        """
                     )
 
-        else:
+        # ----------------------------------------------------
+        # PARTIAL XG
+        # ----------------------------------------------------
 
-            st.warning(
-                "⚠️ Пока не найдена xG-таблица, "
-                "которую можно связать с match_results через match_id."
+        if has_home_xg:
+
+            rows = select_rows(
+                db,
+                """
+                SELECT COUNT(*)
+                FROM match_statistics
+                WHERE home_xg IS NOT NULL
+                """,
             )
 
-    except Exception as exc:
+            st.caption(
+                f"home_xg заполнен: {rows[0][0]}"
+            )
 
-        st.error(
-            f"❌ Ошибка связи RESULT + xG: {exc}"
-        )
+        if has_away_xg:
+
+            rows = select_rows(
+                db,
+                """
+                SELECT COUNT(*)
+                FROM match_statistics
+                WHERE away_xg IS NOT NULL
+                """,
+            )
+
+            st.caption(
+                f"away_xg заполнен: {rows[0][0]}"
+            )
 
     st.divider()
 
     # ========================================================
-    # 8. PREDICTION DATA
-    # ========================================================
-
-    st.subheader("🧠 8. Prediction History")
-
-    try:
-
-        for table in [
-            "predictions",
-            "prediction_scores",
-            "prediction_distributions",
-            "match_predictions",
-        ]:
-
-            count = get_table_count(
-                db,
-                table,
-            )
-
-            if table_exists(
-                db,
-                table,
-            ):
-
-                st.write(
-                    f"✅ `{table}`: {count}"
-                )
-
-                with st.expander(
-                    f"Колонки {table}"
-                ):
-
-                    st.code(
-                        ", ".join(
-                            get_columns(
-                                db,
-                                table,
-                            )
-                        )
-                    )
-
-    except Exception as exc:
-
-        st.warning(
-            f"⚠️ Ошибка prediction: {exc}"
-        )
-
-    st.divider()
-
-    # ========================================================
-    # 9. VALIDATION + GOLD
+    # 5. RESULT + FACTUAL xG
     # ========================================================
 
     st.subheader(
-        "✅ 9. Validation → Gold"
+        "🔗 5. RESULT → FACTUAL xG"
     )
 
-    try:
+    if (
+        table_exists(db, "match_results")
+        and table_exists(db, "match_statistics")
+    ):
 
-        validation_count = get_table_count(
+        result_columns = get_columns(
             db,
-            "prediction_validation",
+            "match_results",
         )
 
-        gold_count = get_table_count(
+        stats_columns = get_columns(
             db,
-            "gold_dataset",
+            "match_statistics",
         )
 
-        st.write(
-            f"**prediction_validation:** "
-            f"{validation_count}"
-        )
+        required = {
+            "result_match_id": "match_id" in result_columns,
+            "stats_match_id": "match_id" in stats_columns,
+            "home_xg": "home_xg" in stats_columns,
+            "away_xg": "away_xg" in stats_columns,
+        }
 
-        st.write(
-            f"**gold_dataset:** "
-            f"{gold_count}"
-        )
+        if all(required.values()):
 
-        if (
-            table_exists(db, "prediction_validation")
-            and table_exists(db, "gold_dataset")
-        ):
+            sql = """
+                SELECT
+                    mr.match_id,
+                    mr.home_goals,
+                    mr.away_goals,
+                    ms.home_xg,
+                    ms.away_xg
+                FROM match_results mr
+                JOIN match_statistics ms
+                  ON ms.match_id = mr.match_id
+                WHERE ms.home_xg IS NOT NULL
+                  AND ms.away_xg IS NOT NULL
+                ORDER BY mr.match_id DESC
+                LIMIT 50
+            """
 
-            vc = get_columns(
-                db,
-                "prediction_validation",
+            try:
+
+                rows = select_rows(
+                    db,
+                    sql,
+                )
+
+                if rows:
+
+                    data = [
+                        row_to_dict(
+                            row,
+                            [
+                                "match_id",
+                                "home_goals",
+                                "away_goals",
+                                "home_xg",
+                                "away_xg",
+                            ],
+                        )
+                        for row in rows
+                    ]
+
+                    st.success(
+                        f"✅ Связано матчей: {len(data)}"
+                    )
+
+                    st.dataframe(
+                        data,
+                        use_container_width=True,
+                    )
+
+                else:
+
+                    st.warning(
+                        """
+                        В БД пока нет матча,
+                        где одновременно присутствуют:
+
+                        RESULT
+                        +
+                        home_xg
+                        +
+                        away_xg
+                        """
+                    )
+
+            except Exception as exc:
+
+                st.error(
+                    f"Ошибка связи RESULT → xG: {exc}"
+                )
+
+        else:
+
+            missing = [
+                key
+                for key, value in required.items()
+                if not value
+            ]
+
+            st.warning(
+                "Не хватает колонок: "
+                + ", ".join(missing)
             )
-
-            gc = get_columns(
-                db,
-                "gold_dataset",
-            )
-
-            st.write(
-                "**prediction_validation columns:**"
-            )
-
-            st.code(
-                ", ".join(vc)
-            )
-
-            st.write(
-                "**gold_dataset columns:**"
-            )
-
-            st.code(
-                ", ".join(gc)
-            )
-
-    except Exception as exc:
-
-        st.warning(
-            f"⚠️ Ошибка validation/gold: {exc}"
-        )
 
     st.divider()
 
     # ========================================================
-    # 10. LEARNING MEMORY
+    # 6. OTHER XG STORAGE
     # ========================================================
 
-    st.subheader("🧠 10. Learning Memory")
+    st.subheader(
+        "🗃️ 6. Остальные xG-слои"
+    )
 
-    try:
+    for table_name in [
+        "gold_dataset",
+        "prediction_validation",
+        "xg_memory",
+    ]:
 
-        for table in [
+        if not table_exists(db, table_name):
+
+            st.warning(
+                f"❌ {table_name}: таблица отсутствует"
+            )
+
+            continue
+
+        columns = get_columns(
+            db,
+            table_name,
+        )
+
+        xg_columns = [
+            column
+            for column in columns
+            if "xg" in column.lower()
+        ]
+
+        count = count_rows(
+            db,
+            table_name,
+        )
+
+        with st.expander(
+            f"{table_name} — {count} строк"
+        ):
+
+            st.write(
+                "Все xG-связанные колонки:"
+            )
+
+            if xg_columns:
+                st.success(
+                    ", ".join(xg_columns)
+                )
+            else:
+                st.caption(
+                    "xG-колонки не обнаружены."
+                )
+
+            st.code(
+                "\n".join(columns)
+            )
+
+    st.divider()
+
+    # ========================================================
+    # 7. LEARNING
+    # ========================================================
+
+    st.subheader(
+        "🧠 7. Learning Memory"
+    )
+
+    lm = count_rows(
+        db,
+        "learning_memory",
+    )
+
+    le = count_rows(
+        db,
+        "learning_events",
+    )
+
+    lr = count_rows(
+        db,
+        "learning_records",
+    )
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        st.metric(
             "learning_memory",
+            lm,
+        )
+
+    with c2:
+        st.metric(
             "learning_events",
+            le,
+        )
+
+    with c3:
+        st.metric(
             "learning_records",
-        ]:
-
-            count = get_table_count(
-                db,
-                table,
-            )
-
-            st.write(
-                f"{'✅' if count > 0 else '⚪'} "
-                f"`{table}`: {count}"
-            )
-
-        if table_exists(
-            db,
-            "learning_memory",
-        ):
-
-            columns = get_columns(
-                db,
-                "learning_memory",
-            )
-
-            if "event_type" in columns:
-
-                rows = read_rows(
-                    db,
-                    """
-                    SELECT
-                        event_type,
-                        COUNT(*) AS cnt
-                    FROM learning_memory
-                    GROUP BY event_type
-                    ORDER BY cnt DESC
-                    """,
-                )
-
-                if rows:
-
-                    st.caption(
-                        "Типы Learning Memory:"
-                    )
-
-                    for row in rows:
-
-                        st.write(
-                            f"• {row[0]}: {row[1]}"
-                        )
-
-    except Exception as exc:
-
-        st.warning(
-            f"⚠️ Ошибка Learning Memory: {exc}"
+            lr,
         )
 
     st.divider()
 
     # ========================================================
-    # 11. MODEL HISTORY
+    # 8. MODEL HISTORY
     # ========================================================
 
-    st.subheader("📈 11. Model History")
+    st.subheader(
+        "📊 8. Model History"
+    )
 
-    try:
+    mp = count_rows(
+        db,
+        "model_parameters",
+    )
 
-        mp = get_table_count(
-            db,
+    ph = count_rows(
+        db,
+        "parameter_history",
+    )
+
+    c1, c2 = st.columns(2)
+
+    with c1:
+        st.metric(
             "model_parameters",
+            mp,
         )
 
-        ph = get_table_count(
-            db,
+    with c2:
+        st.metric(
             "parameter_history",
-        )
-
-        st.write(
-            f"**model_parameters:** {mp}"
-        )
-
-        st.write(
-            f"**parameter_history:** {ph}"
-        )
-
-        if table_exists(
-            db,
-            "predictions",
-        ):
-
-            columns = get_columns(
-                db,
-                "predictions",
-            )
-
-            if "model_version" in columns:
-
-                rows = read_rows(
-                    db,
-                    """
-                    SELECT
-                        model_version,
-                        COUNT(*) AS cnt
-                    FROM predictions
-                    WHERE model_version IS NOT NULL
-                    GROUP BY model_version
-                    ORDER BY cnt DESC
-                    """,
-                )
-
-                if rows:
-
-                    st.caption(
-                        "Версии модели:"
-                    )
-
-                    for row in rows:
-
-                        st.write(
-                            f"• {row[0]}: {row[1]}"
-                        )
-
-    except Exception as exc:
-
-        st.warning(
-            f"⚠️ Ошибка Model History: {exc}"
+            ph,
         )
 
     st.divider()
 
     # ========================================================
-    # 12. SNAPSHOTS
+    # 9. SNAPSHOTS
     # ========================================================
 
-    st.subheader("📸 12. Match Snapshots")
+    st.subheader(
+        "📸 9. Match Snapshots"
+    )
 
-    snapshot_count = get_table_count(
+    snapshots = count_rows(
         db,
         "match_snapshots",
     )
 
     st.metric(
         "match_snapshots",
-        snapshot_count,
+        snapshots,
     )
 
-    if snapshot_count > 0:
+    st.divider()
+
+    # ========================================================
+    # 10. EVOLUTION STATUS
+    # ========================================================
+
+    st.subheader(
+        "🚀 10. ETC / Evolution состояние"
+    )
+
+    st.write(
+        """
+        ### Правильная цепочка FAJ
+
+        **MATCH**
+        ↓
+
+        **PREDICTION**
+        ↓
+
+        **MATCH RESULT**
+        ↓
+
+        **MATCH STATISTICS**
+        ↓
+
+        **FACTUAL xG**
+        ↓
+
+        **VALIDATION**
+        ↓
+
+        **GOLD**
+        ↓
+
+        **ETC**
+        ↓
+
+        **LEARNING MEMORY**
+        """
+    )
+
+    if factual_xg_count > 0:
 
         st.success(
-            "✅ Snapshots присутствуют"
+            f"""
+            ✅ Фактический xG найден.
+
+            Источник:
+            match_statistics
+
+            Полные записи:
+            {factual_xg_count}
+
+            Поля:
+            home_xg
+            away_xg
+            """
         )
 
     else:
 
         st.warning(
-            "⚪ Snapshots пока пусты"
+            """
+            ⚠️ Фактический xG пока не найден
+            среди заполненных записей match_statistics.
+
+            Это НЕ означает, что нужно создавать
+            новую таблицу или менять database.py.
+
+            Сначала проверяем импорт статистики.
+            """
         )
 
-    st.divider()
-
     # ========================================================
-    # 13. FINAL DIAGNOSTIC SUMMARY
+    # 11. DATA DIRECTORY
     # ========================================================
 
     st.subheader(
-        "🎯 13. ИТОГ ДИАГНОСТИКИ"
+        "📁 11. Содержимое data/"
     )
 
-    prediction_count = get_table_count(
-        db,
-        "predictions",
-    )
+    data_dir = os.path.dirname(DB_FILE)
 
-    result_count = get_table_count(
-        db,
-        "match_results",
-    )
+    if os.path.exists(data_dir):
 
-    validation_count = get_table_count(
-        db,
-        "prediction_validation",
-    )
+        files = os.listdir(data_dir)
 
-    gold_count = get_table_count(
-        db,
-        "gold_dataset",
-    )
-
-    learning_count = get_table_count(
-        db,
-        "learning_memory",
-    )
-
-    model_count = (
-        get_table_count(
-            db,
-            "model_parameters",
-        )
-        +
-        get_table_count(
-            db,
-            "parameter_history",
-        )
-    )
-
-    xg_total = 0
-
-    try:
-
-        for source in discover_xg_columns(db):
-
-            xg_total += get_xg_population(
-                db,
-                source["table"],
-                source["column"],
-            )
-
-    except Exception:
-        pass
-
-    summary = [
-        (
-            "Прогнозы",
-            prediction_count,
-            prediction_count > 0,
-        ),
-        (
-            "Факты",
-            result_count,
-            result_count > 0,
-        ),
-        (
-            "Фактический xG",
-            xg_total,
-            xg_total > 0,
-        ),
-        (
-            "Validation",
-            validation_count,
-            validation_count > 0,
-        ),
-        (
-            "Gold",
-            gold_count,
-            gold_count > 0,
-        ),
-        (
-            "Learning Memory",
-            learning_count,
-            learning_count > 0,
-        ),
-        (
-            "Model History",
-            model_count,
-            model_count > 0,
-        ),
-        (
-            "Snapshots",
-            snapshot_count,
-            snapshot_count > 0,
-        ),
-    ]
-
-    for name, count, ok in summary:
-
-        st.write(
-            f"{'✅' if ok else '❌'} "
-            f"**{name}:** {count}"
+        st.code(
+            "\n".join(files)
         )
 
-    st.divider()
-
-    # ========================================================
-    # IMPORTANT
-    # ========================================================
-
-    st.info(
-        "ВАЖНО: эта диагностика НЕ утверждает заранее, "
-        "что фактический xG находится в match_statistics, "
-        "gold_dataset или prediction_validation. "
-        "Она сначала исследует реальную схему БД и показывает, "
-        "ГДЕ ДЕЙСТВИТЕЛЬНО находятся xG-колонки и сколько "
-        "значений в них реально заполнено."
-    )
-
-    # ========================================================
-    # DATA DIRECTORY
-    # ========================================================
-
-    st.subheader("📁 14. Содержимое data/")
-
-    try:
-
-        data_dir = os.path.dirname(
-            DB_FILE
-        )
-
-        if os.path.exists(data_dir):
-
-            files = os.listdir(
-                data_dir
-            )
-
-            st.write(
-                f"Директория: {data_dir}"
-            )
-
-            st.write(
-                files
-            )
-
-    except Exception as exc:
+    else:
 
         st.warning(
-            f"⚠️ Ошибка чтения data/: {exc}"
+            "Директория data не найдена."
         )
 
     st.divider()
@@ -1245,8 +890,7 @@ def main():
         st.rerun()
 
     st.caption(
-        "READ-ONLY. FAJDatabase используется только для чтения. "
-        "База данных не изменяется."
+        "READ-ONLY. Никаких изменений SQLite."
     )
 
 
