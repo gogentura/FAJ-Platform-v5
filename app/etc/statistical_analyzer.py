@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-ETC — Statistical Analyzer v1.3
+ETC — Statistical Analyzer v2.0
 ============================================================
 
 app/etc/statistical_analyzer.py
@@ -47,8 +47,7 @@ Statistical Analyzer является чистым аналитическим с
     - удаляет данные;
     - записывает learning_memory;
     - запускает prediction pipeline;
-    - самостоятельно принимает решения об изменении модели;
-    - возвращает memory_events.
+    - самостоятельно принимает решения об изменении модели.
 
 МОДУЛЬ ТОЛЬКО:
 
@@ -90,31 +89,55 @@ ETC PRINCIPLE:
 
 ============================================================
 
-ИСПРАВЛЕНИЯ v1.3
+ИСПРАВЛЕНИЯ v2.0
 ============================================================
 
-1. Строгая обработка голов:
+1. analyze_match() теперь возвращает СТАБИЛЬНЫЙ КОНТРАКТ:
 
-   home_goals = _safe_int(home_goals_raw, default=-1)
-   away_goals = _safe_int(away_goals_raw, default=-1)
-   if home_goals < 0: return None
-   if away_goals < 0: return None
+   УСПЕХ:
+       {
+           "success": True,
+           "status": "analyzed",
+           "match_id": match_id,
+           "observations": [...],      # обязательное поле
+           "memory_events": [...],     # optional, может быть пустым
+           "prediction": {...},        # optional
+           "fact": {...},             # optional
+           "xg": {...},               # optional
+           "summary": {...},          # обязательное поле
+           "created_at": "..."
+       }
 
-   0:0 — валидный результат.
-   None — отсутствие факта, отклоняется.
+   ОШИБКА:
+       {
+           "success": False,
+           "status": "analysis_failed",
+           "match_id": match_id,
+           "observations": [],
+           "memory_events": [],
+           "prediction": None,
+           "fact": None,
+           "xg": None,
+           "errors": [...],
+           "error": "...",
+           "created_at": "..."
+       }
 
-2. memory_events НЕ ДОБАВЛЯТЬ:
+2. memory_events теперь OPTIONAL:
 
-   Analyzer не записывает LearningMemory.
-   memory_events создаёт только ETCLearningEngine.
+   memory_events НЕ является обязательным результатом
+   StatisticalAnalyzer.
 
-3. Частичная статистика разрешена:
+   ETCLearningEngine сам строит memory_events из:
+       - observations
+       - prediction + fact
+       - xg
+       - analysis_completed fallback
 
-   if not home_stats and not away_stats:
-       return None
+3. observations стал ОБЯЗАТЕЛЬНЫМ полем.
 
-   Если статистика есть хотя бы у одной команды,
-   матч принимается для анализа.
+4. Добавлен параметр prediction, fact, xg в analyze_match()
+   для передачи внешних данных.
 
 ============================================================
 """
@@ -122,19 +145,25 @@ ETC PRINCIPLE:
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from app.database import FAJDatabase
 
 logger = logging.getLogger(__name__)
 
-ANALYZER_VERSION = "1.3"
+ANALYZER_VERSION = "2.0"
 ANALYZER_NAME = "FAJ ETC Statistical Analyzer"
 
 
 # ============================================================
 # HELPERS
 # ============================================================
+
+def _now() -> str:
+    """Текущее время в ISO формате."""
+    return datetime.now().isoformat()
+
 
 def _safe_float(
     value: Any,
@@ -245,6 +274,17 @@ class StatisticalAnalyzer:
         либо быть явно передан ETC.
 
         Метод НЕ выбирает самостоятельно новые матчи.
+
+        ВОЗВРАЩАЕТ:
+            {
+                "success": bool,
+                "matches_analyzed": int,
+                "match_results": [...],
+                "team_statistics": [...],
+                "league_statistics": {...},
+                "observations": [...],
+                "errors": [...]
+            }
         """
 
         result: Dict[str, Any] = {
@@ -262,7 +302,7 @@ class StatisticalAnalyzer:
 
             "team_statistics": [],
 
-            "match_statistics": [],
+            "match_results": [],
 
             "observations": [],
 
@@ -297,7 +337,7 @@ class StatisticalAnalyzer:
 
                     continue
 
-                analyzed = self._analyze_match(
+                analyzed = self._analyze_match_data(
                     match
                 )
 
@@ -338,7 +378,7 @@ class StatisticalAnalyzer:
                 analyzed_matches
             )
 
-            result["match_statistics"] = (
+            result["match_results"] = (
                 analyzed_matches
             )
 
@@ -423,45 +463,94 @@ class StatisticalAnalyzer:
             return result
 
     # ========================================================
-    # PUBLIC — SINGLE MATCH
+    # PUBLIC — SINGLE MATCH (НОВЫЙ КОНТРАКТ v2.0)
     # ========================================================
 
     def analyze_match(
         self,
         match_id: int,
+        prediction: Optional[Dict[str, Any]] = None,
+        fact: Optional[Dict[str, Any]] = None,
+        xg: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Анализирует один конкретный матч.
 
-        Используется ETC Learning Engine для диагностики
-        или точечной обработки.
+        НОВЫЙ КОНТРАКТ v2.0:
 
-        Источник календаря:
-            FAJDatabase.get_matches()
+            memory_events — OPTIONAL
+            observations — OBLIGATORY
 
-        Источник результата:
-            match_results
+        ВОЗВРАЩАЕТ СТАБИЛЬНЫЙ DICT:
 
-        Источник статистики:
-            match_statistics
+            УСПЕХ:
+                {
+                    "success": True,
+                    "status": "analyzed",
+                    "match_id": match_id,
+                    "observations": [...],
+                    "memory_events": [...],
+                    "prediction": {...} or None,
+                    "fact": {...} or None,
+                    "xg": {...} or None,
+                    "summary": {...},
+                    "created_at": "..."
+                }
+
+            ОШИБКА:
+                {
+                    "success": False,
+                    "status": "analysis_failed",
+                    "match_id": match_id,
+                    "observations": [],
+                    "memory_events": [],
+                    "prediction": None,
+                    "fact": None,
+                    "xg": None,
+                    "errors": [...],
+                    "error": "...",
+                    "created_at": "..."
+                }
         """
+
+        # ----------------------------------------------------
+        # БАЗОВЫЙ РЕЗУЛЬТАТ
+        # ----------------------------------------------------
 
         result: Dict[str, Any] = {
             "success": False,
+
+            "status": "analysis_failed",
 
             "version": ANALYZER_VERSION,
             "engine": ANALYZER_NAME,
 
             "match_id": match_id,
 
-            "statistics": None,
-
             "observations": [],
 
+            "memory_events": [],
+
+            "prediction": None,
+
+            "fact": None,
+
+            "xg": None,
+
+            "summary": {},
+
             "errors": [],
+
+            "error": None,
+
+            "created_at": _now(),
         }
 
         try:
+
+            # ----------------------------------------------------
+            # 1. ПОЛУЧАЕМ ДАННЫЕ ИЗ БД
+            # ----------------------------------------------------
 
             matches = self.db.get_matches()
 
@@ -482,9 +571,17 @@ class StatisticalAnalyzer:
                     f"Матч {match_id} не найден."
                 )
 
+                result["error"] = (
+                    f"Матч {match_id} не найден."
+                )
+
                 return result
 
-            analyzed = self._analyze_match(
+            # ----------------------------------------------------
+            # 2. АНАЛИЗИРУЕМ МАТЧ
+            # ----------------------------------------------------
+
+            analyzed = self._analyze_match_data(
                 match
             )
 
@@ -495,17 +592,60 @@ class StatisticalAnalyzer:
                     f"недостаточно фактической статистики."
                 )
 
+                result["error"] = (
+                    f"Матч {match_id}: "
+                    f"недостаточно фактической статистики."
+                )
+
                 return result
 
-            result["statistics"] = analyzed
+            # ----------------------------------------------------
+            # 3. СТРОИМ НАБЛЮДЕНИЯ (ОБЯЗАТЕЛЬНО)
+            # ----------------------------------------------------
 
-            result["observations"] = (
+            observations = (
                 self._build_match_observations(
                     analyzed
                 )
             )
 
+            # ----------------------------------------------------
+            # 4. ФОРМИРУЕМ СТАБИЛЬНЫЙ ОТВЕТ
+            # ----------------------------------------------------
+
             result["success"] = True
+
+            result["status"] = "analyzed"
+
+            # observations — ОБЯЗАТЕЛЬНОЕ поле
+            result["observations"] = observations
+
+            # memory_events — OPTIONAL, может быть пустым
+            result["memory_events"] = []
+
+            # prediction, fact, xg — если переданы
+            if prediction:
+                result["prediction"] = prediction
+
+            if fact:
+                result["fact"] = fact
+
+            if xg:
+                result["xg"] = xg
+
+            # summary — ОБЯЗАТЕЛЬНОЕ поле
+            result["summary"] = {
+                "match_id": match_id,
+                "home_goals": analyzed.get("home_goals"),
+                "away_goals": analyzed.get("away_goals"),
+                "total_goals": analyzed.get("total_goals"),
+                "btts": analyzed.get("btts"),
+                "over_25": analyzed.get("over_25"),
+                "over_35": analyzed.get("over_35"),
+                "home_has_xg": analyzed.get("home", {}).get("available", False),
+                "away_has_xg": analyzed.get("away", {}).get("available", False),
+                "observations_count": len(observations),
+            }
 
             return result
 
@@ -520,20 +660,22 @@ class StatisticalAnalyzer:
                 str(exc)
             )
 
+            result["error"] = str(exc)
+
             return result
 
     # ========================================================
     # MATCH ANALYSIS
     # ========================================================
 
-    def _analyze_match(
+    def _analyze_match_data(
         self,
         match: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
         """
         Собирает объективные факты одного матча.
 
-        ВАЖНОЕ ИСПРАВЛЕНИЕ v1.3:
+        ВАЖНОЕ ИСПРАВЛЕНИЕ v1.3/v2.0:
 
         Голы проверяются строго:
 
@@ -659,8 +801,6 @@ class StatisticalAnalyzer:
                 "round_id"
             ),
 
-            # ✅ ОСТАВЛЕНО v1.3
-            # match_date с fallback на date
             "match_date": (
                 match.get("match_date")
                 or match.get("date")
@@ -1536,9 +1676,6 @@ class StatisticalAnalyzer:
                 4,
             ),
 
-            # Важно:
-            # xG здесь считается на команду,
-            # поскольку xG_values содержит обе команды.
             "observed_xg_per_team_avg": _round(
                 _average(
                     xg_values
@@ -1584,7 +1721,7 @@ class StatisticalAnalyzer:
         """
         Формирует объективные наблюдения для ETC.
 
-        ВАЖНО v1.3:
+        ВАЖНО v2.0:
 
         Это НЕ learning_memory.
 
@@ -1907,10 +2044,13 @@ def analyze_statistics(
 
 def analyze_match_statistics(
     match_id: int,
+    prediction: Optional[Dict[str, Any]] = None,
+    fact: Optional[Dict[str, Any]] = None,
+    xg: Optional[Dict[str, Any]] = None,
     db: Optional[FAJDatabase] = None,
 ) -> Dict[str, Any]:
     """
-    Публичный API анализа одного матча.
+    Публичный API анализа одного матча с новым контрактом v2.0.
     """
 
     analyzer = StatisticalAnalyzer(
@@ -1918,7 +2058,10 @@ def analyze_match_statistics(
     )
 
     return analyzer.analyze_match(
-        match_id
+        match_id=match_id,
+        prediction=prediction,
+        fact=fact,
+        xg=xg,
     )
 
 
@@ -1955,7 +2098,7 @@ def get_analyzer_status() -> Dict[str, Any]:
 
         "database_layer": "FAJDatabase",
 
-        "memory_events": False,
+        "memory_events": "OPTIONAL (не создаются здесь)",
     }
 
 
@@ -2007,6 +2150,10 @@ if __name__ == "__main__":
 
     print(
         "LearningMemory здесь НЕ вызывается."
+    )
+
+    print(
+        "memory_events — OPTIONAL, создаются в ETCLearningEngine."
     )
 
     print("=" * 70)
