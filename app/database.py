@@ -14,6 +14,7 @@ import os
 import uuid
 import json
 import logging
+import hashlib
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from contextlib import contextmanager
@@ -2103,11 +2104,19 @@ class FAJDatabase:
         finally:
             conn.close()
     
+    # ============================================================
+    # UPDATE MATCH RESULT
+    # ============================================================
+    
     def update_result(self, match_id, home_score, away_score, lock: bool = False):
         """
         Записывает фактический результат матча.
         Основной источник — match_results.
         После lock факт становится неизменяемым.
+        
+        ⚠️ ВНИМАНИЕ: Этот метод выполняет отдельную транзакцию.
+        Для атомарного сохранения всех фактов используйте
+        save_complete_match_fact().
         """
         conn = self.get_connection()
         try:
@@ -2288,12 +2297,17 @@ class FAJDatabase:
             conn.close()
     
     # ============================================================
-    # UPDATE MATCH STATS — ПОЛНОСТЬЮ ПЕРЕРАБОТАН
+    # UPDATE MATCH STATS
     # ============================================================
     
     def update_match_stats(self, match_id: int, stats: Dict[str, Any]) -> bool:
         """
         Сохраняет фактическую статистику матча.
+        
+        ⚠️ ВНИМАНИЕ: 
+        - Этот метод выполняет отдельную транзакцию.
+        - Для атомарного сохранения всех фактов используйте save_complete_match_fact()
+        - Метод проверяет LOCK и блокирует изменение LOCKED-матча.
         
         Архитектура:
             matches
@@ -2301,14 +2315,21 @@ class FAJDatabase:
             match_statistics
                 ├── домашняя команда
                 └── гостевая команда
-        
-        ВАЖНО:
-            Не удаляет существующие данные.
-            Использует INSERT ... ON CONFLICT DO UPDATE.
         """
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
+            
+            # ====================================================
+            # 0. ПРОВЕРКА LOCK
+            # ====================================================
+            cursor.execute("""
+                SELECT fact_status FROM match_results
+                WHERE match_id = ?
+            """, (match_id,))
+            row = cursor.fetchone()
+            if row and row["fact_status"] == "locked":
+                raise ValueError(f"Match {match_id} is LOCKED. Stats cannot be changed.")
             
             # ====================================================
             # 1. ПОЛУЧАЕМ КОМАНДЫ МАТЧА
@@ -2453,7 +2474,7 @@ class FAJDatabase:
             conn.close()
     
     # ============================================================
-    # GET MATCH STATS — НОВЫЙ МЕТОД
+    # GET MATCH STATS
     # ============================================================
     
     def get_match_stats(self, match_id: int) -> Optional[Dict[str, Any]]:
@@ -4707,6 +4728,584 @@ class FAJDatabase:
             conn.close()
 
 
+# ============================================================
+# ════════════════════════════════════════════════════════════
+# ЭТАП 2: ТРАНЗАКЦИОННЫЕ МЕТОДЫ (TX)
+# ════════════════════════════════════════════════════════════
+# ============================================================
+
+    # ============================================================
+    # ВНУТРЕННИЕ МЕТОДЫ ДЛЯ ТРАНЗАКЦИЙ (TX)
+    # ============================================================
+
+    def _update_result_tx(
+        self,
+        cursor: sqlite3.Cursor,
+        match_id: int,
+        home_goals: int,
+        away_goals: int,
+    ) -> None:
+        """
+        Внутренний метод для сохранения счёта в транзакции.
+        
+        ПРЕДУСЛОВИЯ:
+            - Проверка LOCK выполнена ДО вызова
+            - cursor активен в открытой транзакции
+        """
+        # Проверяем, существует ли уже запись
+        cursor.execute("""
+            SELECT id, fact_status FROM match_results
+            WHERE match_id = ?
+        """, (match_id,))
+        existing = cursor.fetchone()
+        
+        if existing and existing["fact_status"] == "locked":
+            raise ValueError(f"Match {match_id} is LOCKED. Cannot update result.")
+        
+        if existing:
+            cursor.execute("""
+                UPDATE match_results
+                SET home_goals = ?, away_goals = ?,
+                    fact_status = 'verified'
+                WHERE match_id = ?
+            """, (home_goals, away_goals, match_id))
+        else:
+            cursor.execute("""
+                INSERT INTO match_results (
+                    match_id, home_goals, away_goals,
+                    fact_status
+                ) VALUES (?, ?, ?, ?)
+            """, (match_id, home_goals, away_goals, "verified"))
+        
+        # Обновляем matches для обратной совместимости
+        cursor.execute("""
+            UPDATE matches
+            SET actual_home = ?, actual_away = ?,
+                status = 'finished',
+                fact_status = 'verified',
+                updated_at = ?
+            WHERE id = ?
+        """, (home_goals, away_goals, datetime.now().isoformat(), match_id))
+        
+        if cursor.rowcount == 0:
+            raise ValueError(f"Match {match_id} not found")
+
+    def _update_match_stats_tx(
+        self,
+        cursor: sqlite3.Cursor,
+        match_id: int,
+        stats: Dict[str, Any],
+    ) -> None:
+        """
+        Внутренний метод для сохранения статистики в транзакции.
+        
+        ПРЕДУСЛОВИЯ:
+            - Проверка LOCK выполнена ДО вызова
+            - cursor активен в открытой транзакции
+        """
+        # Получаем команды
+        cursor.execute("""
+            SELECT home_team_id, away_team_id
+            FROM matches
+            WHERE id = ?
+        """, (match_id,))
+        match_row = cursor.fetchone()
+        if not match_row:
+            raise ValueError(f"Match {match_id} not found")
+        
+        home_team_id = match_row["home_team_id"]
+        away_team_id = match_row["away_team_id"]
+        
+        # Обновляем matches
+        cursor.execute("""
+            UPDATE matches SET
+                home_xg = ?,
+                away_xg = ?,
+                home_possession = ?,
+                away_possession = ?,
+                home_shots = ?,
+                away_shots = ?,
+                home_shots_on_target = ?,
+                away_shots_on_target = ?,
+                parser_source = ?,
+                parser_version = ?,
+                data_quality = ?,
+                updated_at = ?
+            WHERE id = ?
+        """, (
+            stats.get("home_xg"),
+            stats.get("away_xg"),
+            stats.get("home_possession"),
+            stats.get("away_possession"),
+            stats.get("home_shots"),
+            stats.get("away_shots"),
+            stats.get("home_shots_on_target"),
+            stats.get("away_shots_on_target"),
+            stats.get("parser_source"),
+            stats.get("parser_version"),
+            stats.get("data_quality", 1.0),
+            datetime.now().isoformat(),
+            match_id
+        ))
+        
+        # Сохраняем статистику команд
+        def upsert_team_stats(team_id, prefix):
+            cursor.execute("""
+                INSERT INTO match_statistics (
+                    match_id, team_id,
+                    possession, shots, shots_on_target,
+                    corners, fouls, yellow_cards, red_cards,
+                    xg, passes, accurate_passes, pass_accuracy, tackles
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(match_id, team_id)
+                DO UPDATE SET
+                    possession = excluded.possession,
+                    shots = excluded.shots,
+                    shots_on_target = excluded.shots_on_target,
+                    corners = excluded.corners,
+                    fouls = excluded.fouls,
+                    yellow_cards = excluded.yellow_cards,
+                    red_cards = excluded.red_cards,
+                    xg = excluded.xg,
+                    passes = excluded.passes,
+                    accurate_passes = excluded.accurate_passes,
+                    pass_accuracy = excluded.pass_accuracy,
+                    tackles = excluded.tackles
+            """, (
+                match_id, team_id,
+                stats.get(f"{prefix}_possession"),
+                stats.get(f"{prefix}_shots"),
+                stats.get(f"{prefix}_shots_on_target"),
+                stats.get(f"{prefix}_corners"),
+                stats.get(f"{prefix}_fouls"),
+                stats.get(f"{prefix}_yellow_cards"),
+                stats.get(f"{prefix}_red_cards"),
+                stats.get(f"{prefix}_xg"),
+                stats.get(f"{prefix}_total_passes"),
+                stats.get(f"{prefix}_accurate_passes"),
+                stats.get(f"{prefix}_pass_accuracy"),
+                stats.get(f"{prefix}_tackles"),
+            ))
+        
+        upsert_team_stats(home_team_id, "home")
+        upsert_team_stats(away_team_id, "away")
+
+    def _save_expert_prediction_tx(
+        self,
+        cursor: sqlite3.Cursor,
+        match_id: int,
+        expert_name: str,
+        score: str,
+        comment: str = "",
+        confidence: int = 50,
+    ) -> None:
+        """Внутренний метод для сохранения экспертного прогноза в транзакции."""
+        cursor.execute("""
+            INSERT INTO expert_predictions (
+                match_id, expert_name, score, comment, confidence, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            match_id, expert_name, score, comment, confidence,
+            datetime.now().isoformat()
+        ))
+
+    def _add_prediction_validation_tx(
+        self,
+        cursor: sqlite3.Cursor,
+        data: Dict[str, Any],
+    ) -> Optional[int]:
+        """Внутренний метод для сохранения валидации в транзакции."""
+        
+        validation_hash = data.get('validation_hash')
+        if not validation_hash:
+            hash_str = f"{data.get('match_id')}_{data.get('prediction_id')}_{data.get('actual_score')}"
+            validation_hash = hashlib.md5(hash_str.encode()).hexdigest()
+        
+        # Проверяем дубли
+        cursor.execute("""
+            SELECT id FROM prediction_validation
+            WHERE validation_hash = ?
+            LIMIT 1
+        """, (validation_hash,))
+        existing = cursor.fetchone()
+        if existing:
+            return existing["id"]
+        
+        cursor.execute("""
+            INSERT INTO prediction_validation (
+                match_id, prediction_id, match_prediction_id,
+                validation_hash,
+                predicted_score, actual_score,
+                predicted_home_xg, actual_home_xg,
+                predicted_away_xg, actual_away_xg,
+                predicted_winner, actual_winner,
+                predicted_probability_home,
+                predicted_probability_draw,
+                predicted_probability_away,
+                score_probability, confidence, risk,
+                predicted_btts, actual_btts,
+                predicted_over25, actual_over25,
+                model_version, passport_version, parser_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            data.get('match_id'),
+            data.get('prediction_id'),
+            data.get('match_prediction_id'),
+            validation_hash,
+            data.get('predicted_score'),
+            data.get('actual_score'),
+            data.get('predicted_home_xg'),
+            data.get('actual_home_xg'),
+            data.get('predicted_away_xg'),
+            data.get('actual_away_xg'),
+            data.get('predicted_winner'),
+            data.get('actual_winner'),
+            data.get('predicted_probability_home'),
+            data.get('predicted_probability_draw'),
+            data.get('predicted_probability_away'),
+            data.get('score_probability'),
+            data.get('confidence'),
+            data.get('risk'),
+            data.get('predicted_btts'),
+            data.get('actual_btts'),
+            data.get('predicted_over25'),
+            data.get('actual_over25'),
+            data.get('model_version'),
+            data.get('passport_version'),
+            data.get('parser_version')
+        ))
+        return cursor.lastrowid
+
+    def _upsert_gold_tx(
+        self,
+        cursor: sqlite3.Cursor,
+        data: Dict[str, Any],
+    ) -> int:
+        """Внутренний метод для сохранения Gold в транзакции."""
+        
+        # Проверяем LOCK
+        cursor.execute("""
+            SELECT id, locked FROM gold_dataset
+            WHERE match_id = ?
+        """, (data.get('match_id'),))
+        existing = cursor.fetchone()
+        
+        if existing and existing["locked"] == 1:
+            raise ValueError(f"Gold record for match {data.get('match_id')} is LOCKED")
+        
+        if existing:
+            gold_id = existing["id"]
+            cursor.execute("""
+                UPDATE gold_dataset SET
+                    actual_score = COALESCE(?, actual_score),
+                    actual_xg_home = COALESCE(?, actual_xg_home),
+                    actual_xg_away = COALESCE(?, actual_xg_away),
+                    actual_btts = COALESCE(?, actual_btts),
+                    actual_total_25 = COALESCE(?, actual_total_25),
+                    actual_total_35 = COALESCE(?, actual_total_35),
+                    actual_home_goals = COALESCE(?, actual_home_goals),
+                    actual_away_goals = COALESCE(?, actual_away_goals),
+                    status = COALESCE(?, status),
+                    expert_score = COALESCE(?, expert_score),
+                    expert_reasoning = COALESCE(?, expert_reasoning),
+                    updated_at = ?
+                WHERE id = ?
+            """, (
+                data.get('actual_score'),
+                data.get('actual_xg_home'),
+                data.get('actual_xg_away'),
+                data.get('actual_btts'),
+                data.get('actual_total_25'),
+                data.get('actual_total_35'),
+                data.get('actual_home_goals'),
+                data.get('actual_away_goals'),
+                data.get('status'),
+                data.get('expert_score'),
+                data.get('expert_reasoning'),
+                datetime.now().isoformat(),
+                gold_id
+            ))
+            return gold_id
+        else:
+            cursor.execute("""
+                INSERT INTO gold_dataset (
+                    match_id, home_team, away_team, match_date,
+                    model_version,
+                    faj_score, faj_xg_home, faj_xg_away,
+                    faj_btts, faj_total_25, faj_total_35,
+                    faj_confidence, faj_rating_home, faj_rating_away,
+                    faj_pir_home, faj_pir_away,
+                    faj_style_home, faj_style_away,
+                    expert_score, expert_reasoning,
+                    status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                data.get('match_id'),
+                data.get('home_team'),
+                data.get('away_team'),
+                data.get('match_date'),
+                data.get('model_version', '1.0'),
+                data.get('faj_score'),
+                data.get('faj_xg_home'),
+                data.get('faj_xg_away'),
+                data.get('faj_btts'),
+                data.get('faj_total_25'),
+                data.get('faj_total_35'),
+                data.get('faj_confidence'),
+                data.get('faj_rating_home'),
+                data.get('faj_rating_away'),
+                data.get('faj_pir_home'),
+                data.get('faj_pir_away'),
+                data.get('faj_style_home'),
+                data.get('faj_style_away'),
+                data.get('expert_score'),
+                data.get('expert_reasoning'),
+                data.get('status', 'pending'),
+                datetime.now().isoformat()
+            ))
+            return cursor.lastrowid
+
+    def _lock_gold_tx(
+        self,
+        cursor: sqlite3.Cursor,
+        gold_id: int,
+    ) -> None:
+        """Внутренний метод для блокировки Gold в транзакции."""
+        cursor.execute("""
+            UPDATE gold_dataset
+            SET locked = 1, locked_at = ?, status = 'completed'
+            WHERE id = ? AND locked = 0
+        """, (datetime.now().isoformat(), gold_id))
+        
+        if cursor.rowcount == 0:
+            # Проверяем, существует ли запись
+            cursor.execute("""
+                SELECT id, locked FROM gold_dataset
+                WHERE id = ?
+            """, (gold_id,))
+            row = cursor.fetchone()
+            if not row:
+                raise ValueError(f"Gold record {gold_id} not found")
+            if row["locked"] == 1:
+                return  # уже locked
+            raise ValueError(f"Gold record {gold_id} could not be locked")
+
+    def _lock_match_result_tx(
+        self,
+        cursor: sqlite3.Cursor,
+        match_id: int,
+    ) -> None:
+        """
+        Внутренний метод для блокировки результата матча в транзакции.
+        
+        ТРЕБОВАНИЯ:
+            - Проверка LOCK выполнена ДО вызова
+            - Если запись отсутствует → ошибка
+            - Если уже locked → ошибка (нарушение контракта)
+            - Если locked успешно → OK
+        """
+        # Проверяем, что запись существует и не locked
+        cursor.execute("""
+            SELECT fact_status FROM match_results
+            WHERE match_id = ?
+        """, (match_id,))
+        row = cursor.fetchone()
+        
+        if not row:
+            raise ValueError(f"Match result for match_id={match_id} not found")
+        
+        if row["fact_status"] == "locked":
+            raise ValueError(f"Match {match_id} is already LOCKED")
+        
+        # Устанавливаем LOCK
+        cursor.execute("""
+            UPDATE match_results
+            SET fact_status = 'locked', locked_at = ?, locked_by = ?
+            WHERE match_id = ? AND fact_status != 'locked'
+        """, (datetime.now().isoformat(), "FAJ", match_id))
+        
+        if cursor.rowcount == 0:
+            raise ValueError(f"Failed to lock match {match_id}")
+        
+        # Обновляем matches
+        cursor.execute("""
+            UPDATE matches
+            SET fact_status = 'locked', updated_at = ?
+            WHERE id = ?
+        """, (datetime.now().isoformat(), match_id))
+
+    # ============================================================
+    # ПУБЛИЧНЫЙ МЕТОД: АТОМАРНОЕ СОХРАНЕНИЕ ФАКТА
+    # ============================================================
+
+    def save_complete_match_fact(
+        self,
+        match_id: int,
+        home_goals: int,
+        away_goals: int,
+        stats: Dict[str, Any],
+        expert_data: Optional[Dict[str, Any]] = None,
+        validation_data: Optional[Dict[str, Any]] = None,
+        gold_data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        АТОМАРНОЕ сохранение всех фактов матча.
+        
+        ОДНА ТРАНЗАКЦИЯ.
+        
+        При любой ошибке → ROLLBACK → ничего не сохраняется.
+        
+        КРИТИЧЕСКИЙ ИНВАРИАНТ:
+            LOCKED → отказ
+            UNLOCKED → save_complete_match_fact()
+                ↓
+            ┌─────────────────────────────┐
+            │ result                      │
+            │ statistics                  │
+            │ expert                      │
+            │ validation                  │
+            │ gold                        │
+            │ gold LOCK                   │
+            │ match LOCK                  │
+            └─────────────────────────────┘
+                ↓
+            COMMIT → всё сохранено
+                │
+                └─── ошибка на любом шаге → ROLLBACK → 0 изменений
+        
+        Args:
+            match_id: ID матча
+            home_goals: голы домашней команды
+            away_goals: голы гостевой команды
+            stats: статистика матча (словарь с полями)
+            expert_data: данные эксперта (опционально)
+            validation_data: данные валидации (опционально)
+            gold_data: данные Gold (опционально)
+        
+        Returns:
+            Dict с результатами
+        
+        Raises:
+            ValueError: при LOCK-ошибке или отсутствии данных
+        """
+        
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # ====================================================
+            # 1. ПРОВЕРКА LOCK
+            # ====================================================
+            cursor.execute("""
+                SELECT fact_status FROM match_results
+                WHERE match_id = ?
+            """, (match_id,))
+            row = cursor.fetchone()
+            if row and row["fact_status"] == "locked":
+                raise ValueError(f"Match {match_id} is LOCKED. Cannot update facts.")
+            
+            # ====================================================
+            # 2. СОХРАНЯЕМ СЧЁТ
+            # ====================================================
+            self._update_result_tx(cursor, match_id, home_goals, away_goals)
+            
+            # ====================================================
+            # 3. СОХРАНЯЕМ СТАТИСТИКУ
+            # ====================================================
+            self._update_match_stats_tx(cursor, match_id, stats)
+            
+            # ====================================================
+            # 4. СОХРАНЯЕМ ЭКСПЕРТА
+            # ====================================================
+            if expert_data:
+                self._save_expert_prediction_tx(
+                    cursor,
+                    match_id,
+                    expert_data.get("expert_name", "Директор"),
+                    expert_data.get("score", ""),
+                    expert_data.get("comment", ""),
+                    expert_data.get("confidence", 50),
+                )
+            
+            # ====================================================
+            # 5. СОХРАНЯЕМ ВАЛИДАЦИЮ (КОПИЯ ЧТОБЫ НЕ МУТИРОВАТЬ)
+            # ====================================================
+            validation_id = None
+            if validation_data:
+                validation_payload = {
+                    **validation_data,
+                    "match_id": match_id,
+                }
+                validation_id = self._add_prediction_validation_tx(
+                    cursor,
+                    validation_payload
+                )
+            
+            # ====================================================
+            # 6. СОХРАНЯЕМ GOLD (КОПИЯ ЧТОБЫ НЕ МУТИРОВАТЬ)
+            # ====================================================
+            gold_id = None
+            if gold_data:
+                gold_payload = {
+                    **gold_data,
+                    "match_id": match_id,
+                }
+                gold_id = self._upsert_gold_tx(cursor, gold_payload)
+            
+            # ====================================================
+            # 7. LOCK GOLD
+            # ====================================================
+            if gold_id is not None:
+                self._lock_gold_tx(cursor, gold_id)
+            
+            # ====================================================
+            # 8. LOCK MATCH
+            # ====================================================
+            self._lock_match_result_tx(cursor, match_id)
+            
+            # ====================================================
+            # 9. COMMIT
+            # ====================================================
+            conn.commit()
+            
+            logger.info(
+                "MATCH FACT SAVED ATOMICALLY | "
+                "match_id=%s | "
+                "home=%s | away=%s | "
+                "validation_id=%s | gold_id=%s",
+                match_id,
+                home_goals,
+                away_goals,
+                validation_id,
+                gold_id,
+            )
+            
+            return {
+                "status": "saved",
+                "match_id": match_id,
+                "validation_id": validation_id,
+                "gold_id": gold_id,
+            }
+            
+        except Exception as exc:
+            conn.rollback()
+            logger.exception(
+                "MATCH FACT SAVE FAILED | "
+                "match_id=%s | error=%s",
+                match_id,
+                exc,
+            )
+            raise
+            
+        finally:
+            conn.close()
+
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
+
 if __name__ == "__main__":
     db = FAJDatabase()
     status = db.get_status()
@@ -4715,3 +5314,4 @@ if __name__ == "__main__":
     print(f"   📁 Файл: {status['file']}")
     print(f"   📌 Версия схемы: {status.get('schema_version', 'не определена')}")
     print(f"   🔒 Memory Hardened: v12.1")
+    print(f"   🔐 Atomic save_complete_match_fact(): AVAILABLE")
