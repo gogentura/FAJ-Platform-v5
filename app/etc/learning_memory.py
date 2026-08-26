@@ -86,8 +86,13 @@ database.py v12.1 является единственным источником
 
     FAJDatabase.add_learning_memory(data)
 
+Чтение выполняется ТОЛЬКО через:
+
+    FAJDatabase.get_learning_memory()
+    FAJDatabase.get_learning_memory_count()
 
 LearningMemory не содержит INSERT SQL.
+LearningMemory не содержит SELECT SQL.
 
 
 BATCH LEARNING CONTRACT
@@ -151,7 +156,7 @@ from app.database import FAJDatabase
 logger = logging.getLogger(__name__)
 
 
-MODULE_VERSION = "2.1"
+MODULE_VERSION = "3.0"
 MODULE_NAME = "FAJ ETC Learning Memory"
 
 DEFAULT_MODEL_VERSION = "v12.1"
@@ -338,6 +343,9 @@ class LearningMemory:
 
     LearningMemory только фиксирует его
     через FAJDatabase.add_learning_memory().
+
+    Чтение выполняется через FAJDatabase.get_learning_memory()
+    и FAJDatabase.get_learning_memory_count().
     """
 
     def __init__(
@@ -628,38 +636,41 @@ class LearningMemory:
         # Проверяем, не существует ли уже marker
         # для этого match_id.
         #
-        # Если существует — возвращаем существующий ID.
+        # Используем count для быстрой проверки.
         #
 
-        existing = self.get(
+        existing_count = self.db.get_learning_memory_count(
             event_type=BATCH_LEARNING_EVENT,
             reference_id=normalized_match_id,
-            limit=1,
         )
 
-        if existing:
+        if existing_count > 0:
 
-            row = existing[0]
-
-            existing_id = (
-                row.get("id")
-                if isinstance(row, dict)
-                else None
+            # Получаем существующий ID
+            existing_rows = self.db.get_learning_memory(
+                event_type=BATCH_LEARNING_EVENT,
+                reference_id=normalized_match_id,
+                limit=1,
             )
 
-            if existing_id is not None:
+            if existing_rows:
 
-                logger.debug(
-                    "BATCH_LEARNING marker already exists | "
-                    "match_id=%s | "
-                    "existing_id=%s",
-                    normalized_match_id,
-                    existing_id,
-                )
+                row = existing_rows[0]
+                existing_id = row.get("id")
 
-                return _safe_int(
-                    existing_id
-                )
+                if existing_id is not None:
+
+                    logger.debug(
+                        "BATCH_LEARNING marker already exists | "
+                        "match_id=%s | "
+                        "existing_id=%s",
+                        normalized_match_id,
+                        existing_id,
+                    )
+
+                    return _safe_int(
+                        existing_id
+                    )
 
         # ----------------------------------------------------
         # APPEND
@@ -1012,7 +1023,7 @@ class LearningMemory:
         )
 
     # ========================================================
-    # READ
+    # READ (ДЕЛЕГИРОВАНИЕ В DATABASE.PY)
     # ========================================================
 
     def get(
@@ -1027,8 +1038,13 @@ class LearningMemory:
         Читает историю ETC.
 
         Только SELECT.
-
         Никаких UPDATE / DELETE.
+
+        ВСЯ ЛОГИКА ЧТЕНИЯ ДЕЛЕГИРОВАНА В DATABASE.PY:
+
+            FAJDatabase.get_learning_memory()
+
+        SQL принадлежит database.py.
         """
 
         limit = max(
@@ -1039,169 +1055,89 @@ class LearningMemory:
             ),
         )
 
-        conn = self.db.get_connection()
+        # ----------------------------------------------------
+        # DATABASE CONTRACT
+        # ----------------------------------------------------
+        #
+        # Никакого SQL здесь нет.
+        #
+        # database.py является единственным
+        # владельцем схемы и операции SELECT.
+        #
 
-        try:
+        rows = self.db.get_learning_memory(
+            event_type=event_type,
+            object_type=object_type,
+            feature=feature,
+            reference_id=reference_id,
+            limit=limit,
+        )
 
-            cursor = conn.cursor()
+        result: List[
+            Dict[str, Any]
+        ] = []
 
-            conditions: List[str] = []
+        for row in rows:
 
-            params: List[Any] = []
-
-            # ------------------------------------------------
-            # OBJECT
-            # ------------------------------------------------
-
-            if object_type is not None:
-
-                conditions.append(
-                    "object = ?"
-                )
-
-                params.append(
-                    object_type
-                )
-
-            # ------------------------------------------------
-            # FEATURE
-            # ------------------------------------------------
-
-            if feature is not None:
-
-                conditions.append(
-                    "feature = ?"
-                )
-
-                params.append(
-                    feature
-                )
-
-            # ------------------------------------------------
-            # EVENT
-            # ------------------------------------------------
-
-            if event_type is not None:
-
-                conditions.append(
-                    "event_type = ?"
-                )
-
-                params.append(
-                    event_type
-                )
-
-            # ------------------------------------------------
-            # REFERENCE
-            # ------------------------------------------------
-
-            if reference_id is not None:
-
-                normalized_reference_id = _safe_int(
-                    reference_id
-                )
-
-                conditions.append(
-                    "reference_id = ?"
-                )
-
-                params.append(
-                    normalized_reference_id
-                )
-
-            # ------------------------------------------------
-            # WHERE
-            # ------------------------------------------------
-
-            where = ""
-
-            if conditions:
-
-                where = (
-                    "WHERE "
-                    + " AND ".join(
-                        conditions
-                    )
-                )
-
-            query = f"""
-                SELECT
-                    id,
-                    event_type,
-                    object,
-                    feature,
-                    before_value,
-                    after_value,
-                    delta,
-                    reason,
-                    confidence,
-                    impact,
-                    algorithm,
-                    model_version,
-                    reference_id,
-                    created_at
-                FROM learning_memory
-                {where}
-                ORDER BY
-                    datetime(created_at) DESC,
-                    id DESC
-                LIMIT ?
-            """
-
-            params.append(
-                limit
+            item = dict(
+                row
             )
 
-            cursor.execute(
-                query,
-                tuple(params),
-            )
-
-            rows = cursor.fetchall()
-
-            result: List[
-                Dict[str, Any]
-            ] = []
-
-            for row in rows:
-
-                item = dict(
-                    row
-                )
-
-                item[
+            item[
+                "before_value"
+            ] = _deserialize(
+                item.get(
                     "before_value"
-                ] = _deserialize(
-                    item.get(
-                        "before_value"
-                    )
                 )
+            )
 
-                item[
+            item[
+                "after_value"
+            ] = _deserialize(
+                item.get(
                     "after_value"
-                ] = _deserialize(
-                    item.get(
-                        "after_value"
-                    )
                 )
+            )
 
-                item[
+            item[
+                "delta"
+            ] = _deserialize(
+                item.get(
                     "delta"
-                ] = _deserialize(
-                    item.get(
-                        "delta"
-                    )
                 )
+            )
 
-                result.append(
-                    item
-                )
+            result.append(
+                item
+            )
 
-            return result
+        return result
 
-        finally:
+    # ========================================================
+    # COUNT (ДЕЛЕГИРОВАНИЕ В DATABASE.PY)
+    # ========================================================
 
-            conn.close()
+    def count(
+        self,
+        event_type: Optional[str] = None,
+        reference_id: Optional[int] = None,
+    ) -> int:
+        """
+        Быстрый подсчёт записей в learning_memory.
+
+        Используется для processed-state / idempotency.
+
+        ВСЯ ЛОГИКА ПОДСЧЁТА ДЕЛЕГИРОВАНА В DATABASE.PY:
+
+            FAJDatabase.get_learning_memory_count()
+
+        SQL принадлежит database.py.
+        """
+
+        return self.db.get_learning_memory_count(
+            event_type=event_type,
+            reference_id=reference_id,
+        )
 
     # ========================================================
     # BATCH MEMORY
@@ -1229,6 +1165,36 @@ class LearningMemory:
             ),
             event_type=BATCH_LEARNING_EVENT,
             limit=limit,
+        )
+
+    # ========================================================
+    # IS PROCESSED (НОВЫЙ МЕТОД)
+    # ========================================================
+
+    def is_match_processed(
+        self,
+        match_id: int,
+    ) -> bool:
+        """
+        Быстрая проверка, обработан ли матч ETC.
+
+        Использует count для производительности.
+        """
+
+        normalized_match_id = _safe_int(
+            match_id
+        )
+
+        if normalized_match_id <= 0:
+
+            return False
+
+        return (
+            self.db.get_learning_memory_count(
+                event_type=BATCH_LEARNING_EVENT,
+                reference_id=normalized_match_id,
+            )
+            > 0
         )
 
     # ========================================================
@@ -1536,6 +1502,24 @@ def get_batch_learning_memory(
     )
 
 
+def is_match_processed(
+    db: FAJDatabase,
+    match_id: int,
+) -> bool:
+    """
+    Module-level API для быстрой проверки
+    обработан ли матч ETC.
+    """
+
+    memory = LearningMemory(
+        db=db
+    )
+
+    return memory.is_match_processed(
+        match_id=match_id
+    )
+
+
 # ============================================================
 # STATUS
 # ============================================================
@@ -1558,6 +1542,10 @@ def get_memory_status() -> Dict[str, Any]:
 
         "writes_learning_memory": True,
 
+        "reads_database": True,
+
+        "reads_learning_memory": True,
+
         "changes_model": False,
 
         "changes_rating": False,
@@ -1578,6 +1566,14 @@ def get_memory_status() -> Dict[str, Any]:
 
         "database_write_method": (
             "add_learning_memory"
+        ),
+
+        "database_read_method": (
+            "get_learning_memory"
+        ),
+
+        "database_count_method": (
+            "get_learning_memory_count"
         ),
     }
 
@@ -1674,7 +1670,39 @@ if __name__ == "__main__":
     print()
 
     print(
-        "LearningMemory готов."
+        "Чтение выполняется только через:"
+    )
+
+    print(
+        "FAJDatabase.get_learning_memory()"
+    )
+
+    print(
+        "FAJDatabase.get_learning_memory_count()"
+    )
+
+    print()
+
+    print(
+        "НОВОЕ В v3.0:"
+    )
+
+    print(
+        "1. get() делегирует в database.py"
+    )
+
+    print(
+        "2. count() делегирует в database.py"
+    )
+
+    print(
+        "3. is_match_processed() использует count"
+    )
+
+    print()
+
+    print(
+        "LearningMemory v3.0 готов."
     )
 
     print("=" * 70)
