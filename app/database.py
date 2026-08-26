@@ -5303,6 +5303,516 @@ class FAJDatabase:
 
 
 # ============================================================
+# ════════════════════════════════════════════════════════════
+# ЭТАП 3: TX-МЕТОДЫ ДЛЯ РЕЙТИНГА И PROCESSING
+# ════════════════════════════════════════════════════════════
+# ============================================================
+
+    # ============================================================
+    # ВНУТРЕННИЕ TX-МЕТОДЫ ДЛЯ РЕЙТИНГА И PROCESSING
+    # ============================================================
+
+    def _add_learning_memory_tx(
+        self,
+        cursor: sqlite3.Cursor,
+        data: Dict[str, Any],
+    ) -> int:
+        """
+        Внутренний TX-метод для вставки learning_memory.
+        
+        КОПИРУЕТ КОНТРАКТ add_learning_memory():
+            - те же поля
+            - та же сериализация
+            - НО: НЕТ COMMIT
+        
+        COMMIT принадлежит внешней транзакции.
+        """
+        def to_text(value: Any) -> Optional[str]:
+            if value is None:
+                return None
+            if isinstance(value, (dict, list)):
+                return json.dumps(value, ensure_ascii=False)
+            return str(value)
+        
+        cursor.execute("""
+            INSERT INTO learning_memory (
+                event_type,
+                object,
+                feature,
+                before_value,
+                after_value,
+                delta,
+                reason,
+                confidence,
+                impact,
+                algorithm,
+                model_version,
+                reference_id,
+                created_at
+            )
+            VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
+        """, (
+            data.get("event_type"),
+            data.get("object"),
+            data.get("feature"),
+            to_text(data.get("before_value")),
+            to_text(data.get("after_value")),
+            to_text(data.get("delta")),
+            data.get("reason"),
+            data.get("confidence", 1.0),
+            data.get("impact", 1.0),
+            data.get("algorithm", "ETC"),
+            data.get("model_version", "v12.1"),
+            data.get("reference_id"),
+            data.get("created_at"),
+        ))
+        
+        memory_id = cursor.lastrowid
+        if memory_id is None:
+            raise RuntimeError("Не удалось получить ID learning_memory.")
+        
+        return int(memory_id)
+
+    def _record_match_processing_tx(
+        self,
+        cursor: sqlite3.Cursor,
+        match_id: int,
+        reason: str = "Матч успешно обработан ETC Learning Engine",
+        algorithm: str = "ETC.LearningEngine",
+        model_version: str = "v12.1",
+    ) -> int:
+        """
+        Внутренний TX-метод для создания batch_learning marker.
+        
+        КОПИРУЕТ КОНТРАКТ LearningMemory.record_batch_learning():
+            event_type = "batch_learning"
+            object = "match:<match_id>"
+            reference_id = match_id
+        
+        НО: НЕТ COMMIT
+        
+        COMMIT принадлежит внешней транзакции.
+        """
+        safe_match_id = int(match_id)
+        if safe_match_id <= 0:
+            raise ValueError("match_id должен быть положительным integer")
+        
+        data = {
+            "event_type": "batch_learning",
+            "object": f"match:{safe_match_id}",
+            "feature": "etc_batch_processed",
+            "before_value": None,
+            "after_value": "processed",
+            "delta": None,
+            "reason": reason,
+            "confidence": 1.0,
+            "impact": 0.0,
+            "algorithm": algorithm,
+            "model_version": model_version,
+            "reference_id": safe_match_id,
+            "created_at": datetime.now().isoformat(),
+        }
+        
+        return self._add_learning_memory_tx(cursor, data)
+
+    def _update_team_rating_tx(
+        self,
+        cursor: sqlite3.Cursor,
+        team_id: int,
+        season_id: int,
+        new_rating: float,
+        old_rating: float,
+    ) -> None:
+        """
+        Внутренний TX-метод для обновления faj_rating в team_passports.
+        
+        ТРЕБОВАНИЯ:
+            - паспорт существует
+            - team_id + season_id соответствуют записи
+            - старый faj_rating соответствует old_rating (защита от конкурентных изменений)
+            - UPDATE действительно изменил одну запись
+        
+        Если rowcount != 1 → ошибка → ROLLBACK.
+        """
+        cursor.execute("""
+            UPDATE team_passports
+            SET faj_rating = ?,
+                updated_at = ?
+            WHERE team_id = ?
+              AND season_id = ?
+              AND faj_rating = ?
+        """, (
+            new_rating,
+            datetime.now().isoformat(),
+            team_id,
+            season_id,
+            old_rating,
+        ))
+        
+        if cursor.rowcount != 1:
+            # Проверяем, существует ли паспорт
+            cursor.execute("""
+                SELECT id, faj_rating FROM team_passports
+                WHERE team_id = ? AND season_id = ?
+            """, (team_id, season_id))
+            row = cursor.fetchone()
+            if not row:
+                raise ValueError(f"Passport not found for team_id={team_id}, season_id={season_id}")
+            raise ValueError(
+                f"Rating mismatch for team_id={team_id}, season_id={season_id}: "
+                f"expected {old_rating}, actual {row['faj_rating']}"
+            )
+
+    def _record_team_rating_history_tx(
+        self,
+        cursor: sqlite3.Cursor,
+        team_id: int,
+        season_id: int,
+        match_id: int,
+        old_rating: float,
+        new_rating: float,
+        delta: float,
+        reason: str,
+        source: str = "ClubRatingUpdater",
+    ) -> int:
+        """
+        Внутренний TX-метод для записи истории изменения рейтинга.
+        
+        APPEND-ONLY.
+        DELETE/UPDATE существующей истории запрещены.
+        """
+        cursor.execute("""
+            INSERT INTO team_history (
+                team_id,
+                season_id,
+                field,
+                old_value,
+                new_value,
+                reason,
+                source,
+                reference_match_id,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            team_id,
+            season_id,
+            "faj_rating",
+            str(old_rating),
+            str(new_rating),
+            reason,
+            source,
+            match_id,
+            datetime.now().isoformat(),
+        ))
+        
+        return cursor.lastrowid
+
+    def _is_match_fully_processed(
+        self,
+        match_id: int,
+    ) -> bool:
+        """
+        Проверяет, обработан ли матч полностью.
+        
+        Условия:
+            1. Есть batch_learning marker
+            2. Есть rating history для home
+            3. Есть rating history для away
+        
+        Только при наличии ВСЕХ трёх условий матч считается processed.
+        
+        Используется ДО начала транзакции для быстрой проверки.
+        Внутри транзакции дополнительная защита через rowcount.
+        """
+        safe_match_id = int(match_id)
+        if safe_match_id <= 0:
+            return False
+        
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # 1. Проверяем batch_learning marker
+            cursor.execute("""
+                SELECT id FROM learning_memory
+                WHERE event_type = 'batch_learning'
+                  AND reference_id = ?
+                LIMIT 1
+            """, (safe_match_id,))
+            if not cursor.fetchone():
+                return False
+            
+            # 2. Получаем home_team_id и away_team_id
+            cursor.execute("""
+                SELECT home_team_id, away_team_id, season_id
+                FROM matches
+                WHERE id = ?
+            """, (safe_match_id,))
+            match_row = cursor.fetchone()
+            if not match_row:
+                return False
+            
+            home_team_id = match_row["home_team_id"]
+            away_team_id = match_row["away_team_id"]
+            season_id = match_row["season_id"]
+            
+            # 3. Проверяем rating history для home
+            cursor.execute("""
+                SELECT id FROM team_history
+                WHERE team_id = ?
+                  AND season_id = ?
+                  AND field = 'faj_rating'
+                  AND reference_match_id = ?
+                LIMIT 1
+            """, (home_team_id, season_id, safe_match_id))
+            if not cursor.fetchone():
+                return False
+            
+            # 4. Проверяем rating history для away
+            cursor.execute("""
+                SELECT id FROM team_history
+                WHERE team_id = ?
+                  AND season_id = ?
+                  AND field = 'faj_rating'
+                  AND reference_match_id = ?
+                LIMIT 1
+            """, (away_team_id, season_id, safe_match_id))
+            if not cursor.fetchone():
+                return False
+            
+            return True
+            
+        finally:
+            conn.close()
+
+    # ============================================================
+    # ПУБЛИЧНЫЙ МЕТОД: АТОМАРНАЯ ОБРАБОТКА МАТЧА + РЕЙТИНГ
+    # ============================================================
+
+    def process_match_with_rating(
+        self,
+        match_id: int,
+        home_team_id: int,
+        away_team_id: int,
+        season_id: int,
+        home_goals: int,
+        away_goals: int,
+        home_rating_before: float,
+        away_rating_before: float,
+        home_rating_after: float,
+        away_rating_after: float,
+        home_delta: float,
+        away_delta: float,
+        home_reason: str,
+        away_reason: str,
+        analysis_memory_data: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """
+        АТОМАРНАЯ обработка матча ETC + обновление рейтинга.
+        
+        ОДНА ТРАНЗАКЦИЯ.
+        
+        При любой ошибке → ROLLBACK → матч не processed.
+        
+        ПОРЯДОК:
+            1. Проверка FULLY PROCESSED (до транзакции)
+            2. BEGIN
+            3. Проверка processed (внутри транзакции)
+            4. Analysis memory (если есть)
+            5. Обновление рейтинга home
+            6. Обновление рейтинга away
+            7. История рейтинга home
+            8. История рейтинга away
+            9. batch_learning marker
+            10. COMMIT
+        
+        Returns:
+            {
+                "status": "processed" | "already_processed",
+                "match_id": match_id,
+                "home": {"old": float, "new": float, "delta": float},
+                "away": {"old": float, "new": float, "delta": float},
+                "history_ids": [int, int],
+                "marker_id": int,
+            }
+        """
+        
+        # ====================================================
+        # 0. ПРОВЕРКА ДО ТРАНЗАКЦИИ
+        # ====================================================
+        if self._is_match_fully_processed(match_id):
+            logger.info(f"Match {match_id} is already fully processed")
+            return {
+                "status": "already_processed",
+                "match_id": match_id,
+            }
+        
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # ====================================================
+            # 1. ПРОВЕРКА FULLY PROCESSED ВНУТРИ ТРАНЗАКЦИИ
+            # ====================================================
+            # Проверяем batch_learning marker
+            cursor.execute("""
+                SELECT id FROM learning_memory
+                WHERE event_type = 'batch_learning'
+                  AND reference_id = ?
+                LIMIT 1
+            """, (match_id,))
+            if cursor.fetchone():
+                raise RuntimeError(f"Match {match_id} already has batch_learning marker")
+            
+            # Проверяем rating history для home
+            cursor.execute("""
+                SELECT id FROM team_history
+                WHERE team_id = ?
+                  AND season_id = ?
+                  AND field = 'faj_rating'
+                  AND reference_match_id = ?
+                LIMIT 1
+            """, (home_team_id, season_id, match_id))
+            if cursor.fetchone():
+                raise RuntimeError(f"Match {match_id} already has rating history for home")
+            
+            # Проверяем rating history для away
+            cursor.execute("""
+                SELECT id FROM team_history
+                WHERE team_id = ?
+                  AND season_id = ?
+                  AND field = 'faj_rating'
+                  AND reference_match_id = ?
+                LIMIT 1
+            """, (away_team_id, season_id, match_id))
+            if cursor.fetchone():
+                raise RuntimeError(f"Match {match_id} already has rating history for away")
+            
+            # ====================================================
+            # 2. ANALYSIS MEMORY
+            # ====================================================
+            marker_id = None
+            history_ids = []
+            
+            if analysis_memory_data:
+                for event_data in analysis_memory_data:
+                    self._add_learning_memory_tx(cursor, event_data)
+            
+            # ====================================================
+            # 3. ОБНОВЛЕНИЕ РЕЙТИНГА HOME
+            # ====================================================
+            self._update_team_rating_tx(
+                cursor,
+                home_team_id,
+                season_id,
+                home_rating_after,
+                home_rating_before,
+            )
+            
+            # ====================================================
+            # 4. ОБНОВЛЕНИЕ РЕЙТИНГА AWAY
+            # ====================================================
+            self._update_team_rating_tx(
+                cursor,
+                away_team_id,
+                season_id,
+                away_rating_after,
+                away_rating_before,
+            )
+            
+            # ====================================================
+            # 5. ИСТОРИЯ РЕЙТИНГА HOME
+            # ====================================================
+            history_id_home = self._record_team_rating_history_tx(
+                cursor,
+                home_team_id,
+                season_id,
+                match_id,
+                home_rating_before,
+                home_rating_after,
+                home_delta,
+                home_reason,
+            )
+            history_ids.append(history_id_home)
+            
+            # ====================================================
+            # 6. ИСТОРИЯ РЕЙТИНГА AWAY
+            # ====================================================
+            history_id_away = self._record_team_rating_history_tx(
+                cursor,
+                away_team_id,
+                season_id,
+                match_id,
+                away_rating_before,
+                away_rating_after,
+                away_delta,
+                away_reason,
+            )
+            history_ids.append(history_id_away)
+            
+            # ====================================================
+            # 7. BATCH_LEARNING MARKER
+            # ====================================================
+            marker_id = self._record_match_processing_tx(
+                cursor,
+                match_id,
+                reason="Матч успешно обработан ETC. Рейтинг обновлён.",
+            )
+            
+            # ====================================================
+            # 8. COMMIT
+            # ====================================================
+            conn.commit()
+            
+            logger.info(
+                "MATCH PROCESSED WITH RATING | "
+                "match_id=%s | "
+                "home: %.4f → %.4f | "
+                "away: %.4f → %.4f | "
+                "marker_id=%s",
+                match_id,
+                home_rating_before,
+                home_rating_after,
+                away_rating_before,
+                away_rating_after,
+                marker_id,
+            )
+            
+            return {
+                "status": "processed",
+                "match_id": match_id,
+                "home": {
+                    "old": home_rating_before,
+                    "new": home_rating_after,
+                    "delta": home_delta,
+                },
+                "away": {
+                    "old": away_rating_before,
+                    "new": away_rating_after,
+                    "delta": away_delta,
+                },
+                "history_ids": history_ids,
+                "marker_id": marker_id,
+            }
+            
+        except Exception as exc:
+            conn.rollback()
+            logger.exception(
+                "MATCH PROCESSING WITH RATING FAILED | "
+                "match_id=%s | error=%s",
+                match_id,
+                exc,
+            )
+            raise
+            
+        finally:
+            conn.close()
+
+
+# ============================================================
 # ENTRY POINT
 # ============================================================
 
@@ -5315,3 +5825,4 @@ if __name__ == "__main__":
     print(f"   📌 Версия схемы: {status.get('schema_version', 'не определена')}")
     print(f"   🔒 Memory Hardened: v12.1")
     print(f"   🔐 Atomic save_complete_match_fact(): AVAILABLE")
+    print(f"   🔐 Atomic process_match_with_rating(): AVAILABLE")
