@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-IMPORT FACTS v4.7.1
+IMPORT FACTS v5.0
 ============================================================
 
 НАЗНАЧЕНИЕ
@@ -45,23 +45,50 @@ Session State НЕ является источником истины.
     - автоматического UNLOCK нет;
     - UI становится только для чтения.
 
+ИСПРАВЛЕНИЯ v5.0
+------------------------------------------------------------
+
+1. Переход на атомарное сохранение через save_complete_match_fact().
+2. Все факты матча сохраняются в ОДНОЙ транзакции.
+3. При любой ошибке — полный ROLLBACK.
+4. Удалены отдельные вызовы update_result(), update_match_stats(),
+   save_expert_prediction(), add_prediction_validation(),
+   upsert_gold(), lock_gold(), lock_match_result().
+5. Единый атомарный контракт с database.py.
+
+АРХИТЕКТУРНЫЙ КОНТРАКТ v5.0
+------------------------------------------------------------
+
+IMPORT FACTS
+    ↓
+build_hybrid_fact()
+    ↓
+fact_status() — проверка полноты
+    ↓
+db.save_complete_match_fact()
+    ↓
+┌─────────────────────────────┐
+│ 1. проверка LOCK            │
+│ 2. счёт                     │
+│ 3. статистика               │
+│ 4. эксперт                  │
+│ 5. валидация                │
+│ 6. Gold                     │
+│ 7. LOCK Gold                │
+│ 8. LOCK match               │
+└─────────────────────────────┘
+    ↓
+COMMIT / ROLLBACK
+
 ВАЖНО
 ------------------------------------------------------------
 
 1. database.py — единственный источник доступа к БД.
-
 2. Никаких DELETE.
-
 3. Никаких DROP.
-
 4. Никакого автоматического UNLOCK.
-
-5. Наличие API-данных НЕ блокирует Soccer365.
-
-6. Наличие сохранённых данных НЕ блокирует Soccer365.
-
-7. LOCK — единственная защита окончательно
-   зафиксированного факта.
+5. LOCK — единственная защита окончательно зафиксированного факта.
+6. save_complete_match_fact() — ЕДИНСТВЕННЫЙ способ сохранения фактов.
 
 ============================================================
 """
@@ -90,7 +117,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 APP_VERSION = "12.1"
-IMPORT_FACTS_VERSION = "4.7.1"
+IMPORT_FACTS_VERSION = "5.0"
 MODEL_VERSION = "v12.1"
 
 DEFAULT_DB_PATH = "data/faj.db"
@@ -1490,10 +1517,10 @@ def fact_status(
 
 
 # ============================================================
-# SAVE FACT
+# 🆕 НОВАЯ ВЕРСИЯ: АТОМАРНОЕ СОХРАНЕНИЕ ФАКТА
 # ============================================================
 
-def save_match_fact(
+def save_match_fact_atomic(
     db: FAJDatabase,
     match: Dict[str, Any],
     fact: Dict[str, Any],
@@ -1501,6 +1528,14 @@ def save_match_fact(
     expert_comment: str,
     expert_confidence: int,
 ) -> Dict[str, Any]:
+    """
+    АТОМАРНОЕ сохранение всех фактов матча.
+    
+    Использует db.save_complete_match_fact().
+    
+    ОДНА ТРАНЗАКЦИЯ.
+    При любой ошибке → ROLLBACK → ничего не сохраняется.
+    """
 
     match_id = get_match_id(match)
 
@@ -1511,7 +1546,8 @@ def save_match_fact(
         )
 
     # --------------------------------------------------------
-    # LOCK CHECK
+    # LOCK CHECK (дублируется в save_complete_match_fact,
+    # но здесь нужно для быстрой проверки статуса)
     # --------------------------------------------------------
 
     if db.is_result_locked(match_id):
@@ -1554,18 +1590,7 @@ def save_match_fact(
     )
 
     # --------------------------------------------------------
-    # RESULT
-    # --------------------------------------------------------
-
-    db.update_result(
-        match_id,
-        home_goals,
-        away_goals,
-        lock=False,
-    )
-
-    # --------------------------------------------------------
-    # STATS
+    # СТАТИСТИКА ДЛЯ СОХРАНЕНИЯ
     # --------------------------------------------------------
 
     source_stats = normalize_source_stats(
@@ -1650,31 +1675,26 @@ def save_match_fact(
         0.0,
     )
 
-    db.update_match_stats(
-        match_id,
-        stats,
-    )
-
     # --------------------------------------------------------
-    # EXPERT
+    # ЭКСПЕРТ
     # --------------------------------------------------------
 
+    expert_data = None
     normalized_expert_score = clean_score(
         expert_score
     )
 
     if normalized_expert_score:
 
-        db.save_expert_prediction(
-            match_id=match_id,
-            expert_name="Директор",
-            score=normalized_expert_score,
-            comment=expert_comment,
-            confidence=expert_confidence,
-        )
+        expert_data = {
+            "expert_name": "Директор",
+            "score": normalized_expert_score,
+            "comment": expert_comment,
+            "confidence": expert_confidence,
+        }
 
     # --------------------------------------------------------
-    # FAJ PREDICTION
+    # ПРОГНОЗ
     # --------------------------------------------------------
 
     prediction = db.get_latest_prediction(
@@ -1686,7 +1706,7 @@ def save_match_fact(
     )
 
     # --------------------------------------------------------
-    # EXPERT
+    # ЭКСПЕРТ ИЗ БД
     # --------------------------------------------------------
 
     expert = get_latest_expert(
@@ -1695,19 +1715,13 @@ def save_match_fact(
     )
 
     # --------------------------------------------------------
-    # VALIDATION
+    # ВАЛИДАЦИЯ
     # --------------------------------------------------------
 
     validation = build_validation_data(
         match_id=match_id,
         prediction=prediction,
         fact=fact,
-    )
-
-    validation_id = (
-        db.add_prediction_validation(
-            validation
-        )
     )
 
     # --------------------------------------------------------
@@ -1721,36 +1735,72 @@ def save_match_fact(
         fact=fact,
     )
 
-    gold_id = db.upsert_gold(
-        gold
-    )
-
     # --------------------------------------------------------
-    # LOCK
+    # АТОМАРНОЕ СОХРАНЕНИЕ
     # --------------------------------------------------------
 
-    if gold_id is not None:
-
-        db.lock_gold(
-            gold_id
-        )
-
-    db.lock_match_result(
-        match_id
+    result = db.save_complete_match_fact(
+        match_id=match_id,
+        home_goals=home_goals,
+        away_goals=away_goals,
+        stats=stats,
+        expert_data=expert_data,
+        validation_data=validation,
+        gold_data=gold,
     )
 
     return {
 
         "match_id": match_id,
 
-        "validation_id": validation_id,
+        "validation_id": result.get(
+            "validation_id"
+        ),
 
-        "gold_id": gold_id,
+        "gold_id": result.get(
+            "gold_id"
+        ),
 
         "score": (
             f"{home_goals}:{away_goals}"
         ),
     }
+
+
+# ============================================================
+# ⚠️ УСТАРЕВШИЙ МЕТОД — ОСТАВЛЕН ДЛЯ СОВМЕСТИМОСТИ
+# ============================================================
+
+def save_match_fact(
+    db: FAJDatabase,
+    match: Dict[str, Any],
+    fact: Dict[str, Any],
+    expert_score: str,
+    expert_comment: str,
+    expert_confidence: int,
+) -> Dict[str, Any]:
+    """
+    ⚠️ УСТАРЕЛО v5.0
+    
+    Используйте save_match_fact_atomic().
+    
+    Этот метод оставлен для обратной совместимости,
+    но использует атомарное сохранение.
+    """
+
+    logger.warning(
+        "save_match_fact() устарел. "
+        "Используйте save_match_fact_atomic()."
+    )
+
+    return save_match_fact_atomic(
+        db=db,
+        match=match,
+        fact=fact,
+        expert_score=expert_score,
+        expert_comment=expert_comment,
+        expert_confidence=expert_confidence,
+    )
 
 
 # ============================================================
@@ -2671,6 +2721,8 @@ def render_match_card(
 
             try:
 
+                # ⚠️ УСТАРЕЛО — используем атомарное сохранение
+                # Но для отдельного сохранения счёта используем update_result
                 db.update_result(
                     match_id,
                     current_home,
@@ -3370,8 +3422,12 @@ def render_match_card(
                 "Кнопка сохранения активна."
             )
 
+    # ═════════════════════════════════════════════════════════
+    # 🔥 НОВОЕ v5.0: АТОМАРНОЕ СОХРАНЕНИЕ
+    # ═════════════════════════════════════════════════════════
+
     if st.button(
-        "✅ Сохранить факты",
+        "✅ Сохранить факты (атомарно)",
         key=f"{key_prefix}_save",
         type="primary",
         use_container_width=True,
@@ -3380,39 +3436,24 @@ def render_match_card(
 
         try:
 
-            result = save_match_fact(
+            result = save_match_fact_atomic(
                 db=db,
-
                 match=match,
-
                 fact=fact,
-
-                expert_score=(
-                    clean_score(
-                        expert_score_input
-                    )
-                    or ""
-                ),
-
+                expert_score=expert_score_input,
                 expert_comment=expert_comment,
-
-                expert_confidence=(
-                    expert_confidence
-                ),
+                expert_confidence=expert_confidence,
             )
 
             st.success(
-                "✅ Факты сохранены "
+                "✅ Факты сохранены АТОМАРНО "
                 "и защищены."
             )
 
             st.caption(
-                f"Match ID: "
-                f"{result['match_id']} | "
-                f"Validation ID: "
-                f"{result['validation_id']} | "
-                f"Gold ID: "
-                f"{result['gold_id']}"
+                f"Match ID: {result['match_id']} | "
+                f"Validation ID: {result['validation_id']} | "
+                f"Gold ID: {result['gold_id']}"
             )
 
             # ------------------------------------------------
@@ -3458,7 +3499,7 @@ def render_match_card(
         except Exception as exc:
 
             logger.exception(
-                "Ошибка сохранения факта"
+                "Ошибка атомарного сохранения факта"
             )
 
             st.error(
