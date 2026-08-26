@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-ETC — Club Rating Updater v2.1
+ETC — Club Rating Updater v3.0
 ============================================================
 
 ФАЙЛ:
@@ -59,6 +59,14 @@ ETC — Club Rating Updater v2.1
    17. Повторный запуск уже обработанного матча
        не изменяет рейтинг повторно.
 
+ИСПРАВЛЕНИЯ v3.0:
+    1. Интеграция с process_match_with_rating() из database.py
+    2. Удалена ручная работа с транзакциями (делегировано в database.py)
+    3. Удалён _begin_transaction() (используется process_match_with_rating)
+    4. _already_processed() делегирует в _is_match_fully_processed()
+    5. _save_rating() заменена на использование process_match_with_rating()
+    6. Версия обновлена до 3.0
+
 ВАЖНО:
 
     Этот модуль не является Prediction Model.
@@ -95,8 +103,8 @@ logger = logging.getLogger(__name__)
 # MODULE
 # ============================================================
 
-UPDATER_VERSION = "2.1"
-UPDATER_NAME = "FAJ ETC Club Rating Updater v2.1"
+UPDATER_VERSION = "3.0"
+UPDATER_NAME = "FAJ ETC Club Rating Updater v3.0"
 
 
 # ============================================================
@@ -257,7 +265,71 @@ class ClubRatingUpdater:
         )
 
     # ========================================================
-    # PUBLIC
+    # PUBLIC — РАСЧЁТ РЕЙТИНГА БЕЗ СОХРАНЕНИЯ
+    # ========================================================
+
+    def calculate_rating_delta(
+        self,
+        home_rating: float,
+        away_rating: float,
+        home_goals: int,
+        away_goals: int,
+        home_observed_xg: Optional[float] = None,
+        away_observed_xg: Optional[float] = None,
+        home_predicted_xg: Optional[float] = None,
+        away_predicted_xg: Optional[float] = None,
+    ) -> Tuple[float, float]:
+        """
+        Рассчитывает дельту рейтинга для обеих команд.
+
+        Возвращает:
+            (home_delta, away_delta)
+        """
+        home_rating = _clamp(home_rating, MIN_RATING, MAX_RATING)
+        away_rating = _clamp(away_rating, MIN_RATING, MAX_RATING)
+
+        # Ожидаемый результат
+        expected_home = self._expected_result(home_rating, away_rating)
+        expected_away = 1.0 - expected_home
+
+        # Фактический результат
+        actual_home = _result_score(home_goals, away_goals)
+        actual_away = 1.0 - actual_home
+
+        # Результативная компонента
+        home_result_component = actual_home - expected_home
+        away_result_component = actual_away - expected_away
+
+        # xG компонента
+        home_xg_component = self._calculate_xg_component(
+            predicted_xg=home_predicted_xg,
+            observed_xg=home_observed_xg,
+        )
+
+        away_xg_component = self._calculate_xg_component(
+            predicted_xg=away_predicted_xg,
+            observed_xg=away_observed_xg,
+        )
+
+        # Сырые дельты
+        home_raw_delta = (
+            home_result_component * K_FACTOR * RESULT_WEIGHT
+            + home_xg_component * K_FACTOR * XG_WEIGHT
+        )
+
+        away_raw_delta = (
+            away_result_component * K_FACTOR * RESULT_WEIGHT
+            + away_xg_component * K_FACTOR * XG_WEIGHT
+        )
+
+        # Zero-sum нормализация
+        rating_delta = (home_raw_delta - away_raw_delta) / 2.0
+        rating_delta = _clamp(rating_delta, -MAX_MATCH_DELTA, MAX_MATCH_DELTA)
+
+        return rating_delta, -rating_delta
+
+    # ========================================================
+    # PUBLIC — ПОЛНОЕ ОБНОВЛЕНИЕ С СОХРАНЕНИЕМ
     # ========================================================
 
     def update_after_match(
@@ -268,40 +340,41 @@ class ClubRatingUpdater:
         away_observed_xg: Optional[float] = None,
         home_predicted_xg: Optional[float] = None,
         away_predicted_xg: Optional[float] = None,
+        analysis_memory_data: Optional[list] = None,
     ) -> Dict[str, Any]:
         """
         Применяет одну ETC rating-коррекцию к завершённому матчу.
 
+        Использует атомарный process_match_with_rating() из database.py.
+
         Вся операция выполняется атомарно.
 
         При любой ошибке:
+            Passport, Team History, Learning Memory — ROLLBACK.
 
-            Passport
-            Team History
-            Learning Memory
+        Args:
+            match: словарь матча
+            result: словарь результата
+            home_observed_xg: фактический xG home
+            away_observed_xg: фактический xG away
+            home_predicted_xg: предсказанный xG home
+            away_predicted_xg: предсказанный xG away
+            analysis_memory_data: список events для learning_memory
 
-        не должны остаться в частично изменённом состоянии.
+        Returns:
+            Dict с результатами
         """
 
         response: Dict[str, Any] = {
             "success": False,
-
             "version": UPDATER_VERSION,
-
             "updater": UPDATER_NAME,
-
             "match_id": None,
-
             "already_processed": False,
-
             "home": {},
-
             "away": {},
-
             "errors": [],
         }
-
-        conn = None
 
         try:
 
@@ -310,646 +383,252 @@ class ClubRatingUpdater:
             # =================================================
 
             if not isinstance(match, dict):
-                raise ValueError(
-                    "ClubRatingUpdater: match должен быть dict."
-                )
+                raise ValueError("match должен быть dict.")
 
             if not isinstance(result, dict):
-                raise ValueError(
-                    "ClubRatingUpdater: result должен быть dict."
-                )
+                raise ValueError("result должен быть dict.")
 
             # =================================================
             # 2. IDENTIFIERS
             # =================================================
 
-            match_id = _safe_int(
-                match.get("id")
-            )
-
-            home_team_id = _safe_int(
-                match.get("home_team_id")
-            )
-
-            away_team_id = _safe_int(
-                match.get("away_team_id")
-            )
-
-            season_id = _safe_int(
-                match.get("season_id")
-            )
+            match_id = _safe_int(match.get("id"))
+            home_team_id = _safe_int(match.get("home_team_id"))
+            away_team_id = _safe_int(match.get("away_team_id"))
+            season_id = _safe_int(match.get("season_id"))
 
             response["match_id"] = match_id
 
             if not match_id:
-                raise ValueError(
-                    "ClubRatingUpdater: отсутствует match_id."
-                )
+                raise ValueError("отсутствует match_id.")
 
             if not home_team_id:
-                raise ValueError(
-                    "ClubRatingUpdater: отсутствует home_team_id."
-                )
+                raise ValueError("отсутствует home_team_id.")
 
             if not away_team_id:
-                raise ValueError(
-                    "ClubRatingUpdater: отсутствует away_team_id."
-                )
+                raise ValueError("отсутствует away_team_id.")
 
             if not season_id:
-                raise ValueError(
-                    "ClubRatingUpdater: отсутствует season_id."
-                )
+                raise ValueError("отсутствует season_id.")
 
             if home_team_id == away_team_id:
-                raise ValueError(
-                    "ClubRatingUpdater: home_team_id "
-                    "и away_team_id совпадают."
-                )
+                raise ValueError("home_team_id и away_team_id совпадают.")
 
             # =================================================
             # 3. RESULT
             # =================================================
 
-            home_goals = _safe_int(
-                result.get("home_goals")
-            )
-
-            away_goals = _safe_int(
-                result.get("away_goals")
-            )
+            home_goals = _safe_int(result.get("home_goals"))
+            away_goals = _safe_int(result.get("away_goals"))
 
             if home_goals < 0:
-                raise ValueError(
-                    "home_goals не может быть отрицательным."
-                )
+                raise ValueError("home_goals не может быть отрицательным.")
 
             if away_goals < 0:
-                raise ValueError(
-                    "away_goals не может быть отрицательным."
-                )
+                raise ValueError("away_goals не может быть отрицательным.")
 
             # =================================================
-            # 4. CONNECTION
+            # 4. CHECK FULLY PROCESSED
             # =================================================
 
-            conn = self.db.get_connection()
-
-            # =================================================
-            # 5. IDEMPOTENCY
-            # =================================================
-
-            if self._already_processed(
-                match_id=match_id,
-                season_id=season_id,
-                home_team_id=home_team_id,
-                away_team_id=away_team_id,
-                conn=conn,
-            ):
-
+            if self.db._is_match_fully_processed(match_id):
                 response["success"] = True
-
                 response["already_processed"] = True
+                response["home"] = {"team_id": home_team_id, "status": "already_processed"}
+                response["away"] = {"team_id": away_team_id, "status": "already_processed"}
 
-                response["home"] = {
-                    "team_id": home_team_id,
-                    "status": "already_processed",
-                }
-
-                response["away"] = {
-                    "team_id": away_team_id,
-                    "status": "already_processed",
-                }
-
-                logger.info(
-                    "ETC Club Rating already processed: "
-                    "match=%s",
-                    match_id,
-                )
-
+                logger.info("ETC Club Rating already processed: match=%s", match_id)
                 return response
 
             # =================================================
-            # 6. BEGIN TRANSACTION
+            # 5. GET CURRENT RATINGS
             # =================================================
 
-            self._begin_transaction(conn)
-
-            # =================================================
-            # 7. PASSPORTS
-            # =================================================
-
-            home_passport = self.db.get_team_passport(
-                home_team_id,
-                season_id,
-            )
-
-            away_passport = self.db.get_team_passport(
-                away_team_id,
-                season_id,
-            )
+            home_passport = self.db.get_team_passport(home_team_id, season_id)
+            away_passport = self.db.get_team_passport(away_team_id, season_id)
 
             if not home_passport:
-                raise ValueError(
-                    "Нет паспорта хозяев: "
-                    f"team_id={home_team_id}, "
-                    f"season_id={season_id}"
-                )
+                raise ValueError(f"Нет паспорта хозяев: team_id={home_team_id}, season_id={season_id}")
 
             if not away_passport:
-                raise ValueError(
-                    "Нет паспорта гостей: "
-                    f"team_id={away_team_id}, "
-                    f"season_id={season_id}"
-                )
-
-            # =================================================
-            # 8. CURRENT RATINGS
-            # =================================================
-
-            home_old_rating = _safe_float(
-                home_passport.get(
-                    "faj_rating"
-                ),
-                DEFAULT_RATING,
-            )
-
-            away_old_rating = _safe_float(
-                away_passport.get(
-                    "faj_rating"
-                ),
-                DEFAULT_RATING,
-            )
+                raise ValueError(f"Нет паспорта гостей: team_id={away_team_id}, season_id={season_id}")
 
             home_old_rating = _clamp(
-                home_old_rating,
-                MIN_RATING,
-                MAX_RATING,
+                _safe_float(home_passport.get("faj_rating"), DEFAULT_RATING),
+                MIN_RATING, MAX_RATING,
             )
 
             away_old_rating = _clamp(
-                away_old_rating,
-                MIN_RATING,
-                MAX_RATING,
+                _safe_float(away_passport.get("faj_rating"), DEFAULT_RATING),
+                MIN_RATING, MAX_RATING,
             )
 
             # =================================================
-            # 9. EXPECTED RESULT
+            # 6. CALCULATE DELTA
             # =================================================
 
-            expected_home = self._expected_result(
-                home_old_rating,
-                away_old_rating,
+            home_delta, away_delta = self.calculate_rating_delta(
+                home_rating=home_old_rating,
+                away_rating=away_old_rating,
+                home_goals=home_goals,
+                away_goals=away_goals,
+                home_observed_xg=home_observed_xg,
+                away_observed_xg=away_observed_xg,
+                home_predicted_xg=home_predicted_xg,
+                away_predicted_xg=away_predicted_xg,
             )
 
-            expected_away = (
-                1.0 - expected_home
-            )
+            home_new_rating = _clamp(home_old_rating + home_delta, MIN_RATING, MAX_RATING)
+            away_new_rating = _clamp(away_old_rating + away_delta, MIN_RATING, MAX_RATING)
 
             # =================================================
-            # 10. ACTUAL RESULT
+            # 7. BUILD REASONS
             # =================================================
 
-            actual_home = _result_score(
-                home_goals,
-                away_goals,
-            )
-
-            actual_away = (
-                1.0 - actual_home
-            )
-
-            # =================================================
-            # 11. RESULT COMPONENT
-            # =================================================
-
-            home_result_component = (
-                actual_home
-                - expected_home
-            )
-
-            away_result_component = (
-                actual_away
-                - expected_away
-            )
-
-            # =================================================
-            # 12. XG COMPONENT
-            # =================================================
-
-            home_xg_component = (
-                self._calculate_xg_component(
-                    predicted_xg=home_predicted_xg,
-                    observed_xg=home_observed_xg,
-                )
-            )
-
-            away_xg_component = (
-                self._calculate_xg_component(
-                    predicted_xg=away_predicted_xg,
-                    observed_xg=away_observed_xg,
-                )
-            )
-
-            # =================================================
-            # 13. RAW DELTA
-            # =================================================
-
-            home_raw_delta = (
-                home_result_component
-                * K_FACTOR
-                * RESULT_WEIGHT
-            )
-
-            home_raw_delta += (
-                home_xg_component
-                * K_FACTOR
-                * XG_WEIGHT
-            )
-
-            away_raw_delta = (
-                away_result_component
-                * K_FACTOR
-                * RESULT_WEIGHT
-            )
-
-            away_raw_delta += (
-                away_xg_component
-                * K_FACTOR
-                * XG_WEIGHT
-            )
-
-            # =================================================
-            # 14. ZERO-SUM NORMALIZATION
-            # =================================================
-
-            rating_delta = (
-                home_raw_delta
-                - away_raw_delta
-            ) / 2.0
-
-            rating_delta = _clamp(
-                rating_delta,
-                -MAX_MATCH_DELTA,
-                MAX_MATCH_DELTA,
-            )
-
-            # =================================================
-            # 15. NEW RATINGS
-            # =================================================
-
-            home_new_rating = _clamp(
-                home_old_rating
-                + rating_delta,
-                MIN_RATING,
-                MAX_RATING,
-            )
-
-            away_new_rating = _clamp(
-                away_old_rating
-                - rating_delta,
-                MIN_RATING,
-                MAX_RATING,
-            )
-
-            home_delta = (
-                home_new_rating
-                - home_old_rating
-            )
-
-            away_delta = (
-                away_new_rating
-                - away_old_rating
-            )
-
-            # =================================================
-            # 16. SAVE HOME
-            # =================================================
-
-            self._save_rating(
+            home_reason = self._build_reason(
                 team_id=home_team_id,
-                season_id=season_id,
-                passport=home_passport,
-                old_rating=home_old_rating,
-                new_rating=home_new_rating,
-                match_id=match_id,
-                opponent_team_id=away_team_id,
-                result=home_goals,
-                opponent_result=away_goals,
+                opponent_id=away_team_id,
+                goals_for=home_goals,
+                goals_against=away_goals,
                 observed_xg=home_observed_xg,
                 predicted_xg=home_predicted_xg,
-                expected_result=expected_home,
-                actual_result=actual_home,
-                conn=conn,
+                rating_delta=home_delta,
             )
 
-            # =================================================
-            # 17. SAVE AWAY
-            # =================================================
-
-            self._save_rating(
+            away_reason = self._build_reason(
                 team_id=away_team_id,
-                season_id=season_id,
-                passport=away_passport,
-                old_rating=away_old_rating,
-                new_rating=away_new_rating,
-                match_id=match_id,
-                opponent_team_id=home_team_id,
-                result=away_goals,
-                opponent_result=home_goals,
+                opponent_id=home_team_id,
+                goals_for=away_goals,
+                goals_against=home_goals,
                 observed_xg=away_observed_xg,
                 predicted_xg=away_predicted_xg,
-                expected_result=expected_away,
-                actual_result=actual_away,
-                conn=conn,
+                rating_delta=away_delta,
             )
 
             # =================================================
-            # 18. COMMIT
+            # 8. BUILD ANALYSIS MEMORY DATA
             # =================================================
 
-            conn.commit()
+            memory_events = analysis_memory_data or []
+
+            # Добавляем rating update events
+            memory_events.append({
+                "event_type": "club_rating_update",
+                "object": f"team:{home_team_id}",
+                "feature": "faj_rating",
+                "before_value": round(home_old_rating, 4),
+                "after_value": round(home_new_rating, 4),
+                "delta": round(home_delta, 4),
+                "reason": f"Post-match ETC rating correction (match {match_id})",
+                "confidence": self._calculate_confidence(home_observed_xg, home_predicted_xg),
+                "impact": abs(home_delta),
+                "algorithm": UPDATER_NAME,
+                "model_version": UPDATER_VERSION,
+                "reference_id": match_id,
+                "created_at": None,
+            })
+
+            memory_events.append({
+                "event_type": "club_rating_update",
+                "object": f"team:{away_team_id}",
+                "feature": "faj_rating",
+                "before_value": round(away_old_rating, 4),
+                "after_value": round(away_new_rating, 4),
+                "delta": round(away_delta, 4),
+                "reason": f"Post-match ETC rating correction (match {match_id})",
+                "confidence": self._calculate_confidence(away_observed_xg, away_predicted_xg),
+                "impact": abs(away_delta),
+                "algorithm": UPDATER_NAME,
+                "model_version": UPDATER_VERSION,
+                "reference_id": match_id,
+                "created_at": None,
+            })
 
             # =================================================
-            # 19. RESPONSE
+            # 9. АТОМАРНОЕ СОХРАНЕНИЕ ЧЕРЕЗ DATABASE.PY
             # =================================================
 
-            response["home"] = {
-                "team_id": home_team_id,
+            # Преобразуем memory_events в формат для process_match_with_rating
+            memory_data = []
+            for event in memory_events:
+                memory_data.append({
+                    "event_type": event.get("event_type"),
+                    "object": event.get("object"),
+                    "feature": event.get("feature"),
+                    "before_value": event.get("before_value"),
+                    "after_value": event.get("after_value"),
+                    "delta": event.get("delta"),
+                    "reason": event.get("reason"),
+                    "confidence": event.get("confidence", 1.0),
+                    "impact": event.get("impact", 0.0),
+                    "algorithm": event.get("algorithm", UPDATER_NAME),
+                    "model_version": event.get("model_version", UPDATER_VERSION),
+                    "reference_id": event.get("reference_id", match_id),
+                    "created_at": event.get("created_at"),
+                })
 
-                "rating_old": round(
-                    home_old_rating,
-                    4,
-                ),
+            result = self.db.process_match_with_rating(
+                match_id=match_id,
+                home_team_id=home_team_id,
+                away_team_id=away_team_id,
+                season_id=season_id,
+                home_goals=home_goals,
+                away_goals=away_goals,
+                home_rating_before=home_old_rating,
+                away_rating_before=away_old_rating,
+                home_rating_after=home_new_rating,
+                away_rating_after=away_new_rating,
+                home_delta=home_delta,
+                away_delta=away_delta,
+                home_reason=home_reason,
+                away_reason=away_reason,
+                analysis_memory_data=memory_data if memory_data else None,
+            )
 
-                "rating_new": round(
-                    home_new_rating,
-                    4,
-                ),
+            # =================================================
+            # 10. RESPONSE
+            # =================================================
 
-                "delta": round(
-                    home_delta,
-                    4,
-                ),
-
-                "expected_result": round(
-                    expected_home,
-                    4,
-                ),
-
-                "actual_result": round(
-                    actual_home,
-                    4,
-                ),
-
-                "observed_xg": home_observed_xg,
-
-                "predicted_xg": home_predicted_xg,
-
-                "xg_component": round(
-                    home_xg_component,
-                    4,
-                ),
-            }
-
-            response["away"] = {
-                "team_id": away_team_id,
-
-                "rating_old": round(
-                    away_old_rating,
-                    4,
-                ),
-
-                "rating_new": round(
-                    away_new_rating,
-                    4,
-                ),
-
-                "delta": round(
-                    away_delta,
-                    4,
-                ),
-
-                "expected_result": round(
-                    expected_away,
-                    4,
-                ),
-
-                "actual_result": round(
-                    actual_away,
-                    4,
-                ),
-
-                "observed_xg": away_observed_xg,
-
-                "predicted_xg": away_predicted_xg,
-
-                "xg_component": round(
-                    away_xg_component,
-                    4,
-                ),
-            }
+            if result.get("status") == "already_processed":
+                response["success"] = True
+                response["already_processed"] = True
+                response["home"] = {"team_id": home_team_id, "status": "already_processed"}
+                response["away"] = {"team_id": away_team_id, "status": "already_processed"}
+                return response
 
             response["success"] = True
+            response["home"] = {
+                "team_id": home_team_id,
+                "rating_old": round(home_old_rating, 4),
+                "rating_new": round(home_new_rating, 4),
+                "delta": round(home_delta, 4),
+                "history_id": result.get("history_ids", [None, None])[0],
+            }
+            response["away"] = {
+                "team_id": away_team_id,
+                "rating_old": round(away_old_rating, 4),
+                "rating_new": round(away_new_rating, 4),
+                "delta": round(away_delta, 4),
+                "history_id": result.get("history_ids", [None, None])[1],
+            }
+            response["marker_id"] = result.get("marker_id")
 
             logger.info(
-                "ETC Club Rating updated: "
-                "match=%s | "
-                "home=%s %.4f -> %.4f | "
-                "away=%s %.4f -> %.4f",
-                match_id,
-                home_team_id,
-                home_old_rating,
-                home_new_rating,
-                away_team_id,
-                away_old_rating,
-                away_new_rating,
+                "ETC Club Rating updated: match=%s | home=%s %.4f -> %.4f | away=%s %.4f -> %.4f",
+                match_id, home_team_id, home_old_rating, home_new_rating,
+                away_team_id, away_old_rating, away_new_rating,
             )
 
             return response
 
         except Exception as exc:
 
-            if conn is not None:
-
-                try:
-                    conn.rollback()
-
-                except Exception:
-                    logger.exception(
-                        "ETC rollback failed: match=%s",
-                        response.get("match_id"),
-                    )
-
-            logger.exception(
-                "ETC Club Rating update failed: "
-                "match=%s",
-                response.get("match_id"),
-            )
-
-            response["errors"].append(
-                str(exc)
-            )
-
+            logger.exception("ETC Club Rating update failed: match=%s", response.get("match_id"))
+            response["errors"].append(str(exc))
             return response
 
-        finally:
-
-            if conn is not None:
-
-                try:
-                    conn.close()
-
-                except Exception:
-                    logger.exception(
-                        "ETC connection close failed."
-                    )
-
     # ========================================================
-    # TRANSACTION
-    # ========================================================
-
-    @staticmethod
-    def _begin_transaction(
-        conn: Any,
-    ) -> None:
-        """
-        Явное начало SQLite-транзакции.
-
-        Если соединение уже находится внутри
-        транзакции, новый BEGIN не выполняется.
-        """
-
-        try:
-
-            if getattr(
-                conn,
-                "in_transaction",
-                False,
-            ):
-                return
-
-        except Exception:
-            pass
-
-        cursor = conn.cursor()
-
-        try:
-
-            cursor.execute(
-                "BEGIN"
-            )
-
-        finally:
-
-            try:
-                cursor.close()
-            except Exception:
-                pass
-
-    # ========================================================
-    # IDEMPOTENCY
-    # ========================================================
-
-    def _already_processed(
-        self,
-        match_id: int,
-        season_id: int,
-        home_team_id: int,
-        away_team_id: int,
-        conn: Optional[Any] = None,
-    ) -> bool:
-        """
-        Проверяет, применялось ли ETC-изменение рейтинга
-        к данному матчу.
-
-        Для валидной завершённой операции должны существовать
-        две записи team_history:
-
-            home
-            away
-
-        Если существует только одна запись, операция считается
-        незавершённой и может быть повторена.
-
-        Это необходимо для защиты от старого состояния,
-        когда одна сторона была записана, а вторая нет.
-        """
-
-        connection = conn
-
-        own_connection = False
-
-        if connection is None:
-
-            connection = self.db.get_connection()
-
-            own_connection = True
-
-        try:
-
-            cursor = connection.cursor()
-
-            cursor.execute(
-                """
-                SELECT
-                    team_id,
-                    COUNT(*) AS cnt
-                FROM team_history
-                WHERE reference_match_id = ?
-                  AND source = 'ETC'
-                  AND field = 'faj_rating'
-                  AND team_id IN (?, ?)
-                GROUP BY team_id
-                """,
-                (
-                    match_id,
-                    home_team_id,
-                    away_team_id,
-                ),
-            )
-
-            rows = cursor.fetchall()
-
-            teams_processed = set()
-
-            for row in rows:
-
-                try:
-
-                    team_id = _safe_int(
-                        row["team_id"]
-                    )
-
-                except (KeyError, TypeError):
-
-                    team_id = _safe_int(
-                        row[0]
-                    )
-
-                if team_id in (
-                    home_team_id,
-                    away_team_id,
-                ):
-
-                    teams_processed.add(
-                        team_id
-                    )
-
-            return (
-                home_team_id in teams_processed
-                and
-                away_team_id in teams_processed
-            )
-
-        finally:
-
-            if own_connection:
-
-                connection.close()
-
-    # ========================================================
-    # EXPECTED RESULT
+    # ВНУТРЕННИЕ МЕТОДЫ
     # ========================================================
 
     @staticmethod
@@ -966,31 +645,9 @@ class ClubRatingUpdater:
         величины изменения Club Rating.
         """
 
-        difference = (
-            home_rating
-            - away_rating
-            + HOME_ADVANTAGE
-        )
-
-        expected = (
-            1.0
-            / (
-                1.0
-                + 10.0 ** (
-                    -difference / 10.0
-                )
-            )
-        )
-
-        return _clamp(
-            expected,
-            0.05,
-            0.95,
-        )
-
-    # ========================================================
-    # XG COMPONENT
-    # ========================================================
+        difference = home_rating - away_rating + HOME_ADVANTAGE
+        expected = 1.0 / (1.0 + 10.0 ** (-difference / 10.0))
+        return _clamp(expected, 0.05, 0.95)
 
     @staticmethod
     def _calculate_xg_component(
@@ -998,279 +655,54 @@ class ClubRatingUpdater:
         observed_xg: Optional[float],
     ) -> float:
         """
-        Разница:
+        Разница: Observed xG - Predicted xG
 
-            Observed xG - Predicted xG
-
-        > 0:
-            фактическая атакующая продуктивность
-            оказалась выше ожидаемой.
-
-        < 0:
-            фактическая продуктивность оказалась ниже
-            ожидаемой.
+        > 0: фактическая атакующая продуктивность выше ожидаемой
+        < 0: фактическая продуктивность ниже ожидаемой
 
         Влияние ограничено диапазоном [-1, +1].
         """
-
-        if predicted_xg is None:
+        if predicted_xg is None or observed_xg is None:
             return 0.0
 
-        if observed_xg is None:
-            return 0.0
-
-        predicted = _safe_float(
-            predicted_xg
-        )
-
-        observed = _safe_float(
-            observed_xg
-        )
-
-        difference = (
-            observed
-            - predicted
-        )
-
-        return _clamp(
-            difference,
-            -1.0,
-            1.0,
-        )
-
-    # ========================================================
-    # SAVE RATING
-    # ========================================================
-
-    def _save_rating(
-        self,
-        team_id: int,
-        season_id: int,
-        passport: Dict[str, Any],
-        old_rating: float,
-        new_rating: float,
-        match_id: int,
-        opponent_team_id: int,
-        result: int,
-        opponent_result: int,
-        observed_xg: Optional[float],
-        predicted_xg: Optional[float],
-        expected_result: float,
-        actual_result: float,
-        conn: Optional[Any] = None,
-    ) -> None:
-        """
-        Сохраняет:
-
-            1. новую версию паспорта;
-            2. запись team_history;
-            3. запись learning_memory.
-
-        Старые записи не удаляются.
-
-        Все операции выполняются в транзакции,
-        открытой update_after_match().
-        """
-
-        delta = (
-            new_rating
-            - old_rating
-        )
-
-        # ----------------------------------------------------
-        # НЕТ ИЗМЕНЕНИЯ
-        # ----------------------------------------------------
-
-        if abs(delta) < 0.000001:
-
-            logger.info(
-                "ETC Club Rating unchanged: "
-                "team=%s match=%s",
-                team_id,
-                match_id,
-            )
-
-            return
-
-        # ----------------------------------------------------
-        # VERSION
-        # ----------------------------------------------------
-
-        old_version = passport.get(
-            "version",
-            "v1.0",
-        )
-
-        new_version = self._next_version(
-            old_version
-        )
-
-        # ----------------------------------------------------
-        # PASSPORT
-        # ----------------------------------------------------
-
-        self.db.save_team_passport(
-            team_id=team_id,
-            season_id=season_id,
-            data={
-                "faj_rating": new_rating,
-                "force_update": True,
-            },
-            version=new_version,
-            source="ETC",
-        )
-
-        # ----------------------------------------------------
-        # TEAM HISTORY
-        # ----------------------------------------------------
-
-        self.db.record_team_history(
-            team_id=team_id,
-            season_id=season_id,
-            field="faj_rating",
-            old_value=str(
-                round(
-                    old_rating,
-                    6,
-                )
-            ),
-            new_value=str(
-                round(
-                    new_rating,
-                    6,
-                )
-            ),
-            reason=(
-                "ETC post-match Club Rating update"
-            ),
-            source="ETC",
-            reference_match_id=match_id,
-        )
-
-        # ----------------------------------------------------
-        # LEARNING MEMORY
-        # ----------------------------------------------------
-
-        self.memory.record(
-            event_type="club_rating_update",
-            object_type=f"team:{team_id}",
-            feature="faj_rating",
-            before_value=round(
-                old_rating,
-                6,
-            ),
-            after_value=round(
-                new_rating,
-                6,
-            ),
-            delta=round(
-                delta,
-                6,
-            ),
-            reason=(
-                "Post-match ETC rating correction"
-            ),
-            confidence=self._calculate_confidence(
-                observed_xg=observed_xg,
-                predicted_xg=predicted_xg,
-            ),
-            impact=abs(delta),
-            algorithm=UPDATER_NAME,
-            model_version=UPDATER_VERSION,
-            reference_id=match_id,
-        )
-
-        logger.info(
-            "ETC rating saved: "
-            "team=%s | "
-            "%.4f -> %.4f | "
-            "delta=%+.4f | "
-            "match=%s",
-            team_id,
-            old_rating,
-            new_rating,
-            delta,
-            match_id,
-        )
-
-    # ========================================================
-    # CONFIDENCE
-    # ========================================================
+        difference = _safe_float(observed_xg) - _safe_float(predicted_xg)
+        return _clamp(difference, -1.0, 1.0)
 
     @staticmethod
     def _calculate_confidence(
         observed_xg: Optional[float],
         predicted_xg: Optional[float],
     ) -> float:
-        """
-        Confidence записи ETC.
-
-        Это НЕ вероятность результата матча.
-        """
-
-        if (
-            observed_xg is not None
-            and predicted_xg is not None
-        ):
-
+        """Confidence записи ETC."""
+        if observed_xg is not None and predicted_xg is not None:
             return 1.0
-
         if observed_xg is not None:
-
             return 0.85
-
         return 0.70
 
-    # ========================================================
-    # VERSION
-    # ========================================================
-
     @staticmethod
-    def _next_version(
-        version: str,
+    def _build_reason(
+        team_id: int,
+        opponent_id: int,
+        goals_for: int,
+        goals_against: int,
+        observed_xg: Optional[float],
+        predicted_xg: Optional[float],
+        rating_delta: float,
     ) -> str:
-        """
-        Версия паспорта:
+        """Формирует читаемое объяснение изменения рейтинга."""
+        xg_part = ""
+        if observed_xg is not None and predicted_xg is not None:
+            xg_diff = observed_xg - predicted_xg
+            xg_part = f" | xG diff: {xg_diff:+.2f} (obs: {observed_xg:.2f}, pred: {predicted_xg:.2f})"
 
-            v1.0 -> v1.1
-            v2.3 -> v2.4
+        result_text = "win" if goals_for > goals_against else "draw" if goals_for == goals_against else "loss"
 
-        Если формат неизвестен:
-
-            <version>.etc
-        """
-
-        try:
-
-            if not isinstance(
-                version,
-                str,
-            ):
-
-                return "v1.0"
-
-            if version.startswith("v"):
-
-                number = version[1:]
-
-                major, minor = number.split(
-                    ".",
-                    1,
-                )
-
-                return (
-                    f"v{int(major)}."
-                    f"{int(minor) + 1}"
-                )
-
-        except (
-            ValueError,
-            AttributeError,
-        ):
-
-            pass
-
-        return f"{version}.etc"
+        return (
+            f"team {team_id} vs {opponent_id}: "
+            f"{goals_for}-{goals_against} ({result_text}), "
+            f"delta: {rating_delta:+.4f}{xg_part}"
+        )
 
 
 # ============================================================
@@ -1284,19 +716,43 @@ def update_club_rating(
     away_observed_xg: Optional[float] = None,
     home_predicted_xg: Optional[float] = None,
     away_predicted_xg: Optional[float] = None,
+    analysis_memory_data: Optional[list] = None,
     db: Optional[FAJDatabase] = None,
 ) -> Dict[str, Any]:
     """
-    Публичный API ETC.
+    Публичный API ETC Club Rating Updater.
     """
-
-    updater = ClubRatingUpdater(
-        db=db
-    )
-
+    updater = ClubRatingUpdater(db=db)
     return updater.update_after_match(
         match=match,
         result=result,
+        home_observed_xg=home_observed_xg,
+        away_observed_xg=away_observed_xg,
+        home_predicted_xg=home_predicted_xg,
+        away_predicted_xg=away_predicted_xg,
+        analysis_memory_data=analysis_memory_data,
+    )
+
+
+def calculate_rating_delta(
+    home_rating: float,
+    away_rating: float,
+    home_goals: int,
+    away_goals: int,
+    home_observed_xg: Optional[float] = None,
+    away_observed_xg: Optional[float] = None,
+    home_predicted_xg: Optional[float] = None,
+    away_predicted_xg: Optional[float] = None,
+) -> Tuple[float, float]:
+    """
+    Публичный API для расчёта дельты рейтинга без сохранения.
+    """
+    updater = ClubRatingUpdater()
+    return updater.calculate_rating_delta(
+        home_rating=home_rating,
+        away_rating=away_rating,
+        home_goals=home_goals,
+        away_goals=away_goals,
         home_observed_xg=home_observed_xg,
         away_observed_xg=away_observed_xg,
         home_predicted_xg=home_predicted_xg,
@@ -1320,33 +776,37 @@ if __name__ == "__main__":
     )
 
     print("=" * 70)
-
-    print(
-        "FAJ ETC — Club Rating Updater"
-    )
-
-    print(
-        f"Version: {UPDATER_VERSION}"
-    )
-
+    print("FAJ ETC — Club Rating Updater")
+    print(f"Version: {UPDATER_VERSION}")
     print("=" * 70)
 
-    print(
-        "Модуль предназначен для применения "
-        "пост-матчевой коррекции Club Rating."
+    # Пример расчёта
+    home_rating = 70.0
+    away_rating = 65.0
+    home_goals = 2
+    away_goals = 1
+    home_obs_xg = 2.1
+    away_obs_xg = 1.2
+    home_pred_xg = 1.8
+    away_pred_xg = 1.1
+
+    home_delta, away_delta = calculate_rating_delta(
+        home_rating=home_rating,
+        away_rating=away_rating,
+        home_goals=home_goals,
+        away_goals=away_goals,
+        home_observed_xg=home_obs_xg,
+        away_observed_xg=away_obs_xg,
+        home_predicted_xg=home_pred_xg,
+        away_predicted_xg=away_pred_xg,
     )
 
-    print(
-        "Исторические факты не изменяются."
-    )
-
-    print(
-        "Learning Memory ведётся append-only."
-    )
-
-    print(
-        "Операция Passport + History + Learning Memory "
-        "выполняется атомарно."
-    )
-
+    print("Пример расчёта:")
+    print(f"  Home: {home_rating:.2f} -> {home_rating + home_delta:.2f} (delta: {home_delta:+.4f})")
+    print(f"  Away: {away_rating:.2f} -> {away_rating + away_delta:.2f} (delta: {away_delta:+.4f})")
+    print("")
+    print("Модуль предназначен для применения пост-матчевой коррекции Club Rating.")
+    print("Исторические факты не изменяются.")
+    print("Learning Memory ведётся append-only.")
+    print("Операция Passport + History + Learning Memory выполняется атомарно через database.py.")
     print("=" * 70)
