@@ -4405,35 +4405,135 @@ class FAJDatabase:
             conn.close()
     
     # ============================================================
-    # LEARNING MEMORY — ЧТЕНИЕ (НОВЫЙ МЕТОД)
+    # 🆕 НОВЫЙ МЕТОД P0: GET LEARNING MEMORY (С ФИЛЬТРАЦИЕЙ)
     # ============================================================
     
-    def get_learning_memory(self, limit: int = 50) -> List[Dict[str, Any]]:
+    def get_learning_memory(
+        self,
+        event_type: Optional[str] = None,
+        object_type: Optional[str] = None,
+        feature: Optional[str] = None,
+        reference_id: Optional[int] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
         """
-        Возвращает последние записи из learning_memory.
+        Read-only чтение learning_memory с полной фильтрацией.
+        
+        Единственный владелец SQL-схемы: database.py
+        
+        APPEND-ONLY: метод ничего не изменяет.
         
         Args:
-            limit: количество записей (по умолчанию 50)
+            event_type: фильтр по типу события
+            object_type: фильтр по объекту (например, "match:123")
+            feature: фильтр по признаку
+            reference_id: фильтр по reference_id
+            limit: максимальное количество записей (по умолчанию 100)
         
         Returns:
-            Список словарей с полями:
-                id, event_type, object, feature,
-                before_value, after_value, delta,
-                reason, confidence, impact,
-                algorithm, model_version,
-                reference_id, created_at
+            Список словарей с полями learning_memory
+        """
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 100
+        
+        if limit <= 0:
+            return []
+        
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            conditions = []
+            params = []
+            
+            if event_type is not None:
+                conditions.append("event_type = ?")
+                params.append(event_type)
+            
+            if object_type is not None:
+                conditions.append("object = ?")
+                params.append(object_type)
+            
+            if feature is not None:
+                conditions.append("feature = ?")
+                params.append(feature)
+            
+            if reference_id is not None:
+                conditions.append("reference_id = ?")
+                params.append(int(reference_id))
+            
+            where = ""
+            if conditions:
+                where = "WHERE " + " AND ".join(conditions)
+            
+            query = f"""
+                SELECT *
+                FROM learning_memory
+                {where}
+                ORDER BY
+                    datetime(created_at) DESC,
+                    id DESC
+                LIMIT ?
+            """
+            params.append(limit)
+            
+            cursor.execute(query, tuple(params))
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+    
+    # ============================================================
+    # 🆕 НОВЫЙ МЕТОД P0: GET LEARNING MEMORY COUNT
+    # ============================================================
+    
+    def get_learning_memory_count(
+        self,
+        event_type: Optional[str] = None,
+        reference_id: Optional[int] = None,
+    ) -> int:
+        """
+        Быстрая read-only проверка количества записей learning_memory.
+        
+        Используется прежде всего для processed-state / idempotency.
+        
+        Args:
+            event_type: фильтр по типу события
+            reference_id: фильтр по reference_id
+        
+        Returns:
+            Количество записей, удовлетворяющих фильтру
         """
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT *
+            conditions = []
+            params = []
+            
+            if event_type is not None:
+                conditions.append("event_type = ?")
+                params.append(event_type)
+            
+            if reference_id is not None:
+                conditions.append("reference_id = ?")
+                params.append(int(reference_id))
+            
+            where = ""
+            if conditions:
+                where = "WHERE " + " AND ".join(conditions)
+            
+            query = f"""
+                SELECT COUNT(*) AS count
                 FROM learning_memory
-                ORDER BY id DESC
-                LIMIT ?
-            """, (limit,))
-            rows = cursor.fetchall()
-            return [dict(row) for row in rows]
+                {where}
+            """
+            
+            cursor.execute(query, tuple(params))
+            row = cursor.fetchone()
+            if row is None:
+                return 0
+            return int(row["count"])
         finally:
             conn.close()
     
