@@ -28,6 +28,7 @@ Data Football API Client v1.0
     3. Домашняя форма
     4. Выездная форма
     5. Статистика отдельного матча
+    6. Статистика команды за сезон
 
 Источник:
     API-Football / API-Sports
@@ -501,6 +502,61 @@ class DataFootballAPI:
         )
 
         return self._response_list(payload)
+
+    # ========================================================
+    # TEAM STATISTICS
+    # ========================================================
+
+    def get_team_statistics(
+        self,
+        team_id: int,
+        league_id: int,
+        season: int,
+    ) -> Dict[str, Any]:
+        """
+        Получает статистику команды за сезон в конкретной лиге.
+
+        Используется для Scout-контекста.
+
+        Параметры:
+            team_id: внешний ID команды
+            league_id: внешний ID лиги
+            season: год сезона (например, 2025)
+
+        Возвращает:
+            Dict с ключами:
+                - response: статистика команды
+                - parameters: переданные параметры
+                - errors: ошибки (если есть)
+
+        Документация:
+            https://www.api-football.com/documentation-v3#endpoints-teams-statistics
+        """
+
+        params: Dict[str, Any] = {
+            "team": int(team_id),
+            "league": int(league_id),
+            "season": int(season),
+        }
+
+        payload = self._request(
+            "teams/statistics",
+            params,
+        )
+
+        # Возвращаем весь payload, но response может быть dict, а не list
+        response = payload.get("response", {})
+
+        # Если response — не dict, возвращаем пустой dict
+        if not isinstance(response, dict):
+            logger.warning(
+                "TEAM STATISTICS: unexpected response format | team=%s | league=%s",
+                team_id,
+                league_id,
+            )
+            return {}
+
+        return response
 
 
 # ============================================================
