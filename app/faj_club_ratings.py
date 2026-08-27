@@ -2,46 +2,28 @@
 # -*- coding: utf-8 -*-
 
 """
-===========================================================
-FAJ Club Ratings v1.0
-FAJ Expert Initial Club Rating Registry
-Сезон 2026/27
-===========================================================
+FAJ Club Ratings v1.1
+Единый экспертный START_RATING для FAJ.
 
-Центральный источник начальных рейтингов FAJ.
+ВАЖНО:
+- файл является Python-модулем и остаётся в app/
+- SQLite здесь НЕ используется
+- database.py здесь НЕ изменяется
+- START_RATING является неизменяемой исторической точкой старта
+- будущий CURRENT_RATING будет вести ETC
 
-Турниры:
-    - РПЛ
-    - АПЛ
-    - Ла Лига
-    - Лига чемпионов
-
-Рейтинги турниров независимы.
-
-Начальный рейтинг:
-    FAJ Expert Rating
-
-В дальнейшем:
-    FAJ Evolution Training Center
-    будет изменять рейтинг по результатам матчей.
-===========================================================
+UI получает данные через:
+    get_all_ratings()
+    get_league_ratings()
+    get_team_rating()
 """
 
-FAJ_RATING_VERSION = "1.0"
+FAJ_RATING_VERSION = "1.1"
 FAJ_SEASON = "2026/27"
 FAJ_RATING_SOURCE = "expert"
 
 
-# ============================================================
-# FAJ CLUB RATINGS
-# ============================================================
-
 FAJ_CLUB_RATINGS = {
-
-    # ========================================================
-    # РПЛ
-    # ========================================================
-
     "РПЛ": {
         "Зенит": 90,
         "Краснодар": 88,
@@ -51,7 +33,7 @@ FAJ_CLUB_RATINGS = {
         "Локомотив": 83,
         "Ростов": 78,
         "Ахмат": 75,
-        "Рубин": 75,                  # Тёмная лошадка
+        "Рубин": 75,
         "Крылья Советов": 74,
         "Балтика": 71,
         "Оренбург": 70,
@@ -60,11 +42,6 @@ FAJ_CLUB_RATINGS = {
         "Акрон": 67,
         "Родина": 66,
     },
-
-
-    # ========================================================
-    # АПЛ
-    # ========================================================
 
     "АПЛ": {
         "Арсенал": 92,
@@ -84,15 +61,10 @@ FAJ_CLUB_RATINGS = {
         "Фулхэм": 74,
         "Борнмут": 73,
         "Лидс": 72,
-        "Халл Сити": 71,              # Тёмная лошадка
+        "Халл Сити": 71,
         "Ипсвич": 69,
         "Ковентри": 67,
     },
-
-
-    # ========================================================
-    # ЛА ЛИГА
-    # ========================================================
 
     "Ла Лига": {
         "Барселона": 93,
@@ -110,150 +82,136 @@ FAJ_CLUB_RATINGS = {
         "Осасуна": 71,
         "Эспаньол": 70,
         "Алавес": 68,
-        "Расинг Сантандер": 68,       # Тёмная лошадка
+        "Расинг Сантандер": 68,
         "Леванте": 66,
         "Эльче": 65,
         "Малага": 64,
         "Депортиво Ла-Корунья": 63,
     },
 
-
-    # ========================================================
-    # ЛИГА ЧЕМПИОНОВ
-    #
-    # ЕДИНЫЙ СПИСОК.
-    # КОРЗИН ЗДЕСЬ НЕТ.
-    # ========================================================
-
     "Лига чемпионов": {
         "ПСЖ": 97,
         "Бавария": 95,
         "Реал Мадрид": 94,
-        "Интер": 91,
-        "Манчестер Сити": 90,
         "Арсенал": 96,
         "Барселона": 94,
+        "Манчестер Сити": 90,
+        "Интер": 91,
         "Ливерпуль": 87,
         "Атлетико Мадрид": 86,
-
         "Боруссия Дортмунд": 85,
-        "Рома": 84,
-        "Спортинг": 81,
-        "Астон Вилла": 80,
-        "Порту": 82,
         "Манчестер Юнайтед": 85,
-        "Брюгге": 79,
+        "Рома": 84,
+        "Порту": 82,
         "Реал Бетис": 82,
-        "ПСВ": 81,
-
-        "Фейеноорд": 80,
-        "Лилль": 78,
-        "Будё-Глимт": 77,
         "Наполи": 81,
-        "Лейпциг": 79,
-        "Вильярреал": 78,
-        "Шахтёр": 74,
+        "Спортинг": 81,
+        "ПСВ": 81,
         "Галатасарай": 81,
         "Фенербахче": 80,
-
+        "Астон Вилла": 80,
+        "Фейеноорд": 80,
+        "Лейпциг": 79,
+        "Брюгге": 79,
+        "Вильярреал": 78,
+        "Лилль": 78,
+        "Ланс": 78,
         "Штутгарт": 77,
-        "Комо": 79,                    # Тёмная лошадка
-        "Ланс": 78,                    # Тёмная лошадка
-        "Славия Прага": 70,
-        "ЛАСК": 69,
-        "Сабах": 68,
+        "Будё-Глимт": 77,
+        "Шахтёр": 74,
         "АЕК": 72,
         "Слован": 71,
+        "Славия Прага": 70,
+        "ЛАСК": 69,
         "Викинг": 69,
+        "Сабах": 68,
+        "Комо": 79,
     },
 }
 
 
-# ============================================================
-# HELPERS
-# ============================================================
-
 def get_rating(tournament: str, team_name: str):
-    """Получить рейтинг команды в конкретном турнире."""
+    """Рейтинг команды в конкретном турнире."""
     return FAJ_CLUB_RATINGS.get(tournament, {}).get(team_name)
 
 
+def get_team_rating(team_name: str, tournament: str | None = None):
+    """
+    Получить рейтинг команды.
+
+    Если tournament указан — ищем только там.
+    Если нет — возвращаем первое найденное значение.
+    """
+    if tournament:
+        return get_rating(tournament, team_name)
+
+    for teams in FAJ_CLUB_RATINGS.values():
+        if team_name in teams:
+            return teams[team_name]
+
+    return None
+
+
+def get_league_ratings(tournament: str):
+    """Рейтинги всех команд выбранного турнира."""
+    return dict(FAJ_CLUB_RATINGS.get(tournament, {}))
+
+
+def get_all_ratings():
+    """Полная копия реестра рейтингов."""
+    return {
+        tournament: dict(teams)
+        for tournament, teams in FAJ_CLUB_RATINGS.items()
+    }
+
+
 def get_tournament_ratings(tournament: str):
-    """Получить рейтинги всех команд конкретного турнира."""
-    return FAJ_CLUB_RATINGS.get(tournament, {}).copy()
+    """Совместимый алиас."""
+    return get_league_ratings(tournament)
 
 
 def get_all_tournaments():
-    """Получить список доступных турниров."""
     return list(FAJ_CLUB_RATINGS.keys())
 
 
 def get_all_teams(tournament: str):
-    """Получить список команд конкретного турнира."""
     return list(FAJ_CLUB_RATINGS.get(tournament, {}).keys())
 
 
-def set_rating(
-    tournament: str,
-    team_name: str,
-    rating: float
-):
+def set_rating(tournament: str, team_name: str, rating: float):
     """
-    Установить рейтинг команды.
+    Административное изменение START_RATING.
 
-    Административный метод.
-    Динамические изменения рейтинга в дальнейшем
-    выполняет FAJ Evolution Training Center.
+    В штатной работе ETC этот метод не используется.
     """
-
     if tournament not in FAJ_CLUB_RATINGS:
         FAJ_CLUB_RATINGS[tournament] = {}
 
-    rating = float(rating)
-    rating = max(0.0, min(100.0, rating))
+    value = max(0.0, min(100.0, float(rating)))
+    FAJ_CLUB_RATINGS[tournament][team_name] = round(value, 1)
 
-    FAJ_CLUB_RATINGS[tournament][team_name] = round(rating, 1)
-
-
-# ============================================================
-# VALIDATION
-# ============================================================
 
 def validate_ratings():
-    """Проверить корректность всех рейтингов."""
-
     errors = []
 
     for tournament, teams in FAJ_CLUB_RATINGS.items():
-
         if not teams:
-            errors.append(
-                f"{tournament}: нет команд"
-            )
+            errors.append(f"{tournament}: нет команд")
 
         for team, rating in teams.items():
-
             if not isinstance(rating, (int, float)):
                 errors.append(
-                    f"{tournament} / {team}: "
-                    f"рейтинг не является числом"
+                    f"{tournament} / {team}: рейтинг не число"
                 )
-
             elif not 0 <= rating <= 100:
                 errors.append(
-                    f"{tournament} / {team}: "
-                    f"рейтинг вне диапазона 0-100"
+                    f"{tournament} / {team}: рейтинг вне 0-100"
                 )
 
     return errors
 
 
-# ============================================================
-# MAIN
-# ============================================================
-
 if __name__ == "__main__":
-
     print("=" * 60)
     print("FAJ CLUB RATINGS")
     print(f"Version: {FAJ_RATING_VERSION}")
@@ -264,36 +222,16 @@ if __name__ == "__main__":
     errors = validate_ratings()
 
     if errors:
-
         print("\nОШИБКИ:")
-
         for error in errors:
             print(f" - {error}")
-
     else:
-
         print("\nВсе рейтинги валидны.")
-
         for tournament, teams in FAJ_CLUB_RATINGS.items():
-
-            print(f"\n{'=' * 40}")
-            print(tournament)
-            print(f"{'=' * 40}")
-
-            sorted_teams = sorted(
-                teams.items(),
-                key=lambda item: item[1],
-                reverse=True
-            )
-
+            print(f"\n{tournament}")
             for position, (team, rating) in enumerate(
-                sorted_teams,
-                start=1
+                sorted(teams.items(), key=lambda item: item[1], reverse=True),
+                start=1,
             ):
-                print(
-                    f"{position:2}. "
-                    f"{team:<25} "
-                    f"{rating}"
-                )
-
-            print(f"\nВсего команд: {len(teams)}")
+                print(f"{position:2}. {team:<25} {rating}")
+            print(f"Всего команд: {len(teams)}")
