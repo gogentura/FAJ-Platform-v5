@@ -2,27 +2,16 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ Tour Manager v5.0
+FAJ Tour Manager v5.1
 
 Главная задача:
     календарь -> сезон -> тур -> матчи.
 
 Tour Manager НЕ рассчитывает рейтинг.
 
-Важное изменение v5.0:
-    при выборе соревнования автоматически проверяется наличие
-    сезона 2026/27, команд этого соревнования И паспортов.
-
-Если паспортов нет, Tour Manager создаёт их через
-save_team_passport() с начальными параметрами.
-
-Таким образом:
-    РПЛ
-    АПЛ
-    Ла Лига
-    Лига чемпионов
-
-имеют собственные сезоны, команды и паспорта.
+v5.1:
+    При выборе пары команд отображается FAJ рейтинг
+    из START_RATINGS (только в UI, не сохраняется).
 """
 
 from __future__ import annotations
@@ -153,6 +142,14 @@ def get_team_rating(team_name: str) -> Optional[float]:
     except Exception:
         pass
     return None
+
+
+def get_team_rating_display(team_name: str) -> str:
+    """Возвращает строку с названием и рейтингом для selectbox."""
+    rating = get_team_rating(team_name)
+    if rating is not None:
+        return f"{team_name} — {rating:.1f}"
+    return team_name
 
 
 # ============================================================
@@ -696,9 +693,9 @@ def main() -> None:
 
             st.divider()
 
-    # --------------------------------------------------------
-    # ADD MATCH
-    # --------------------------------------------------------
+    # ============================================================
+    # ADD MATCH — ИЗМЕНЕНО: ДОБАВЛЕНЫ РЕЙТИНГИ
+    # ============================================================
 
     st.subheader("➕ Добавить матч")
 
@@ -724,32 +721,69 @@ def main() -> None:
             "✅ Все команды уже распределены по матчам этого тура."
         )
     else:
+        # Формируем список с рейтингами для отображения
+        available_with_ratings = [
+            get_team_rating_display(name)
+            for name in available_team_names
+        ]
+
         c1, c2 = st.columns(2)
 
         with c1:
-            home_name = st.selectbox(
+            selected_display = st.selectbox(
                 "Хозяева",
-                ["— выберите команду —"] + available_team_names,
+                ["— выберите команду —"] + available_with_ratings,
                 key="home_team",
             )
 
+            # Извлекаем имя из строки с рейтингом
+            if selected_display and selected_display != "— выберите команду —":
+                home_name = selected_display.split(" — ")[0]
+            else:
+                home_name = "— выберите команду —"
+
         with c2:
+            # Список гостей с рейтингами (исключаем выбранного хозяина)
             away_options = [
-                name
+                get_team_rating_display(name)
                 for name in available_team_names
-                if name != home_name
+                if name != home_name and home_name != "— выберите команду —"
             ]
 
-            away_name = st.selectbox(
+            away_display = st.selectbox(
                 "Гости",
                 ["— выберите команду —"] + away_options,
                 key="away_team",
             )
 
+            # Извлекаем имя из строки с рейтингом
+            if away_display and away_display != "— выберите команду —":
+                away_name = away_display.split(" — ")[0]
+            else:
+                away_name = "— выберите команду —"
+
         match_date = st.date_input(
             "Дата матча",
             key="match_date",
         )
+
+        # Показываем рейтинги выбранных команд (дополнительная информация)
+        if home_name != "— выберите команду —" and away_name != "— выберите команду —":
+            home_rating = get_team_rating(home_name)
+            away_rating = get_team_rating(away_name)
+
+            rating_col1, rating_col2 = st.columns(2)
+            with rating_col1:
+                if home_rating is not None:
+                    st.caption(f"🏷️ FAJ Rating хозяев: **{home_rating:.1f}**")
+                else:
+                    st.caption("🏷️ FAJ Rating хозяев: не найден")
+
+            with rating_col2:
+                if away_rating is not None:
+                    st.caption(f"🏷️ FAJ Rating гостей: **{away_rating:.1f}**")
+                else:
+                    st.caption("🏷️ FAJ Rating гостей: не найден")
 
         if (
             home_name != "— выберите команду —"
