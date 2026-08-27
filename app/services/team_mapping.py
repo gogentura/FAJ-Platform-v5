@@ -61,6 +61,19 @@ class TeamMappingService:
 
     VERSION = "1.0"
 
+    # Сопоставление FAJ лиг со странами для API поиска
+    LEAGUE_COUNTRY_MAP = {
+        "РПЛ": "Russia",
+        "АПЛ": "England",
+        "Ла Лига": "Spain",
+        "Бундеслига": "Germany",
+        "Серия А": "Italy",
+        "Лига 1": "France",
+        "Лига чемпионов": None,  # не используем страну
+        "Чемпионшип": "England",
+        "Эредивизи": "Netherlands",
+    }
+
     def __init__(
         self,
         api: Optional[DataFootballAPI] = None,
@@ -100,6 +113,20 @@ class TeamMappingService:
         logger.info("Team mapping cache cleared")
 
     # ========================================================
+    # HELPERS
+    # ========================================================
+
+    @classmethod
+    def _get_country(cls, league: Optional[str]) -> Optional[str]:
+        """Преобразует FAJ лигу в страну для API поиска."""
+        if not league:
+            return None
+
+        league = str(league).strip()
+
+        return cls.LEAGUE_COUNTRY_MAP.get(league)
+
+    # ========================================================
     # MAIN API
     # ========================================================
 
@@ -132,26 +159,31 @@ class TeamMappingService:
         if cache_key in self._cache:
             return self._cache[cache_key]
 
+        # Преобразуем FAJ лигу в страну для API
+        country = self._get_country(league)
+
         try:
             results = self.api.search_team(
                 team_name,
-                country=league,
+                country=country,  # ✅ теперь country — это страна или None
             )
 
         except Exception as exc:
             logger.warning(
-                "Team mapping API error | team=%s | league=%s | error=%s",
+                "Team mapping API error | team=%s | league=%s | country=%s | error=%s",
                 team_name,
                 league,
+                country,
                 exc,
             )
             return None
 
         if not results:
             logger.warning(
-                "External team not found | team=%s | league=%s",
+                "External team not found | team=%s | league=%s | country=%s",
                 team_name,
                 league,
+                country,
             )
             return None
 
@@ -179,9 +211,10 @@ class TeamMappingService:
             self._cache[cache_key] = team_id
 
             logger.info(
-                "TEAM MAPPED | FAJ=%s | league=%s | API_ID=%s",
+                "TEAM MAPPED | FAJ=%s | league=%s | country=%s | API_ID=%s",
                 team_name,
                 league,
+                country,
                 team_id,
             )
 
