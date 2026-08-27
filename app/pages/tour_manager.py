@@ -120,6 +120,13 @@ def season_name(season: Any) -> str:
     return str(season["name"])
 
 
+def is_target_season(season: Any) -> bool:
+    """Распознаёт 2026/27, 2026-2027 и 2026-27 как один сезон."""
+    name = season_name(season).strip().replace("\u2013", "-").replace("\u2014", "-")
+    normalized = name.replace(" ", "")
+    return normalized in {"2026/27", "2026-27", "2026-2027"} or "2026/27" in normalized or "2026-27" in normalized or "2026-2027" in normalized
+
+
 def get_round_label(competition: str, number: int) -> str:
     return ROUND_LABELS.get(competition, {}).get(
         int(number),
@@ -151,6 +158,7 @@ def _call_db_create(method, values: dict[str, Any]):
     aliases = {
         "name": ["name", "season_name", "team_name"],
         "league": ["league", "competition"],
+        "year": ["year", "season_year"],
         "status": ["status"],
     }
 
@@ -178,6 +186,16 @@ def _call_db_create(method, values: dict[str, Any]):
     return method(**kwargs)
 
 
+def _season_matches(name: str) -> bool:
+    """Распознаёт 2026/27, 2026-27 и 2026-2027 как один сезон."""
+    value = str(name or "").strip()
+    return (
+        "2026/27" in value
+        or "2026-27" in value
+        or "2026-2027" in value
+    )
+
+
 def _ensure_season(db: FAJDatabase, competition: str):
     """Гарантирует наличие сезона 2026/27."""
     seasons = db.get_seasons()
@@ -185,7 +203,7 @@ def _ensure_season(db: FAJDatabase, competition: str):
     for season in seasons:
         if (
             str(row_value(season, "league", "")) == competition
-            and SEASON_NAME in season_name(season)
+            and is_target_season(season)
         ):
             return season
 
@@ -205,6 +223,8 @@ def _ensure_season(db: FAJDatabase, competition: str):
             {
                 "name": SEASON_NAME,
                 "league": competition,
+                "year": 2026,
+                "competition_type": "league" if competition != "Лига чемпионов" else "ucl",
                 "status": "active",
             },
         )
@@ -215,7 +235,7 @@ def _ensure_season(db: FAJDatabase, competition: str):
         for season in seasons:
             if (
                 str(row_value(season, "league", "")) == competition
-                and SEASON_NAME in season_name(season)
+                and _season_matches(season_name(season))
             ):
                 return season
 
