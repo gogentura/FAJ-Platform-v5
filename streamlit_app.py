@@ -3,7 +3,7 @@
 
 """
 ============================================================
-FAJ Platform v12.1
+FAJ Platform v12.2
 MAIN APPLICATION
 ============================================================
 
@@ -22,26 +22,27 @@ MAIN APPLICATION
                                      ├── system
                                      ├── diagnostic
                                      ├── parser_diagnostic
-                                     ├── data_audit        ← НОВОЕ
+                                     ├── data_audit
                                      └── reset_data
 
-СИСТЕМА:
-
-    Bootstrap
-        ↓
-    Round Center
-        ↓
-    FAJ Cycle (оркестратор, без кнопки в UI)
-        ↓
-    Learning Engine → ETC → Predictions
+    CLUB RATINGS
+           │
+           └── app/faj_club_ratings.py
+                    │
+                    ├── РПЛ
+                    ├── Ла Лига
+                    ├── АПЛ
+                    └── Лига чемпионов
 
 ПРИНЦИПЫ:
 
-    - SQLite only
-    - database.py — единственный источник схемы
+    - SQLite only для игровой/исторической БД
+    - database.py — единственный источник схемы БД
     - никакого прямого SQL в Streamlit
-    - операции выполняются через FAJDatabase / managers
-    - исторические факты не удаляются
+    - FAJ Club Rating хранится отдельно от SQLite
+    - стартовый рейтинг является экспертной базой
+    - текущий рейтинг в будущем изменяется через ETC
+    - исторический стартовый рейтинг не перезаписывается
     - predictions не смешиваются с results
 ============================================================
 """
@@ -70,8 +71,13 @@ if ROOT_DIR not in sys.path:
 
 try:
     from app.config import config
+
 except Exception as exc:
-    st.error(f"❌ Не удалось загрузить app.config: {exc}")
+
+    st.error(
+        f"❌ Не удалось загрузить app.config: {exc}"
+    )
+
     st.stop()
 
 
@@ -92,9 +98,18 @@ st.set_page_config(
 # ============================================================
 
 try:
-    from app.database import FAJDatabase, DB_FILE
+
+    from app.database import (
+        FAJDatabase,
+        DB_FILE,
+    )
+
 except Exception as exc:
-    st.error(f"❌ Не удалось загрузить app.database: {exc}")
+
+    st.error(
+        f"❌ Не удалось загрузить app.database: {exc}"
+    )
+
     st.stop()
 
 
@@ -102,12 +117,64 @@ DB_PATH = DB_FILE
 
 
 # ============================================================
+# CLUB RATINGS
+# ============================================================
+
+"""
+FAJ Club Rating не является частью database.py.
+
+Сейчас это экспертный стартовый слой.
+
+Позже:
+
+    START_RATING
+          ↓
+    CLUB RATING ENGINE
+          ↓
+    результаты матчей
+          ↓
+    новый CURRENT_RATING
+
+ETC сможет обновлять текущий рейтинг,
+при этом START_RATING останется неизменным.
+"""
+
+try:
+
+    from app.faj_club_ratings import (
+        FAJ_CLUB_RATINGS,
+        get_all_ratings,
+        get_league_ratings,
+        get_team_rating,
+    )
+
+    RATINGS_AVAILABLE = True
+
+except Exception:
+
+    FAJ_CLUB_RATINGS = {}
+    RATINGS_AVAILABLE = False
+
+    def get_all_ratings():
+        return {}
+
+    def get_league_ratings(league):
+        return {}
+
+    def get_team_rating(team_name):
+        return None
+
+
+# ============================================================
 # BOOTSTRAP
 # ============================================================
 
 try:
+
     from app.bootstrap import bootstrap_faj
+
 except Exception:
+
     bootstrap_faj = None
 
 
@@ -116,9 +183,12 @@ except Exception:
 # ============================================================
 
 if "page" not in st.session_state:
+
     st.session_state.page = "tour_manager"
 
+
 if "bootstrap_result" not in st.session_state:
+
     st.session_state.bootstrap_result = None
 
 
@@ -127,7 +197,9 @@ if "bootstrap_result" not in st.session_state:
 # ============================================================
 
 def navigate(page_name: str) -> None:
+
     st.session_state.page = page_name
+
     st.rerun()
 
 
@@ -136,18 +208,27 @@ def navigate(page_name: str) -> None:
 # ============================================================
 
 def get_db() -> FAJDatabase:
+
     return FAJDatabase()
 
 
 def database_exists() -> bool:
+
     return os.path.exists(DB_PATH)
 
 
 def table_exists(table_name: str) -> bool:
+
     try:
+
         db = get_db()
-        return bool(db.table_exists(table_name))
+
+        return bool(
+            db.table_exists(table_name)
+        )
+
     except Exception:
+
         return False
 
 
@@ -156,24 +237,42 @@ def table_exists(table_name: str) -> bool:
 # ============================================================
 
 def get_active_season():
+
     """
     Возвращает активный сезон РПЛ.
     """
 
     try:
+
         db = get_db()
+
         seasons = db.get_seasons()
 
+        # ----------------------------------------------------
         # Сначала ищем явно активный сезон
+        # ----------------------------------------------------
+
         for season in seasons:
 
             data = dict(season)
 
-            league = data.get("league", "")
-            name = data.get("name", "")
-            status = data.get("status", "")
+            league = data.get(
+                "league",
+                ""
+            )
+
+            name = data.get(
+                "name",
+                ""
+            )
+
+            status = data.get(
+                "status",
+                ""
+            )
 
             if league != "РПЛ":
+
                 continue
 
             if (
@@ -182,13 +281,17 @@ def get_active_season():
                 or "2026-27" in name
                 or "2026-2027" in name
             ):
+
                 return {
                     "id": data["id"],
                     "league": league,
                     "name": name,
                 }
 
+        # ----------------------------------------------------
         # Fallback — последний сезон РПЛ
+        # ----------------------------------------------------
+
         for season in reversed(seasons):
 
             data = dict(season)
@@ -198,12 +301,16 @@ def get_active_season():
                 return {
                     "id": data["id"],
                     "league": data["league"],
-                    "name": data.get("name", ""),
+                    "name": data.get(
+                        "name",
+                        "",
+                    ),
                 }
 
         return None
 
     except Exception:
+
         return None
 
 
@@ -229,9 +336,15 @@ def get_db_counts():
         # ----------------------------------------------------
 
         try:
-            teams = db.get_teams(league="РПЛ")
+
+            teams = db.get_teams(
+                league="РПЛ"
+            )
+
             result["teams"] = len(teams)
+
         except Exception:
+
             result["teams"] = 0
 
         # ----------------------------------------------------
@@ -243,7 +356,9 @@ def get_db_counts():
         if season:
 
             try:
+
                 matches = db.get_matches()
+
                 rounds = db.get_rounds()
 
                 round_map = {}
@@ -252,7 +367,9 @@ def get_db_counts():
 
                     row = dict(round_row)
 
-                    round_map[row.get("id")] = row
+                    round_map[
+                        row.get("id")
+                    ] = row
 
                 count = 0
 
@@ -260,48 +377,75 @@ def get_db_counts():
 
                     match_data = dict(match)
 
-                    round_id = match_data.get("round_id")
+                    round_id = match_data.get(
+                        "round_id"
+                    )
 
-                    round_data = round_map.get(round_id)
+                    round_data = round_map.get(
+                        round_id
+                    )
 
                     if not round_data:
+
                         continue
 
-                    if round_data.get("season_id") == season["id"]:
+                    if (
+                        round_data.get(
+                            "season_id"
+                        )
+                        == season["id"]
+                    ):
+
                         count += 1
 
                 result["matches"] = count
 
             except Exception:
+
                 result["matches"] = 0
 
         # ----------------------------------------------------
         # PREDICTIONS
         # ----------------------------------------------------
 
-        if table_exists("predictions"):
+        if table_exists(
+            "predictions"
+        ):
 
             try:
-                result["predictions"] = db.get_table_count(
-                    "predictions"
+
+                result["predictions"] = (
+                    db.get_table_count(
+                        "predictions"
+                    )
                 )
+
             except Exception:
+
                 result["predictions"] = 0
 
         # ----------------------------------------------------
         # RESULTS
         # ----------------------------------------------------
 
-        if table_exists("match_results"):
+        if table_exists(
+            "match_results"
+        ):
 
             try:
-                result["results"] = db.get_table_count(
-                    "match_results"
+
+                result["results"] = (
+                    db.get_table_count(
+                        "match_results"
+                    )
                 )
+
             except Exception:
+
                 result["results"] = 0
 
     except Exception:
+
         pass
 
     return result
@@ -316,12 +460,16 @@ def get_passport_data():
     try:
 
         db = get_db()
+
         season = get_active_season()
 
         if not season:
+
             return []
 
-        teams = db.get_teams(league="РПЛ")
+        teams = db.get_teams(
+            league="РПЛ"
+        )
 
         data = []
 
@@ -335,13 +483,18 @@ def get_passport_data():
             )
 
             if not passport:
+
                 continue
 
-            passport_data = dict(passport)
+            passport_data = dict(
+                passport
+            )
 
             data.append(
                 {
-                    "team_name": team_data["name"],
+                    "team_name": team_data[
+                        "name"
+                    ],
                     "attack": passport_data.get(
                         "attack",
                         0,
@@ -368,7 +521,82 @@ def get_passport_data():
         return data
 
     except Exception:
+
         return []
+
+
+# ============================================================
+# CLUB RATING HELPERS
+# ============================================================
+
+def render_league_rating(
+    league_name: str,
+    title: str = None,
+):
+
+    """
+    Показывает рейтинг выбранного турнира.
+    """
+
+    if not RATINGS_AVAILABLE:
+
+        st.warning(
+            "⚠️ FAJ Club Rating пока не подключён."
+        )
+
+        st.info(
+            "Создайте файл "
+            "`app/faj_club_ratings.py`."
+        )
+
+        return
+
+    ratings = get_league_ratings(
+        league_name
+    )
+
+    if not ratings:
+
+        st.warning(
+            f"⚠️ Рейтинг для {league_name} "
+            "не найден."
+        )
+
+        return
+
+    if title:
+
+        st.subheader(title)
+
+    rows = []
+
+    for position, (
+        team,
+        rating
+    ) in enumerate(
+        sorted(
+            ratings.items(),
+            key=lambda x: x[1],
+            reverse=True,
+        ),
+        start=1,
+    ):
+
+        rows.append(
+            {
+                "№": position,
+                "Команда": team,
+                "FAJ Rating": rating,
+            }
+        )
+
+    df = pd.DataFrame(rows)
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+    )
 
 
 # ============================================================
@@ -381,7 +609,9 @@ if st.session_state.bootstrap_result is None:
 
         try:
 
-            with st.spinner("🚀 Проверка FAJ..."):
+            with st.spinner(
+                "🚀 Проверка FAJ..."
+            ):
 
                 st.session_state.bootstrap_result = (
                     bootstrap_faj()
@@ -424,31 +654,64 @@ with st.sidebar:
     # ROUND CENTER
     # ========================================================
 
-    st.caption("🏟️ ROUND CENTER")
+    st.caption(
+        "🏟️ ROUND CENTER"
+    )
 
     if st.button(
         "🗓️ Управление турами",
         use_container_width=True,
     ):
-        navigate("tour_manager")
+
+        navigate(
+            "tour_manager"
+        )
 
     if st.button(
         "🧠 Прогноз тура",
         use_container_width=True,
     ):
-        navigate("predict_round")
+
+        navigate(
+            "predict_round"
+        )
 
     if st.button(
         "📥 Факты тура",
         use_container_width=True,
     ):
-        navigate("import_facts")
+
+        navigate(
+            "import_facts"
+        )
 
     if st.button(
         "🏁 Тур сыгран",
         use_container_width=True,
     ):
-        navigate("round_complete")
+
+        navigate(
+            "round_complete"
+        )
+
+    st.divider()
+
+    # ========================================================
+    # FAJ RATINGS
+    # ========================================================
+
+    st.caption(
+        "⭐ FAJ RATINGS"
+    )
+
+    if st.button(
+        "⭐ Рейтинг клубов",
+        use_container_width=True,
+    ):
+
+        navigate(
+            "club_ratings"
+        )
 
     st.divider()
 
@@ -456,49 +719,72 @@ with st.sidebar:
     # SYSTEM
     # ========================================================
 
-    st.caption("⚙️ СИСТЕМА")
+    st.caption(
+        "⚙️ СИСТЕМА"
+    )
 
     if st.button(
         "📋 Паспорта",
         use_container_width=True,
     ):
-        navigate("passports")
+
+        navigate(
+            "passports"
+        )
 
     if st.button(
         "📊 Аналитика",
         use_container_width=True,
     ):
-        navigate("analytics")
+
+        navigate(
+            "analytics"
+        )
 
     if st.button(
         "📚 История",
         use_container_width=True,
     ):
-        navigate("history")
+
+        navigate(
+            "history"
+        )
 
     if st.button(
         "🧠 ETC",
         use_container_width=True,
     ):
-        navigate("etc")
+
+        navigate(
+            "etc"
+        )
 
     if st.button(
         "⚙️ Система",
         use_container_width=True,
     ):
-        navigate("system")
+
+        navigate(
+            "system"
+        )
 
     if st.button(
         "🧹 Очистка данных",
         use_container_width=True,
     ):
-        navigate("reset_data")
+
+        navigate(
+            "reset_data"
+        )
 
     if st.button(
         "🔧 Диагностика",
         use_container_width=True,
     ):
-        navigate("diagnostic")
+
+        navigate(
+            "diagnostic"
+        )
 
     # ========================================================
     # PARSER DIAGNOSTIC
@@ -508,17 +794,23 @@ with st.sidebar:
         "🔬 Диагностика парсеров",
         use_container_width=True,
     ):
-        navigate("parser_diagnostic")
+
+        navigate(
+            "parser_diagnostic"
+        )
 
     # ========================================================
-    # DATA AUDIT — НОВАЯ КНОПКА
+    # DATA AUDIT
     # ========================================================
 
     if st.button(
         "🔍 Аудит данных FAJ",
         use_container_width=True,
     ):
-        navigate("data_audit")
+
+        navigate(
+            "data_audit"
+        )
 
     st.divider()
 
@@ -526,7 +818,9 @@ with st.sidebar:
     # GITHUB STORAGE
     # ========================================================
 
-    st.caption("☁️ ХРАНИЛИЩЕ")
+    st.caption(
+        "☁️ ХРАНИЛИЩЕ"
+    )
 
     if st.button(
         "💾 Сохранить базу в GitHub",
@@ -539,9 +833,13 @@ with st.sidebar:
                 save_database_to_github
             )
 
-            with st.spinner("Сохранение..."):
+            with st.spinner(
+                "Сохранение..."
+            ):
 
-                result = save_database_to_github()
+                result = (
+                    save_database_to_github()
+                )
 
             st.success(
                 f"✅ База сохранена: "
@@ -565,11 +863,17 @@ with st.sidebar:
                 load_database_from_github
             )
 
-            with st.spinner("Восстановление..."):
+            with st.spinner(
+                "Восстановление..."
+            ):
 
-                result = load_database_from_github()
+                result = (
+                    load_database_from_github()
+                )
 
-            if result.get("loaded"):
+            if result.get(
+                "loaded"
+            ):
 
                 st.success(
                     f"✅ База восстановлена: "
@@ -579,7 +883,8 @@ with st.sidebar:
             else:
 
                 st.info(
-                    f"ℹ️ {result.get('reason', '')}"
+                    f"ℹ️ "
+                    f"{result.get('reason', '')}"
                 )
 
             st.rerun()
@@ -598,17 +903,21 @@ with st.sidebar:
 
     counts = get_db_counts()
 
-    st.caption("📊 СОСТОЯНИЕ")
+    st.caption(
+        "📊 СОСТОЯНИЕ"
+    )
 
     c1, c2 = st.columns(2)
 
     with c1:
+
         st.metric(
             "Команды",
             counts["teams"],
         )
 
     with c2:
+
         st.metric(
             "Матчи",
             counts["matches"],
@@ -616,11 +925,31 @@ with st.sidebar:
 
     if database_exists():
 
-        st.caption("🟢 SQLite")
+        st.caption(
+            "🟢 SQLite"
+        )
 
     else:
 
-        st.caption("🔴 SQLite отсутствует")
+        st.caption(
+            "🔴 SQLite отсутствует"
+        )
+
+    # --------------------------------------------------------
+    # RATING STATUS
+    # --------------------------------------------------------
+
+    if RATINGS_AVAILABLE:
+
+        st.caption(
+            "⭐ FAJ Rating: 🟢 загружен"
+        )
+
+    else:
+
+        st.caption(
+            "⭐ FAJ Rating: 🔴 не загружен"
+        )
 
 
 # ============================================================
@@ -645,7 +974,10 @@ if st.session_state.page == "tour_manager":
             f"❌ Ошибка загрузки страницы: {exc}"
         )
 
-        with st.expander("Техническая ошибка"):
+        with st.expander(
+            "Техническая ошибка"
+        ):
+
             st.exception(exc)
 
 
@@ -663,7 +995,10 @@ elif st.session_state.page == "predict_round":
             f"❌ Ошибка загрузки страницы: {exc}"
         )
 
-        with st.expander("Техническая ошибка"):
+        with st.expander(
+            "Техническая ошибка"
+        ):
+
             st.exception(exc)
 
 
@@ -681,7 +1016,10 @@ elif st.session_state.page == "import_facts":
             f"❌ Ошибка загрузки страницы: {exc}"
         )
 
-        with st.expander("Техническая ошибка"):
+        with st.expander(
+            "Техническая ошибка"
+        ):
+
             st.exception(exc)
 
 
@@ -699,17 +1037,112 @@ elif st.session_state.page == "round_complete":
             f"❌ Ошибка загрузки страницы: {exc}"
         )
 
-        with st.expander("Техническая ошибка"):
+        with st.expander(
+            "Техническая ошибка"
+        ):
+
             st.exception(exc)
 
 
 # ============================================================
-# SYSTEM
+# FAJ CLUB RATINGS
+# ============================================================
+
+elif st.session_state.page == "club_ratings":
+
+    st.title(
+        "⭐ FAJ Club Rating"
+    )
+
+    st.caption(
+        "Экспертный стартовый рейтинг клубов "
+        "с последующим динамическим обновлением через ETC."
+    )
+
+    st.divider()
+
+    if not RATINGS_AVAILABLE:
+
+        st.error(
+            "❌ Модуль FAJ Club Rating не найден."
+        )
+
+        st.code(
+            "app/faj_club_ratings.py"
+        )
+
+    else:
+
+        # ----------------------------------------------------
+        # ОБЩАЯ ИНФОРМАЦИЯ
+        # ----------------------------------------------------
+
+        st.info(
+            "Стартовый рейтинг — это базовая оценка силы "
+            "команды перед началом работы динамического "
+            "рейтинга FAJ."
+        )
+
+        # ----------------------------------------------------
+        # ВЫБОР ТУРНИРА
+        # ----------------------------------------------------
+
+        leagues = [
+            "РПЛ",
+            "Ла Лига",
+            "АПЛ",
+            "Лига чемпионов",
+        ]
+
+        selected_league = st.selectbox(
+            "Выберите турнир",
+            leagues,
+        )
+
+        st.divider()
+
+        # ----------------------------------------------------
+        # РЕЙТИНГ
+        # ----------------------------------------------------
+
+        render_league_rating(
+            selected_league
+        )
+
+        st.divider()
+
+        # ----------------------------------------------------
+        # ЛОГИКА
+        # ----------------------------------------------------
+
+        st.subheader(
+            "⚙️ Логика рейтинга"
+        )
+
+        st.write(
+            "Сейчас отображается стартовый FAJ Rating."
+        )
+
+        st.write(
+            "После подключения ClubRatingUpdater "
+            "рейтинг будет изменяться по результатам матчей."
+        )
+
+        st.write(
+            "При этом стартовое значение останется "
+            "исторической точкой отсчёта."
+        )
+
+
+# ============================================================
+# PASSPORTS
 # ============================================================
 
 elif st.session_state.page == "passports":
 
-    st.title("📋 Паспорта команд")
+    st.title(
+        "📋 Паспорта команд"
+    )
 
     try:
 
@@ -723,7 +1156,9 @@ elif st.session_state.page == "passports":
 
         else:
 
-            df = pd.DataFrame(data)
+            df = pd.DataFrame(
+                data
+            )
 
             display_df = df.rename(
                 columns={
@@ -757,7 +1192,9 @@ elif st.session_state.page == "passports":
 
 elif st.session_state.page == "analytics":
 
-    st.title("📊 Аналитика")
+    st.title(
+        "📊 Аналитика"
+    )
 
     st.info(
         "Аналитический слой FAJ."
@@ -768,24 +1205,28 @@ elif st.session_state.page == "analytics":
     c1, c2, c3, c4 = st.columns(4)
 
     with c1:
+
         st.metric(
             "Команды",
             counts["teams"],
         )
 
     with c2:
+
         st.metric(
             "Матчи",
             counts["matches"],
         )
 
     with c3:
+
         st.metric(
             "Результаты",
             counts["results"],
         )
 
     with c4:
+
         st.metric(
             "Прогнозы",
             counts["predictions"],
@@ -798,7 +1239,9 @@ elif st.session_state.page == "analytics":
 
 elif st.session_state.page == "history":
 
-    st.title("📚 История FAJ")
+    st.title(
+        "📚 История FAJ"
+    )
 
     st.info(
         "История прогнозов и фактических результатов."
@@ -809,12 +1252,14 @@ elif st.session_state.page == "history":
     c1, c2 = st.columns(2)
 
     with c1:
+
         st.metric(
             "Матчи",
             counts["matches"],
         )
 
     with c2:
+
         st.metric(
             "Прогнозы",
             counts["predictions"],
@@ -839,7 +1284,10 @@ elif st.session_state.page == "etc":
             f"❌ Ошибка загрузки страницы ETC: {exc}"
         )
 
-        with st.expander("Техническая ошибка"):
+        with st.expander(
+            "Техническая ошибка"
+        ):
+
             st.exception(exc)
 
 
@@ -849,7 +1297,9 @@ elif st.session_state.page == "etc":
 
 elif st.session_state.page == "system":
 
-    st.title("⚙️ Система")
+    st.title(
+        "⚙️ Система"
+    )
 
     st.caption(
         "Техническое состояние FAJ Platform"
@@ -885,10 +1335,48 @@ elif st.session_state.page == "system":
     st.divider()
 
     # --------------------------------------------------------
+    # CLUB RATINGS STATUS
+    # --------------------------------------------------------
+
+    st.subheader(
+        "⭐ FAJ Club Rating"
+    )
+
+    if RATINGS_AVAILABLE:
+
+        all_ratings = (
+            get_all_ratings()
+        )
+
+        st.success(
+            "🟢 Модуль рейтингов загружен"
+        )
+
+        total_teams = sum(
+            len(league)
+            for league in all_ratings.values()
+        )
+
+        st.metric(
+            "Клубов в рейтинговой базе",
+            total_teams,
+        )
+
+    else:
+
+        st.error(
+            "🔴 Модуль рейтингов не найден"
+        )
+
+    st.divider()
+
+    # --------------------------------------------------------
     # SQLITE
     # --------------------------------------------------------
 
-    st.subheader("💾 SQLite")
+    st.subheader(
+        "💾 SQLite"
+    )
 
     if database_exists():
 
@@ -899,7 +1387,9 @@ elif st.session_state.page == "system":
         try:
 
             size_mb = (
-                os.path.getsize(DB_PATH)
+                os.path.getsize(
+                    DB_PATH
+                )
                 / 1024
                 / 1024
             )
@@ -910,6 +1400,7 @@ elif st.session_state.page == "system":
             )
 
         except Exception:
+
             pass
 
     else:
@@ -924,7 +1415,9 @@ elif st.session_state.page == "system":
     # DATABASE INFO
     # --------------------------------------------------------
 
-    st.subheader("📁 Диагностика БД")
+    st.subheader(
+        "📁 Диагностика БД"
+    )
 
     st.write(
         f"**Путь к БД:** `{DB_PATH}`"
@@ -935,21 +1428,28 @@ elif st.session_state.page == "system":
         f"{os.path.exists(DB_PATH)}"
     )
 
-    if os.path.exists(DB_PATH):
+    if os.path.exists(
+        DB_PATH
+    ):
 
         try:
 
             size_mb = (
-                os.path.getsize(DB_PATH)
+                os.path.getsize(
+                    DB_PATH
+                )
                 / 1024
                 / 1024
             )
 
             st.write(
-                f"**Размер:** {size_mb:.2f} MB"
+                f"**Размер:** "
+                f"{size_mb:.2f} MB"
             )
 
-            mtime = os.path.getmtime(DB_PATH)
+            mtime = os.path.getmtime(
+                DB_PATH
+            )
 
             st.write(
                 "**Изменён:** "
@@ -957,6 +1457,7 @@ elif st.session_state.page == "system":
             )
 
         except Exception:
+
             pass
 
     st.divider()
@@ -965,25 +1466,35 @@ elif st.session_state.page == "system":
     # SUMMARY
     # --------------------------------------------------------
 
-    st.subheader("🔍 Состояние")
+    st.subheader(
+        "🔍 Состояние"
+    )
 
     summary_df = pd.DataFrame(
         [
             {
                 "Показатель": "Команды РПЛ",
-                "Количество": counts["teams"],
+                "Количество": counts[
+                    "teams"
+                ],
             },
             {
                 "Показатель": "Матчи активного сезона",
-                "Количество": counts["matches"],
+                "Количество": counts[
+                    "matches"
+                ],
             },
             {
                 "Показатель": "Результаты",
-                "Количество": counts["results"],
+                "Количество": counts[
+                    "results"
+                ],
             },
             {
                 "Показатель": "Прогнозы",
-                "Количество": counts["predictions"],
+                "Количество": counts[
+                    "predictions"
+                ],
             },
         ]
     )
@@ -1013,12 +1524,15 @@ elif st.session_state.page == "reset_data":
             f"❌ Ошибка загрузки страницы: {exc}"
         )
 
-        with st.expander("Техническая ошибка"):
+        with st.expander(
+            "Техническая ошибка"
+        ):
+
             st.exception(exc)
 
 
 # ============================================================
-# DIAGNOSTIC (БД)
+# DIAGNOSTIC
 # ============================================================
 
 elif st.session_state.page == "diagnostic":
@@ -1031,19 +1545,29 @@ elif st.session_state.page == "diagnostic":
     # PATH
     # --------------------------------------------------------
 
-    st.subheader("📁 Путь к БД")
+    st.subheader(
+        "📁 Путь к БД"
+    )
 
-    st.code(DB_PATH)
+    st.code(
+        DB_PATH
+    )
 
     # --------------------------------------------------------
     # FILE
     # --------------------------------------------------------
 
-    st.subheader("📊 Статус файла")
+    st.subheader(
+        "📊 Статус файла"
+    )
 
-    if os.path.exists(DB_PATH):
+    if os.path.exists(
+        DB_PATH
+    ):
 
-        size = os.path.getsize(DB_PATH)
+        size = os.path.getsize(
+            DB_PATH
+        )
 
         st.success(
             "✅ Файл существует! "
@@ -1075,7 +1599,9 @@ elif st.session_state.page == "diagnostic":
             f"{status['status']}"
         )
 
-        st.json(status)
+        st.json(
+            status
+        )
 
     except Exception as exc:
 
@@ -1083,7 +1609,9 @@ elif st.session_state.page == "diagnostic":
             f"❌ Ошибка инициализации: {exc}"
         )
 
-        st.exception(exc)
+        st.exception(
+            exc
+        )
 
     # --------------------------------------------------------
     # DATA DIRECTORY
@@ -1095,11 +1623,15 @@ elif st.session_state.page == "diagnostic":
 
     try:
 
-        data_dir = os.path.dirname(DB_PATH)
+        data_dir = os.path.dirname(
+            DB_PATH
+        )
 
         files = (
             os.listdir(data_dir)
-            if os.path.exists(data_dir)
+            if os.path.exists(
+                data_dir
+            )
             else []
         )
 
@@ -1119,7 +1651,7 @@ elif st.session_state.page == "diagnostic":
 
 
 # ============================================================
-# PARSER DIAGNOSTIC — НОВЫЙ БЛОК
+# PARSER DIAGNOSTIC
 # ============================================================
 
 elif st.session_state.page == "parser_diagnostic":
@@ -1136,20 +1668,28 @@ elif st.session_state.page == "parser_diagnostic":
             f"❌ Ошибка загрузки диагностики парсеров: {exc}"
         )
 
-        with st.expander("Техническая ошибка"):
-            st.exception(exc)
+        with st.expander(
+            "Техническая ошибка"
+        ):
+
+            st.exception(
+                exc
+            )
 
 
 # ============================================================
-# DATA AUDIT — АУДИТ ДАННЫХ (НОВЫЙ БЛОК)
+# DATA AUDIT
 # ============================================================
 
 elif st.session_state.page == "data_audit":
 
-    st.title("🔍 Аудит данных FAJ")
+    st.title(
+        "🔍 Аудит данных FAJ"
+    )
 
     st.caption(
-        "Проверка данных, необходимых для Evolution Report"
+        "Проверка данных, необходимых "
+        "для Evolution Report"
     )
 
     st.divider()
@@ -1159,8 +1699,8 @@ elif st.session_state.page == "data_audit":
     # --------------------------------------------------------
 
     st.info(
-        "Аудит проверяет наличие критических данных для "
-        "построения эволюционного отчета FAJ:\n\n"
+        "Аудит проверяет наличие критических данных "
+        "для построения эволюционного отчета FAJ:\n\n"
         "• Прогнозы (predictions)\n"
         "• Фактические результаты (match_results)\n"
         "• Learning Memory (learning_memory)\n"
@@ -1188,11 +1728,15 @@ elif st.session_state.page == "data_audit":
                 "audit_faj_data.py",
             )
 
-            if not os.path.exists(script_path):
+            if not os.path.exists(
+                script_path
+            ):
 
                 st.error(
-                    f"❌ Скрипт аудита не найден: {script_path}\n\n"
-                    "Создайте файл `scripts/audit_faj_data.py`"
+                    f"❌ Скрипт аудита не найден: "
+                    f"{script_path}\n\n"
+                    "Создайте файл "
+                    "`scripts/audit_faj_data.py`"
                 )
 
             else:
@@ -1210,10 +1754,6 @@ elif st.session_state.page == "data_audit":
                         capture_output=True,
                         text=True,
                     )
-
-                # --------------------------------------------
-                # ВЫВОД АУДИТА
-                # --------------------------------------------
 
                 if result.stdout:
 
@@ -1233,10 +1773,6 @@ elif st.session_state.page == "data_audit":
                             language="text",
                         )
 
-                # --------------------------------------------
-                # РЕЗУЛЬТАТ
-                # --------------------------------------------
-
                 if result.returncode == 0:
 
                     st.success(
@@ -1248,9 +1784,7 @@ elif st.session_state.page == "data_audit":
 
                     st.warning(
                         "⚠️ Аудит завершён. "
-                        "Обнаружены недостающие данные.\n\n"
-                        "Проверьте вывод выше, чтобы определить, "
-                        "каких данных не хватает для Evolution Report."
+                        "Обнаружены недостающие данные."
                     )
 
         except Exception as exc:
@@ -1263,7 +1797,9 @@ elif st.session_state.page == "data_audit":
                 "Техническая ошибка"
             ):
 
-                st.exception(exc)
+                st.exception(
+                    exc
+                )
 
     # --------------------------------------------------------
     # ИНСТРУКЦИЯ
@@ -1273,30 +1809,32 @@ elif st.session_state.page == "data_audit":
         "📖 Как интерпретировать результаты аудита"
     ):
 
-        st.markdown("""
-        **✅ Что должно быть:**
+        st.markdown(
+            """
+**✅ Что должно быть:**
 
-        | Данные | Что проверяет |
-        |--------|---------------|
-        | `predictions` | Прогнозы FAJ |
-        | `prediction_scores` | Точные счета прогнозов |
-        | `match_results` | Фактические результаты |
-        | `learning_memory` | Память обучения ETC |
-        | `model_parameters` | Параметры модели (исторически) |
-        | `team_passports` | Паспорта команд |
+| Данные | Что проверяет |
+|--------|---------------|
+| `predictions` | Прогнозы FAJ |
+| `prediction_scores` | Точные счета прогнозов |
+| `match_results` | Фактические результаты |
+| `learning_memory` | Память обучения ETC |
+| `model_parameters` | Параметры модели |
+| `team_passports` | Паспорта команд |
 
-        **❌ Чего не хватает для Evolution Report:**
+**❌ Чего не хватает для Evolution Report:**
 
-        - Нет исторических параметров модели → нельзя показать "было → стало"
-        - Нет `match_snapshots` → нельзя восстановить состояние модели
-        - Нет `prediction_error` в learning_memory → нет связи обучение → ошибка
-        - Нет xG в match_results → нельзя сравнить прогнозный и фактический xG
+- Нет исторических параметров модели → нельзя показать "было → стало"
+- Нет `match_snapshots` → нельзя восстановить состояние модели
+- Нет `prediction_error` в learning_memory → нет связи обучение → ошибка
+- Нет xG в match_results → нельзя сравнить прогнозный и фактический xG
 
-        **📌 Что делать:**
+**📌 Что делать:**
 
-        1. Если данных нет → добавить сохранение
-        2. Если данные есть → перейти к Evolution Report
-        """)
+1. Если данных нет → добавить сохранение
+2. Если данные есть → перейти к Evolution Report
+"""
+        )
 
 
 # ============================================================
@@ -1305,7 +1843,9 @@ elif st.session_state.page == "data_audit":
 
 else:
 
-    st.session_state.page = "tour_manager"
+    st.session_state.page = (
+        "tour_manager"
+    )
 
     st.rerun()
 
