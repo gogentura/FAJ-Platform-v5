@@ -4424,6 +4424,80 @@ class FAJDatabase:
             }
         finally:
             conn.close()
+
+    # ============================================================
+    # 🆕 НОВЫЙ МЕТОД: GET CURRENT PARAMETERS
+    # ============================================================
+
+    def get_current_parameters(self) -> Optional[Any]:
+        """
+        Возвращает текущие параметры модели.
+        
+        Используется ETCController для BEFORE/AFTER snapshot.
+        
+        Returns:
+            SimpleNamespace или объект с полями:
+                alpha, beta, gamma, delta, version
+            или None, если параметры не найдены.
+        
+        Если параметров нет — возвращает значения по умолчанию.
+        """
+        from types import SimpleNamespace
+        
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Получаем все текущие параметры
+            cursor.execute("""
+                SELECT parameter_name, parameter_value
+                FROM model_parameters
+                WHERE is_current = 1
+                ORDER BY parameter_name
+            """)
+            
+            rows = cursor.fetchall()
+            
+            if not rows:
+                # Нет параметров — возвращаем значения по умолчанию
+                logger.info("No model parameters found, using defaults")
+                return SimpleNamespace(
+                    alpha=0.7,
+                    beta=1.0,
+                    gamma=0.5,
+                    delta=0.3,
+                    version=1,
+                )
+            
+            # Собираем параметры
+            params = {}
+            version = 1
+            
+            for row in rows:
+                name = row["parameter_name"]
+                value = row["parameter_value"]
+                
+                if name in ("alpha", "beta", "gamma", "delta"):
+                    params[name] = float(value)
+                elif name == "version":
+                    version = int(value)
+            
+            # Если не все параметры найдены — дополняем значениями по умолчанию
+            defaults = {"alpha": 0.7, "beta": 1.0, "gamma": 0.5, "delta": 0.3}
+            for key, default_value in defaults.items():
+                if key not in params:
+                    params[key] = default_value
+            
+            return SimpleNamespace(
+                alpha=params["alpha"],
+                beta=params["beta"],
+                gamma=params["gamma"],
+                delta=params["delta"],
+                version=version,
+            )
+            
+        finally:
+            conn.close()
     
     # ============================================================
     # 🆕 НОВЫЙ МЕТОД P0: GET LEARNING MEMORY (С ФИЛЬТРАЦИЕЙ)
