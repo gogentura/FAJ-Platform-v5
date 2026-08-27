@@ -14,7 +14,7 @@ v5.1:
     из START_RATINGS (только в UI, не сохраняется).
 
 v5.2:
-    Убрана лишняя информационная надпись о Club Rating.
+    Исправлен импорт: FAJ_CLUB_RATINGS вместо START_RATINGS.
 """
 
 from __future__ import annotations
@@ -138,8 +138,8 @@ def match_is_locked(db: FAJDatabase, match_id: int) -> bool:
 def get_team_rating(team_name: str) -> Optional[float]:
     """Получает стартовый рейтинг команды из FAJ Club Ratings."""
     try:
-        from app.faj_club_ratings import START_RATINGS
-        for league, teams in START_RATINGS.items():
+        from app.faj_club_ratings import FAJ_CLUB_RATINGS
+        for league, teams in FAJ_CLUB_RATINGS.items():
             if team_name in teams:
                 return float(teams[team_name])
     except Exception:
