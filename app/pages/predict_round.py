@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1 — MEMORY HARDENED
-PREDICT ROUND v3.4
+PREDICT ROUND v3.5
 ============================================================
 
 НАЗНАЧЕНИЕ:
@@ -52,6 +52,12 @@ import streamlit as st
 from app.database import FAJDatabase
 from app.match_manager import MatchManager
 from app.core.prediction_manager import get_prediction_manager
+from app.services.team_mapping import get_team_mapping_service
+from app.services.match_context import (
+    get_match_context_service,
+    MatchContextError,
+    MatchContextService,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -353,6 +359,181 @@ def get_risk_level(prediction: dict) -> str:
     return "Высокий"
 
 
+# ============================================================
+# SCOUT / ADDITIONAL STATISTICS
+# ============================================================
+
+def get_scout_context(
+    db: FAJDatabase,
+    match: dict,
+) -> dict:
+    """
+    Ручное получение дополнительной статистики из внешнего API.
+
+    ВАЖНО:
+        - не меняет prediction
+        - не меняет passport
+        - не меняет rating
+        - не пишет в SQLite
+        - не участвует автоматически в PredictionManager
+        - только READ-ONLY
+    """
+    try:
+        mapping = get_team_mapping_service()
+    except Exception as exc:
+        logger.exception("Cannot initialize TeamMappingService")
+        return {
+            "status": "error",
+            "message": f"Ошибка инициализации маппинга: {exc}",
+        }
+
+    home_name = team_name(db, match.get("home_team_id"))
+    away_name = team_name(db, match.get("away_team_id"))
+
+    if not home_name or not away_name:
+        return {
+            "status": "error",
+            "message": "Не удалось определить названия команд",
+        }
+
+    # Определяем лигу для поиска
+    league = match.get("competition") or match.get("league") or "РПЛ"
+
+    try:
+        home_api_id = mapping.get_api_id(home_name, league=league)
+        away_api_id = mapping.get_api_id(away_name, league=league)
+
+        if not home_api_id:
+            return {
+                "status": "error",
+                "message": f"API ID не найден для: {home_name}",
+            }
+
+        if not away_api_id:
+            return {
+                "status": "error",
+                "message": f"API ID не найден для: {away_name}",
+            }
+
+        # Получаем контекст через MatchContextService
+        context_service = get_match_context_service()
+        context = context_service.get_match_context(
+            home_team_id=home_api_id,
+            away_team_id=away_api_id,
+            h2h_last=10,
+            form_last=5,
+        )
+
+        return {
+            "status": "success",
+            "home_name": home_name,
+            "away_name": away_name,
+            "home_api_id": home_api_id,
+            "away_api_id": away_api_id,
+            "context": context,
+            "summary": context_service.build_director_summary(context),
+        }
+
+    except MatchContextError as exc:
+        logger.warning("MatchContextError: %s", exc)
+        return {
+            "status": "error",
+            "message": str(exc),
+        }
+
+    except Exception as exc:
+        logger.exception("Unexpected error in get_scout_context")
+        return {
+            "status": "error",
+            "message": f"Ошибка получения статистики: {exc}",
+        }
+
+
+def render_scout_block(scout_result: dict):
+    """Отображает Scout-статистику в карточке матча."""
+    if not scout_result:
+        return
+
+    if scout_result.get("status") == "error":
+        st.warning(f"⚠️ {scout_result.get('message', 'Ошибка API')}")
+        return
+
+    summary = scout_result.get("summary", {})
+    if not summary:
+        st.info("Статистика недоступна")
+        return
+
+    h2h = summary.get("h2h", {})
+    home_form = summary.get("home_form", {})
+    home_at_home = summary.get("home_at_home", {})
+    away_form = summary.get("away_form", {})
+    away_away = summary.get("away_away", {})
+
+    # Строки формы
+    home_form_str = MatchContextService.form_string(home_form)
+    away_form_str = MatchContextService.form_string(away_form)
+
+    st.markdown("### 📊 Дополнительная статистика (Scout)")
+    st.caption(
+        "Данные получены вручную из внешнего API. "
+        "Они не изменяют прогноз FAJ, рейтинг или паспорт."
+    )
+
+    # H2H
+    if h2h.get("matches", 0) > 0:
+        st.markdown("**История личных встреч**")
+        h2h_col1, h2h_col2, h2h_col3, h2h_col4 = st.columns(4)
+        with h2h_col1:
+            st.metric("Матчей", h2h.get("matches", 0))
+        with h2h_col2:
+            st.metric("Победы хозяев", h2h.get("home_wins", 0))
+        with h2h_col3:
+            st.metric("Ничьи", h2h.get("draws", 0))
+        with h2h_col4:
+            st.metric("Победы гостей", h2h.get("away_wins", 0))
+
+        c1, c2 = st.columns(2)
+        with c1:
+            st.metric(
+                "Голы хозяев (в среднем)",
+                f"{h2h.get('home_goals_avg', 0):.2f}",
+            )
+        with c2:
+            st.metric(
+                "Голы гостей (в среднем)",
+                f"{h2h.get('away_goals_avg', 0):.2f}",
+            )
+
+    # Форма команд
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown(f"**{scout_result.get('home_name', 'Хозяева')}**")
+        st.metric("Последние 5 матчей", home_form_str)
+        if home_at_home.get("matches", 0) > 0:
+            st.metric(
+                "Дома (последние 5)",
+                f"{home_at_home.get('wins', 0)}W "
+                f"{home_at_home.get('draws', 0)}D "
+                f"{home_at_home.get('losses', 0)}L",
+                f"Голы: {home_at_home.get('goals_for', 0)}–"
+                f"{home_at_home.get('goals_against', 0)}",
+            )
+
+    with col2:
+        st.markdown(f"**{scout_result.get('away_name', 'Гости')}**")
+        st.metric("Последние 5 матчей", away_form_str)
+        if away_away.get("matches", 0) > 0:
+            st.metric(
+                "В гостях (последние 5)",
+                f"{away_away.get('wins', 0)}W "
+                f"{away_away.get('draws', 0)}D "
+                f"{away_away.get('losses', 0)}L",
+                f"Голы: {away_away.get('goals_for', 0)}–"
+                f"{away_away.get('goals_against', 0)}",
+            )
+
+
 def render_probability_columns(prediction: dict):
     """Показывает П1 / X / П2."""
 
@@ -593,9 +774,6 @@ def render_prediction_card(
     except (TypeError, ValueError):
         confidence = 0
 
-    # ============================================================
-    # ИСПРАВЛЕНО: вызываем get_risk_level() вместо prediction.get("risk")
-    # ============================================================
     risk = get_risk_level(prediction)
 
     c1, c2 = st.columns(2)
@@ -631,9 +809,43 @@ def render_prediction_card(
         )
     )
 
-    # --------------------------------------------------------
+    # ============================================================
+    # SCOUT / ADDITIONAL STATISTICS — НОВЫЙ БЛОК
+    # ============================================================
+
+    st.markdown("### 🔎 Дополнительная статистика")
+
+    scout_key = f"scout_stats_{match_id}"
+
+    if scout_key not in st.session_state:
+        st.session_state[scout_key] = None
+
+    col_scout1, col_scout2 = st.columns([3, 1])
+
+    with col_scout1:
+        st.caption(
+            "Получить дополнительную статистику из внешнего API: "
+            "H2H, последние матчи, домашняя/выездная форма."
+        )
+
+    with col_scout2:
+        if st.button(
+            "📊 Получить статистику",
+            key=f"scout_button_{match_id}",
+            use_container_width=True,
+        ):
+            with st.spinner("Получение внешней статистики..."):
+                scout_result = get_scout_context(db, match)
+                st.session_state[scout_key] = scout_result
+
+    scout_result = st.session_state.get(scout_key)
+
+    if scout_result:
+        render_scout_block(scout_result)
+
+    # ============================================================
     # EXPERT — С СОХРАНЕНИЕМ В БД
-    # --------------------------------------------------------
+    # ============================================================
 
     st.markdown("### 🧑‍💼 Прогноз Директора")
 
