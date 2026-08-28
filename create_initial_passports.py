@@ -1,67 +1,46 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
-FAJ Platform v12.1
-Initial Passport Creator v1.1
+FAJ Platform v12.1 — Initial Passport Creator v1.0
 
-Создание стартовых паспортов v1.0.
-
-Турниры:
-- АПЛ
-- Ла Лига
-- Лига чемпионов
-
-РПЛ НЕ ТРОГАЕМ — стартовые паспорта РПЛ уже существуют.
+Однократное создание стартовых паспортов v1.0 из FAJ_CLUB_RATINGS.
 
 Правила:
-- START_RATING берётся только из app.faj_club_ratings
-- database.py не изменяется
-- прямого SQL нет
-- команды и сезоны создаются через FAJDatabase
-- паспорта создаются через PassportManager
-- существующие паспорта не перезаписываются
-- ETC и обучение не запускаются
+- START_RATING берётся только из app.faj_club_ratings.
+- database.py не изменяется.
+- Прямого SQL нет.
+- Команды/сезоны создаются через FAJDatabase.
+- Паспорта создаются через PassportManager.
+- Повторный запуск существующие паспорта не перезаписывает.
+- ETC/обучение не запускается.
 """
 
 import streamlit as st
 
 from app.database import FAJDatabase
-from app.faj_club_ratings import (
-    FAJ_CLUB_RATINGS,
-    FAJ_SEASON,
-)
+from app.faj_club_ratings import FAJ_CLUB_RATINGS, FAJ_SEASON, get_all_ratings
 from app.passport_manager import PassportManager
-
 
 SEASON_YEAR = 2026
 
-TARGET_TOURNAMENTS = [
-    "АПЛ",
-    "Ла Лига",
-    "Лига чемпионов",
-]
-
 COMPETITION_TYPES = {
+    "РПЛ": "league",
     "АПЛ": "league",
     "Ла Лига": "league",
     "Лига чемпионов": "cup",
 }
-
 
 def get_or_create_season(db, tournament):
     return db.create_season(
         name=FAJ_SEASON,
         league=tournament,
         year=SEASON_YEAR,
-        competition_type=COMPETITION_TYPES[tournament],
+        competition_type=COMPETITION_TYPES.get(tournament, "league"),
         status="active",
     )
 
-
 def get_or_create_team(db, tournament, team_name):
     teams = db.get_teams(league=tournament)
-
     for team in teams:
         if team["name"] == team_name:
             return int(team["id"])
@@ -76,10 +55,11 @@ def get_or_create_team(db, tournament, team_name):
         )
     )
 
-
 def build_initial_passport(start_rating):
     r = float(start_rating)
 
+    # Все силовые параметры v1.0 получают исторический START_RATING.
+    # Поэтому PassportManager.calculate_rating() сохраняет тот же рейтинг.
     return {
         "attack": r,
         "defense": r,
@@ -100,14 +80,12 @@ def build_initial_passport(start_rating):
         "key_player_loss": r,
         "league_adaptation": r,
         "form": r,
-
         "results_strength": None,
         "opponent_strength": None,
         "matches_count": 0,
     }
 
-
-def create_initial_passports():
+def create_all_initial_passports():
     db = FAJDatabase()
     manager = PassportManager(db=db)
 
@@ -117,49 +95,16 @@ def create_initial_passports():
         "errors": [],
     }
 
-    for tournament in TARGET_TOURNAMENTS:
-
-        teams = FAJ_CLUB_RATINGS.get(tournament, {})
-
-        if not teams:
-            report["errors"].append(
-                f"{tournament}: турнир отсутствует в FAJ_CLUB_RATINGS"
-            )
-            continue
-
-        # --------------------------------------------------------
-        # SEASON
-        # --------------------------------------------------------
-
+    for tournament, teams in get_all_ratings().items():
         try:
-            season_id = get_or_create_season(
-                db,
-                tournament,
-            )
-
+            season_id = get_or_create_season(db, tournament)
         except Exception as exc:
-            report["errors"].append(
-                f"{tournament}: ошибка создания сезона: {exc}"
-            )
+            report["errors"].append(f"{tournament}: ошибка сезона: {exc}")
             continue
-
-        # --------------------------------------------------------
-        # TEAMS
-        # --------------------------------------------------------
 
         for team_name, start_rating in teams.items():
-
             try:
-
-                team_id = get_or_create_team(
-                    db,
-                    tournament,
-                    team_name,
-                )
-
-                # ------------------------------------------------
-                # CHECK EXISTING PASSPORT
-                # ------------------------------------------------
+                team_id = get_or_create_team(db, tournament, team_name)
 
                 current = manager.get_current_passport(
                     team_id=team_id,
@@ -167,36 +112,25 @@ def create_initial_passports():
                 )
 
                 if current is not None:
-
                     report["existing"].append({
                         "tournament": tournament,
                         "team": team_name,
                         "version": current.get("version"),
                         "faj_rating": current.get("faj_rating"),
                     })
-
                     continue
-
-                # ------------------------------------------------
-                # CREATE PASSPORT v1.0
-                # ------------------------------------------------
 
                 passport = manager.create_passport(
                     team_id=team_id,
                     season_id=season_id,
-                    data=build_initial_passport(
-                        start_rating
-                    ),
+                    data=build_initial_passport(start_rating),
                     source="expert_start_rating",
                 )
 
                 if passport is None:
-
                     report["errors"].append(
-                        f"{tournament} / {team_name}: "
-                        "паспорт не сохранён"
+                        f"{tournament} / {team_name}: паспорт не сохранён"
                     )
-
                     continue
 
                 report["created"].append({
@@ -209,16 +143,13 @@ def create_initial_passports():
                 })
 
             except Exception as exc:
-
                 report["errors"].append(
                     f"{tournament} / {team_name}: {exc}"
                 )
 
     return report
 
-
 def main():
-
     st.set_page_config(
         page_title="FAJ — Стартовые паспорта",
         page_icon="🛂",
@@ -226,64 +157,35 @@ def main():
     )
 
     st.title("🛂 FAJ — Стартовые паспорта")
-
     st.caption(
-        f"Сезон {FAJ_SEASON} | "
-        "START_RATING → Passport v1.0"
+        f"Сезон {FAJ_SEASON} | START_RATING → Passport v1.0"
     )
 
-    # ------------------------------------------------------------
-    # TOTAL
-    # ------------------------------------------------------------
-
-    total = sum(
-        len(FAJ_CLUB_RATINGS.get(tournament, {}))
-        for tournament in TARGET_TOURNAMENTS
-    )
+    total = sum(len(teams) for teams in FAJ_CLUB_RATINGS.values())
 
     st.info(
-        f"Будут обработаны {total} команд: "
-        "АПЛ, Ла Лига и Лига чемпионов."
+        f"В реестре FAJ: {total} команд. "
+        "Будут созданы только отсутствующие паспорта v1.0."
     )
 
     st.warning(
-        "РПЛ не изменяется. "
-        "Существующие паспорта не перезаписываются."
+        "⚠️ Повторный запуск безопасен: существующие паспорта не перезаписываются."
     )
 
-    st.divider()
-
-    # ------------------------------------------------------------
-    # CREATE
-    # ------------------------------------------------------------
-
     if st.button(
-        "🚀 СОЗДАТЬ СТАРТОВЫЕ ПАСПОРТА",
+        "🚀 СОЗДАТЬ ВСЕ СТАРТОВЫЕ ПАСПОРТА",
         type="primary",
         use_container_width=True,
     ):
-
-        with st.spinner(
-            "Создаю стартовые паспорта..."
-        ):
-
-            report = create_initial_passports()
-
-        # --------------------------------------------------------
-        # RESULT
-        # --------------------------------------------------------
+        with st.spinner("Создаю паспорта..."):
+            report = create_all_initial_passports()
 
         st.success(
-            f"Готово. Создано паспортов: "
-            f"{len(report['created'])}"
+            f"Готово. Создано: {len(report['created'])}"
         )
 
         if report["created"]:
-
-            st.subheader(
-                f"✅ Создано: {len(report['created'])}"
-            )
-
+            st.subheader("Создано")
             st.dataframe(
                 report["created"],
                 use_container_width=True,
@@ -291,12 +193,7 @@ def main():
             )
 
         if report["existing"]:
-
-            st.subheader(
-                f"ℹ️ Уже существовали: "
-                f"{len(report['existing'])}"
-            )
-
+            st.subheader("Уже существовали — пропущены")
             st.dataframe(
                 report["existing"],
                 use_container_width=True,
@@ -304,21 +201,11 @@ def main():
             )
 
         if report["errors"]:
-
-            st.subheader(
-                f"❌ Ошибки: {len(report['errors'])}"
-            )
-
+            st.error(f"Ошибок: {len(report['errors'])}")
             for error in report["errors"]:
-                st.error(error)
-
+                st.write(f"❌ {error}")
         else:
-
-            st.success(
-                "Ошибок нет. "
-                "Стартовые паспорта созданы корректно."
-            )
-
+            st.success("Ошибок нет.")
 
 if __name__ == "__main__":
     main()
