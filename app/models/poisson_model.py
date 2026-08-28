@@ -4,7 +4,7 @@
 """
 =====================================================
 FAJ Platform v12.0
-FAJ Poisson Model v7.4
+FAJ Poisson Model v7.5
 =====================================================
 
 РОЛЬ:
@@ -15,12 +15,12 @@ FAJ Poisson Model v7.4
 
     Team Passport
           ↓
-    FAJ XG Model v1.4
+    FAJ XG Model v2.0
           ↓
        home_xG
        away_xG
           ↓
-    FAJ Poisson Model v7.4
+    FAJ Poisson Model v7.5
           ↓
     вероятности:
         1X2
@@ -32,7 +32,7 @@ FAJ Poisson Model v7.4
         entropy
         stability
           ↓
-    Monte Carlo Model v1.3
+    Monte Carlo Model v1.4
 
 ВАЖНО:
     Poisson Model НЕ использует bookmaker odds.
@@ -70,37 +70,13 @@ FAJ Poisson Model v7.4
         "goals_away": [...]
     }
 
-ИЗМЕНЕНИЯ v7.4:
+ИЗМЕНЕНИЯ v7.5:
 
-    1. Единый диапазон xG с FAJ XG Model:
-           MIN_XG = 0.15
-           MAX_XG = 4.00
-
-    2. MAX_GOALS = 8.
-
-    3. Матрица строится как независимое
-       произведение Poisson(home) × Poisson(away).
-
-    4. Усечённая матрица нормализуется.
-       Поэтому сумма вероятностей всегда = 1.0.
-
-    5. tail_probability рассчитывается ДО нормализации
-       и показывает потерю хвоста за пределами 0..MAX_GOALS.
-
-    6. model_stability = 1 - tail_probability.
-
-    7. Добавлены распределения голов хозяев и гостей.
-
-    8. Добавлена полная диагностика.
-
-    9. Результаты 1X2, BTTS и тоталов рассчитываются
-       непосредственно из единой нормализованной матрицы.
-
-   10. Добавлена защита от некорректного xG.
-
-   11. Добавлен status = success/error.
-
-   12. Сохранён совместимый публичный API calculate().
+    1. Константы MAX_GOALS, XG_MIN, XG_MAX
+       берутся из config.py.
+    2. Единый контракт с XGModel и Monte Carlo.
+    3. Обновлена документация (XG Model v2.0,
+       Monte Carlo v1.4).
 
 =====================================================
 """
@@ -109,13 +85,15 @@ import math
 import logging
 from typing import Dict, List, Tuple, Optional, Any
 
+from app.config import config
+
 
 logger = logging.getLogger(__name__)
 
 
 class FAJPoissonModel:
     """
-    FAJ Poisson Model v7.4
+    FAJ Poisson Model v7.5
 
     Аналитический математический слой FAJ.
 
@@ -123,16 +101,15 @@ class FAJPoissonModel:
     вероятностное распределение исходов матча.
     """
 
-    VERSION = "7.4"
+    VERSION = "7.5"
 
     # ============================================================
-    # MODEL CONSTANTS
+    # MODEL CONSTANTS — ИЗ CONFIG
     # ============================================================
 
-    MAX_GOALS = 8
-
-    XG_MIN = 0.15
-    XG_MAX = 4.00
+    MAX_GOALS = config.MAX_GOALS
+    XG_MIN = config.XG_MIN
+    XG_MAX = config.XG_MAX
 
     # ============================================================
     # INITIALIZATION
@@ -994,7 +971,7 @@ if __name__ == "__main__":
 
     print()
     print("=" * 70)
-    print("FAJ POISSON MODEL v7.4")
+    print("FAJ POISSON MODEL v7.5")
     print("=" * 70)
 
     model = FAJPoissonModel()
@@ -1209,7 +1186,7 @@ if __name__ == "__main__":
     print()
     print("=" * 70)
     print(
-        "Poisson Model v7.4 "
+        "Poisson Model v7.5 "
         "READY"
     )
     print("=" * 70)
