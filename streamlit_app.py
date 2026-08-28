@@ -16,9 +16,10 @@ MAIN APPLICATION
  ROUND CENTER                    SYSTEM
     │                                │
     ├── tour_manager                ├── passports
-    ├── predict_round               ├── analytics
-    ├── import_facts                ├── history
-    └── round_complete              ├── etc
+    ├── predict_round               ├── create_initial_passports  ← НОВОЕ
+    ├── import_facts                ├── analytics
+    └── round_complete              ├── history
+                                     ├── etc
                                      ├── system
                                      ├── diagnostic
                                      ├── parser_diagnostic
@@ -852,6 +853,20 @@ with st.sidebar:
             "passports"
         )
 
+    # ========================================================
+    # 🆕 НОВАЯ КНОПКА: СОЗДАНИЕ СТАРТОВЫХ ПАСПОРТОВ
+    # ========================================================
+
+    if st.button(
+        "🛂 Создать стартовые паспорта",
+        use_container_width=True,
+        key="nav_create_initial_passports",
+    ):
+
+        navigate(
+            "create_initial_passports"
+        )
+
     if st.button(
         "📊 Аналитика",
         use_container_width=True,
@@ -1233,6 +1248,18 @@ elif CURRENT_PAGE == "passports":
         st.error(
             f"❌ Ошибка загрузки паспортов: {exc}"
         )
+
+
+# ============================================================
+# 🆕 НОВЫЙ РОУТ: СОЗДАНИЕ СТАРТОВЫХ ПАСПОРТОВ
+# ============================================================
+
+elif CURRENT_PAGE == "create_initial_passports":
+
+    load_page(
+        "app.pages.create_initial_passports",
+        "Создание стартовых паспортов",
+    )
 
 
 # ============================================================
