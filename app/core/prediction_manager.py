@@ -4,7 +4,7 @@
 """
 =====================================================
 FAJ Platform v12.1 — MEMORY HARDENED
-Prediction Manager v2.1
+Prediction Manager v2.2
 =====================================================
 
 РОЛЬ:
@@ -29,13 +29,11 @@ Prediction Manager v2.1
 
     Prediction и Fact никогда не смешиваются.
 
-ИСПРАВЛЕНИЯ v2.1:
-    1. Pipeline version используется как model_version.
-    2. Prediction Manager version не маскирует версию модели.
-    3. prediction_hash сохраняется.
-    4. memory_state_id сохраняется.
-    5. snapshots записываются до запуска Pipeline.
-    6. Все DB операции идут через FAJDatabase.
+ИСПРАВЛЕНИЯ v2.2:
+    1. Убран fallback calculate_rating() в _get_passport_with_rating().
+    2. Если faj_rating отсутствует или невалиден — возвращается None.
+    3. Rating должен приходить из паспорта, а не пересчитываться на лету.
+    4. Сохранена полная совместимость с PredictionPipeline.
 """
 
 import hashlib
@@ -63,9 +61,9 @@ logger = logging.getLogger(__name__)
 
 
 class PredictionManager:
-    """Prediction Manager v2.1 — Memory Hardened."""
+    """Prediction Manager v2.2 — Memory Hardened."""
 
-    VERSION = "2.1"
+    VERSION = "2.2"
 
     FINISHED_STATUSES: Set[str] = {
         "finished",
@@ -571,7 +569,7 @@ class PredictionManager:
         return result
 
     # ============================================================
-    # PASSPORT + RATING
+    # PASSPORT + RATING — ИСПРАВЛЕНО v2.2
     # ============================================================
 
     def _get_passport_with_rating(
@@ -616,32 +614,33 @@ class PredictionManager:
             )
             return None
 
-        stored_rating = passport.get(
-            "faj_rating"
-        )
+        # ============================================================
+        # ВАЖНО: Rating должен приходить из паспорта.
+        # Нет fallback через calculate_rating().
+        # ============================================================
 
-        if stored_rating is not None:
-            try:
-                rating = float(
-                    stored_rating
-                )
-            except (
-                TypeError,
-                ValueError,
-            ):
-                rating = (
-                    self.passport_manager
-                    .calculate_rating(
-                        passport
-                    )
-                )
-        else:
-            rating = (
-                self.passport_manager
-                .calculate_rating(
-                    passport
-                )
+        stored_rating = passport.get("faj_rating")
+
+        if stored_rating is None:
+            logger.error(
+                "FAJ RATING MISSING | "
+                "team=%s | season=%s | "
+                "Prediction requires passport.faj_rating",
+                team_name,
+                season_id,
             )
+            return None
+
+        try:
+            rating = float(stored_rating)
+        except (TypeError, ValueError):
+            logger.error(
+                "FAJ RATING INVALID | "
+                "team=%s | value=%r",
+                team_name,
+                stored_rating,
+            )
+            return None
 
         logger.info(
             "FAJ RATING | team=%s | %.2f",
@@ -651,7 +650,7 @@ class PredictionManager:
 
         return {
             "passport": passport,
-            "rating": float(rating),
+            "rating": rating,
         }
 
     # ============================================================
