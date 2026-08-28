@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1 — MEMORY HARDENED
-PREDICT ROUND v3.6
+PREDICT ROUND v3.7
 ============================================================
 
 НАЗНАЧЕНИЕ:
@@ -21,7 +21,7 @@ PREDICT ROUND v3.6
         ↓
     прогноз каждого матча
         ↓
-    сохранение FAJ-прогноза (через кнопку "Сохранить прогнозы FAJ")
+    сохранение FAJ-прогноза (через кнопку "Рассчитать прогнозы FAJ")
         ↓
     ввод и сохранение прогноза Директора
         ↓
@@ -36,12 +36,14 @@ PREDICT ROUND v3.6
     - изменение паспортов;
     - изменение математической модели.
 
-ВАЖНО:
-    sqlite3.Row всегда преобразуется в dict перед использованием .get().
-    Экспертный прогноз сохраняется в БД (expert_predictions).
-    FAJ прогноз сохраняется в БД (predictions + prediction_scores).
-    GitHub — постоянное хранилище/checkpoint для faj.db.
-============================================================
+ИСПРАВЛЕНИЯ v3.7:
+    1. Отображение Math Most Likely Score
+    2. Отображение FAJ Final Score
+    3. Отображение FAJ Confidence
+    4. Отображение Decision Factors (разворачиваемый блок)
+    5. Исправлена передача db в faj_score_from_prediction()
+    6. Убрана дублирующая кнопка (устаревшая)
+    7. Две кнопки: "Рассчитать прогнозы FAJ" и "Пересчитать все прогнозы"
 """
 
 from __future__ import annotations
@@ -127,13 +129,12 @@ def format_probability(value) -> str:
     return f"{percent(value):.1f}%"
 
 # ============================================================
-# ИСПРАВЛЕНО: get_latest_prediction() использует include_history=False
+# GET LATEST PREDICTION
 # ============================================================
 
 def get_latest_prediction(db: FAJDatabase, match_id: int):
     """Возвращает последний сохранённый прогноз FAJ."""
     try:
-        # ✅ Используем include_history=False для DESC сортировки
         predictions = db.get_predictions_by_match(match_id, include_history=False)
         if not predictions:
             return None
@@ -145,12 +146,18 @@ def get_latest_prediction(db: FAJDatabase, match_id: int):
     except Exception:
         return None
 
-def get_top_scores(db: FAJDatabase, prediction_id: int):
+# ============================================================
+# GET TOP SCORES
+# ============================================================
+
+def get_top_scores(db: FAJDatabase, prediction_id: int, score_type: str = "math"):
     """
     Получает Top-5 счетов.
 
-    Основной источник — prediction_scores.
-    Если метода отсутствует, возвращается пустой список.
+    Args:
+        db: FAJDatabase
+        prediction_id: ID прогноза
+        score_type: "math" или "faj"
     """
     if not prediction_id:
         return []
@@ -159,7 +166,7 @@ def get_top_scores(db: FAJDatabase, prediction_id: int):
         if not hasattr(db, "get_prediction_scores"):
             return []
 
-        scores = db.get_prediction_scores(prediction_id)
+        scores = db.get_prediction_scores(prediction_id, score_type=score_type)
 
         result = []
 
@@ -179,22 +186,28 @@ def get_top_scores(db: FAJDatabase, prediction_id: int):
     except Exception:
         return []
 
-def score_from_prediction(db: FAJDatabase, prediction: dict) -> str:
-    """
-    Возвращает наиболее вероятный точный счёт.
+# ============================================================
+# MATH SCORE FROM PREDICTION
+# ============================================================
 
-    Источник истины:
-        1. prediction["most_likely_score"]
-        2. prediction["predicted_score"]
-        3. prediction["score"]
-        4. prediction_scores (rank=1)
-        5. extended.top_scores[0]
+def math_score_from_prediction(db: FAJDatabase, prediction: dict) -> str:
+    """
+    Возвращает Math Most Likely Score.
+
+    Источник истины (приоритет):
+        1. prediction["math_most_likely_score"]
+        2. prediction["most_likely_score"]
+        3. prediction["predicted_score"]
+        4. prediction["score"]
+        5. prediction_scores (rank=1, score_type="math")
+        6. extended.top_scores[0]
     """
     if not prediction:
         return "—"
 
-    # 1-3. Явные поля prediction
+    # 1-4. Явные поля prediction
     for key in (
+        "math_most_likely_score",
         "most_likely_score",
         "predicted_score",
         "score",
@@ -203,42 +216,24 @@ def score_from_prediction(db: FAJDatabase, prediction: dict) -> str:
         if value:
             return str(value)
 
-    # 4. prediction_scores
+    # 5. prediction_scores (math)
     try:
-        prediction_id = (
-            prediction.get("prediction_id")
-            or prediction.get("id")
-        )
+        prediction_id = prediction.get("prediction_id") or prediction.get("id")
         if prediction_id and hasattr(db, "get_prediction_scores"):
-            scores = db.get_prediction_scores(prediction_id)
-            rows = [
-                row_dict(row)
-                for row in (scores or [])
-            ]
-            rows = [row for row in rows if row]
+            scores = db.get_prediction_scores(prediction_id, score_type="math")
+            rows = [row_dict(row) for row in (scores or []) if row_dict(row)]
             if rows:
-                rows.sort(
-                    key=lambda x: float(
-                        x.get("probability", 0) or 0
-                    ),
-                    reverse=True,
-                )
+                rows.sort(key=lambda x: float(x.get("probability", 0) or 0), reverse=True)
                 score = rows[0].get("score")
                 if score:
                     return str(score)
     except Exception as exc:
-        logger.debug(
-            "Ошибка чтения prediction_scores: %s",
-            exc,
-        )
+        logger.debug("Ошибка чтения prediction_scores (math): %s", exc)
 
-    # 5. extended.top_scores
+    # 6. extended.top_scores
     extended = prediction.get("extended", {})
     if isinstance(extended, dict):
-        top_scores = extended.get(
-            "top_scores",
-            [],
-        )
+        top_scores = extended.get("top_scores", [])
         if isinstance(top_scores, list) and top_scores:
             first = row_dict(top_scores[0])
             if first:
@@ -251,6 +246,118 @@ def score_from_prediction(db: FAJDatabase, prediction: dict) -> str:
                     return f"{home}:{away}"
 
     return "—"
+
+# ============================================================
+# MATH PROBABILITY FROM PREDICTION
+# ============================================================
+
+def math_probability_from_prediction(prediction: dict) -> float:
+    """Возвращает вероятность Math Most Likely Score."""
+    if not prediction:
+        return 0.0
+
+    # 1. math_score_probability
+    value = prediction.get("math_score_probability")
+    if value is not None:
+        return probability_value(value)
+
+    # 2. score_probability
+    value = prediction.get("score_probability")
+    if value is not None:
+        return probability_value(value)
+
+    return 0.0
+
+# ============================================================
+# FAJ SCORE FROM PREDICTION (ИСПРАВЛЕНО: db передаётся)
+# ============================================================
+
+def faj_score_from_prediction(db: FAJDatabase, prediction: dict) -> str:
+    """
+    Возвращает FAJ Final Score.
+
+    Источник истины (приоритет):
+        1. prediction["faj_final_score"]
+        2. extended["faj_final_score"]
+        3. prediction_scores (rank=1, score_type="faj")
+    """
+    if not prediction:
+        return "—"
+
+    # 1. faj_final_score
+    faj_score = prediction.get("faj_final_score")
+    if faj_score:
+        return str(faj_score)
+
+    # 2. extended.faj_final_score
+    extended = prediction.get("extended", {})
+    if isinstance(extended, dict):
+        faj_score = extended.get("faj_final_score")
+        if faj_score:
+            return str(faj_score)
+
+    # 3. prediction_scores (faj)
+    try:
+        prediction_id = prediction.get("prediction_id") or prediction.get("id")
+        if prediction_id and hasattr(db, "get_prediction_scores"):
+            scores = db.get_prediction_scores(prediction_id, score_type="faj")
+            rows = [row_dict(row) for row in (scores or []) if row_dict(row)]
+            if rows:
+                rows.sort(key=lambda x: float(x.get("probability", 0) or 0), reverse=True)
+                score = rows[0].get("score")
+                if score:
+                    return str(score)
+    except Exception as exc:
+        logger.debug("Ошибка чтения prediction_scores (faj): %s", exc)
+
+    return "—"
+
+# ============================================================
+# FAJ CONFIDENCE FROM PREDICTION
+# ============================================================
+
+def faj_confidence_from_prediction(prediction: dict) -> float:
+    """Возвращает FAJ Confidence."""
+    if not prediction:
+        return 0.0
+
+    confidence = prediction.get("faj_confidence")
+    if confidence is not None:
+        return probability_value(confidence)
+
+    return 0.0
+
+# ============================================================
+# FAJ DECISION FACTORS FROM PREDICTION
+# ============================================================
+
+def faj_decision_factors_from_prediction(prediction: dict) -> dict:
+    """Возвращает Decision Factors."""
+    if not prediction:
+        return {}
+
+    factors = prediction.get("decision_factors")
+    if isinstance(factors, dict):
+        return factors
+
+    return {}
+
+# ============================================================
+# LEGACY: SCORE FROM PREDICTION (оставлен для совместимости)
+# ============================================================
+
+def score_from_prediction(db: FAJDatabase, prediction: dict) -> str:
+    """
+    Возвращает наиболее вероятный точный счёт (LEGACY).
+
+    Используется для обратной совместимости.
+    Рекомендуется использовать math_score_from_prediction().
+    """
+    return math_score_from_prediction(db, prediction)
+
+# ============================================================
+# RISK LEVEL
+# ============================================================
 
 def get_risk_level(prediction: dict) -> str:
     """
@@ -544,6 +651,143 @@ def render_probability_columns(prediction: dict):
     with c3:
         st.metric("П2", format_probability(away))
 
+# ============================================================
+# RENDER FAJ FINAL SCORE BLOCK
+# ============================================================
+
+def render_faj_final_score_block(
+    db: FAJDatabase,
+    prediction: dict,
+):
+    """
+    Отображает блок с Math Most Likely Score и FAJ Final Score.
+    """
+    if not prediction:
+        return
+
+    # Получаем оба счёта
+    math_score = math_score_from_prediction(db, prediction)
+    math_prob = math_probability_from_prediction(prediction)
+    faj_score = faj_score_from_prediction(db, prediction)  # ← ИСПРАВЛЕНО
+    faj_conf = faj_confidence_from_prediction(prediction)
+    decision_factors = faj_decision_factors_from_prediction(prediction)
+
+    st.markdown("### 🎯 Прогноз точного счёта")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("#### 📐 Math Most Likely Score")
+        st.markdown(
+            f"<h2 style='text-align: center;'>"
+            f"{math_score}"
+            f"</h2>",
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            f"Вероятность: {format_probability(math_prob)}"
+        )
+        st.caption(
+            "Математически наиболее вероятный счёт "
+            "по распределению Poisson/Monte Carlo"
+        )
+
+    with col2:
+        st.markdown("#### 🧠 FAJ Final Score")
+        st.markdown(
+            f"<h2 style='text-align: center; color: #FF6B00;'>"
+            f"{faj_score}"
+            f"</h2>",
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            f"Уверенность FAJ: {format_probability(faj_conf)}"
+        )
+        st.caption(
+            "Решение FAJ с учётом рейтинга, паспорта, "
+            "формы и домашнего преимущества"
+        )
+
+    # ============================================================
+    # DECISION FACTORS (разворачиваемый блок)
+    # ============================================================
+
+    if decision_factors:
+        with st.expander("📋 Основания FAJ"):
+            # Rating
+            rating = decision_factors.get("rating", {})
+            if rating:
+                st.write("**Рейтинг:**")
+                st.write(f"  Хозяева: {rating.get('home', '—')}")
+                st.write(f"  Гости: {rating.get('away', '—')}")
+                st.write(f"  Разница: {rating.get('delta', '—')}")
+
+            # Passport
+            passport = decision_factors.get("passport", {})
+            if passport:
+                st.write("**Паспорт:**")
+                st.write(f"  Атака хозяев: {passport.get('home_attack', '—')}")
+                st.write(f"  Защита гостей: {passport.get('away_defense', '—')}")
+                st.write(f"  Атака гостей: {passport.get('away_attack', '—')}")
+                st.write(f"  Защита хозяев: {passport.get('home_defense', '—')}")
+
+            # Last Match
+            last_match = decision_factors.get("last_match", {})
+            if last_match:
+                st.write("**Последний матч:**")
+                st.write(f"  Хозяева: {last_match.get('home_result', '—')}")
+                st.write(f"  Гости: {last_match.get('away_result', '—')}")
+
+            # Form
+            form = decision_factors.get("form", {})
+            if form:
+                st.write("**Форма (последние 5 матчей):**")
+                st.write(f"  Хозяева: {form.get('home_points', '—')} очков")
+                st.write(f"  Гости: {form.get('away_points', '—')} очков")
+
+            # Home Advantage
+            home_adv = decision_factors.get("home_advantage", {})
+            if home_adv:
+                st.write("**Домашнее преимущество:**")
+                st.write(f"  Коэффициент: {home_adv.get('configured_value', '—')}")
+
+            # History
+            history = decision_factors.get("history", {})
+            if history:
+                st.write("**История:**")
+                st.write(f"  Матчей: {history.get('count', 0)}")
+                st.write(f"  Вес: {history.get('weight', 0):.2f}")
+
+            # Selected Candidate
+            selected = decision_factors.get("selected_candidate", {})
+            if selected:
+                st.write("**Выбранный кандидат:**")
+                st.write(f"  Счёт: {selected.get('score', '—')}")
+                st.write(f"  Math вероятность: {format_probability(selected.get('math_probability', 0))}")
+                st.write(f"  FAJ вероятность: {format_probability(selected.get('faj_probability', 0))}")
+
+    # ============================================================
+    # FAJ SCORE RANKING
+    # ============================================================
+
+    faj_ranking = prediction.get("faj_score_ranking", [])
+    if faj_ranking:
+        with st.expander("🏆 FAJ Score Ranking (Топ-5)"):
+            table_data = []
+            for item in faj_ranking[:5]:
+                table_data.append({
+                    "Ранг": item.get("rank", "—"),
+                    "Счёт": item.get("score", "—"),
+                    "Math Prob": format_probability(item.get("math_probability", 0)),
+                    "FAJ Score": f"{item.get('faj_score', 0):.4f}",
+                })
+            if table_data:
+                st.table(table_data)
+
+# ============================================================
+# RENDER PREDICTION CARD
+# ============================================================
+
 def render_prediction_card(
     db: FAJDatabase,
     match: dict,
@@ -578,59 +822,20 @@ def render_prediction_card(
     render_probability_columns(prediction)
 
     # --------------------------------------------------------
-    # Основной прогноз
+    # FAJ Final Score Block
     # --------------------------------------------------------
 
-    st.markdown("### 🎯 Основной прогноз")
-
-    score = score_from_prediction(db, prediction)
-
-    probability = prediction.get("probability", {})
-    if not isinstance(probability, dict):
-        probability = {}
-
-    home_probability = probability_value(
-        probability.get("home", prediction.get("home_win", 0))
-    )
-    draw_probability = probability_value(
-        probability.get("draw", prediction.get("draw", 0))
-    )
-    away_probability = probability_value(
-        probability.get("away", prediction.get("away_win", 0))
-    )
-
-    outcomes = {
-        "П1": home_probability,
-        "X": draw_probability,
-        "П2": away_probability,
-    }
-
-    main_outcome = max(outcomes, key=outcomes.get)
-
-    c1, c2 = st.columns(2)
-
-    with c1:
-        st.metric(
-            "Исход",
-            main_outcome,
-            f"{percent(outcomes[main_outcome]):.1f}%",
-        )
-
-    with c2:
-        st.metric(
-            "Вероятный счёт",
-            score,
-        )
+    render_faj_final_score_block(db, prediction)
 
     # --------------------------------------------------------
-    # TOP-5
+    # TOP-5 MATH (для обратной совместимости)
     # --------------------------------------------------------
 
-    st.markdown("### 🏆 Топ-5 вероятных счетов")
+    st.markdown("### 🏆 Топ-5 математических счетов")
 
     prediction_id = prediction.get("prediction_id") or prediction.get("id")
 
-    top_scores = get_top_scores(db, prediction_id)
+    top_scores = get_top_scores(db, prediction_id, score_type="math")
 
     # Если database.py не предоставляет отдельный getter,
     # пробуем использовать данные самого результата.
@@ -762,15 +967,24 @@ def render_prediction_card(
 
     risk = get_risk_level(prediction)
 
-    c1, c2 = st.columns(2)
+    # FAJ Confidence
+    faj_conf = faj_confidence_from_prediction(prediction)
+
+    c1, c2, c3 = st.columns(3)
 
     with c1:
         st.metric(
-            "Уверенность",
+            "Уверенность (Math)",
             f"{confidence:.0f}%",
         )
 
     with c2:
+        st.metric(
+            "Уверенность (FAJ)",
+            format_probability(faj_conf),
+        )
+
+    with c3:
         st.metric(
             "Риск",
             risk,
@@ -786,17 +1000,16 @@ def render_prediction_card(
         or "FAJ"
     )
 
+    engine_version = prediction.get("engine_version", "—")
+
     st.caption(
         f"Модель: {model_version}"
-        + (
-            f" • prediction_id: {prediction_id}"
-            if prediction_id
-            else ""
-        )
+        + (f" • Engine: {engine_version}" if engine_version else "")
+        + (f" • prediction_id: {prediction_id}" if prediction_id else "")
     )
 
     # ============================================================
-    # SCOUT / ADDITIONAL STATISTICS — НОВЫЙ БЛОК
+    # SCOUT / ADDITIONAL STATISTICS
     # ============================================================
 
     st.markdown("### 🔎 Дополнительная статистика")
@@ -1123,19 +1336,19 @@ def main():
         )
 
     # ========================================================
-    # 6. КНОПКА: СОХРАНИТЬ ПРОГНОЗЫ FAJ
+    # 6. КНОПКА: РАССЧИТАТЬ ПРОГНОЗЫ FAJ (ОСНОВНАЯ)
     # ========================================================
 
     st.divider()
 
-    col_save1, col_save2, col_save3 = st.columns([1, 2, 1])
+    col_calc1, col_calc2, col_calc3 = st.columns([1, 2, 1])
 
-    with col_save2:
+    with col_calc2:
         if existing_predictions == len(matches):
-            st.success("✅ Все прогнозы FAJ уже сохранены в БД")
+            st.success("✅ Все прогнозы FAJ уже рассчитаны")
         else:
             if st.button(
-                "💾 СОХРАНИТЬ ПРОГНОЗЫ FAJ",
+                "🔮 РАССЧИТАТЬ ПРОГНОЗЫ FAJ",
                 type="primary",
                 use_container_width=True,
             ):
@@ -1168,6 +1381,8 @@ def main():
 
                         if result.get("status") != "error":
                             saved_count += 1
+                            # Обновляем данные для карточки
+                            predictions_data[match_id] = result
                         else:
                             failed_count += 1
                             logger.error(
@@ -1187,17 +1402,17 @@ def main():
 
                 if failed_count == 0:
                     st.success(
-                        f"✅ FAJ сохранил прогнозы всех {saved_count} матчей."
+                        f"✅ FAJ рассчитал прогнозы для всех {saved_count} матчей."
                     )
                     st.rerun()
                 else:
                     st.warning(
-                        f"⚠️ Сохранено: {saved_count}. "
+                        f"⚠️ Рассчитано: {saved_count}. "
                         f"Ошибок: {failed_count}."
                     )
 
     # ========================================================
-    # 6.5 КНОПКА: ПЕРЕСЧИТАТЬ ВСЕ ПРОГНОЗЫ (НОВАЯ)
+    # 7. КНОПКА: ПЕРЕСЧИТАТЬ ВСЕ ПРОГНОЗЫ (ПРИНУДИТЕЛЬНЫЙ)
     # ========================================================
 
     st.divider()
@@ -1207,9 +1422,8 @@ def main():
     with col_force2:
         if st.button(
             "🔄 ПЕРЕСЧИТАТЬ ВСЕ ПРОГНОЗЫ",
-            type="primary",
+            type="secondary",
             use_container_width=True,
-            key="force_recalc",
         ):
             st.warning(
                 "⚠️ Будут пересчитаны ВСЕ матчи тура. "
@@ -1241,6 +1455,7 @@ def main():
 
                     if result.get("status") != "error":
                         saved_count += 1
+                        predictions_data[match_id] = result
                     else:
                         failed_count += 1
                         logger.error(
@@ -1268,67 +1483,6 @@ def main():
                     f"⚠️ Пересчитано: {saved_count}. "
                     f"Ошибок: {failed_count}."
                 )
-
-    # ========================================================
-    # 7. КНОПКА: РАССЧИТАТЬ (ОСТАВЛЯЕМ ДЛЯ ОБРАТНОЙ СОВМЕСТИМОСТИ)
-    # ========================================================
-
-    st.divider()
-
-    if st.button(
-        "🔮 РАССЧИТАТЬ ПРОГНОЗЫ FAJ (устаревший)",
-        use_container_width=True,
-    ):
-        st.warning(
-            "Используйте кнопку 'СОХРАНИТЬ ПРОГНОЗЫ FAJ' выше. "
-            "Эта кнопка оставлена для обратной совместимости."
-        )
-
-        progress = st.progress(0)
-        status_box = st.empty()
-
-        saved_count = 0
-        failed_count = 0
-
-        for index, match in enumerate(matches):
-            match_id = match.get("id")
-            home = team_name(db, match.get("home_team_id"))
-            away = team_name(db, match.get("away_team_id"))
-
-            status_box.info(
-                f"Расчёт {index + 1}/{len(matches)}: "
-                f"{home} — {away}"
-            )
-
-            try:
-                result = pred_mgr.predict_by_match_id(
-                    int(match["id"])
-                )
-
-                if result.get("status") != "error":
-                    saved_count += 1
-                else:
-                    failed_count += 1
-
-            except Exception as exc:
-                failed_count += 1
-                logger.error(f"Ошибка прогноза: {exc}")
-
-            progress.progress((index + 1) / len(matches))
-
-        status_box.empty()
-
-        if failed_count == 0:
-            st.success(
-                f"✅ FAJ рассчитал и сохранил "
-                f"прогнозы всех {saved_count} матчей."
-            )
-            st.rerun()
-        else:
-            st.warning(
-                f"⚠️ Сохранено: {saved_count}. "
-                f"Ошибок: {failed_count}."
-            )
 
     # ========================================================
     # 8. CARDS
