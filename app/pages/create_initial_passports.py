@@ -3,25 +3,16 @@
 
 """
 FAJ Platform v12.1
-Initial Passport Creator v1.1
+Initial Passport Creator v1.2
 
 Создание стартовых паспортов v1.0.
 
 Турниры:
-- АПЛ
+- АПЛ — ПРИНУДИТЕЛЬНОЕ ОБНОВЛЕНИЕ (если faj_rating == 50)
 - Ла Лига
 - Лига чемпионов
 
-РПЛ НЕ ТРОГАЕМ — стартовые паспорта РПЛ уже существуют.
-
-Правила:
-- START_RATING берётся только из app.faj_club_ratings
-- database.py не изменяется
-- прямого SQL нет
-- команды и сезоны создаются через FAJDatabase
-- паспорта создаются через PassportManager
-- существующие паспорта не перезаписываются
-- ETC и обучение не запускаются
+РПЛ НЕ ТРОГАЕМ.
 """
 
 import streamlit as st
@@ -31,7 +22,7 @@ from app.faj_club_ratings import (
     FAJ_CLUB_RATINGS,
     FAJ_SEASON,
 )
-from app.passports.passport_manager import PassportManager   # ← ИСПРАВЛЕНО
+from app.passports.passport_manager import PassportManager
 
 
 SEASON_YEAR = 2026
@@ -114,6 +105,7 @@ def create_initial_passports():
     report = {
         "created": [],
         "existing": [],
+        "updated": [],      # ← НОВОЕ: пересозданные паспорта
         "errors": [],
     }
 
@@ -166,37 +158,71 @@ def create_initial_passports():
                     season_id=season_id,
                 )
 
-                if current is not None:
+                # ================================================
+                # АПЛ: ПРИНУДИТЕЛЬНОЕ ОБНОВЛЕНИЕ ЕСЛИ faj_rating == 50
+                # ================================================
+                if tournament == "АПЛ" and current is not None:
+                    current_rating = current.get("faj_rating")
+                    try:
+                        current_rating = float(current_rating)
+                    except (TypeError, ValueError):
+                        current_rating = None
 
+                    if current_rating == 50.0:
+                        # Пересоздаём паспорт с правильным рейтингом
+                        passport = manager.create_passport(
+                            team_id=team_id,
+                            season_id=season_id,
+                            data=build_initial_passport(start_rating),
+                            source="expert_start_rating_force_update",
+                        )
+
+                        if passport is None:
+                            report["errors"].append(
+                                f"{tournament} / {team_name}: "
+                                "не удалось обновить паспорт"
+                            )
+                            continue
+
+                        report["updated"].append({
+                            "tournament": tournament,
+                            "team": team_name,
+                            "old_rating": current_rating,
+                            "new_rating": start_rating,
+                            "version": passport.get("version"),
+                            "passport_uuid": passport.get("passport_uuid"),
+                        })
+                        continue
+
+                # ------------------------------------------------
+                # ПАСПОРТ УЖЕ СУЩЕСТВУЕТ
+                # ------------------------------------------------
+
+                if current is not None:
                     report["existing"].append({
                         "tournament": tournament,
                         "team": team_name,
                         "version": current.get("version"),
                         "faj_rating": current.get("faj_rating"),
                     })
-
                     continue
 
                 # ------------------------------------------------
-                # CREATE PASSPORT v1.0
+                # СОЗДАЁМ НОВЫЙ ПАСПОРТ
                 # ------------------------------------------------
 
                 passport = manager.create_passport(
                     team_id=team_id,
                     season_id=season_id,
-                    data=build_initial_passport(
-                        start_rating
-                    ),
+                    data=build_initial_passport(start_rating),
                     source="expert_start_rating",
                 )
 
                 if passport is None:
-
                     report["errors"].append(
                         f"{tournament} / {team_name}: "
                         "паспорт не сохранён"
                     )
-
                     continue
 
                 report["created"].append({
@@ -247,8 +273,9 @@ def main():
     )
 
     st.warning(
+        "⚠️ АПЛ — принудительное обновление (если faj_rating == 50).\n\n"
         "РПЛ не изменяется. "
-        "Существующие паспорта не перезаписываются."
+        "Существующие паспорта с правильным рейтингом не перезаписываются."
     )
 
     st.divider()
@@ -258,7 +285,7 @@ def main():
     # ------------------------------------------------------------
 
     if st.button(
-        "🚀 СОЗДАТЬ СТАРТОВЫЕ ПАСПОРТА",
+        "🚀 СОЗДАТЬ / ОБНОВИТЬ СТАРТОВЫЕ ПАСПОРТА",
         type="primary",
         use_container_width=True,
     ):
@@ -274,9 +301,21 @@ def main():
         # --------------------------------------------------------
 
         st.success(
-            f"Готово. Создано паспортов: "
-            f"{len(report['created'])}"
+            f"Готово. Создано: {len(report['created'])}, "
+            f"Обновлено: {len(report['updated'])}"
         )
+
+        if report["updated"]:
+
+            st.subheader(
+                f"🔄 Обновлено (АПЛ): {len(report['updated'])}"
+            )
+
+            st.dataframe(
+                report["updated"],
+                use_container_width=True,
+                hide_index=True,
+            )
 
         if report["created"]:
 
@@ -293,7 +332,7 @@ def main():
         if report["existing"]:
 
             st.subheader(
-                f"ℹ️ Уже существовали: "
+                f"ℹ️ Уже существовали (не трогали): "
                 f"{len(report['existing'])}"
             )
 
