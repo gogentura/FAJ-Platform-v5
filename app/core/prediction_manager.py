@@ -4,7 +4,7 @@
 """
 =====================================================
 FAJ Platform v12.1 — MEMORY HARDENED
-Prediction Manager v2.2
+Prediction Manager v2.3
 =====================================================
 
 РОЛЬ:
@@ -25,15 +25,17 @@ Prediction Manager v2.2
           ↓
         PREDICTION PIPELINE
           ↓
+        FAJ FINAL SCORE ENGINE  ← НОВОЕ
+          ↓
         SAVE PREDICTION
 
     Prediction и Fact никогда не смешиваются.
 
-ИСПРАВЛЕНИЯ v2.2:
-    1. Убран fallback calculate_rating() в _get_passport_with_rating().
-    2. Если faj_rating отсутствует или невалиден — возвращается None.
-    3. Rating должен приходить из паспорта, а не пересчитываться на лету.
-    4. Сохранена полная совместимость с PredictionPipeline.
+ИСПРАВЛЕНИЯ v2.3:
+    1. Интеграция FAJ Final Score Engine
+    2. Сохранение math_most_likely_score и faj_final_score
+    3. Сохранение faj_confidence и decision_factors
+    4. Контекст для Engine через get_team_recent_context()
 """
 
 import hashlib
@@ -46,6 +48,11 @@ from typing import Dict, Any, Optional, List, Set
 from app.core.prediction_pipeline import (
     PredictionPipeline,
     get_prediction_pipeline,
+)
+
+from app.core.final_score_engine import (
+    FAJFinalScoreEngine,
+    get_faj_final_score_engine,
 )
 
 from app.passports.passport_manager import (
@@ -61,9 +68,9 @@ logger = logging.getLogger(__name__)
 
 
 class PredictionManager:
-    """Prediction Manager v2.2 — Memory Hardened."""
+    """Prediction Manager v2.3 — Memory Hardened + FAJ Final Score."""
 
-    VERSION = "2.2"
+    VERSION = "2.3"
 
     FINISHED_STATUSES: Set[str] = {
         "finished",
@@ -78,6 +85,7 @@ class PredictionManager:
         self,
         pipeline: Optional[PredictionPipeline] = None,
         passport_manager: Optional[PassportManager] = None,
+        final_score_engine: Optional[FAJFinalScoreEngine] = None,
         db: Optional[FAJDatabase] = None,
     ):
         self.version = self.VERSION
@@ -90,6 +98,11 @@ class PredictionManager:
         self.passport_manager = (
             passport_manager
             or get_passport_manager()
+        )
+
+        self.final_engine = (
+            final_score_engine
+            or get_faj_final_score_engine()
         )
 
         self.db = db or FAJDatabase()
@@ -234,6 +247,95 @@ class PredictionManager:
             if result.get("status") == "error":
                 return result
 
+            # ============================================================
+            # 🆕 FAJ FINAL SCORE ENGINE
+            # ============================================================
+
+            faj_result = None
+            math_distribution = None
+
+            # Извлекаем math_distribution из результата pipeline
+            extended = result.get("extended", {})
+            if isinstance(extended, dict):
+                # Поддерживаем оба формата
+                if "distributions" in extended:
+                    math_distribution = extended.get("distributions", [])
+                elif "score_matrix" in extended:
+                    math_distribution = extended.get("score_matrix", {})
+                else:
+                    # Пробуем построить из top_scores
+                    top_scores = extended.get("top_scores", [])
+                    if top_scores:
+                        math_distribution = []
+                        for item in top_scores:
+                            if isinstance(item, dict):
+                                math_distribution.append({
+                                    "home": item.get("home", 0),
+                                    "away": item.get("away", 0),
+                                    "probability": item.get("probability", 0.0),
+                                })
+
+            if math_distribution and match_id is not None:
+                try:
+                    # Получаем контекст для Engine
+                    home_context = self._build_engine_context(
+                        team_id=home_data["passport"].get("team_id"),
+                        season_id=season_id,
+                        team_name=home_team,
+                        match_date=self._get_match_date(match_id),
+                    )
+
+                    away_context = self._build_engine_context(
+                        team_id=away_data["passport"].get("team_id"),
+                        season_id=season_id,
+                        team_name=away_team,
+                        match_date=self._get_match_date(match_id),
+                    )
+
+                    # Получаем home_advantage
+                    home_advantage = 1.08
+                    base = self.db.get_base(
+                        home_data["passport"].get("team_id"),
+                        season_id,
+                    )
+                    if base:
+                        home_advantage = float(base.get("home_advantage", 1.08))
+
+                    faj_result = self.final_engine.calculate(
+                        home_context=home_context,
+                        away_context=away_context,
+                        math_distribution=math_distribution,
+                        home_advantage=home_advantage,
+                    )
+
+                    if faj_result and faj_result.get("faj_final_score") != "—":
+                        logger.info(
+                            "FAJ FINAL SCORE | %s vs %s | "
+                            "math= %s (%.2f%%) | "
+                            "faj= %s (%.2f%%)",
+                            home_team,
+                            away_team,
+                            faj_result.get("math_most_likely_score"),
+                            faj_result.get("math_probability", 0) * 100,
+                            faj_result.get("faj_final_score"),
+                            faj_result.get("faj_confidence", 0) * 100,
+                        )
+                    else:
+                        logger.warning(
+                            "FAJ FINAL SCORE FAILED | %s vs %s",
+                            home_team,
+                            away_team,
+                        )
+                        faj_result = None
+
+                except Exception as e:
+                    logger.exception(
+                        "FAJ Final Score Engine error | %s vs %s",
+                        home_team,
+                        away_team,
+                    )
+                    faj_result = None
+
             # ====================================================
             # MANAGER METADATA
             # ====================================================
@@ -248,6 +350,34 @@ class PredictionManager:
             result["manager_version"] = (
                 self.VERSION
             )
+
+            # ============================================================
+            # 🆕 ОБОГАЩАЕМ РЕЗУЛЬТАТ FAJ-ДАННЫМИ
+            # ============================================================
+
+            if faj_result and faj_result.get("faj_final_score") != "—":
+                result["math_most_likely_score"] = faj_result.get("math_most_likely_score")
+                result["math_score_probability"] = faj_result.get("math_probability", 0.0)
+                result["faj_final_score"] = faj_result.get("faj_final_score")
+                result["faj_confidence"] = faj_result.get("faj_confidence", 0.0)
+                result["faj_score_ranking"] = faj_result.get("faj_score_ranking", [])
+                result["decision_factors"] = faj_result.get("decision_factors", {})
+                result["context_availability"] = faj_result.get("context_availability", {})
+                result["history_count"] = faj_result.get("history_count", 0)
+                result["history_weight"] = faj_result.get("history_weight", 0.0)
+                result["engine_version"] = faj_result.get("engine_version", "unknown")
+            else:
+                # Если FAJ не сработал — сохраняем только математику
+                result["math_most_likely_score"] = result.get("score")
+                result["math_score_probability"] = result.get("score_probability", 0.0)
+                result["faj_final_score"] = None
+                result["faj_confidence"] = None
+                result["faj_score_ranking"] = []
+                result["decision_factors"] = {}
+                result["context_availability"] = {}
+                result["history_count"] = 0
+                result["history_weight"] = 0.0
+                result["engine_version"] = None
 
             # ====================================================
             # SAVE PREDICTION
@@ -281,6 +411,94 @@ class PredictionManager:
                 "away_team": away_team,
                 "match_id": match_id,
             }
+
+    # ============================================================
+    # 🆕 BUILD ENGINE CONTEXT
+    # ============================================================
+
+    def _build_engine_context(
+        self,
+        team_id: Optional[int],
+        season_id: Optional[int],
+        team_name: str,
+        match_date: Optional[str],
+    ) -> Dict[str, Any]:
+        """
+        Собирает контекст команды для FAJ Final Score Engine.
+
+        Использует get_team_recent_context() из database.py.
+        Если данные отсутствуют — возвращает пустой контекст.
+        """
+        if team_id is None or season_id is None or match_date is None:
+            logger.warning(
+                "Missing data for engine context: team_id=%s, season_id=%s, match_date=%s",
+                team_id,
+                season_id,
+                match_date,
+            )
+            return {
+                "team_id": team_id,
+                "season_id": season_id,
+                "rating": None,
+                "passport": {},
+                "base": {},
+                "last_match": None,
+                "recent_matches": [],
+                "form": None,
+                "availability": {
+                    "rating": False,
+                    "passport": False,
+                    "base": False,
+                    "last_match": False,
+                    "recent_matches": False,
+                }
+            }
+
+        try:
+            context = self.db.get_team_recent_context(
+                team_id=team_id,
+                season_id=season_id,
+                match_date=match_date,
+                limit=5,
+            )
+            return context if context else {}
+        except Exception as e:
+            logger.warning(
+                "Failed to get context for %s: %s",
+                team_name,
+                e,
+            )
+            return {
+                "team_id": team_id,
+                "season_id": season_id,
+                "rating": None,
+                "passport": {},
+                "base": {},
+                "last_match": None,
+                "recent_matches": [],
+                "form": None,
+                "availability": {
+                    "rating": False,
+                    "passport": False,
+                    "base": False,
+                    "last_match": False,
+                    "recent_matches": False,
+                }
+            }
+
+    # ============================================================
+    # 🆕 GET MATCH DATE
+    # ============================================================
+
+    def _get_match_date(self, match_id: int) -> Optional[str]:
+        """Получает дату матча из БД."""
+        try:
+            match = self._get_match(match_id)
+            if match:
+                return match.get("date")
+        except Exception as e:
+            logger.warning("Failed to get match date for %s: %s", match_id, e)
+        return None
 
     # ============================================================
     # PREDICT BY MATCH ID
@@ -877,6 +1095,7 @@ class PredictionManager:
         home_win: float,
         draw: float,
         away_win: float,
+        faj_final_score: Optional[str] = None,
     ) -> str:
 
         data = {
@@ -896,6 +1115,7 @@ class PredictionManager:
                 float(away_win),
                 6,
             ),
+            "faj_final_score": faj_final_score,
         }
 
         encoded = json.dumps(
@@ -1002,6 +1222,15 @@ class PredictionManager:
                 ),
             )
 
+            # ============================================================
+            # 🆕 FAJ ДАННЫЕ
+            # ============================================================
+
+            faj_final_score = result.get("faj_final_score")
+            faj_confidence = result.get("faj_confidence")
+            decision_factors = result.get("decision_factors", {})
+            math_most_likely_score = result.get("math_most_likely_score")
+
             # ====================================================
             # HASH
             # ====================================================
@@ -1012,15 +1241,12 @@ class PredictionManager:
                     home_win=home_win,
                     draw=draw,
                     away_win=away_win,
+                    faj_final_score=faj_final_score,
                 )
             )
 
             # ====================================================
             # MODEL VERSION
-            #
-            # ВАЖНО:
-            # Здесь должна быть версия Pipeline,
-            # а не PredictionManager.
             # ====================================================
 
             model_version = result.get(
@@ -1078,6 +1304,10 @@ class PredictionManager:
                 prediction_source="FAJ Engine",
                 prediction_hash=prediction_hash,
                 memory_state_id=memory_state_id,
+                # 🆕 FAJ поля
+                faj_final_score=faj_final_score,
+                faj_confidence=int(faj_confidence * 100) if faj_confidence is not None else None,
+                decision_factors=json.dumps(decision_factors) if decision_factors else None,
             )
 
             if not pred_id:
@@ -1087,7 +1317,7 @@ class PredictionManager:
                 return None
 
             # ====================================================
-            # TOP SCORES
+            # TOP SCORES — MATH
             # ====================================================
 
             top_scores = extended.get(
@@ -1110,6 +1340,21 @@ class PredictionManager:
                         "rank",
                         0,
                     ),
+                    score_type="math",
+                )
+
+            # ============================================================
+            # 🆕 TOP SCORES — FAJ
+            # ============================================================
+
+            faj_ranking = result.get("faj_score_ranking", [])
+            for item in faj_ranking:
+                self.db.add_prediction_score(
+                    prediction_id=pred_id,
+                    score=item.get("score", "0:0"),
+                    probability=item.get("faj_probability", 0.0),
+                    rank=item.get("rank", 0),
+                    score_type="faj",
                 )
 
             # ====================================================
@@ -1143,11 +1388,15 @@ class PredictionManager:
                 "prediction_id=%s | "
                 "match_id=%s | "
                 "model_version=%s | "
-                "hash=%s",
+                "hash=%s | "
+                "math=%s | "
+                "faj=%s",
                 pred_id,
                 match_id,
                 model_version,
                 prediction_hash[:8],
+                math_most_likely_score,
+                faj_final_score,
             )
 
             return pred_id
@@ -1198,6 +1447,9 @@ class PredictionManager:
             "version": self.VERSION,
             "pipeline_version": (
                 self.pipeline.VERSION
+            ),
+            "engine_version": (
+                self.final_engine.VERSION
             ),
             "status": "READY",
         }
