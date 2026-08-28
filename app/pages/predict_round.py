@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1 — MEMORY HARDENED
-PREDICT ROUND v3.5
+PREDICT ROUND v3.6
 ============================================================
 
 НАЗНАЧЕНИЕ:
@@ -59,9 +59,7 @@ from app.services.match_context import (
     MatchContextService,
 )
 
-
 logger = logging.getLogger(__name__)
-
 
 # ============================================================
 # HELPERS
@@ -79,7 +77,6 @@ def row_dict(row):
         return dict(row)
     except Exception:
         return None
-
 
 def team_name(db: FAJDatabase, team_id) -> str:
     """Получает название команды."""
@@ -99,7 +96,6 @@ def team_name(db: FAJDatabase, team_id) -> str:
     except Exception:
         return "?"
 
-
 def percent(value) -> float:
     """Безопасно переводит вероятность в проценты."""
     try:
@@ -114,7 +110,6 @@ def percent(value) -> float:
     except (TypeError, ValueError):
         return 0.0
 
-
 def probability_value(value) -> float:
     """Возвращает вероятность в диапазоне 0..1."""
     try:
@@ -128,30 +123,27 @@ def probability_value(value) -> float:
     except (TypeError, ValueError):
         return 0.0
 
-
 def format_probability(value) -> str:
     return f"{percent(value):.1f}%"
 
+# ============================================================
+# ИСПРАВЛЕНО: get_latest_prediction() использует include_history=False
+# ============================================================
 
 def get_latest_prediction(db: FAJDatabase, match_id: int):
     """Возвращает последний сохранённый прогноз FAJ."""
     try:
-        predictions = db.get_predictions_by_match(match_id)
-
+        # ✅ Используем include_history=False для DESC сортировки
+        predictions = db.get_predictions_by_match(match_id, include_history=False)
         if not predictions:
             return None
-
         rows = [row_dict(p) for p in predictions]
         rows = [p for p in rows if p]
-
         if not rows:
             return None
-
         return rows[0]
-
     except Exception:
         return None
-
 
 def get_top_scores(db: FAJDatabase, prediction_id: int):
     """
@@ -186,7 +178,6 @@ def get_top_scores(db: FAJDatabase, prediction_id: int):
 
     except Exception:
         return []
-
 
 def score_from_prediction(db: FAJDatabase, prediction: dict) -> str:
     """
@@ -260,7 +251,6 @@ def score_from_prediction(db: FAJDatabase, prediction: dict) -> str:
                     return f"{home}:{away}"
 
     return "—"
-
 
 def get_risk_level(prediction: dict) -> str:
     """
@@ -358,7 +348,6 @@ def get_risk_level(prediction: dict) -> str:
 
     return "Высокий"
 
-
 # ============================================================
 # SCOUT / ADDITIONAL STATISTICS
 # ============================================================
@@ -448,7 +437,6 @@ def get_scout_context(
             "message": f"Ошибка получения статистики: {exc}",
         }
 
-
 def render_scout_block(scout_result: dict):
     """Отображает Scout-статистику в карточке матча."""
     if not scout_result:
@@ -533,7 +521,6 @@ def render_scout_block(scout_result: dict):
                 f"{away_away.get('goals_against', 0)}",
             )
 
-
 def render_probability_columns(prediction: dict):
     """Показывает П1 / X / П2."""
 
@@ -556,7 +543,6 @@ def render_probability_columns(prediction: dict):
 
     with c3:
         st.metric("П2", format_probability(away))
-
 
 def render_prediction_card(
     db: FAJDatabase,
@@ -940,7 +926,6 @@ def render_prediction_card(
         "и не изменяет автоматически прогноз FAJ."
     )
 
-
 # ============================================================
 # MAIN
 # ============================================================
@@ -1212,6 +1197,79 @@ def main():
                     )
 
     # ========================================================
+    # 6.5 КНОПКА: ПЕРЕСЧИТАТЬ ВСЕ ПРОГНОЗЫ (НОВАЯ)
+    # ========================================================
+
+    st.divider()
+
+    col_force1, col_force2, col_force3 = st.columns([1, 2, 1])
+
+    with col_force2:
+        if st.button(
+            "🔄 ПЕРЕСЧИТАТЬ ВСЕ ПРОГНОЗЫ",
+            type="primary",
+            use_container_width=True,
+            key="force_recalc",
+        ):
+            st.warning(
+                "⚠️ Будут пересчитаны ВСЕ матчи тура. "
+                "Старые прогнозы останутся в истории, "
+                "но текущие будут заменены новыми."
+            )
+
+            progress = st.progress(0)
+            status_box = st.empty()
+
+            saved_count = 0
+            failed_count = 0
+
+            for index, match in enumerate(matches):
+                match_id = match.get("id")
+                home = team_name(db, match.get("home_team_id"))
+                away = team_name(db, match.get("away_team_id"))
+
+                status_box.info(
+                    f"Пересчёт {index + 1}/{len(matches)}: "
+                    f"{home} — {away}"
+                )
+
+                try:
+                    # Принудительно пересчитываем
+                    result = pred_mgr.predict_by_match_id(
+                        int(match["id"])
+                    )
+
+                    if result.get("status") != "error":
+                        saved_count += 1
+                    else:
+                        failed_count += 1
+                        logger.error(
+                            f"Ошибка пересчёта матча {match_id}: "
+                            f"{result.get('message', 'Неизвестная ошибка')}"
+                        )
+
+                except Exception as exc:
+                    failed_count += 1
+                    logger.error(
+                        f"Ошибка пересчёта матча {match_id}: {exc}"
+                    )
+
+                progress.progress((index + 1) / len(matches))
+
+            status_box.empty()
+
+            if failed_count == 0:
+                st.success(
+                    f"✅ Все {saved_count} прогнозов пересчитаны и сохранены."
+                )
+                st.rerun()
+            else:
+                st.warning(
+                    f"⚠️ Пересчитано: {saved_count}. "
+                    f"Ошибок: {failed_count}."
+                )
+
+    # ========================================================
     # 7. КНОПКА: РАССЧИТАТЬ (ОСТАВЛЯЕМ ДЛЯ ОБРАТНОЙ СОВМЕСТИМОСТИ)
     # ========================================================
 
@@ -1337,7 +1395,6 @@ def main():
     ):
         st.session_state.page = "tour_manager"
         st.rerun()
-
 
 # ============================================================
 # ENTRY POINT
