@@ -2,19 +2,18 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ Tour Manager v5.2
+FAJ Tour Manager v5.3
 
 Главная задача:
     календарь -> сезон -> тур -> матчи.
 
 Tour Manager НЕ рассчитывает рейтинг.
 
-v5.1:
-    При выборе пары команд отображается FAJ рейтинг
-    из START_RATINGS (только в UI, не сохраняется).
-
-v5.2:
-    Исправлен импорт: FAJ_CLUB_RATINGS вместо START_RATINGS.
+v5.3:
+    - get_team_rating() теперь использует нормализованные имена
+    - _ensure_passports() ремонтирует initial passport 50.0 → START_RATING
+    - Добавлена диагностика RATING CHECK
+    - Обученные паспорта НЕ перезаписываются
 """
 
 from __future__ import annotations
@@ -135,15 +134,31 @@ def match_is_locked(db: FAJDatabase, match_id: int) -> bool:
         return False
 
 
+# ============================================================
+# PATCh 1: get_team_rating()
+# ============================================================
+
 def get_team_rating(team_name: str) -> Optional[float]:
-    """Получает стартовый рейтинг команды из FAJ Club Ratings."""
+    """
+    Получает START_RATING команды из единого реестра FAJ_CLUB_RATINGS.
+    Tour Manager только читает registry.
+    Никаких расчётов рейтинга здесь нет.
+    """
     try:
         from app.faj_club_ratings import FAJ_CLUB_RATINGS
+        normalized_name = str(team_name).strip()
         for league, teams in FAJ_CLUB_RATINGS.items():
-            if team_name in teams:
-                return float(teams[team_name])
+            if not isinstance(teams, dict):
+                continue
+            if normalized_name in teams:
+                rating = teams[normalized_name]
+                if rating is not None:
+                    return float(rating)
     except Exception:
-        pass
+        logger.exception(
+            "Ошибка чтения FAJ_CLUB_RATINGS | team=%s",
+            team_name,
+        )
     return None
 
 
@@ -321,77 +336,226 @@ def _ensure_teams(db: FAJDatabase, competition: str):
     return db.get_teams(league=competition)
 
 
-def _ensure_passports(db: FAJDatabase, competition: str, season_id: int, teams: List[Dict]) -> None:
-    """
-    Гарантирует наличие паспорта для каждой команды в сезоне.
+# ============================================================
+# PATCH 2: _ensure_passports()
+# ============================================================
 
-    Если паспорт отсутствует, создаёт его с начальными параметрами:
-        - все компоненты = 50.0
-        - faj_rating = START_RATING (если есть) или 50.0
-        - version = "v1.0"
-        - source = "initial"
+def _ensure_passports(
+    db: FAJDatabase,
+    competition: str,
+    season_id: int,
+    teams: List[Dict],
+) -> None:
     """
-    logger.info(f"🔍 Проверка паспортов для {competition} (season_id={season_id})")
-
-    missing_count = 0
+    Гарантирует наличие паспорта для каждой команды сезона.
+    Правила:
+    1. START_RATING берётся ТОЛЬКО из FAJ_CLUB_RATINGS.
+    2. Tour Manager не рассчитывает FAJ Rating.
+    3. Если паспорта нет — создаём initial passport.
+    4. Если initial passport существует и faj_rating отсутствует
+       или равен старому DEFAULT_RATING — исправляем его.
+    5. Уже обученные паспорта НЕ перезаписываем.
+    """
+    logger.info(
+        "🔍 Проверка паспортов | competition=%s | season_id=%s",
+        competition,
+        season_id,
+    )
+    created_count = 0
+    repaired_count = 0
 
     for team in teams:
         team_id_val = int(team_id(team))
         team_name_val = team_name(team)
 
-        existing_passport = db.get_team_passport(team_id_val, season_id)
-
-        if existing_passport:
+        # ========================================================
+        # START RATING
+        # ========================================================
+        expected_rating = get_team_rating(team_name_val)
+        if expected_rating is None:
+            logger.error(
+                "❌ START_RATING не найден | "
+                "competition=%s | team=%s",
+                competition,
+                team_name_val,
+            )
             continue
 
-        logger.info(f"📝 Создаём паспорт для {team_name_val} (team_id={team_id_val})")
-
-        rating = get_team_rating(team_name_val) or DEFAULT_RATING
-
-        passport_data = {
-            "attack": 50.0,
-            "defense": 50.0,
-            "control": 50.0,
-            "tempo": 50.0,
-            "press": 50.0,
-            "transition": 50.0,
-            "finishing": 50.0,
-            "goalkeeper": 50.0,
-            "discipline": 50.0,
-            "squad_quality": 50.0,
-            "bench_quality": 50.0,
-            "coach_factor": 50.0,
-            "mental": 50.0,
-            "home_strength": 50.0,
-            "away_strength": 50.0,
-            "injury_factor": 50.0,
-            "key_player_loss": 50.0,
-            "league_adaptation": 80.0,
-            "form": 50.0,
-            "passport_confidence": 0.5,
-            "faj_rating": rating,
-            "force_update": True,
-        }
-
-        result = db.save_team_passport(
-            team_id=team_id_val,
-            season_id=season_id,
-            data=passport_data,
-            version=PASSPORT_VERSION,
-            source="initial",
+        logger.info(
+            "FAJ START RATING | team=%s | %.2f",
+            team_name_val,
+            expected_rating,
         )
 
-        if result is not None:
-            logger.info(f"✅ Паспорт создан для {team_name_val}: faj_rating={rating}")
-            missing_count += 1
+        # ========================================================
+        # CURRENT PASSPORT
+        # ========================================================
+        existing_passport = db.get_team_passport(
+            team_id_val,
+            season_id,
+        )
+
+        # ========================================================
+        # 1. ПАСПОРТА НЕТ → СОЗДАЁМ
+        # ========================================================
+        if not existing_passport:
+            logger.info(
+                "📝 Создаём паспорт | team=%s | team_id=%s",
+                team_name_val,
+                team_id_val,
+            )
+            passport_data = {
+                "attack": 50.0,
+                "defense": 50.0,
+                "control": 50.0,
+                "tempo": 50.0,
+                "press": 50.0,
+                "transition": 50.0,
+                "finishing": 50.0,
+                "goalkeeper": 50.0,
+                "discipline": 50.0,
+                "squad_quality": 50.0,
+                "bench_quality": 50.0,
+                "coach_factor": 50.0,
+                "mental": 50.0,
+                "home_strength": 50.0,
+                "away_strength": 50.0,
+                "injury_factor": 50.0,
+                "key_player_loss": 50.0,
+                "league_adaptation": 80.0,
+                "form": 50.0,
+                "passport_confidence": 0.5,
+                "faj_rating": expected_rating,
+                "force_update": True,
+            }
+            result = db.save_team_passport(
+                team_id=team_id_val,
+                season_id=season_id,
+                data=passport_data,
+                version=PASSPORT_VERSION,
+                source="initial",
+            )
+            if result is not None:
+                logger.info(
+                    "✅ Паспорт создан | "
+                    "team=%s | faj_rating=%.2f",
+                    team_name_val,
+                    expected_rating,
+                )
+                created_count += 1
+            else:
+                logger.warning(
+                    "⚠️ Не удалось создать паспорт | team=%s",
+                    team_name_val,
+                )
+            continue
+
+        # ========================================================
+        # 2. ПАСПОРТ УЖЕ СУЩЕСТВУЕТ
+        # ========================================================
+        stored_rating = existing_passport.get("faj_rating")
+        try:
+            stored_rating_float = (
+                float(stored_rating)
+                if stored_rating is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            stored_rating_float = None
+
+        source = str(
+            existing_passport.get("source", "")
+        ).strip().lower()
+        version = str(
+            existing_passport.get("version", "")
+        ).strip()
+
+        logger.info(
+            "PASSPORT EXISTS | "
+            "team=%s | rating=%s | source=%s | version=%s",
+            team_name_val,
+            stored_rating_float,
+            source,
+            version,
+        )
+
+        # ========================================================
+        # 3. ОПРЕДЕЛЯЕМ INITIAL
+        # ========================================================
+        is_initial = (
+            source == "initial"
+            or version == PASSPORT_VERSION
+        )
+        is_missing_rating = (
+            stored_rating_float is None
+        )
+        is_default_rating = (
+            stored_rating_float == DEFAULT_RATING
+        )
+
+        # ========================================================
+        # 4. РЕМОНТИРУЕМ ТОЛЬКО INITIAL 50.0 / NONE
+        # ========================================================
+        if is_initial and (
+            is_missing_rating
+            or is_default_rating
+        ):
+            logger.warning(
+                "🔧 Ремонт START_RATING | "
+                "team=%s | old=%s | new=%.2f",
+                team_name_val,
+                stored_rating_float,
+                expected_rating,
+            )
+            repaired_data = dict(existing_passport)
+            repaired_data["faj_rating"] = expected_rating
+            repaired_data["force_update"] = True
+            result = db.save_team_passport(
+                team_id=team_id_val,
+                season_id=season_id,
+                data=repaired_data,
+                version=PASSPORT_VERSION,
+                source="initial",
+            )
+            if result is not None:
+                logger.info(
+                    "✅ START_RATING восстановлен | "
+                    "team=%s | faj_rating=%.2f",
+                    team_name_val,
+                    expected_rating,
+                )
+                repaired_count += 1
+            else:
+                logger.error(
+                    "❌ Не удалось восстановить START_RATING | "
+                    "team=%s",
+                    team_name_val,
+                )
+        # ========================================================
+        # 5. ОБУЧЕННЫЙ ПАСПОРТ НЕ ТРОГАЕМ
+        # ========================================================
         else:
-            logger.warning(f"⚠️ Не удалось создать паспорт для {team_name_val}")
+            logger.info(
+                "🔒 Паспорт оставлен без изменений | "
+                "team=%s | faj_rating=%s",
+                team_name_val,
+                stored_rating_float,
+            )
 
-    if missing_count > 0:
-        logger.info(f"✅ Создано паспортов для {competition}: {missing_count}")
-    else:
-        logger.info(f"✅ Все паспорта для {competition} уже существуют")
+    logger.info(
+        "PASSPORT BOOTSTRAP COMPLETE | "
+        "competition=%s | "
+        "created=%s | "
+        "repaired=%s",
+        competition,
+        created_count,
+        repaired_count,
+    )
 
+
+# ============================================================
+# PATCH 3: ensure_competition_data() с диагностикой
+# ============================================================
 
 def ensure_competition_data(db: FAJDatabase, competition: str):
     """
@@ -409,6 +573,30 @@ def ensure_competition_data(db: FAJDatabase, competition: str):
     season_id_val = int(season_id(season))
 
     _ensure_passports(db, competition, season_id_val, teams)
+
+    # ============================================================
+    # RATING DIAGNOSTICS
+    # ============================================================
+    for team in teams:
+        tid = int(team_id(team))
+        name = team_name(team)
+        passport = db.get_team_passport(
+            tid,
+            season_id_val,
+        )
+        expected = get_team_rating(name)
+        actual = (
+            passport.get("faj_rating")
+            if passport
+            else None
+        )
+        logger.info(
+            "RATING CHECK | "
+            "team=%s | registry=%s | passport=%s",
+            name,
+            expected,
+            actual,
+        )
 
     return season, teams
 
