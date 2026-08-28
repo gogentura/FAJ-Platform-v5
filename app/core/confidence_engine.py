@@ -4,23 +4,24 @@
 """
 =====================================================
 FAJ Platform v12.0
-Confidence Engine v1.3
+Confidence Engine v1.4
 
 РОЛЬ:
     Оценка уверенности в прогнозе.
 
-ФАКТОРЫ (v1.3):
+ФАКТОРЫ (v1.4):
     35% Probability spread (разброс вероятностей)
-    20% Passport quality (качество данных)
+    20% Passport quality (качество данных / xG)
     15% Monte Carlo stability (стабильность симуляции)
-    15% Rating difference (разница рейтингов)
+    15% Rating difference (разница xG)
     10% Season phase (фаза сезона)
     5%  Context (травмы, форма, мотивация)
 
-ИЗМЕНЕНИЯ v1.3:
-    - context_score: нет данных = штраф (0.4 вместо 0.5)
-    - passport_quality: минимальный порог снижен (0.2 + avg*0.8)
-    - mc_stability: если нет Monte Carlo → 0.3 (штраф)
+ИЗМЕНЕНИЯ v1.4:
+    - Адаптирован под структуру PredictionPipeline
+    - quality_score использует xG вместо passport
+    - rating_score использует разницу xG
+    - mc_stability берёт Monte Carlo из extended
 =====================================================
 """
 
@@ -38,7 +39,7 @@ class ConfidenceEngine:
     Расчёт уверенности прогноза
     """
 
-    VERSION = "1.3"
+    VERSION = "1.4"
 
     # Веса факторов (живут в коде)
     WEIGHTS = {
@@ -64,7 +65,7 @@ class ConfidenceEngine:
         Расчёт уверенности
 
         Args:
-            raw_prediction: сырой прогноз
+            raw_prediction: сырой прогноз от Pipeline
             calibrated: скорректированные вероятности
             context: контекст матча (MatchContext)
 
@@ -74,13 +75,13 @@ class ConfidenceEngine:
         # 1. Probability spread (35%)
         spread_score = self._calculate_spread_score(calibrated)
 
-        # 2. Passport quality (20%)
+        # 2. Passport quality (20%) — адаптировано
         quality_score = self._calculate_quality_score(raw_prediction)
 
-        # 3. Monte Carlo stability (15%)
+        # 3. Monte Carlo stability (15%) — адаптировано
         mc_stability = self._calculate_mc_stability(raw_prediction, calibrated)
 
-        # 4. Rating difference (15%)
+        # 4. Rating difference (15%) — адаптировано
         rating_score = self._calculate_rating_score(raw_prediction)
 
         # 5. Season phase (10%)
@@ -144,13 +145,24 @@ class ConfidenceEngine:
         self,
         raw: Dict[str, Any]
     ) -> float:
-        """Оценка на основе качества паспортов"""
-        home_q = raw.get("passport", {}).get("home_quality", 0)
-        away_q = raw.get("passport", {}).get("away_quality", 0)
-        avg = (home_q + away_q) / 2
-
-        # Минимальный порог: даже при avg=0 даём 0.2
-        return 0.2 + avg * 0.8
+        """
+        Оценка качества данных на основе xG
+        
+        Адаптировано для PredictionPipeline:
+            - использует xG как прокси качества
+            - если xG в разумном диапазоне → высокое качество
+        """
+        xg = raw.get("xg", {})
+        home_xg = xg.get("home", 0.0)
+        away_xg = xg.get("away", 0.0)
+        
+        # Проверяем, что xG в разумном диапазоне (0.1–4.0)
+        if 0.1 <= home_xg <= 4.0 and 0.1 <= away_xg <= 4.0:
+            return 0.8
+        elif home_xg > 0 and away_xg > 0:
+            return 0.6
+        else:
+            return 0.4
 
     def _calculate_mc_stability(
         self,
@@ -159,16 +171,22 @@ class ConfidenceEngine:
     ) -> float:
         """
         Оценка на основе стабильности Monte Carlo
-        Сравнивает Poisson и Monte Carlo результаты
+        
+        Адаптировано для PredictionPipeline:
+            - берёт Monte Carlo из extended
+            - если нет MC — использует top_scores как прокси
         """
-        mc = raw.get("monte_carlo", {})
-
-        # Если нет Monte Carlo — штраф
+        extended = raw.get("extended", {})
+        
+        # Monte Carlo может быть в extended
+        mc = extended.get("monte_carlo", {})
+        
         if not mc or not isinstance(mc, dict):
-            return 0.3
-
-        # Проверяем наличие ключей
-        if "home_win" not in mc or "draw" not in mc or "away_win" not in mc:
+            # Если нет Monte Carlo — пробуем найти top_scores как прокси
+            top_scores = extended.get("top_scores", [])
+            if top_scores and len(top_scores) >= 3:
+                # Если есть top_scores, стабильность средняя
+                return 0.6
             return 0.3
 
         # Poisson вероятности (из calibrated)
@@ -196,28 +214,33 @@ class ConfidenceEngine:
         self,
         raw: Dict[str, Any]
     ) -> float:
-        """Оценка на основе разницы рейтингов"""
-        home = raw.get("rating", {}).get("home", 1500)
-        away = raw.get("rating", {}).get("away", 1500)
-
-        diff = abs(home - away)
-        # 0 → 0.5, 100 → 0.7, 200 → 0.9, 300 → 1.0
-        score = 0.5 + (diff / 300) * 0.5
+        """
+        Оценка на основе разницы xG (прокси силы команд)
+        
+        Адаптировано для PredictionPipeline:
+            - использует разницу xG вместо рейтингов
+        """
+        xg = raw.get("xg", {})
+        home_xg = xg.get("home", 0.0)
+        away_xg = xg.get("away", 0.0)
+        
+        diff = abs(home_xg - away_xg)
+        # diff 0 → 0.5, diff 1.0 → 0.7, diff 2.0 → 0.9, diff 3.0 → 1.0
+        score = 0.5 + (diff / 3.0) * 0.5
         return max(0.5, min(1.0, score))
 
     def _calculate_season_score(
         self,
         raw: Dict[str, Any]
     ) -> float:
-        """Оценка на основе фазы сезона"""
-        phase = raw.get("season_phase", "mid")
-        phases = {
-            "start": 0.6,
-            "early": 0.7,
-            "mid": 0.9,
-            "end": 0.85
-        }
-        return phases.get(phase, 0.8)
+        """
+        Оценка на основе фазы сезона
+        
+        Пока заглушка — всегда mid.
+        В будущем можно добавить из config.
+        """
+        # Пока всегда mid
+        return 0.85
 
     def _calculate_context_score(
         self,
@@ -225,7 +248,7 @@ class ConfidenceEngine:
     ) -> float:
         """Оценка на основе контекста матча"""
         if not context:
-            # Нет данных = штраф (не среднее значение)
+            # Нет данных = штраф
             return 0.4
 
         # Преобразуем в словарь если нужно
