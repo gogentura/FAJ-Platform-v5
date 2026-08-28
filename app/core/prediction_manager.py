@@ -13,29 +13,33 @@ Prediction Manager v2.3
 ПРАВИЛА:
     Manager работает с БД.
     Pipeline с БД НЕ работает.
+    Engine с БД НЕ работает.
 
     Manager:
-        MATCH
-          ↓
-        PASSPORT
-          ↓
-        FAJ RATING
-          ↓
-        SNAPSHOT
-          ↓
-        PREDICTION PIPELINE
-          ↓
-        FAJ FINAL SCORE ENGINE  ← НОВОЕ
-          ↓
-        SAVE PREDICTION
+        1. GET PASSPORT + RATING (ОДИН РАЗ)
+        2. VALIDATE
+        3. BUILD CONTEXT
+        4. FREEZE PREDICTION SNAPSHOT (FAIL → STOP)
+        5. PIPELINE.run(same passport + same rating)
+        6. NORMALIZE DISTRIBUTION ONCE
+        7. FINAL_SCORE_ENGINE.calculate(same context + same distribution)
+        8. BUILD FINAL PREDICTION
+        9. SAVE_PREDICTION
+        10. RETURN
 
     Prediction и Fact никогда не смешиваются.
 
-ИСПРАВЛЕНИЯ v2.3:
-    1. Интеграция FAJ Final Score Engine
-    2. Сохранение math_most_likely_score и faj_final_score
-    3. Сохранение faj_confidence и decision_factors
-    4. Контекст для Engine через get_team_recent_context()
+ИСПРАВЛЕНИЯ v2.3 (ФИНАЛЬНЫЕ):
+    1. Единый Prediction Context — immutable snapshot
+    2. Pipeline и Engine получают ОДИНАКОВЫЕ passport/rating
+    3. Distribution нормализуется ОДИН раз в Manager
+    4. Snapshot failure → STOP (без сохранения prediction)
+    5. Сезон определяется через league (без хардкода)
+    6. Поиск матча с учётом season_id
+    7. SAVE_PREDICTIONS вместо SAVE_TO_GOLD_DATASET
+    8. history_count/weight из decision_factors
+    9. engine_version из self.final_engine.VERSION
+    10. faj_score (не faj_probability) для FAJ ranking
 """
 
 import hashlib
@@ -43,7 +47,7 @@ import json
 import logging
 
 from datetime import datetime
-from typing import Dict, Any, Optional, List, Set
+from typing import Dict, Any, Optional, List, Set, Union
 
 from app.core.prediction_pipeline import (
     PredictionPipeline,
@@ -65,6 +69,11 @@ from app.config import config
 
 
 logger = logging.getLogger(__name__)
+
+
+class PredictionContextError(Exception):
+    """Ошибка создания/фиксации Prediction Context."""
+    pass
 
 
 class PredictionManager:
@@ -134,102 +143,108 @@ class PredictionManager:
         )
 
         try:
+            # ====================================================
+            # 1. SEASON
+            # ====================================================
+
             if season_id is None:
-                season_id = (
-                    self._get_current_season_id()
-                )
+                season_id = self._get_season_id(league)
 
             if season_id is None:
                 return {
                     "status": "error",
-                    "message": (
-                        "Активный сезон не найден."
-                    ),
+                    "message": f"Активный сезон не найден для лиги: {league}",
                 }
 
             # ====================================================
-            # PASSPORTS + RATINGS
+            # 2. GET PASSPORT + RATING (ОДИН РАЗ)
             # ====================================================
 
-            home_data = (
-                self._get_passport_with_rating(
-                    home_team,
-                    season_id,
-                )
-            )
-
-            away_data = (
-                self._get_passport_with_rating(
-                    away_team,
-                    season_id,
-                )
-            )
+            home_data = self._get_passport_with_rating(home_team, season_id)
+            away_data = self._get_passport_with_rating(away_team, season_id)
 
             if not home_data or not away_data:
                 missing = []
-
                 if not home_data:
                     missing.append(home_team)
-
                 if not away_data:
                     missing.append(away_team)
-
                 return {
                     "status": "error",
-                    "message": (
-                        "Паспорт не найден: "
-                        + ", ".join(missing)
-                    ),
+                    "message": f"Паспорт не найден: {', '.join(missing)}",
                 }
 
-            self._validate_passport_for_prediction(
-                home_data["passport"],
-                home_team,
-            )
+            # ====================================================
+            # 3. VALIDATE
+            # ====================================================
 
-            self._validate_passport_for_prediction(
-                away_data["passport"],
-                away_team,
-            )
+            self._validate_passport_for_prediction(home_data["passport"], home_team)
+            self._validate_passport_for_prediction(away_data["passport"], away_team)
+
+            home_passport = home_data["passport"]
+            away_passport = away_data["passport"]
+            home_rating = home_data["rating"]
+            away_rating = away_data["rating"]
 
             logger.info(
-                "PREDICTION INPUT | %s vs %s | "
-                "home_rating=%.2f | away_rating=%.2f",
+                "PREDICTION INPUT | %s vs %s | home_rating=%.2f | away_rating=%.2f",
                 home_team,
                 away_team,
-                home_data["rating"],
-                away_data["rating"],
+                home_rating,
+                away_rating,
             )
 
             # ====================================================
-            # MEMORY STATE
+            # 4. MEMORY STATE
             # ====================================================
 
-            memory_state_id = (
-                self._generate_memory_state_id()
+            memory_state_id = self._generate_memory_state_id()
+
+            # ====================================================
+            # 5. BUILD PREDICTION CONTEXT (immutable snapshot)
+            # ====================================================
+
+            match_date = self._get_match_date(match_id) if match_id else None
+
+            home_context = self._build_prediction_context(
+                team_id=home_passport.get("team_id"),
+                season_id=season_id,
+                team_name=home_team,
+                match_date=match_date,
+                passport=home_passport,
+                rating=home_rating,
+            )
+
+            away_context = self._build_prediction_context(
+                team_id=away_passport.get("team_id"),
+                season_id=season_id,
+                team_name=away_team,
+                match_date=match_date,
+                passport=away_passport,
+                rating=away_rating,
             )
 
             # ====================================================
-            # SNAPSHOT BEFORE PREDICTION
+            # 6. FREEZE PREDICTION SNAPSHOT (FAIL → STOP)
             # ====================================================
 
             if match_id is not None:
-                self._record_snapshots(
+                self._freeze_prediction_snapshot(
                     match_id=match_id,
-                    home_data=home_data,
-                    away_data=away_data,
+                    home_context=home_context,
+                    away_context=away_context,
                     memory_state_id=memory_state_id,
                 )
 
             # ====================================================
-            # RUN PURE PIPELINE
+            # 7. PIPELINE.run (same passport + same rating)
             # ====================================================
 
             result = self.pipeline.run(
-                home_passport=home_data["passport"],
-                away_passport=away_data["passport"],
-                home_rating=home_data["rating"],
-                away_rating=away_data["rating"],
+                home_passport=home_passport,
+                away_passport=away_passport,
+                home_rating=home_rating,
+                away_rating=away_rating,
                 home_team=home_team,
                 away_team=away_team,
                 league=league,
@@ -238,81 +253,40 @@ class PredictionManager:
             if not isinstance(result, dict):
                 return {
                     "status": "error",
-                    "message": (
-                        "PredictionPipeline "
-                        "вернул некорректный результат."
-                    ),
+                    "message": "PredictionPipeline вернул некорректный результат.",
                 }
 
             if result.get("status") == "error":
                 return result
 
-            # ============================================================
-            # 🆕 FAJ FINAL SCORE ENGINE
-            # ============================================================
+            # ====================================================
+            # 8. NORMALIZE DISTRIBUTION ONCE
+            # ====================================================
+
+            math_distribution = self._extract_math_distribution(result)
+            normalized_distribution = self._normalize_distribution(math_distribution)
+
+            # ====================================================
+            # 9. FAJ FINAL SCORE ENGINE (same context + same distribution)
+            # ====================================================
 
             faj_result = None
-            math_distribution = None
 
-            # Извлекаем math_distribution из результата pipeline
-            extended = result.get("extended", {})
-            if isinstance(extended, dict):
-                # Поддерживаем оба формата
-                if "distributions" in extended:
-                    math_distribution = extended.get("distributions", [])
-                elif "score_matrix" in extended:
-                    math_distribution = extended.get("score_matrix", {})
-                else:
-                    # Пробуем построить из top_scores
-                    top_scores = extended.get("top_scores", [])
-                    if top_scores:
-                        math_distribution = []
-                        for item in top_scores:
-                            if isinstance(item, dict):
-                                math_distribution.append({
-                                    "home": item.get("home", 0),
-                                    "away": item.get("away", 0),
-                                    "probability": item.get("probability", 0.0),
-                                })
-
-            if math_distribution and match_id is not None:
+            if normalized_distribution and match_id is not None:
                 try:
-                    # Получаем контекст для Engine
-                    home_context = self._build_engine_context(
-                        team_id=home_data["passport"].get("team_id"),
-                        season_id=season_id,
-                        team_name=home_team,
-                        match_date=self._get_match_date(match_id),
-                    )
-
-                    away_context = self._build_engine_context(
-                        team_id=away_data["passport"].get("team_id"),
-                        season_id=season_id,
-                        team_name=away_team,
-                        match_date=self._get_match_date(match_id),
-                    )
-
-                    # Получаем home_advantage
-                    home_advantage = 1.08
-                    base = self.db.get_base(
-                        home_data["passport"].get("team_id"),
-                        season_id,
-                    )
-                    if base:
-                        home_advantage = float(base.get("home_advantage", 1.08))
+                    # home_advantage из контекста
+                    home_advantage = home_context.get("home_advantage", 1.08)
 
                     faj_result = self.final_engine.calculate(
                         home_context=home_context,
                         away_context=away_context,
-                        math_distribution=math_distribution,
+                        math_distribution=normalized_distribution,
                         home_advantage=home_advantage,
                     )
 
                     if faj_result and faj_result.get("faj_final_score") != "—":
                         logger.info(
-                            "FAJ FINAL SCORE | %s vs %s | "
-                            "math= %s (%.2f%%) | "
-                            "faj= %s (%.2f%%)",
+                            "FAJ FINAL SCORE | %s vs %s | math=%s (%.2f%%) | faj=%s (%.2f%%)",
                             home_team,
                             away_team,
                             faj_result.get("math_most_likely_score"),
@@ -321,53 +295,52 @@ class PredictionManager:
                             faj_result.get("faj_confidence", 0) * 100,
                         )
                     else:
-                        logger.warning(
-                            "FAJ FINAL SCORE FAILED | %s vs %s",
-                            home_team,
-                            away_team,
-                        )
+                        logger.warning("FAJ FINAL SCORE FAILED | %s vs %s", home_team, away_team)
                         faj_result = None
 
                 except Exception as e:
-                    logger.exception(
-                        "FAJ Final Score Engine error | %s vs %s",
-                        home_team,
-                        away_team,
-                    )
+                    logger.exception("FAJ Final Score Engine error | %s vs %s", home_team, away_team)
                     faj_result = None
 
             # ====================================================
-            # MANAGER METADATA
+            # 10. MANAGER METADATA
             # ====================================================
 
             result["match_id"] = match_id
             result["home_team"] = home_team
             result["away_team"] = away_team
             result["league"] = league
-            result["memory_state_id"] = (
-                memory_state_id
-            )
-            result["manager_version"] = (
-                self.VERSION
-            )
+            result["memory_state_id"] = memory_state_id
+            result["manager_version"] = self.VERSION
 
-            # ============================================================
-            # 🆕 ОБОГАЩАЕМ РЕЗУЛЬТАТ FAJ-ДАННЫМИ
-            # ============================================================
+            # ====================================================
+            # 11. ОБОГАЩАЕМ РЕЗУЛЬТАТ FAJ-ДАННЫМИ
+            # ====================================================
 
             if faj_result and faj_result.get("faj_final_score") != "—":
+                # Math данные
                 result["math_most_likely_score"] = faj_result.get("math_most_likely_score")
                 result["math_score_probability"] = faj_result.get("math_probability", 0.0)
+
+                # FAJ данные
                 result["faj_final_score"] = faj_result.get("faj_final_score")
                 result["faj_confidence"] = faj_result.get("faj_confidence", 0.0)
                 result["faj_score_ranking"] = faj_result.get("faj_score_ranking", [])
-                result["decision_factors"] = faj_result.get("decision_factors", {})
+
+                # Decision factors
+                decision_factors = faj_result.get("decision_factors", {})
+                result["decision_factors"] = decision_factors
                 result["context_availability"] = faj_result.get("context_availability", {})
-                result["history_count"] = faj_result.get("history_count", 0)
-                result["history_weight"] = faj_result.get("history_weight", 0.0)
-                result["engine_version"] = faj_result.get("engine_version", "unknown")
+
+                # История — из decision_factors["history"]
+                history = decision_factors.get("history", {})
+                result["history_count"] = history.get("count", 0)
+                result["history_weight"] = history.get("weight", 0.0)
+
+                # Engine версия — из self.final_engine
+                result["engine_version"] = self.final_engine.VERSION
             else:
-                # Если FAJ не сработал — сохраняем только математику
+                # Если FAJ не сработал — только математика
                 result["math_most_likely_score"] = result.get("score")
                 result["math_score_probability"] = result.get("score_probability", 0.0)
                 result["faj_final_score"] = None
@@ -380,7 +353,7 @@ class PredictionManager:
                 result["engine_version"] = None
 
             # ====================================================
-            # SAVE PREDICTION
+            # 12. SAVE PREDICTION
             # ====================================================
 
             pred_id = self._save_prediction(
@@ -390,6 +363,7 @@ class PredictionManager:
                 league=league,
                 match_id=match_id,
                 memory_state_id=memory_state_id,
+                normalized_distribution=normalized_distribution,
             )
 
             if pred_id is not None:
@@ -397,13 +371,18 @@ class PredictionManager:
 
             return result
 
-        except Exception as e:
-            logger.exception(
-                "Prediction exception: %s vs %s",
-                home_team,
-                away_team,
-            )
+        except PredictionContextError as e:
+            logger.error("PREDICTION CONTEXT ERROR | %s", str(e))
+            return {
+                "status": "error",
+                "message": f"Ошибка фиксации контекста: {str(e)}",
+                "home_team": home_team,
+                "away_team": away_team,
+                "match_id": match_id,
+            }
 
+        except Exception as e:
+            logger.exception("Prediction exception: %s vs %s", home_team, away_team)
             return {
                 "status": "error",
                 "message": str(e),
@@ -413,81 +392,302 @@ class PredictionManager:
             }
 
     # ============================================================
-    # 🆕 BUILD ENGINE CONTEXT
+    # BUILD PREDICTION CONTEXT
     # ============================================================
 
-    def _build_engine_context(
+    def _build_prediction_context(
         self,
         team_id: Optional[int],
         season_id: Optional[int],
         team_name: str,
         match_date: Optional[str],
+        passport: Dict[str, Any],
+        rating: float,
     ) -> Dict[str, Any]:
         """
-        Собирает контекст команды для FAJ Final Score Engine.
+        Строит ЕДИНЫЙ контекст для PredictionPipeline и FinalScoreEngine.
 
-        Использует get_team_recent_context() из database.py.
-        Если данные отсутствуют — возвращает пустой контекст.
+        ВАЖНО:
+            - passport и rating НЕ ЗАМЕНЯЮТСЯ историей
+            - история добавляется как дополнительный контекст
+            - если история недоступна — используется пустой контекст
         """
-        if team_id is None or season_id is None or match_date is None:
-            logger.warning(
-                "Missing data for engine context: team_id=%s, season_id=%s, match_date=%s",
-                team_id,
-                season_id,
-                match_date,
-            )
-            return {
-                "team_id": team_id,
-                "season_id": season_id,
-                "rating": None,
-                "passport": {},
-                "base": {},
-                "last_match": None,
-                "recent_matches": [],
-                "form": None,
-                "availability": {
-                    "rating": False,
-                    "passport": False,
-                    "base": False,
-                    "last_match": False,
-                    "recent_matches": False,
-                }
+        context = {
+            "team_id": team_id,
+            "season_id": season_id,
+            "team_name": team_name,
+            "rating": rating,
+            "passport": passport,  # НЕ ЗАМЕНЯЕТСЯ
+            "home_advantage": 1.08,
+            "last_match": None,
+            "recent_matches": [],
+            "form": None,
+            "availability": {
+                "rating": rating is not None,
+                "passport": bool(passport),
+                "base": False,
+                "last_match": False,
+                "recent_matches": False,
             }
+        }
 
-        try:
-            context = self.db.get_team_recent_context(
-                team_id=team_id,
-                season_id=season_id,
-                match_date=match_date,
-                limit=5,
-            )
-            return context if context else {}
-        except Exception as e:
-            logger.warning(
-                "Failed to get context for %s: %s",
-                team_name,
-                e,
-            )
-            return {
-                "team_id": team_id,
-                "season_id": season_id,
-                "rating": None,
-                "passport": {},
-                "base": {},
-                "last_match": None,
-                "recent_matches": [],
-                "form": None,
-                "availability": {
-                    "rating": False,
-                    "passport": False,
-                    "base": False,
-                    "last_match": False,
-                    "recent_matches": False,
-                }
-            }
+        # Добавляем историю, если есть данные
+        if team_id is not None and season_id is not None and match_date is not None:
+            try:
+                db_context = self.db.get_team_recent_context(
+                    team_id=team_id,
+                    season_id=season_id,
+                    match_date=match_date,
+                    limit=5,
+                )
+
+                if db_context:
+                    # ТОЛЬКО ДОБАВЛЯЕМ историю, НЕ ЗАМЕНЯЕМ passport/rating
+                    context["last_match"] = db_context.get("last_match")
+                    context["recent_matches"] = db_context.get("recent_matches", [])
+                    context["form"] = db_context.get("form")
+                    context["home_advantage"] = db_context.get("base", {}).get("home_advantage", 1.08)
+                    context["availability"] = db_context.get("availability", context["availability"])
+
+                    logger.info(
+                        "CONTEXT BUILT | team=%s | rating=%.2f | matches=%s",
+                        team_name,
+                        rating,
+                        len(context["recent_matches"]),
+                    )
+
+            except Exception as e:
+                logger.warning("Failed to build context for %s: %s", team_name, e)
+
+        return context
 
     # ============================================================
-    # 🆕 GET MATCH DATE
+    # FREEZE PREDICTION SNAPSHOT (FAIL → STOP)
+    # ============================================================
+
+    def _freeze_prediction_snapshot(
+        self,
+        match_id: int,
+        home_context: Dict[str, Any],
+        away_context: Dict[str, Any],
+        memory_state_id: str,
+    ) -> None:
+        """
+        Фиксирует snapshot состояния ДО prediction.
+
+        ВАЖНО:
+            - любая ошибка → PredictionContextError → prediction НЕ сохраняется
+            - snapshot является обязательным для воспроизводимости
+        """
+        try:
+            home_passport = home_context.get("passport", {})
+            away_passport = away_context.get("passport", {})
+
+            home_snapshot = {
+                "attack": home_passport.get("attack"),
+                "defense": home_passport.get("defense"),
+                "control": home_passport.get("control"),
+                "press": home_passport.get("press"),
+                "tempo": home_passport.get("tempo"),
+                "transition": home_passport.get("transition"),
+                "finishing": home_passport.get("finishing"),
+                "coach_factor": home_passport.get("coach_factor"),
+                "squad_quality": home_passport.get("squad_quality"),
+                "form": home_passport.get("form"),
+                "fitness": home_passport.get("fitness"),
+                "fatigue": home_passport.get("fatigue"),
+                "morale": home_passport.get("morale"),
+            }
+
+            away_snapshot = {
+                "attack": away_passport.get("attack"),
+                "defense": away_passport.get("defense"),
+                "control": away_passport.get("control"),
+                "press": away_passport.get("press"),
+                "tempo": away_passport.get("tempo"),
+                "transition": away_passport.get("transition"),
+                "finishing": away_passport.get("finishing"),
+                "coach_factor": away_passport.get("coach_factor"),
+                "squad_quality": away_passport.get("squad_quality"),
+                "form": away_passport.get("form"),
+                "fitness": away_passport.get("fitness"),
+                "fatigue": away_passport.get("fatigue"),
+                "morale": away_passport.get("morale"),
+            }
+
+            self.db.record_match_snapshot(
+                match_id=match_id,
+                team_id=home_context.get("team_id"),
+                data=home_snapshot,
+                passport_id=home_passport.get("id"),
+                passport_version=home_passport.get("version"),
+                memory_state_id=memory_state_id,
+            )
+
+            self.db.record_match_snapshot(
+                match_id=match_id,
+                team_id=away_context.get("team_id"),
+                data=away_snapshot,
+                passport_id=away_passport.get("id"),
+                passport_version=away_passport.get("version"),
+                memory_state_id=memory_state_id,
+            )
+
+            logger.info("SNAPSHOT FROZEN | match_id=%s | memory_state=%s", match_id, memory_state_id[:8])
+
+        except Exception as e:
+            logger.error("SNAPSHOT FAILED | match_id=%s | error=%s", match_id, str(e))
+            raise PredictionContextError(f"Не удалось зафиксировать snapshot: {str(e)}")
+
+    # ============================================================
+    # EXTRACT MATH DISTRIBUTION
+    # ============================================================
+
+    def _extract_math_distribution(
+        self,
+        result: Dict[str, Any],
+    ) -> Optional[Union[Dict[str, float], List[Dict[str, Any]]]]:
+        """Извлекает math_distribution из результата Pipeline."""
+        extended = result.get("extended", {})
+        if not isinstance(extended, dict):
+            return None
+
+        # 1. distributions (приоритет)
+        if "distributions" in extended:
+            distributions = extended.get("distributions")
+            if isinstance(distributions, list) and distributions:
+                return distributions
+
+        # 2. score_matrix
+        if "score_matrix" in extended:
+            score_matrix = extended.get("score_matrix")
+            if isinstance(score_matrix, dict) and score_matrix:
+                return score_matrix
+
+        # 3. top_scores → преобразование
+        top_scores = extended.get("top_scores", [])
+        if isinstance(top_scores, list) and top_scores:
+            result_list = []
+            for item in top_scores:
+                if isinstance(item, dict):
+                    home = item.get("home")
+                    away = item.get("away")
+                    prob = item.get("probability")
+                    if home is not None and away is not None and prob is not None:
+                        try:
+                            result_list.append({
+                                "home": int(home),
+                                "away": int(away),
+                                "probability": float(prob),
+                            })
+                        except (TypeError, ValueError):
+                            continue
+            if result_list:
+                return result_list
+
+        return None
+
+    # ============================================================
+    # NORMALIZE DISTRIBUTION ONCE
+    # ============================================================
+
+    def _normalize_distribution(
+        self,
+        distribution: Optional[Union[Dict[str, float], List[Dict[str, Any]]]],
+    ) -> Optional[List[Dict[str, Any]]]:
+        """
+        Нормализует distribution ОДИН раз.
+
+        Вход:
+            - { "1:1": 0.128, "2:1": 0.109, ... }
+            - [{"home": 1, "away": 1, "probability": 0.128}, ...]
+
+        Выход:
+            - [{"home": 1, "away": 1, "probability": 0.128}, ...]
+            - probability нормализованы (сумма = 1.0)
+            - пустые/некорректные элементы отброшены
+        """
+        if not distribution:
+            return None
+
+        items = []
+
+        if isinstance(distribution, dict):
+            for score_str, prob in distribution.items():
+                try:
+                    prob = float(prob)
+                    if prob <= 0:
+                        continue
+                    if ":" in score_str:
+                        parts = score_str.split(":", 1)
+                        home = int(parts[0])
+                        away = int(parts[1])
+                        if home >= 0 and away >= 0:
+                            items.append({"home": home, "away": away, "probability": prob})
+                except (TypeError, ValueError):
+                    continue
+
+        elif isinstance(distribution, list):
+            for item in distribution:
+                if not isinstance(item, dict):
+                    continue
+                home = item.get("home")
+                away = item.get("away")
+                prob = item.get("probability")
+                try:
+                    home = int(home)
+                    away = int(away)
+                    prob = float(prob)
+                    if home >= 0 and away >= 0 and prob > 0:
+                        items.append({"home": home, "away": away, "probability": prob})
+                except (TypeError, ValueError):
+                    continue
+
+        if not items:
+            return None
+
+        # Нормализация
+        total = sum(item["probability"] for item in items)
+        if total <= 0:
+            return None
+
+        for item in items:
+            item["probability"] = round(item["probability"] / total, 6)
+
+        # Сортировка по убыванию вероятности
+        items.sort(key=lambda x: x["probability"], reverse=True)
+
+        return items
+
+    # ============================================================
+    # SEASON
+    # ============================================================
+
+    def _get_season_id(self, league: str) -> Optional[int]:
+        """Возвращает ID активного сезона для указанной лиги."""
+        seasons = self.db.get_seasons()
+
+        for season in seasons:
+            season_league = season.get("league", "")
+            status = season.get("status", "")
+
+            if season_league == league and status == "active":
+                logger.info("Season detected | league=%s | id=%s", league, season["id"])
+                return season["id"]
+
+        # Fallback: ищем по названию
+        for season in seasons:
+            name = season.get("name", "")
+            season_league = season.get("league", "")
+            if season_league == league and ("2026-2027" in name or "2026/27" in name):
+                logger.info("Season detected (fallback) | league=%s | id=%s", league, season["id"])
+                return season["id"]
+
+        logger.error("Season not found | league=%s", league)
+        return None
+
+    # ============================================================
+    # GET MATCH DATE
     # ============================================================
 
     def _get_match_date(self, match_id: int) -> Optional[str]:
@@ -504,29 +704,20 @@ class PredictionManager:
     # PREDICT BY MATCH ID
     # ============================================================
 
-    def predict_by_match_id(
-        self,
-        match_id: int,
-    ) -> Dict[str, Any]:
-
+    def predict_by_match_id(self, match_id: int) -> Dict[str, Any]:
         match = self._get_match(match_id)
 
         if not match:
             return {
                 "status": "error",
-                "message": (
-                    f"Матч с ID {match_id} не найден."
-                ),
+                "message": f"Матч с ID {match_id} не найден.",
                 "match_id": match_id,
             }
 
         return self.predict(
             home_team=match.get("home_team"),
             away_team=match.get("away_team"),
-            league=match.get(
-                "competition",
-                "РПЛ",
-            ),
+            league=match.get("competition", "РПЛ"),
             match_type="league",
             context=None,
             season_id=match.get("season_id"),
@@ -537,59 +728,28 @@ class PredictionManager:
     # PREDICT ROUND
     # ============================================================
 
-    def predict_round(
-        self,
-        round_id: int,
-        include_finished: bool = False,
-    ) -> List[Dict[str, Any]]:
-
-        matches = self._get_round_matches(
-            round_id
-        )
-
+    def predict_round(self, round_id: int, include_finished: bool = False) -> List[Dict[str, Any]]:
+        matches = self._get_round_matches(round_id)
         results = []
 
         for match in matches:
-            status = str(
-                match.get("status", "")
-            ).strip().lower()
+            status = str(match.get("status", "")).strip().lower()
 
-            if (
-                not include_finished
-                and status in self.FINISHED_STATUSES
-            ):
-                logger.info(
-                    "Skip finished match: id=%s",
-                    match["id"],
-                )
+            if not include_finished and status in self.FINISHED_STATUSES:
+                logger.info("Skip finished match: id=%s", match["id"])
                 continue
 
             try:
-                results.append(
-                    self.predict_by_match_id(
-                        match["id"]
-                    )
-                )
-
+                results.append(self.predict_by_match_id(match["id"]))
             except Exception as e:
-                logger.exception(
-                    "Prediction error for match %s",
-                    match["id"],
-                )
-
-                results.append(
-                    {
-                        "status": "error",
-                        "match_id": match["id"],
-                        "home_team": match.get(
-                            "home_team"
-                        ),
-                        "away_team": match.get(
-                            "away_team"
-                        ),
-                        "message": str(e),
-                    }
-                )
+                logger.exception("Prediction error for match %s", match["id"])
+                results.append({
+                    "status": "error",
+                    "match_id": match["id"],
+                    "home_team": match.get("home_team"),
+                    "away_team": match.get("away_team"),
+                    "message": str(e),
+                })
 
         return results
 
@@ -597,106 +757,32 @@ class PredictionManager:
     # PREDICT ROUND BY NUMBER
     # ============================================================
 
-    def predict_round_by_number(
-        self,
-        round_number: int,
-        include_finished: bool = False,
-    ) -> List[Dict[str, Any]]:
-
-        season_id = (
-            self._get_current_season_id()
-        )
+    def predict_round_by_number(self, round_number: int, include_finished: bool = False) -> List[Dict[str, Any]]:
+        season_id = self._get_season_id("РПЛ")
 
         if not season_id:
-            return [
-                {
-                    "status": "error",
-                    "message": "Сезон не найден",
-                }
-            ]
+            return [{"status": "error", "message": "Сезон не найден"}]
 
-        rounds = self.db.get_rounds(
-            season_id
-        )
-
+        rounds = self.db.get_rounds(season_id)
         round_id = None
 
         for current_round in rounds:
-            if (
-                current_round["round_number"]
-                == round_number
-            ):
+            if current_round["round_number"] == round_number:
                 round_id = current_round["id"]
                 break
 
         if round_id is None:
-            return [
-                {
-                    "status": "error",
-                    "message": (
-                        f"Тур {round_number} "
-                        "не найден в БД"
-                    ),
-                }
-            ]
+            return [{"status": "error", "message": f"Тур {round_number} не найден в БД"}]
 
-        logger.info(
-            "Predict round by number | "
-            "round_number=%s | round_id=%s",
-            round_number,
-            round_id,
-        )
-
-        return self.predict_round(
-            round_id,
-            include_finished,
-        )
-
-    # ============================================================
-    # CURRENT SEASON
-    # ============================================================
-
-    def _get_current_season_id(
-        self,
-    ) -> Optional[int]:
-
-        seasons = self.db.get_seasons()
-
-        for season in seasons:
-            name = season.get(
-                "name",
-                "",
-            )
-
-            if (
-                "РПЛ 2026-2027" in name
-                or "2026-2027" in name
-            ):
-                logger.info(
-                    "Season detected: %s",
-                    season["id"],
-                )
-
-                return season["id"]
-
-        logger.error(
-            "Season 2026-2027 not found "
-            "in database"
-        )
-
-        return None
+        logger.info("Predict round by number | round_number=%s | round_id=%s", round_number, round_id)
+        return self.predict_round(round_id, include_finished)
 
     # ============================================================
     # GET MATCH
     # ============================================================
 
-    def _get_match(
-        self,
-        match_id: int,
-    ) -> Optional[Dict[str, Any]]:
-
+    def _get_match(self, match_id: int) -> Optional[Dict[str, Any]]:
         all_matches = self.db.get_matches()
-
         match = None
 
         for current_match in all_matches:
@@ -707,39 +793,17 @@ class PredictionManager:
         if not match:
             return None
 
-        home = self.db.get_team(
-            match["home_team_id"]
-        )
+        home = self.db.get_team(match["home_team_id"])
+        away = self.db.get_team(match["away_team_id"])
 
-        away = self.db.get_team(
-            match["away_team_id"]
-        )
-
-        match["home_team"] = (
-            home["name"]
-            if home
-            else None
-        )
-
-        match["away_team"] = (
-            away["name"]
-            if away
-            else None
-        )
+        match["home_team"] = home["name"] if home else None
+        match["away_team"] = away["name"] if away else None
 
         rounds = self.db.get_rounds()
-
         for current_round in rounds:
-            if (
-                current_round["id"]
-                == match["round_id"]
-            ):
-                match["round_number"] = (
-                    current_round["round_number"]
-                )
-                match["season_id"] = (
-                    current_round["season_id"]
-                )
+            if current_round["id"] == match["round_id"]:
+                match["round_number"] = current_round["round_number"]
+                match["season_id"] = current_round["season_id"]
                 break
 
         return match
@@ -748,46 +812,22 @@ class PredictionManager:
     # GET ROUND MATCHES
     # ============================================================
 
-    def _get_round_matches(
-        self,
-        round_id: int,
-    ) -> List[Dict[str, Any]]:
-
-        all_matches = self.db.get_matches(
-            round_id
-        )
-
+    def _get_round_matches(self, round_id: int) -> List[Dict[str, Any]]:
+        all_matches = self.db.get_matches(round_id)
         result = []
 
         for match in all_matches:
             match_dict = dict(match)
-
-            home = self.db.get_team(
-                match["home_team_id"]
-            )
-
-            away = self.db.get_team(
-                match["away_team_id"]
-            )
-
-            match_dict["home_team"] = (
-                home["name"]
-                if home
-                else None
-            )
-
-            match_dict["away_team"] = (
-                away["name"]
-                if away
-                else None
-            )
-
+            home = self.db.get_team(match["home_team_id"])
+            away = self.db.get_team(match["away_team_id"])
+            match_dict["home_team"] = home["name"] if home else None
+            match_dict["away_team"] = away["name"] if away else None
             result.append(match_dict)
 
         return result
 
     # ============================================================
-    # PASSPORT + RATING — ИСПРАВЛЕНО v2.2
+    # PASSPORT + RATING
     # ============================================================
 
     def _get_passport_with_rating(
@@ -797,293 +837,57 @@ class PredictionManager:
     ) -> Optional[Dict[str, Any]]:
 
         if season_id is not None:
-            passport = (
-                self.passport_manager
-                .get_current_passport_by_name(
-                    team_name,
-                    season_id,
-                )
-            )
+            passport = self.passport_manager.get_current_passport_by_name(team_name, season_id)
         else:
-            passport = (
-                self.passport_manager
-                .get_current_passport_by_name(
-                    team_name
-                )
-            )
+            passport = self.passport_manager.get_current_passport_by_name(team_name)
 
         if not passport:
-            logger.error(
-                "PASSPORT NOT FOUND | "
-                "team=%s | season=%s",
-                team_name,
-                season_id,
-            )
+            logger.error("PASSPORT NOT FOUND | team=%s | season=%s", team_name, season_id)
             return None
 
-        if not isinstance(
-            passport,
-            dict,
-        ):
-            logger.error(
-                "INVALID PASSPORT TYPE | "
-                "team=%s",
-                team_name,
-            )
+        if not isinstance(passport, dict):
+            logger.error("INVALID PASSPORT TYPE | team=%s", team_name)
             return None
-
-        # ============================================================
-        # ВАЖНО: Rating должен приходить из паспорта.
-        # Нет fallback через calculate_rating().
-        # ============================================================
 
         stored_rating = passport.get("faj_rating")
 
         if stored_rating is None:
-            logger.error(
-                "FAJ RATING MISSING | "
-                "team=%s | season=%s | "
-                "Prediction requires passport.faj_rating",
-                team_name,
-                season_id,
-            )
+            logger.error("FAJ RATING MISSING | team=%s | season=%s", team_name, season_id)
             return None
 
         try:
             rating = float(stored_rating)
         except (TypeError, ValueError):
-            logger.error(
-                "FAJ RATING INVALID | "
-                "team=%s | value=%r",
-                team_name,
-                stored_rating,
-            )
+            logger.error("FAJ RATING INVALID | team=%s | value=%r", team_name, stored_rating)
             return None
 
-        logger.info(
-            "FAJ RATING | team=%s | %.2f",
-            team_name,
-            rating,
-        )
+        logger.info("FAJ RATING | team=%s | %.2f", team_name, rating)
 
-        return {
-            "passport": passport,
-            "rating": rating,
-        }
+        return {"passport": passport, "rating": rating}
 
     # ============================================================
     # PASSPORT VALIDATION
     # ============================================================
 
-    def _validate_passport_for_prediction(
-        self,
-        passport: Dict[str, Any],
-        team_name: str,
-    ) -> None:
+    def _validate_passport_for_prediction(self, passport: Dict[str, Any], team_name: str) -> None:
+        if not isinstance(passport, dict):
+            raise ValueError(f"Invalid passport for {team_name}")
 
-        if not isinstance(
-            passport,
-            dict,
-        ):
-            raise ValueError(
-                f"Invalid passport for "
-                f"{team_name}"
-            )
-
-        required = [
-            "attack",
-            "defense",
-            "control",
-            "goalkeeper",
-            "form",
-        ]
-
-        missing = [
-            field
-            for field in required
-            if (
-                field not in passport
-                or passport.get(field) is None
-            )
-        ]
+        required = ["attack", "defense", "control", "goalkeeper", "form"]
+        missing = [field for field in required if field not in passport or passport.get(field) is None]
 
         if missing:
-            raise ValueError(
-                f"Passport for {team_name} "
-                "missing required fields: "
-                + ", ".join(missing)
-            )
+            raise ValueError(f"Passport for {team_name} missing required fields: {', '.join(missing)}")
 
-        logger.info(
-            "PASSPORT VALIDATED | team=%s",
-            team_name,
-        )
-
-    # ============================================================
-    # SNAPSHOTS
-    # ============================================================
-
-    def _record_snapshots(
-        self,
-        match_id: int,
-        home_data: Dict[str, Any],
-        away_data: Dict[str, Any],
-        memory_state_id: str,
-    ) -> None:
-
-        try:
-            home_passport = (
-                home_data["passport"]
-            )
-
-            away_passport = (
-                away_data["passport"]
-            )
-
-            home_data_snapshot = {
-                "attack": home_passport.get(
-                    "attack"
-                ),
-                "defense": home_passport.get(
-                    "defense"
-                ),
-                "control": home_passport.get(
-                    "control"
-                ),
-                "press": home_passport.get(
-                    "press"
-                ),
-                "tempo": home_passport.get(
-                    "tempo"
-                ),
-                "transition": home_passport.get(
-                    "transition"
-                ),
-                "finishing": home_passport.get(
-                    "finishing"
-                ),
-                "coach_factor": home_passport.get(
-                    "coach_factor"
-                ),
-                "squad_quality": home_passport.get(
-                    "squad_quality"
-                ),
-                "form": home_passport.get(
-                    "form"
-                ),
-                "fitness": home_passport.get(
-                    "fitness"
-                ),
-                "fatigue": home_passport.get(
-                    "fatigue"
-                ),
-                "morale": home_passport.get(
-                    "morale"
-                ),
-            }
-
-            away_data_snapshot = {
-                "attack": away_passport.get(
-                    "attack"
-                ),
-                "defense": away_passport.get(
-                    "defense"
-                ),
-                "control": away_passport.get(
-                    "control"
-                ),
-                "press": away_passport.get(
-                    "press"
-                ),
-                "tempo": away_passport.get(
-                    "tempo"
-                ),
-                "transition": away_passport.get(
-                    "transition"
-                ),
-                "finishing": away_passport.get(
-                    "finishing"
-                ),
-                "coach_factor": away_passport.get(
-                    "coach_factor"
-                ),
-                "squad_quality": away_passport.get(
-                    "squad_quality"
-                ),
-                "form": away_passport.get(
-                    "form"
-                ),
-                "fitness": away_passport.get(
-                    "fitness"
-                ),
-                "fatigue": away_passport.get(
-                    "fatigue"
-                ),
-                "morale": away_passport.get(
-                    "morale"
-                ),
-            }
-
-            self.db.record_match_snapshot(
-                match_id=match_id,
-                team_id=home_passport.get(
-                    "team_id"
-                ),
-                data=home_data_snapshot,
-                passport_id=home_passport.get(
-                    "id"
-                ),
-                passport_version=home_passport.get(
-                    "version"
-                ),
-                memory_state_id=memory_state_id,
-            )
-
-            self.db.record_match_snapshot(
-                match_id=match_id,
-                team_id=away_passport.get(
-                    "team_id"
-                ),
-                data=away_data_snapshot,
-                passport_id=away_passport.get(
-                    "id"
-                ),
-                passport_version=away_passport.get(
-                    "version"
-                ),
-                memory_state_id=memory_state_id,
-            )
-
-            logger.info(
-                "Snapshots recorded for match %s",
-                match_id,
-            )
-
-        except Exception as e:
-            logger.warning(
-                "Failed to record snapshots "
-                "for match %s: %s",
-                match_id,
-                e,
-            )
+        logger.info("PASSPORT VALIDATED | team=%s", team_name)
 
     # ============================================================
     # MEMORY STATE ID
     # ============================================================
 
-    def _generate_memory_state_id(
-        self,
-    ) -> str:
-
-        timestamp = (
-            datetime.utcnow()
-            .isoformat(timespec="microseconds")
-        )
-
-        return (
-            f"FAJ-MEM-{self.pipeline.VERSION}-"
-            f"{timestamp}"
-        )
+    def _generate_memory_state_id(self) -> str:
+        timestamp = datetime.utcnow().isoformat(timespec="microseconds")
+        return f"FAJ-MEM-{self.pipeline.VERSION}-{timestamp}"
 
     # ============================================================
     # PREDICTION HASH
@@ -1097,36 +901,56 @@ class PredictionManager:
         away_win: float,
         faj_final_score: Optional[str] = None,
     ) -> str:
-
         data = {
             "match_id": match_id,
-            "pipeline_version": (
-                self.pipeline.VERSION
-            ),
-            "home_win": round(
-                float(home_win),
-                6,
-            ),
-            "draw": round(
-                float(draw),
-                6,
-            ),
-            "away_win": round(
-                float(away_win),
-                6,
-            ),
+            "pipeline_version": self.pipeline.VERSION,
+            "home_win": round(float(home_win), 6),
+            "draw": round(float(draw), 6),
+            "away_win": round(float(away_win), 6),
             "faj_final_score": faj_final_score,
         }
+        encoded = json.dumps(data, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
-        encoded = json.dumps(
-            data,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+    # ============================================================
+    # FIND MATCH (с учётом season_id)
+    # ============================================================
 
-        return hashlib.sha256(
-            encoded.encode("utf-8")
-        ).hexdigest()
+    def _find_match_by_teams(
+        self,
+        home_team: str,
+        away_team: str,
+        season_id: Optional[int] = None,
+        league: Optional[str] = None,
+    ) -> Optional[int]:
+        all_matches = self.db.get_matches()
+
+        for match in all_matches:
+            home = self.db.get_team(match["home_team_id"])
+            away = self.db.get_team(match["away_team_id"])
+
+            if not home or not away:
+                continue
+
+            if home["name"] != home_team or away["name"] != away_team:
+                continue
+
+            if season_id is not None:
+                # Проверяем season_id через rounds
+                rounds = self.db.get_rounds()
+                for round_item in rounds:
+                    if round_item["id"] == match["round_id"] and round_item["season_id"] == season_id:
+                        return match["id"]
+
+            if league is not None:
+                if match.get("competition") == league:
+                    return match["id"]
+
+            # Если нет фильтров — возвращаем первый найденный
+            if season_id is None and league is None:
+                return match["id"]
+
+        return None
 
     # ============================================================
     # SAVE PREDICTION
@@ -1140,139 +964,54 @@ class PredictionManager:
         league: str,
         match_id: Optional[int] = None,
         memory_state_id: Optional[str] = None,
+        normalized_distribution: Optional[List[Dict[str, Any]]] = None,
     ) -> Optional[int]:
 
-        if not getattr(
-            config,
-            "SAVE_TO_GOLD_DATASET",
-            True,
-        ):
-            logger.info(
-                "Prediction saving disabled"
-            )
+        if not getattr(config, "SAVE_PREDICTIONS", True):
+            logger.info("Prediction saving disabled")
             return None
 
         try:
             if match_id is None:
-                match_id = (
-                    self._find_match_by_teams(
-                        home_team,
-                        away_team,
-                    )
-                )
+                match_id = self._find_match_by_teams(home_team, away_team, season_id=None, league=league)
 
             if match_id is None:
-                logger.warning(
-                    "Cannot save prediction: "
-                    "match not found | %s vs %s",
-                    home_team,
-                    away_team,
-                )
+                logger.warning("Cannot save prediction: match not found | %s vs %s", home_team, away_team)
                 return None
 
-            probability = result.get(
-                "probability",
-                {},
-            )
+            probability = result.get("probability", {})
+            home_win = float(probability.get("home", 0.0))
+            draw = float(probability.get("draw", 0.0))
+            away_win = float(probability.get("away", 0.0))
 
-            home_win = float(
-                probability.get(
-                    "home",
-                    0.0,
-                )
-            )
-
-            draw = float(
-                probability.get(
-                    "draw",
-                    0.0,
-                )
-            )
-
-            away_win = float(
-                probability.get(
-                    "away",
-                    0.0,
-                )
-            )
-
-            confidence_data = result.get(
-                "confidence",
-                {},
-            )
-
+            confidence_data = result.get("confidence", {})
             try:
-                confidence_value = float(
-                    confidence_data.get(
-                        "overall",
-                        0.5,
-                    )
-                )
-            except (
-                TypeError,
-                ValueError,
-            ):
+                confidence_value = float(confidence_data.get("overall", 0.5))
+            except (TypeError, ValueError):
                 confidence_value = 0.5
+            confidence_value = max(0.0, min(1.0, confidence_value))
 
-            confidence_value = max(
-                0.0,
-                min(
-                    1.0,
-                    confidence_value,
-                ),
-            )
-
-            # ============================================================
-            # 🆕 FAJ ДАННЫЕ
-            # ============================================================
-
+            # FAJ данные
             faj_final_score = result.get("faj_final_score")
             faj_confidence = result.get("faj_confidence")
             decision_factors = result.get("decision_factors", {})
             math_most_likely_score = result.get("math_most_likely_score")
 
-            # ====================================================
             # HASH
-            # ====================================================
-
-            prediction_hash = (
-                self._generate_prediction_hash(
-                    match_id=match_id,
-                    home_win=home_win,
-                    draw=draw,
-                    away_win=away_win,
-                    faj_final_score=faj_final_score,
-                )
+            prediction_hash = self._generate_prediction_hash(
+                match_id=match_id,
+                home_win=home_win,
+                draw=draw,
+                away_win=away_win,
+                faj_final_score=faj_final_score,
             )
 
-            # ====================================================
-            # MODEL VERSION
-            # ====================================================
+            model_version = result.get("version", self.pipeline.VERSION)
+            extended = result.get("extended", {})
+            total = extended.get("total", {})
+            btts = extended.get("btts", {})
 
-            model_version = result.get(
-                "version",
-                self.pipeline.VERSION,
-            )
-
-            extended = result.get(
-                "extended",
-                {},
-            )
-
-            total = extended.get(
-                "total",
-                {},
-            )
-
-            btts = extended.get(
-                "btts",
-                {},
-            )
-
-            # ====================================================
             # SAVE MAIN PREDICTION
-            # ====================================================
-
             pred_id = self.db.save_prediction(
                 match_id=match_id,
                 model_version=model_version,
@@ -1280,117 +1019,56 @@ class PredictionManager:
                 home_win=home_win,
                 draw=draw,
                 away_win=away_win,
-                over25=total.get(
-                    "over_2_5",
-                    result.get(
-                        "over_2_5",
-                        0.0,
-                    ),
-                ),
-                over35=total.get(
-                    "over_3_5",
-                    0.0,
-                ),
-                btts=btts.get(
-                    "yes",
-                    result.get(
-                        "btts",
-                        0.0,
-                    ),
-                ),
-                confidence=int(
-                    confidence_value * 100
-                ),
+                over25=total.get("over_2_5", result.get("over_2_5", 0.0)),
+                over35=total.get("over_3_5", 0.0),
+                btts=btts.get("yes", result.get("btts", 0.0)),
+                confidence=int(confidence_value * 100),
                 prediction_source="FAJ Engine",
                 prediction_hash=prediction_hash,
                 memory_state_id=memory_state_id,
-                # 🆕 FAJ поля
                 faj_final_score=faj_final_score,
                 faj_confidence=int(faj_confidence * 100) if faj_confidence is not None else None,
                 decision_factors=json.dumps(decision_factors) if decision_factors else None,
             )
 
             if not pred_id:
-                logger.warning(
-                    "Prediction save returned no ID"
-                )
+                logger.warning("Prediction save returned no ID")
                 return None
 
-            # ====================================================
             # TOP SCORES — MATH
-            # ====================================================
-
-            top_scores = extended.get(
-                "top_scores",
-                [],
-            )
-
+            top_scores = extended.get("top_scores", [])
             for score_data in top_scores:
                 self.db.add_prediction_score(
                     prediction_id=pred_id,
-                    score=(
-                        f"{score_data.get('home', 0)}:"
-                        f"{score_data.get('away', 0)}"
-                    ),
-                    probability=score_data.get(
-                        "probability",
-                        0.0,
-                    ),
-                    rank=score_data.get(
-                        "rank",
-                        0,
-                    ),
+                    score=f"{score_data.get('home', 0)}:{score_data.get('away', 0)}",
+                    probability=score_data.get("probability", 0.0),
+                    rank=score_data.get("rank", 0),
                     score_type="math",
                 )
 
-            # ============================================================
-            # 🆕 TOP SCORES — FAJ
-            # ============================================================
-
+            # TOP SCORES — FAJ (используем faj_score)
             faj_ranking = result.get("faj_score_ranking", [])
             for item in faj_ranking:
                 self.db.add_prediction_score(
                     prediction_id=pred_id,
                     score=item.get("score", "0:0"),
-                    probability=item.get("faj_probability", 0.0),
+                    probability=item.get("faj_score", 0.0),
                     rank=item.get("rank", 0),
                     score_type="faj",
                 )
 
-            # ====================================================
-            # DISTRIBUTION
-            # ====================================================
-
-            distributions = extended.get(
-                "distributions",
-                [],
-            )
-
-            for dist in distributions:
+            # DISTRIBUTION — используем нормализованную
+            distributions_to_save = normalized_distribution or extended.get("distributions", [])
+            for dist in distributions_to_save:
                 self.db.add_prediction_distribution(
                     prediction_id=pred_id,
-                    home_goals=dist.get(
-                        "home",
-                        0,
-                    ),
-                    away_goals=dist.get(
-                        "away",
-                        0,
-                    ),
-                    probability=dist.get(
-                        "probability",
-                        0.0,
-                    ),
+                    home_goals=dist.get("home", 0),
+                    away_goals=dist.get("away", 0),
+                    probability=dist.get("probability", 0.0),
                 )
 
             logger.info(
-                "Prediction saved | "
-                "prediction_id=%s | "
-                "match_id=%s | "
-                "model_version=%s | "
-                "hash=%s | "
-                "math=%s | "
-                "faj=%s",
+                "Prediction saved | prediction_id=%s | match_id=%s | model_version=%s | hash=%s | math=%s | faj=%s",
                 pred_id,
                 match_id,
                 model_version,
@@ -1402,40 +1080,8 @@ class PredictionManager:
             return pred_id
 
         except Exception:
-            logger.exception(
-                "Save prediction error"
-            )
+            logger.exception("Save prediction error")
             return None
-
-    # ============================================================
-    # FIND MATCH
-    # ============================================================
-
-    def _find_match_by_teams(
-        self,
-        home_team: str,
-        away_team: str,
-    ) -> Optional[int]:
-
-        all_matches = self.db.get_matches()
-
-        for match in all_matches:
-            home = self.db.get_team(
-                match["home_team_id"]
-            )
-
-            away = self.db.get_team(
-                match["away_team_id"]
-            )
-
-            if home and away:
-                if (
-                    home["name"] == home_team
-                    and away["name"] == away_team
-                ):
-                    return match["id"]
-
-        return None
 
     # ============================================================
     # STATUS
@@ -1445,12 +1091,8 @@ class PredictionManager:
         return {
             "manager": "Prediction Manager",
             "version": self.VERSION,
-            "pipeline_version": (
-                self.pipeline.VERSION
-            ),
-            "engine_version": (
-                self.final_engine.VERSION
-            ),
+            "pipeline_version": self.pipeline.VERSION,
+            "engine_version": self.final_engine.VERSION,
             "status": "READY",
         }
 
@@ -1459,18 +1101,11 @@ class PredictionManager:
 # SINGLETON
 # ============================================================
 
-_default_manager: Optional[
-    PredictionManager
-] = None
+_default_manager: Optional[PredictionManager] = None
 
 
 def get_prediction_manager() -> PredictionManager:
-
     global _default_manager
-
     if _default_manager is None:
-        _default_manager = (
-            PredictionManager()
-        )
-
+        _default_manager = PredictionManager()
     return _default_manager
