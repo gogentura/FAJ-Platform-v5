@@ -3,74 +3,39 @@
 
 """
 =====================================================
-FAJ Platform v12.1
+FAJ Platform v12.1 — MEMORY HARDENED
 Prediction Manager v2.1
 =====================================================
 
 РОЛЬ:
     Дирижёр prediction pipeline.
 
-АРХИТЕКТУРА:
+ПРАВИЛА:
+    Manager работает с БД.
+    Pipeline с БД НЕ работает.
 
-    MATCH
-      ↓
-    TEAM PASSPORT
-      ↓
-    FAJ CLUB RATING
-      ↓
-    PREDICTION PIPELINE
-      │
-      ├── FAJ XG MODEL
-      │       ↓
-      │    home_xg
-      │    away_xg
-      │
-      ├── POISSON
-      │
-      └── MONTE CARLO
-              ↓
-        FINAL PREDICTION
-              ↓
-        GOLD DATASET
+    Manager:
+        MATCH
+          ↓
+        PASSPORT
+          ↓
+        FAJ RATING
+          ↓
+        SNAPSHOT
+          ↓
+        PREDICTION PIPELINE
+          ↓
+        SAVE PREDICTION
 
-ВАЖНО:
+    Prediction и Fact никогда не смешиваются.
 
-    Prediction Manager НЕ рассчитывает xG.
-
-    Prediction Manager НЕ рассчитывает Poisson.
-
-    Prediction Manager НЕ запускает Monte Carlo
-    напрямую.
-
-    Prediction Manager НЕ изменяет Team Passport.
-
-    Prediction Manager НЕ обновляет FAJ Rating.
-
-    Все математические расчёты выполняются
-    внутри PredictionPipeline.
-
-    FAJ Rating передаётся в pipeline для
-    использования соответствующими слоями
-    и диагностики.
-
-    Новый FAJ XG Model НЕ использует Rating
-    как множитель xG.
-
-ИЗМЕНЕНИЯ v2.1:
-
-    1. Сохранена архитектура v2.0.
-    2. Prediction Manager остаётся orchestration layer.
-    3. Усилен prediction_hash.
-    4. В hash включаются xG и основные вероятности.
-    5. Сохранён memory_state_id.
-    6. Snapshot создаётся до prediction.
-    7. FAJ Rating берётся из сохранённого
-       passport faj_rating.
-    8. Не выполняется скрытый пересчёт Rating
-       без необходимости.
-    9. Сохранён Database-only API.
-   10. Сохранён совместимый публичный API.
-=====================================================
+ИСПРАВЛЕНИЯ v2.1:
+    1. Pipeline version используется как model_version.
+    2. Prediction Manager version не маскирует версию модели.
+    3. prediction_hash сохраняется.
+    4. memory_state_id сохраняется.
+    5. snapshots записываются до запуска Pipeline.
+    6. Все DB операции идут через FAJDatabase.
 """
 
 import hashlib
@@ -85,8 +50,6 @@ from app.core.prediction_pipeline import (
     get_prediction_pipeline,
 )
 
-from app.core.match_context import MatchContext
-
 from app.passports.passport_manager import (
     PassportManager,
     get_passport_manager,
@@ -100,26 +63,7 @@ logger = logging.getLogger(__name__)
 
 
 class PredictionManager:
-    """
-    Prediction Manager v2.1.
-
-    Отвечает только за orchestration:
-
-        MATCH
-          ↓
-        PASSPORT
-          ↓
-        RATING
-          ↓
-        PIPELINE
-          ↓
-        PREDICTION
-          ↓
-        DATABASE
-
-    Математические модели находятся
-    внутри PredictionPipeline.
-    """
+    """Prediction Manager v2.1 — Memory Hardened."""
 
     VERSION = "2.1"
 
@@ -131,10 +75,6 @@ class PredictionManager:
         "ended",
         "full time",
     }
-
-    # ============================================================
-    # INITIALIZATION
-    # ============================================================
 
     def __init__(
         self,
@@ -154,10 +94,7 @@ class PredictionManager:
             or get_passport_manager()
         )
 
-        self.db = (
-            db
-            or FAJDatabase()
-        )
+        self.db = db or FAJDatabase()
 
         logger.info(
             "Prediction Manager v%s initialized",
@@ -174,27 +111,10 @@ class PredictionManager:
         away_team: str,
         league: str = "РПЛ",
         match_type: str = "league",
-        context: Optional[MatchContext] = None,
+        context=None,
         season_id: Optional[int] = None,
         match_id: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """
-        Полный прогноз одного матча.
-
-        Prediction Manager:
-
-            1. получает сезон;
-            2. получает паспорта;
-            3. получает FAJ Rating;
-            4. валидирует паспорта;
-            5. фиксирует snapshot;
-            6. запускает PredictionPipeline;
-            7. добавляет metadata;
-            8. сохраняет prediction.
-
-        Сам Manager математические модели
-        не рассчитывает.
-        """
 
         logger.info(
             "Prediction requested: %s vs %s",
@@ -203,30 +123,21 @@ class PredictionManager:
         )
 
         try:
-
-            # ====================================================
-            # 1. SEASON
-            # ====================================================
-
             if season_id is None:
                 season_id = (
                     self._get_current_season_id()
                 )
 
             if season_id is None:
-
                 return {
                     "status": "error",
                     "message": (
                         "Активный сезон не найден."
                     ),
-                    "home_team": home_team,
-                    "away_team": away_team,
-                    "match_id": match_id,
                 }
 
             # ====================================================
-            # 2. PASSPORTS + RATING
+            # PASSPORTS + RATINGS
             # ====================================================
 
             home_data = (
@@ -244,7 +155,6 @@ class PredictionManager:
             )
 
             if not home_data or not away_data:
-
                 missing = []
 
                 if not home_data:
@@ -259,14 +169,7 @@ class PredictionManager:
                         "Паспорт не найден: "
                         + ", ".join(missing)
                     ),
-                    "home_team": home_team,
-                    "away_team": away_team,
-                    "match_id": match_id,
                 }
-
-            # ====================================================
-            # 3. PASSPORT VALIDATION
-            # ====================================================
 
             self._validate_passport_for_prediction(
                 home_data["passport"],
@@ -279,10 +182,8 @@ class PredictionManager:
             )
 
             logger.info(
-                "PREDICTION INPUT | "
-                "%s vs %s | "
-                "home_rating=%.2f | "
-                "away_rating=%.2f",
+                "PREDICTION INPUT | %s vs %s | "
+                "home_rating=%.2f | away_rating=%.2f",
                 home_team,
                 away_team,
                 home_data["rating"],
@@ -290,7 +191,7 @@ class PredictionManager:
             )
 
             # ====================================================
-            # 4. MEMORY STATE
+            # MEMORY STATE
             # ====================================================
 
             memory_state_id = (
@@ -298,11 +199,10 @@ class PredictionManager:
             )
 
             # ====================================================
-            # 5. MATCH SNAPSHOT
+            # SNAPSHOT BEFORE PREDICTION
             # ====================================================
 
             if match_id is not None:
-
                 self._record_snapshots(
                     match_id=match_id,
                     home_data=home_data,
@@ -311,7 +211,7 @@ class PredictionManager:
                 )
 
             # ====================================================
-            # 6. RUN PREDICTION PIPELINE
+            # RUN PURE PIPELINE
             # ====================================================
 
             result = self.pipeline.run(
@@ -324,42 +224,35 @@ class PredictionManager:
                 league=league,
             )
 
-            # ====================================================
-            # 7. PIPELINE VALIDATION
-            # ====================================================
-
             if not isinstance(result, dict):
-
                 return {
                     "status": "error",
                     "message": (
                         "PredictionPipeline "
                         "вернул некорректный результат."
                     ),
-                    "home_team": home_team,
-                    "away_team": away_team,
-                    "match_id": match_id,
                 }
 
             if result.get("status") == "error":
                 return result
 
             # ====================================================
-            # 8. METADATA
+            # MANAGER METADATA
             # ====================================================
 
             result["match_id"] = match_id
             result["home_team"] = home_team
             result["away_team"] = away_team
             result["league"] = league
-            result["match_type"] = match_type
-            result["season_id"] = season_id
             result["memory_state_id"] = (
                 memory_state_id
             )
+            result["manager_version"] = (
+                self.VERSION
+            )
 
             # ====================================================
-            # 9. SAVE PREDICTION
+            # SAVE PREDICTION
             # ====================================================
 
             pred_id = self._save_prediction(
@@ -374,19 +267,9 @@ class PredictionManager:
             if pred_id is not None:
                 result["prediction_id"] = pred_id
 
-            logger.info(
-                "Prediction completed | "
-                "%s vs %s | "
-                "prediction_id=%s",
-                home_team,
-                away_team,
-                pred_id,
-            )
-
             return result
 
-        except Exception as exc:
-
+        except Exception as e:
             logger.exception(
                 "Prediction exception: %s vs %s",
                 home_team,
@@ -395,7 +278,7 @@ class PredictionManager:
 
             return {
                 "status": "error",
-                "message": str(exc),
+                "message": str(e),
                 "home_team": home_team,
                 "away_team": away_team,
                 "match_id": match_id,
@@ -409,22 +292,14 @@ class PredictionManager:
         self,
         match_id: int,
     ) -> Dict[str, Any]:
-        """
-        Прогноз по match_id.
-
-        Основной способ запуска прогноза
-        для существующего матча.
-        """
 
         match = self._get_match(match_id)
 
         if not match:
-
             return {
                 "status": "error",
                 "message": (
-                    f"Матч с ID {match_id} "
-                    f"не найден."
+                    f"Матч с ID {match_id} не найден."
                 ),
                 "match_id": match_id,
             }
@@ -451,9 +326,6 @@ class PredictionManager:
         round_id: int,
         include_finished: bool = False,
     ) -> List[Dict[str, Any]]:
-        """
-        Прогноз всех матчей тура.
-        """
 
         matches = self._get_round_matches(
             round_id
@@ -462,49 +334,46 @@ class PredictionManager:
         results = []
 
         for match in matches:
-
             status = str(
                 match.get("status", "")
-            ).lower()
+            ).strip().lower()
 
             if (
                 not include_finished
                 and status in self.FINISHED_STATUSES
             ):
-
                 logger.info(
                     "Skip finished match: id=%s",
                     match["id"],
                 )
-
                 continue
 
             try:
-
                 results.append(
                     self.predict_by_match_id(
                         match["id"]
                     )
                 )
 
-            except Exception as exc:
-
+            except Exception as e:
                 logger.exception(
                     "Prediction error for match %s",
                     match["id"],
                 )
 
-                results.append({
-                    "status": "error",
-                    "match_id": match["id"],
-                    "home_team": match.get(
-                        "home_team"
-                    ),
-                    "away_team": match.get(
-                        "away_team"
-                    ),
-                    "message": str(exc),
-                })
+                results.append(
+                    {
+                        "status": "error",
+                        "match_id": match["id"],
+                        "home_team": match.get(
+                            "home_team"
+                        ),
+                        "away_team": match.get(
+                            "away_team"
+                        ),
+                        "message": str(e),
+                    }
+                )
 
         return results
 
@@ -517,20 +386,18 @@ class PredictionManager:
         round_number: int,
         include_finished: bool = False,
     ) -> List[Dict[str, Any]]:
-        """
-        Прогноз тура по номеру.
-        """
 
         season_id = (
             self._get_current_season_id()
         )
 
         if not season_id:
-
-            return [{
-                "status": "error",
-                "message": "Сезон не найден",
-            }]
+            return [
+                {
+                    "status": "error",
+                    "message": "Сезон не найден",
+                }
+            ]
 
         rounds = self.db.get_rounds(
             season_id
@@ -539,32 +406,27 @@ class PredictionManager:
         round_id = None
 
         for current_round in rounds:
-
             if (
                 current_round["round_number"]
                 == round_number
             ):
-
-                round_id = (
-                    current_round["id"]
-                )
-
+                round_id = current_round["id"]
                 break
 
         if round_id is None:
-
-            return [{
-                "status": "error",
-                "message": (
-                    f"Тур {round_number} "
-                    f"не найден в БД"
-                ),
-            }]
+            return [
+                {
+                    "status": "error",
+                    "message": (
+                        f"Тур {round_number} "
+                        "не найден в БД"
+                    ),
+                }
+            ]
 
         logger.info(
             "Predict round by number | "
-            "round_number=%s | "
-            "round_id=%s",
+            "round_number=%s | round_id=%s",
             round_number,
             round_id,
         )
@@ -575,30 +437,25 @@ class PredictionManager:
         )
 
     # ============================================================
-    # SEASON
+    # CURRENT SEASON
     # ============================================================
 
     def _get_current_season_id(
         self,
     ) -> Optional[int]:
-        """
-        Получение текущего сезона
-        исключительно через FAJDatabase.
-        """
 
         seasons = self.db.get_seasons()
 
         for season in seasons:
-
-            name = str(
-                season.get("name", "")
+            name = season.get(
+                "name",
+                "",
             )
 
             if (
                 "РПЛ 2026-2027" in name
                 or "2026-2027" in name
             ):
-
                 logger.info(
                     "Season detected: %s",
                     season["id"],
@@ -621,38 +478,22 @@ class PredictionManager:
         self,
         match_id: int,
     ) -> Optional[Dict[str, Any]]:
-        """
-        Получение матча через FAJDatabase.
-        """
 
         all_matches = self.db.get_matches()
 
         match = None
 
         for current_match in all_matches:
-
             if current_match["id"] == match_id:
-
-                match = dict(
-                    current_match
-                )
-
+                match = dict(current_match)
                 break
 
         if not match:
             return None
 
-        # --------------------------------------------------------
-        # HOME TEAM
-        # --------------------------------------------------------
-
         home = self.db.get_team(
             match["home_team_id"]
         )
-
-        # --------------------------------------------------------
-        # AWAY TEAM
-        # --------------------------------------------------------
 
         away = self.db.get_team(
             match["away_team_id"]
@@ -670,31 +511,19 @@ class PredictionManager:
             else None
         )
 
-        # --------------------------------------------------------
-        # ROUND / SEASON
-        # --------------------------------------------------------
-
         rounds = self.db.get_rounds()
 
         for current_round in rounds:
-
             if (
                 current_round["id"]
                 == match["round_id"]
             ):
-
                 match["round_number"] = (
-                    current_round[
-                        "round_number"
-                    ]
+                    current_round["round_number"]
                 )
-
                 match["season_id"] = (
-                    current_round[
-                        "season_id"
-                    ]
+                    current_round["season_id"]
                 )
-
                 break
 
         return match
@@ -707,20 +536,14 @@ class PredictionManager:
         self,
         round_id: int,
     ) -> List[Dict[str, Any]]:
-        """
-        Получение матчей тура через FAJDatabase.
-        """
 
-        all_matches = (
-            self.db.get_matches(
-                round_id
-            )
+        all_matches = self.db.get_matches(
+            round_id
         )
 
         result = []
 
         for match in all_matches:
-
             match_dict = dict(match)
 
             home = self.db.get_team(
@@ -743,9 +566,7 @@ class PredictionManager:
                 else None
             )
 
-            result.append(
-                match_dict
-            )
+            result.append(match_dict)
 
         return result
 
@@ -758,23 +579,8 @@ class PredictionManager:
         team_name: str,
         season_id: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
-        """
-        Получает актуальный Team Passport
-        и сохранённый FAJ Rating.
-
-        ВАЖНО:
-
-        Prediction Manager не обновляет Rating.
-
-        Если faj_rating отсутствует,
-        прогноз считается некорректно подготовленным,
-        поскольку Rating является отдельным
-        состоянием FAJ и должен быть сформирован
-        соответствующим слоем системы.
-        """
 
         if season_id is not None:
-
             passport = (
                 self.passport_manager
                 .get_current_passport_by_name(
@@ -782,9 +588,7 @@ class PredictionManager:
                     season_id,
                 )
             )
-
         else:
-
             passport = (
                 self.passport_manager
                 .get_current_passport_by_name(
@@ -793,93 +597,61 @@ class PredictionManager:
             )
 
         if not passport:
-
             logger.error(
                 "PASSPORT NOT FOUND | "
                 "team=%s | season=%s",
                 team_name,
                 season_id,
             )
-
             return None
 
         if not isinstance(
             passport,
             dict,
         ):
-
             logger.error(
                 "INVALID PASSPORT TYPE | "
                 "team=%s",
                 team_name,
             )
-
             return None
 
-        stored_rating = (
-            passport.get("faj_rating")
+        stored_rating = passport.get(
+            "faj_rating"
         )
 
-        # --------------------------------------------------------
-        # RATING MUST EXIST
-        # --------------------------------------------------------
-
-        if stored_rating is None:
-
-            logger.error(
-                "FAJ RATING NOT FOUND | "
-                "team=%s | season=%s",
-                team_name,
-                season_id,
+        if stored_rating is not None:
+            try:
+                rating = float(
+                    stored_rating
+                )
+            except (
+                TypeError,
+                ValueError,
+            ):
+                rating = (
+                    self.passport_manager
+                    .calculate_rating(
+                        passport
+                    )
+                )
+        else:
+            rating = (
+                self.passport_manager
+                .calculate_rating(
+                    passport
+                )
             )
-
-            return None
-
-        try:
-
-            rating = float(
-                stored_rating
-            )
-
-        except (
-            TypeError,
-            ValueError,
-        ):
-
-            logger.error(
-                "INVALID FAJ RATING | "
-                "team=%s | value=%r",
-                team_name,
-                stored_rating,
-            )
-
-            return None
-
-        if not (
-            config.RATING_MIN
-            <= rating
-            <= config.RATING_MAX
-        ):
-
-            logger.error(
-                "FAJ RATING OUT OF RANGE | "
-                "team=%s | rating=%.3f",
-                team_name,
-                rating,
-            )
-
-            return None
 
         logger.info(
-            "FAJ RATING LOADED | "
-            "team=%s | rating=%.2f",
+            "FAJ RATING | team=%s | %.2f",
             team_name,
             rating,
         )
 
         return {
             "passport": passport,
-            "rating": rating,
+            "rating": float(rating),
         }
 
     # ============================================================
@@ -891,19 +663,14 @@ class PredictionManager:
         passport: Dict[str, Any],
         team_name: str,
     ) -> None:
-        """
-        Минимальная валидация паспорта,
-        необходимая Prediction Pipeline.
-        """
 
         if not isinstance(
             passport,
             dict,
         ):
-
             raise ValueError(
-                f"Invalid passport "
-                f"for {team_name}"
+                f"Invalid passport for "
+                f"{team_name}"
             )
 
         required = [
@@ -919,22 +686,19 @@ class PredictionManager:
             for field in required
             if (
                 field not in passport
-                or passport.get(field)
-                is None
+                or passport.get(field) is None
             )
         ]
 
         if missing:
-
             raise ValueError(
                 f"Passport for {team_name} "
-                f"missing required fields: "
-                f"{', '.join(missing)}"
+                "missing required fields: "
+                + ", ".join(missing)
             )
 
         logger.info(
-            "PASSPORT VALIDATED | "
-            "team=%s",
+            "PASSPORT VALIDATED | team=%s",
             team_name,
         )
 
@@ -949,16 +713,8 @@ class PredictionManager:
         away_data: Dict[str, Any],
         memory_state_id: str,
     ) -> None:
-        """
-        Фиксирует состояние Team Passport
-        непосредственно перед прогнозом.
-
-        Snapshot является исторической фиксацией
-        входных данных prediction.
-        """
 
         try:
-
             home_passport = (
                 home_data["passport"]
             )
@@ -967,59 +723,96 @@ class PredictionManager:
                 away_data["passport"]
             )
 
-            # ====================================================
-            # HOME SNAPSHOT
-            # ====================================================
+            home_data_snapshot = {
+                "attack": home_passport.get(
+                    "attack"
+                ),
+                "defense": home_passport.get(
+                    "defense"
+                ),
+                "control": home_passport.get(
+                    "control"
+                ),
+                "press": home_passport.get(
+                    "press"
+                ),
+                "tempo": home_passport.get(
+                    "tempo"
+                ),
+                "transition": home_passport.get(
+                    "transition"
+                ),
+                "finishing": home_passport.get(
+                    "finishing"
+                ),
+                "coach_factor": home_passport.get(
+                    "coach_factor"
+                ),
+                "squad_quality": home_passport.get(
+                    "squad_quality"
+                ),
+                "form": home_passport.get(
+                    "form"
+                ),
+                "fitness": home_passport.get(
+                    "fitness"
+                ),
+                "fatigue": home_passport.get(
+                    "fatigue"
+                ),
+                "morale": home_passport.get(
+                    "morale"
+                ),
+            }
+
+            away_data_snapshot = {
+                "attack": away_passport.get(
+                    "attack"
+                ),
+                "defense": away_passport.get(
+                    "defense"
+                ),
+                "control": away_passport.get(
+                    "control"
+                ),
+                "press": away_passport.get(
+                    "press"
+                ),
+                "tempo": away_passport.get(
+                    "tempo"
+                ),
+                "transition": away_passport.get(
+                    "transition"
+                ),
+                "finishing": away_passport.get(
+                    "finishing"
+                ),
+                "coach_factor": away_passport.get(
+                    "coach_factor"
+                ),
+                "squad_quality": away_passport.get(
+                    "squad_quality"
+                ),
+                "form": away_passport.get(
+                    "form"
+                ),
+                "fitness": away_passport.get(
+                    "fitness"
+                ),
+                "fatigue": away_passport.get(
+                    "fatigue"
+                ),
+                "morale": away_passport.get(
+                    "morale"
+                ),
+            }
 
             self.db.record_match_snapshot(
                 match_id=match_id,
                 team_id=home_passport.get(
                     "team_id"
                 ),
-                data={
-                    "attack": home_passport.get(
-                        "attack"
-                    ),
-                    "defense": home_passport.get(
-                        "defense"
-                    ),
-                    "control": home_passport.get(
-                        "control"
-                    ),
-                    "press": home_passport.get(
-                        "press"
-                    ),
-                    "tempo": home_passport.get(
-                        "tempo"
-                    ),
-                    "transition": home_passport.get(
-                        "transition"
-                    ),
-                    "finishing": home_passport.get(
-                        "finishing"
-                    ),
-                    "coach_factor": home_passport.get(
-                        "coach_factor"
-                    ),
-                    "squad_quality": home_passport.get(
-                        "squad_quality"
-                    ),
-                    "form": home_passport.get(
-                        "form"
-                    ),
-                    "fitness": home_passport.get(
-                        "fitness"
-                    ),
-                    "fatigue": home_passport.get(
-                        "fatigue"
-                    ),
-                    "morale": home_passport.get(
-                        "morale"
-                    ),
-                    "faj_rating": home_data.get(
-                        "rating"
-                    ),
-                },
+                data=home_data_snapshot,
                 passport_id=home_passport.get(
                     "id"
                 ),
@@ -1029,59 +822,12 @@ class PredictionManager:
                 memory_state_id=memory_state_id,
             )
 
-            # ====================================================
-            # AWAY SNAPSHOT
-            # ====================================================
-
             self.db.record_match_snapshot(
                 match_id=match_id,
                 team_id=away_passport.get(
                     "team_id"
                 ),
-                data={
-                    "attack": away_passport.get(
-                        "attack"
-                    ),
-                    "defense": away_passport.get(
-                        "defense"
-                    ),
-                    "control": away_passport.get(
-                        "control"
-                    ),
-                    "press": away_passport.get(
-                        "press"
-                    ),
-                    "tempo": away_passport.get(
-                        "tempo"
-                    ),
-                    "transition": away_passport.get(
-                        "transition"
-                    ),
-                    "finishing": away_passport.get(
-                        "finishing"
-                    ),
-                    "coach_factor": away_passport.get(
-                        "coach_factor"
-                    ),
-                    "squad_quality": away_passport.get(
-                        "squad_quality"
-                    ),
-                    "form": away_passport.get(
-                        "form"
-                    ),
-                    "fitness": away_passport.get(
-                        "fitness"
-                    ),
-                    "fatigue": away_passport.get(
-                        "fatigue"
-                    ),
-                    "morale": away_passport.get(
-                        "morale"
-                    ),
-                    "faj_rating": away_data.get(
-                        "rating"
-                    ),
-                },
+                data=away_data_snapshot,
                 passport_id=away_passport.get(
                     "id"
                 ),
@@ -1092,27 +838,16 @@ class PredictionManager:
             )
 
             logger.info(
-                "Snapshots recorded | "
-                "match_id=%s | "
-                "memory_state_id=%s",
+                "Snapshots recorded for match %s",
                 match_id,
-                memory_state_id,
             )
 
-        except Exception as exc:
-
-            # Snapshot failure НЕ должен
-            # уничтожать сам prediction pipeline.
-            #
-            # Исторически это диагностическая
-            # проблема, которую необходимо видеть
-            # в логах.
-
+        except Exception as e:
             logger.warning(
                 "Failed to record snapshots "
                 "for match %s: %s",
                 match_id,
-                exc,
+                e,
             )
 
     # ============================================================
@@ -1122,18 +857,14 @@ class PredictionManager:
     def _generate_memory_state_id(
         self,
     ) -> str:
-        """
-        Идентификатор состояния модели
-        на момент prediction.
-        """
 
         timestamp = (
-            datetime.now()
-            .isoformat()
+            datetime.utcnow()
+            .isoformat(timespec="microseconds")
         )
 
         return (
-            f"FAJ-{self.VERSION}-"
+            f"FAJ-MEM-{self.pipeline.VERSION}-"
             f"{timestamp}"
         )
 
@@ -1144,78 +875,26 @@ class PredictionManager:
     def _generate_prediction_hash(
         self,
         match_id: int,
-        result: Dict[str, Any],
+        home_win: float,
+        draw: float,
+        away_win: float,
     ) -> str:
-        """
-        Генерирует детерминированный hash
-        prediction.
-
-        Hash фиксирует не только 1X2,
-        но и основные параметры прогноза.
-
-        Это позволяет отличать два разных
-        состояния prediction для одного матча.
-        """
-
-        probability = (
-            result.get(
-                "probability",
-                {}
-            )
-        )
 
         data = {
             "match_id": match_id,
-
-            "manager_version": self.VERSION,
-
             "pipeline_version": (
-                result.get(
-                    "pipeline_version"
-                )
+                self.pipeline.VERSION
             ),
-
-            "model_version": (
-                result.get(
-                    "model_version"
-                )
-            ),
-
-            "home_xg": (
-                result.get("home_xg")
-            ),
-
-            "away_xg": (
-                result.get("away_xg")
-            ),
-
             "home_win": round(
-                float(
-                    probability.get(
-                        "home",
-                        0.0
-                    )
-                ),
+                float(home_win),
                 6,
             ),
-
             "draw": round(
-                float(
-                    probability.get(
-                        "draw",
-                        0.0
-                    )
-                ),
+                float(draw),
                 6,
             ),
-
             "away_win": round(
-                float(
-                    probability.get(
-                        "away",
-                        0.0
-                    )
-                ),
+                float(away_win),
                 6,
             ),
         }
@@ -1224,7 +903,6 @@ class PredictionManager:
             data,
             sort_keys=True,
             separators=(",", ":"),
-            ensure_ascii=False,
         )
 
         return hashlib.sha256(
@@ -1244,31 +922,19 @@ class PredictionManager:
         match_id: Optional[int] = None,
         memory_state_id: Optional[str] = None,
     ) -> Optional[int]:
-        """
-        Сохраняет Prediction исключительно
-        через FAJDatabase.
-        """
 
         if not getattr(
             config,
             "SAVE_TO_GOLD_DATASET",
             True,
         ):
-
             logger.info(
                 "Prediction saving disabled"
             )
-
             return None
 
         try:
-
-            # ====================================================
-            # 1. MATCH ID
-            # ====================================================
-
             if match_id is None:
-
                 match_id = (
                     self._find_match_by_teams(
                         home_team,
@@ -1277,24 +943,17 @@ class PredictionManager:
                 )
 
             if match_id is None:
-
                 logger.warning(
                     "Cannot save prediction: "
-                    "match not found | "
-                    "%s vs %s",
+                    "match not found | %s vs %s",
                     home_team,
                     away_team,
                 )
-
                 return None
-
-            # ====================================================
-            # 2. PROBABILITY
-            # ====================================================
 
             probability = result.get(
                 "probability",
-                {}
+                {},
             )
 
             home_win = float(
@@ -1318,128 +977,126 @@ class PredictionManager:
                 )
             )
 
-            # ====================================================
-            # 3. CONFIDENCE
-            # ====================================================
-
-            confidence_data = (
-                result.get(
-                    "confidence",
-                    {}
-                )
-            )
-
-            confidence_value = (
-                confidence_data.get(
-                    "overall",
-                    0.5,
-                )
+            confidence_data = result.get(
+                "confidence",
+                {},
             )
 
             try:
-
                 confidence_value = float(
-                    confidence_value
+                    confidence_data.get(
+                        "overall",
+                        0.5,
+                    )
                 )
-
             except (
                 TypeError,
                 ValueError,
             ):
-
                 confidence_value = 0.5
 
             confidence_value = max(
                 0.0,
                 min(
-                    confidence_value,
                     1.0,
+                    confidence_value,
                 ),
             )
 
             # ====================================================
-            # 4. PREDICTION HASH
+            # HASH
             # ====================================================
 
             prediction_hash = (
                 self._generate_prediction_hash(
                     match_id=match_id,
-                    result=result,
-                )
-            )
-
-            # ====================================================
-            # 5. SAVE MAIN PREDICTION
-            # ====================================================
-
-            extended = result.get(
-                "extended",
-                {}
-            )
-
-            total_data = extended.get(
-                "total",
-                {}
-            )
-
-            btts_data = extended.get(
-                "btts",
-                {}
-            )
-
-            pred_id = (
-                self.db.save_prediction(
-                    match_id=match_id,
-                    model_version=self.VERSION,
-                    algorithm="FAJ Engine",
                     home_win=home_win,
                     draw=draw,
                     away_win=away_win,
-                    over25=total_data.get(
-                        "over_2_5",
-                        0.0,
-                    ),
-                    over35=total_data.get(
-                        "over_3_5",
-                        0.0,
-                    ),
-                    btts=btts_data.get(
-                        "yes",
-                        0.0,
-                    ),
-                    confidence=int(
-                        confidence_value * 100
-                    ),
-                    prediction_source="FAJ Engine",
-                    prediction_hash=(
-                        prediction_hash
-                    ),
-                    memory_state_id=(
-                        memory_state_id
-                    ),
                 )
             )
 
+            # ====================================================
+            # MODEL VERSION
+            #
+            # ВАЖНО:
+            # Здесь должна быть версия Pipeline,
+            # а не PredictionManager.
+            # ====================================================
+
+            model_version = result.get(
+                "version",
+                self.pipeline.VERSION,
+            )
+
+            extended = result.get(
+                "extended",
+                {},
+            )
+
+            total = extended.get(
+                "total",
+                {},
+            )
+
+            btts = extended.get(
+                "btts",
+                {},
+            )
+
+            # ====================================================
+            # SAVE MAIN PREDICTION
+            # ====================================================
+
+            pred_id = self.db.save_prediction(
+                match_id=match_id,
+                model_version=model_version,
+                algorithm="FAJ Engine",
+                home_win=home_win,
+                draw=draw,
+                away_win=away_win,
+                over25=total.get(
+                    "over_2_5",
+                    result.get(
+                        "over_2_5",
+                        0.0,
+                    ),
+                ),
+                over35=total.get(
+                    "over_3_5",
+                    0.0,
+                ),
+                btts=btts.get(
+                    "yes",
+                    result.get(
+                        "btts",
+                        0.0,
+                    ),
+                ),
+                confidence=int(
+                    confidence_value * 100
+                ),
+                prediction_source="FAJ Engine",
+                prediction_hash=prediction_hash,
+                memory_state_id=memory_state_id,
+            )
+
             if not pred_id:
-
                 logger.warning(
-                    "Prediction save "
-                    "returned no ID"
+                    "Prediction save returned no ID"
                 )
-
                 return None
 
             # ====================================================
-            # 6. TOP SCORES
+            # TOP SCORES
             # ====================================================
 
             top_scores = extended.get(
                 "top_scores",
-                []
+                [],
             )
 
             for score_data in top_scores:
-
                 self.db.add_prediction_score(
                     prediction_id=pred_id,
                     score=(
@@ -1457,16 +1114,15 @@ class PredictionManager:
                 )
 
             # ====================================================
-            # 7. DISTRIBUTIONS
+            # DISTRIBUTION
             # ====================================================
 
             distributions = extended.get(
                 "distributions",
-                []
+                [],
             )
 
             for dist in distributions:
-
                 self.db.add_prediction_distribution(
                     prediction_id=pred_id,
                     home_goals=dist.get(
@@ -1487,20 +1143,20 @@ class PredictionManager:
                 "Prediction saved | "
                 "prediction_id=%s | "
                 "match_id=%s | "
+                "model_version=%s | "
                 "hash=%s",
                 pred_id,
                 match_id,
-                prediction_hash[:12],
+                model_version,
+                prediction_hash[:8],
             )
 
             return pred_id
 
         except Exception:
-
             logger.exception(
                 "Save prediction error"
             )
-
             return None
 
     # ============================================================
@@ -1512,17 +1168,10 @@ class PredictionManager:
         home_team: str,
         away_team: str,
     ) -> Optional[int]:
-        """
-        Поиск матча по командам
-        исключительно через FAJDatabase.
-        """
 
-        all_matches = (
-            self.db.get_matches()
-        )
+        all_matches = self.db.get_matches()
 
         for match in all_matches:
-
             home = self.db.get_team(
                 match["home_team_id"]
             )
@@ -1531,15 +1180,12 @@ class PredictionManager:
                 match["away_team_id"]
             )
 
-            if not home or not away:
-                continue
-
-            if (
-                home["name"] == home_team
-                and away["name"] == away_team
-            ):
-
-                return match["id"]
+            if home and away:
+                if (
+                    home["name"] == home_team
+                    and away["name"] == away_team
+                ):
+                    return match["id"]
 
         return None
 
@@ -1548,29 +1194,19 @@ class PredictionManager:
     # ============================================================
 
     def status(self) -> Dict[str, Any]:
-        """
-        Диагностический статус.
-        """
-
         return {
-            "manager": (
-                "Prediction Manager"
-            ),
+            "manager": "Prediction Manager",
             "version": self.VERSION,
-            "pipeline": (
-                getattr(
-                    self.pipeline,
-                    "VERSION",
-                    None,
-                )
+            "pipeline_version": (
+                self.pipeline.VERSION
             ),
             "status": "READY",
         }
 
 
-# ================================================================
+# ============================================================
 # SINGLETON
-# ================================================================
+# ============================================================
 
 _default_manager: Optional[
     PredictionManager
@@ -1578,44 +1214,12 @@ _default_manager: Optional[
 
 
 def get_prediction_manager() -> PredictionManager:
-    """
-    Singleton Prediction Manager.
-    """
 
     global _default_manager
 
     if _default_manager is None:
-
         _default_manager = (
             PredictionManager()
         )
 
     return _default_manager
-
-
-# ================================================================
-# SELF TEST
-# ================================================================
-
-if __name__ == "__main__":
-
-    manager = PredictionManager()
-
-    print()
-    print("=" * 70)
-    print(
-        "FAJ PREDICTION MANAGER "
-        f"v{manager.VERSION}"
-    )
-    print("=" * 70)
-
-    print()
-    print("STATUS")
-    print("-" * 70)
-
-    print(
-        manager.status()
-    )
-
-    print()
-    print("=" * 70)
