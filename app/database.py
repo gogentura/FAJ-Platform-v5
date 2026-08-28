@@ -388,6 +388,20 @@ def run_migrations():
         ensure_column("predictions", "prediction_version", "INTEGER DEFAULT 1")
         logger.info("✅ Проверена колонка prediction_status и prediction_version в predictions")
     
+    # ============================================================
+    # 🆕 FAJ FINAL SCORE — НОВЫЕ ПОЛЯ
+    # ============================================================
+    
+    # Добавляем колонки в predictions
+    ensure_column("predictions", "faj_final_score", "TEXT")
+    ensure_column("predictions", "faj_confidence", "INTEGER")
+    ensure_column("predictions", "decision_factors", "TEXT")
+    
+    # Добавляем колонку в prediction_scores
+    ensure_column("prediction_scores", "score_type", "TEXT DEFAULT 'math'")
+    
+    logger.info("✅ Добавлены колонки FAJ Final Score в predictions и prediction_scores")
+    
     ensure_index_if_table_exists("prediction_validation", "idx_validation_match", "match_id")
     ensure_index_if_table_exists("prediction_validation", "idx_validation_predicted", "predicted_score")
     
@@ -3012,7 +3026,10 @@ class FAJDatabase:
                         memory_state_id: str = None,
                         snapshot_id: int = None,
                         passport_revision: str = None,
-                        parameter_revision: str = None) -> int:
+                        parameter_revision: str = None,
+                        faj_final_score: str = None,
+                        faj_confidence: int = None,
+                        decision_factors: str = None) -> int:
         """Сохраняет прогноз. Если hash совпадает — возвращает существующий."""
         conn = self.get_connection()
         try:
@@ -3027,6 +3044,23 @@ class FAJDatabase:
                 """, (prediction_hash,))
                 existing = cursor.fetchone()
                 if existing:
+                    # Обновляем FAJ поля если они переданы
+                    if faj_final_score is not None or faj_confidence is not None or decision_factors is not None:
+                        updates = []
+                        params = []
+                        if faj_final_score is not None:
+                            updates.append("faj_final_score = ?")
+                            params.append(faj_final_score)
+                        if faj_confidence is not None:
+                            updates.append("faj_confidence = ?")
+                            params.append(faj_confidence)
+                        if decision_factors is not None:
+                            updates.append("decision_factors = ?")
+                            params.append(decision_factors)
+                        if updates:
+                            params.append(existing["id"])
+                            cursor.execute(f"UPDATE predictions SET {', '.join(updates)} WHERE id = ?", params)
+                            conn.commit()
                     return existing["id"]
             
             # Получаем текущую версию для этого матча
@@ -3047,8 +3081,9 @@ class FAJDatabase:
                     prediction_status, prediction_version,
                     memory_state_id, snapshot_id,
                     passport_revision, parameter_revision,
+                    faj_final_score, faj_confidence, decision_factors,
                     created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 match_id, model_version, algorithm,
                 home_win, draw, away_win,
@@ -3057,6 +3092,7 @@ class FAJDatabase:
                 "active", next_ver,
                 memory_state_id, snapshot_id,
                 passport_revision, parameter_revision,
+                faj_final_score, faj_confidence, decision_factors,
                 datetime.now().isoformat()
             ))
             prediction_id = cursor.lastrowid
@@ -3098,7 +3134,8 @@ class FAJDatabase:
             cursor = conn.cursor()
             if include_history:
                 cursor.execute("""
-                    SELECT * FROM predictions                    WHERE match_id = ?
+                    SELECT * FROM predictions
+                    WHERE match_id = ?
                     ORDER BY prediction_version ASC, created_at ASC
                 """, (match_id,))
             else:
@@ -3127,14 +3164,14 @@ class FAJDatabase:
         finally:
             conn.close()
     
-    def add_prediction_score(self, prediction_id, score, probability, rank):
+    def add_prediction_score(self, prediction_id, score, probability, rank, score_type="math"):
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO prediction_scores (prediction_id, score, probability, rank)
-                VALUES (?, ?, ?, ?)
-            """, (prediction_id, score, probability, rank))
+                INSERT INTO prediction_scores (prediction_id, score, probability, rank, score_type)
+                VALUES (?, ?, ?, ?, ?)
+            """, (prediction_id, score, probability, rank, score_type))
             row_id = cursor.lastrowid
             conn.commit()
             return row_id
@@ -3161,15 +3198,22 @@ class FAJDatabase:
         finally:
             conn.close()
     
-    def get_prediction_scores(self, prediction_id):
+    def get_prediction_scores(self, prediction_id, score_type=None):
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM prediction_scores
-                WHERE prediction_id = ?
-                ORDER BY rank ASC, id ASC
-            """, (prediction_id,))
+            if score_type:
+                cursor.execute("""
+                    SELECT * FROM prediction_scores
+                    WHERE prediction_id = ? AND score_type = ?
+                    ORDER BY rank ASC, id ASC
+                """, (prediction_id, score_type))
+            else:
+                cursor.execute("""
+                    SELECT * FROM prediction_scores
+                    WHERE prediction_id = ?
+                    ORDER BY rank ASC, id ASC
+                """, (prediction_id,))
             return cursor.fetchall()
         finally:
             conn.close()
@@ -4798,6 +4842,254 @@ class FAJDatabase:
                 e
             )
             return False
+        finally:
+            conn.close()
+
+
+    # ============================================================
+    # 🆕 НОВЫЙ МЕТОД: GET TEAM RECENT CONTEXT (FAJ FINAL SCORE)
+    # ============================================================
+
+    def get_team_recent_context(
+        self,
+        team_id: int,
+        season_id: int,
+        match_date: str,
+        limit: int = 5,
+    ) -> Dict[str, Any]:
+        """
+        Возвращает контекст команды для FAJ Final Score Engine.
+
+        ВАЖНО:
+            - Только матчи ДО match_date (без утечки будущего)
+            - ORDER BY match_date DESC
+            - Возвращает rating, passport, last_match, recent_matches
+            - Отмечает availability каждого компонента
+
+        Args:
+            team_id: ID команды
+            season_id: ID сезона
+            match_date: Дата прогнозируемого матча (ISO формат)
+            limit: Максимум матчей в recent_matches
+
+        Returns:
+            {
+                "team_id": int,
+                "season_id": int,
+                "rating": float | None,
+                "passport": dict | None,
+                "base": dict | None,
+                "last_match": dict | None,
+                "recent_matches": list,
+                "form": dict | None,
+                "availability": {
+                    "rating": bool,
+                    "passport": bool,
+                    "base": bool,
+                    "last_match": bool,
+                    "recent_matches": bool,
+                }
+            }
+        """
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+
+            result = {
+                "team_id": team_id,
+                "season_id": season_id,
+                "rating": None,
+                "passport": None,
+                "base": None,
+                "last_match": None,
+                "recent_matches": [],
+                "form": None,
+                "availability": {
+                    "rating": False,
+                    "passport": False,
+                    "base": False,
+                    "last_match": False,
+                    "recent_matches": False,
+                }
+            }
+
+            # ====================================================
+            # 1. PASSPORT + RATING
+            # ====================================================
+            passport = self.get_team_passport(team_id, season_id)
+            if passport:
+                result["passport"] = dict(passport)
+                result["availability"]["passport"] = True
+
+                rating = passport.get("faj_rating")
+                if rating is not None:
+                    try:
+                        result["rating"] = float(rating)
+                        result["availability"]["rating"] = True
+                    except (TypeError, ValueError):
+                        pass
+
+            # ====================================================
+            # 2. BASE (home_advantage)
+            # ====================================================
+            base = self.get_base(team_id, season_id)
+            if base:
+                result["base"] = dict(base)
+                result["availability"]["base"] = True
+
+            # ====================================================
+            # 3. MATCH HISTORY (только матчи ДО match_date)
+            # ====================================================
+            cursor.execute("""
+                SELECT
+                    m.id,
+                    m.home_team_id,
+                    m.away_team_id,
+                    m.date,
+                    m.actual_home,
+                    m.actual_away,
+                    m.home_xg,
+                    m.away_xg,
+                    m.competition,
+                    ht.name AS home_team_name,
+                    at.name AS away_team_name
+                FROM matches m
+                LEFT JOIN teams ht ON ht.id = m.home_team_id
+                LEFT JOIN teams at ON at.id = m.away_team_id
+                WHERE (
+                    m.home_team_id = ? OR m.away_team_id = ?
+                )
+                AND m.status = 'finished'
+                AND m.actual_home IS NOT NULL
+                AND m.actual_away IS NOT NULL
+                AND datetime(m.date) < datetime(?)
+                ORDER BY datetime(m.date) DESC
+                LIMIT ?
+            """, (team_id, team_id, match_date, limit + 1))
+
+            rows = cursor.fetchall()
+            rows = [dict(row) for row in rows]
+
+            # ====================================================
+            # 4. LAST MATCH (самый свежий)
+            # ====================================================
+            if rows:
+                first = rows[0]
+                is_home = first["home_team_id"] == team_id
+                goals_for = first["actual_home"] if is_home else first["actual_away"]
+                goals_against = first["actual_away"] if is_home else first["actual_home"]
+
+                if goals_for is not None and goals_against is not None:
+                    if goals_for > goals_against:
+                        result_type = "WIN"
+                    elif goals_for == goals_against:
+                        result_type = "DRAW"
+                    else:
+                        result_type = "LOSS"
+
+                    result["last_match"] = {
+                        "match_id": first["id"],
+                        "opponent_id": first["away_team_id"] if is_home else first["home_team_id"],
+                        "opponent_name": first["away_team_name"] if is_home else first["home_team_name"],
+                        "goals_for": goals_for,
+                        "goals_against": goals_against,
+                        "result": result_type,
+                        "match_date": first["date"],
+                        "is_home": is_home,
+                        "xg_for": first["home_xg"] if is_home else first["away_xg"],
+                        "xg_against": first["away_xg"] if is_home else first["home_xg"],
+                    }
+                    result["availability"]["last_match"] = True
+
+                # ====================================================
+                # 5. RECENT MATCHES (до limit)
+                # ====================================================
+                recent = []
+                for row in rows[:limit]:
+                    is_home = row["home_team_id"] == team_id
+                    goals_for = row["actual_home"] if is_home else row["actual_away"]
+                    goals_against = row["actual_away"] if is_home else row["actual_home"]
+
+                    if goals_for is not None and goals_against is not None:
+                        if goals_for > goals_against:
+                            result_type = "WIN"
+                        elif goals_for == goals_against:
+                            result_type = "DRAW"
+                        else:
+                            result_type = "LOSS"
+
+                        recent.append({
+                            "match_id": row["id"],
+                            "opponent_id": row["away_team_id"] if is_home else row["home_team_id"],
+                            "opponent_name": row["away_team_name"] if is_home else row["home_team_name"],
+                            "goals_for": goals_for,
+                            "goals_against": goals_against,
+                            "result": result_type,
+                            "match_date": row["date"],
+                            "is_home": is_home,
+                            "xg_for": row["home_xg"] if is_home else row["away_xg"],
+                            "xg_against": row["away_xg"] if is_home else row["home_xg"],
+                        })
+
+                result["recent_matches"] = recent
+                if recent:
+                    result["availability"]["recent_matches"] = True
+
+            # ====================================================
+            # 6. FORM (из recent_matches)
+            # ====================================================
+            if result["availability"]["recent_matches"]:
+                recent = result["recent_matches"]
+                points = 0
+                goals_scored = 0
+                goals_conceded = 0
+                xg_sum = 0.0
+                xga_sum = 0.0
+
+                for match in recent:
+                    if match["result"] == "WIN":
+                        points += 3
+                    elif match["result"] == "DRAW":
+                        points += 1
+                    goals_scored += match["goals_for"]
+                    goals_conceded += match["goals_against"]
+                    if match.get("xg_for") is not None:
+                        xg_sum += match["xg_for"]
+                    if match.get("xg_against") is not None:
+                        xga_sum += match["xg_against"]
+
+                result["form"] = {
+                    "points": points,
+                    "goals_scored": goals_scored,
+                    "goals_conceded": goals_conceded,
+                    "matches": len(recent),
+                    "xg_sum": round(xg_sum, 2),
+                    "xga_sum": round(xga_sum, 2),
+                    "goal_difference": goals_scored - goals_conceded,
+                }
+
+            return result
+
+        except Exception as e:
+            logger.error(f"get_team_recent_context error: {e}")
+            return {
+                "team_id": team_id,
+                "season_id": season_id,
+                "rating": None,
+                "passport": None,
+                "base": None,
+                "last_match": None,
+                "recent_matches": [],
+                "form": None,
+                "availability": {
+                    "rating": False,
+                    "passport": False,
+                    "base": False,
+                    "last_match": False,
+                    "recent_matches": False,
+                },
+                "error": str(e)
+            }
         finally:
             conn.close()
 
