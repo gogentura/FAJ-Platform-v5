@@ -4,7 +4,7 @@
 """
 =====================================================
 FAJ Platform v12.0
-FAJ Monte Carlo Model v1.3
+FAJ Monte Carlo Model v1.4
 =====================================================
 
 РОЛЬ:
@@ -15,14 +15,14 @@ FAJ Monte Carlo Model v1.3
 
     Team Passport
           ↓
-    FAJ XG Model v1.4
+    FAJ XG Model v2.0
           ↓
        home_xG
        away_xG
           ↓
-    FAJ Poisson Model v7.4
+    FAJ Poisson Model
           ↓
-    FAJ Monte Carlo Model v1.3
+    FAJ Monte Carlo Model v1.4
           ↓
     Simulation
           ↓
@@ -106,51 +106,12 @@ FAJ Monte Carlo Model v1.3
 
 =====================================================
 
-ИЗМЕНЕНИЯ v1.3:
+ИЗМЕНЕНИЯ v1.4:
 
-    1. Единый диапазон xG:
-           0.15 – 4.00
-
-    2. Единый MAX_GOALS = 8.
-
-    3. Используется локальный RNG:
-           random.Random()
-
-       вместо глобального:
-           random.seed()
-
-    4. Seed больше не изменяет глобальное
-       состояние random.
-
-    5. Добавлены:
-           BTTS
-           Over 2.5
-           Under 2.5
-
-    6. Добавлены:
-           expected_home_goals
-           expected_away_goals
-           expected_total_goals
-
-    7. Добавлен top_scores.
-
-    8. Добавлена оценка Monte Carlo
-       sampling error.
-
-    9. Convergence теперь зависит
-       от количества итераций и
-       является диагностическим
-       показателем, а не искусственной
-       константой.
-
-   10. Добавлена защита iterations.
-
-   11. Добавлена защита xG.
-
-   12. Добавлен status = success/error.
-
-   13. Сохранён совместимый API:
-           simulate()
+    1. Константы MIN_XG, MAX_XG, MAX_GOALS
+       берутся из config.py.
+    2. Единый контракт с XGModel и Poisson.
+    3. Сохранена полная совместимость API.
 
 =====================================================
 """
@@ -174,7 +135,7 @@ logger = logging.getLogger(__name__)
 
 class MonteCarloModel:
     """
-    FAJ Monte Carlo Model v1.3
+    FAJ Monte Carlo Model v1.4
 
     Стохастическая симуляция футбольного матча.
 
@@ -184,18 +145,17 @@ class MonteCarloModel:
         количество случайных симуляций.
     """
 
-    VERSION = "1.3"
+    VERSION = "1.4"
 
     # ============================================================
-    # MODEL CONSTANTS
+    # MODEL CONSTANTS — ИЗ CONFIG
     # ============================================================
 
     DEFAULT_ITERATIONS = config.MONTE_CARLO_ITERATIONS
 
-    MIN_XG = 0.15
-    MAX_XG = 4.00
-
-    MAX_GOALS = 8
+    MIN_XG = config.XG_MIN
+    MAX_XG = config.XG_MAX
+    MAX_GOALS = config.MAX_GOALS
 
     MIN_ITERATIONS = 100
     MAX_ITERATIONS = 1_000_000
@@ -1145,7 +1105,7 @@ if __name__ == "__main__":
 
     print()
     print("=" * 70)
-    print("FAJ MONTE CARLO MODEL v1.3")
+    print("FAJ MONTE CARLO MODEL v1.4")
     print("=" * 70)
 
     model = MonteCarloModel()
@@ -1365,6 +1325,6 @@ if __name__ == "__main__":
     print()
     print("=" * 70)
     print(
-        "Monte Carlo Model v1.3 READY"
+        "Monte Carlo Model v1.4 READY"
     )
     print("=" * 70)
