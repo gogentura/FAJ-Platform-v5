@@ -31,7 +31,7 @@ from app.faj_club_ratings import (
     FAJ_CLUB_RATINGS,
     FAJ_SEASON,
 )
-from app.core.passport_manager import PassportManager   # ← ИСПРАВЛЕНО
+from app.passports.passport_manager import PassportManager   # ← ИСПРАВЛЕНО
 
 
 SEASON_YEAR = 2026
