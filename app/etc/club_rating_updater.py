@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-ETC — Club Rating Updater v3.0
+ETC — Club Rating Updater v3.1
 ============================================================
 
 ФАЙЛ:
@@ -59,6 +59,12 @@ ETC — Club Rating Updater v3.0
    17. Повторный запуск уже обработанного матча
        не изменяет рейтинг повторно.
 
+ИСПРАВЛЕНИЯ v3.1:
+    1. Исправлен вызов приватного метода _is_match_fully_processed()
+       на публичный is_match_fully_processed() (MUST FIX #1)
+    2. Исправлено поле "object" на "object_type" в memory_data (MUST FIX #2)
+    3. Версия обновлена до 3.1
+
 ИСПРАВЛЕНИЯ v3.0:
     1. Интеграция с process_match_with_rating() из database.py
     2. Удалена ручная работа с транзакциями (делегировано в database.py)
@@ -103,8 +109,8 @@ logger = logging.getLogger(__name__)
 # MODULE
 # ============================================================
 
-UPDATER_VERSION = "3.0"
-UPDATER_NAME = "FAJ ETC Club Rating Updater v3.0"
+UPDATER_VERSION = "3.1"
+UPDATER_NAME = "FAJ ETC Club Rating Updater v3.1"
 
 
 # ============================================================
@@ -431,7 +437,8 @@ class ClubRatingUpdater:
             # 4. CHECK FULLY PROCESSED
             # =================================================
 
-            if self.db._is_match_fully_processed(match_id):
+            # ✅ ИСПРАВЛЕНИЕ MUST FIX #1: использование публичного метода
+            if self.db.is_match_fully_processed(match_id):
                 response["success"] = True
                 response["already_processed"] = True
                 response["home"] = {"team_id": home_team_id, "status": "already_processed"}
@@ -514,7 +521,7 @@ class ClubRatingUpdater:
             # Добавляем rating update events
             memory_events.append({
                 "event_type": "club_rating_update",
-                "object": f"team:{home_team_id}",
+                "object_type": f"team:{home_team_id}",  # ✅ ИСПРАВЛЕНИЕ MUST FIX #2
                 "feature": "faj_rating",
                 "before_value": round(home_old_rating, 4),
                 "after_value": round(home_new_rating, 4),
@@ -530,7 +537,7 @@ class ClubRatingUpdater:
 
             memory_events.append({
                 "event_type": "club_rating_update",
-                "object": f"team:{away_team_id}",
+                "object_type": f"team:{away_team_id}",  # ✅ ИСПРАВЛЕНИЕ MUST FIX #2
                 "feature": "faj_rating",
                 "before_value": round(away_old_rating, 4),
                 "after_value": round(away_new_rating, 4),
@@ -553,7 +560,7 @@ class ClubRatingUpdater:
             for event in memory_events:
                 memory_data.append({
                     "event_type": event.get("event_type"),
-                    "object": event.get("object"),
+                    "object_type": event.get("object_type"),  # ✅ ИСПРАВЛЕНИЕ MUST FIX #2
                     "feature": event.get("feature"),
                     "before_value": event.get("before_value"),
                     "after_value": event.get("after_value"),
