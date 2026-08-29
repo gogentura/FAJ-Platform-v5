@@ -44,6 +44,7 @@ PREDICT ROUND v3.7
     5. Исправлена передача db в faj_score_from_prediction()
     6. Убрана дублирующая кнопка (устаревшая)
     7. Две кнопки: "Рассчитать прогнозы FAJ" и "Пересчитать все прогнозы"
+    8. Исправлена math_probability_from_prediction() — теперь использует db и prediction_scores
 """
 
 from __future__ import annotations
@@ -248,23 +249,106 @@ def math_score_from_prediction(db: FAJDatabase, prediction: dict) -> str:
     return "—"
 
 # ============================================================
-# MATH PROBABILITY FROM PREDICTION
+# 🆕 MATH PROBABILITY FROM PREDICTION (ИСПРАВЛЕНА)
 # ============================================================
 
-def math_probability_from_prediction(prediction: dict) -> float:
-    """Возвращает вероятность Math Most Likely Score."""
+def math_probability_from_prediction(
+    db: FAJDatabase,
+    prediction: dict,
+) -> float:
+    """
+    Возвращает вероятность Math Most Likely Score.
+
+    Источник истины (приоритет):
+        1. prediction["math_score_probability"]
+        2. prediction["math_probability"]
+        3. prediction["score_probability"]
+        4. extended["math_score_probability"]
+        5. extended["math_probability"]
+        6. extended["score_probability"]
+        7. prediction_scores (score_type="math") для Math Most Likely Score
+    """
     if not prediction:
         return 0.0
 
-    # 1. math_score_probability
-    value = prediction.get("math_score_probability")
-    if value is not None:
-        return probability_value(value)
+    # ============================================================
+    # 1. ОСНОВНОЕ ПОЛЕ
+    # ============================================================
+    for key in (
+        "math_score_probability",
+        "math_probability",
+        "score_probability",
+    ):
+        value = prediction.get(key)
+        if value is not None:
+            return probability_value(value)
 
-    # 2. score_probability
-    value = prediction.get("score_probability")
-    if value is not None:
-        return probability_value(value)
+    # ============================================================
+    # 2. EXTENDED
+    # ============================================================
+    extended = prediction.get("extended", {})
+    if isinstance(extended, dict):
+        for key in (
+            "math_score_probability",
+            "math_probability",
+            "score_probability",
+        ):
+            value = extended.get(key)
+            if value is not None:
+                return probability_value(value)
+
+    # ============================================================
+    # 3. DATABASE — prediction_scores
+    # ============================================================
+    try:
+        prediction_id = (
+            prediction.get("prediction_id")
+            or prediction.get("id")
+        )
+        if prediction_id and hasattr(db, "get_prediction_scores"):
+            scores = db.get_prediction_scores(
+                prediction_id,
+                score_type="math",
+            )
+            rows = [
+                row_dict(row)
+                for row in (scores or [])
+                if row_dict(row)
+            ]
+            if rows:
+                # Ищем Math Most Likely Score
+                math_score = math_score_from_prediction(
+                    db,
+                    prediction,
+                )
+                # Сначала ищем точное совпадение со счётом
+                for row in rows:
+                    score = row.get("score")
+                    if score is None:
+                        home = row.get("home")
+                        away = row.get("away")
+                        if home is not None and away is not None:
+                            score = f"{home}:{away}"
+                    if score is not None and str(score) == str(math_score):
+                        return probability_value(
+                            row.get("probability", 0)
+                        )
+                # Если точное совпадение не найдено,
+                # берём первый score после сортировки
+                rows.sort(
+                    key=lambda x: float(
+                        x.get("probability", 0) or 0
+                    ),
+                    reverse=True,
+                )
+                return probability_value(
+                    rows[0].get("probability", 0)
+                )
+    except Exception as exc:
+        logger.debug(
+            "Ошибка чтения Math probability из prediction_scores: %s",
+            exc,
+        )
 
     return 0.0
 
@@ -667,8 +751,8 @@ def render_faj_final_score_block(
 
     # Получаем оба счёта
     math_score = math_score_from_prediction(db, prediction)
-    math_prob = math_probability_from_prediction(prediction)
-    faj_score = faj_score_from_prediction(db, prediction)  # ← ИСПРАВЛЕНО
+    math_prob = math_probability_from_prediction(db, prediction)  # ← ИСПРАВЛЕНО: передаём db
+    faj_score = faj_score_from_prediction(db, prediction)
     faj_conf = faj_confidence_from_prediction(prediction)
     decision_factors = faj_decision_factors_from_prediction(prediction)
 
