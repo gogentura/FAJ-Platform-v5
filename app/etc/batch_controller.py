@@ -183,7 +183,7 @@ logger = logging.getLogger(__name__)
 # MODULE
 # ============================================================
 
-MODULE_VERSION = "2.0"
+MODULE_VERSION = "2.1"
 MODULE_NAME = "ETC Batch Controller"
 
 
@@ -1143,50 +1143,84 @@ class BatchController:
         Fallback object=match:<id> отсутствует.
 
         Метод только читает БД.
+
+        ✅ ИСПРАВЛЕНИЕ MUST FIX #1:
+            При ошибке НЕ возвращаем пустой set,
+            а пробрасываем исключение (fail-closed).
+
+        ✅ ИСПРАВЛЕНИЕ MUST FIX #2:
+            Убран хардкод limit=10000.
+            Используется пагинация через цикл.
         """
 
         processed: Set[int] = set()
 
+        # Используем пагинацию вместо хардкода limit
+        offset = 0
+        page_size = 1000  # размер страницы для пагинации
+        total_read = 0
+
         try:
 
-            rows = self.learning_memory.get(
-                event_type=PROCESSED_EVENT_TYPE,
-                limit=10000,
-            )
+            while True:
 
-        except Exception as exc:
+                rows = self.learning_memory.get(
+                    event_type=PROCESSED_EVENT_TYPE,
+                    limit=page_size,
+                    offset=offset,
+                )
 
-            logger.warning(
-                "Unable to read ETC processed "
-                "matches from learning_memory: %s",
-                exc,
+                if not rows:
+                    break
+
+                for row in rows:
+
+                    if not isinstance(
+                        row,
+                        dict,
+                    ):
+                        continue
+
+                    reference_id = row.get(
+                        "reference_id"
+                    )
+
+                    match_id = _safe_int(
+                        reference_id
+                    )
+
+                    if match_id > 0:
+
+                        processed.add(
+                            match_id
+                        )
+
+                total_read += len(rows)
+
+                # Если получили меньше, чем запросили — это последняя страница
+                if len(rows) < page_size:
+                    break
+
+                offset += page_size
+
+            logger.debug(
+                "Loaded %d processed markers from learning_memory",
+                len(processed),
             )
 
             return processed
 
-        for row in rows:
+        except Exception as exc:
 
-            if not isinstance(
-                row,
-                dict,
-            ):
-                continue
-
-            reference_id = row.get(
-                "reference_id"
+            # ✅ ИСПРАВЛЕНИЕ MUST FIX #1: fail-closed
+            logger.error(
+                "Unable to read ETC processed matches from learning_memory: %s",
+                exc,
             )
 
-            match_id = _safe_int(
-                reference_id
-            )
-
-            if match_id > 0:
-
-                processed.add(
-                    match_id
-                )
-
-        return processed
+            raise RuntimeError(
+                f"Не удалось получить ETC processed markers: {exc}"
+            ) from exc
 
     # ========================================================
     # INTERNAL — FINGERPRINT
