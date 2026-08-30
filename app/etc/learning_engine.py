@@ -9,8 +9,13 @@ ETC — Evolution Training Center
 app/etc/learning_engine.py
 ============================================================
 
-ETC LEARNING ENGINE v2.1
+ETC LEARNING ENGINE v2.2
 ============================================================
+
+ИСПРАВЛЕНИЯ v2.2:
+    1. Исправлен вызов _get_match() → get_match() (публичный метод database.py)
+    2. Добавлена проверка существования match через db.get_match()
+    3. Версия обновлена до 2.2
 
 ИСПРАВЛЕНИЯ v2.1:
     1. Убрана самостоятельная классификация prediction error
@@ -140,7 +145,7 @@ logger = logging.getLogger(__name__)
 # MODULE
 # ============================================================
 
-MODULE_VERSION = "2.1"
+MODULE_VERSION = "2.2"
 MODULE_NAME = "FAJ ETC Learning Engine"
 
 PROCESSED_EVENT_TYPE = "batch_learning"
@@ -225,7 +230,7 @@ def _first(
 
 class ETCLearningEngine:
     """
-    Главный исполнитель ETC v2.1.
+    Главный исполнитель ETC v2.2.
 
     Контракт:
 
@@ -333,11 +338,11 @@ class ETCLearningEngine:
         )
 
         # ----------------------------------------------------
-        # CHECK MATCH EXISTS
+        # CHECK MATCH EXISTS (ИСПРАВЛЕНО v2.2)
         # ----------------------------------------------------
 
         try:
-            match = self.db._get_match(safe_match_id) if hasattr(self.db, "_get_match") else None
+            match = self.db.get_match(safe_match_id)
         except Exception:
             match = None
 
@@ -1357,16 +1362,11 @@ if __name__ == "__main__":
             print(f"{key}: {value}")
 
         print()
-        print("ETCLearningEngine v2.1 готов.")
+        print("ETCLearningEngine v2.2 готов.")
         print()
-        print("НОВОЕ В v2.1:")
-        print("1. Убрана самостоятельная классификация prediction error")
-        print("2. Строгий xG контракт (predicted_xg, actual_xg)")
-        print("3. Транзакционная атомарность через db.transaction()")
-        print("4. Защита от дублирования через force + count()")
-        print("5. Разделены memory_ids и marker_id")
-        print("6. Проверка существования match_id")
-        print("7. Поддержка force в run_batch()")
+        print("НОВОЕ В v2.2:")
+        print("1. Исправлен вызов _get_match() → get_match()")
+        print("2. Использован публичный метод database.py")
 
     except Exception as exc:
         print(f"ETC Learning Engine initialization error: {exc}")
