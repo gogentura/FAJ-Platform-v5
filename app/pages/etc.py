@@ -7,7 +7,7 @@ ETC — Evolution Training Center
 ============================================================
 ФАЙЛ:
     app/pages/etc.py
-ETC PAGE v6.1
+ETC PAGE v7.0 (E-FINAL UI)
 ============================================================
 НАЗНАЧЕНИЕ
 -----------
@@ -18,15 +18,29 @@ ETC PAGE v6.1
     • уже обработанные матчи;
     • последний batch;
     • batch fingerprint;
-    • LearningMemory;
+    • LearningMemory (только learning events);
     • ошибки FAJ;
     • xG deviations;
     • повторяющиеся error patterns;
-    • ETC signals;
+    • ETC signals (raw и normalized);
+    • ParameterOptimizer proposals;
+    • Review Gate (pending/rejected/approved);
+    • Auto-apply: DISABLED;
     • ошибки отдельных матчей;
     • следующий шаг цикла.
 
-ИСПРАВЛЕНИЯ v6.1 (по аудиту)
+ИСПРАВЛЕНИЯ v7.0 (E-FINAL UI)
+============================================================
+1. Обновлён Flow под E-FINAL цепочку
+2. Убраны BEFORE/AFTER snapshots из UI (не пишутся в LearningMemory)
+3. Убраны parameter_changes (заменены на proposals)
+4. Добавлен блок Review Gate (pending/rejected/approved)
+5. Добавлен блок Proposals (с параметрами и приоритетами)
+6. Добавлено отображение normalized signals
+7. Обновлены версии (ETCController v4.1, ETC Page v7.0)
+8. Явно показано AUTO-APPLY: DISABLED
+
+ИСПРАВЛЕНИЯ v6.1
 ============================================================
 1. Добавлено отображение warnings из ErrorClassifier v2.2
 2. Добавлено отображение data_incomplete в error_type
@@ -38,22 +52,6 @@ ETC PAGE v6.1
 8. Исправлен вызов _render_signals() с правильным анализом
 9. Добавлена функция _extract_analysis() для единого получения analysis
 10. Добавлена функция _extract_warnings() для получения warnings
-
-ИСПРАВЛЕНИЯ v6.0
-============================================================
-1. Унифицирован контракт с ETCController v3.1
-2. Убраны множественные fallback'и (already_processed_match_ids, analysis, learning_analysis, match_ledger)
-3. Обновлён _render_status() под финальный status() контракт
-4. Обновлён _render_last_result() под финальный run() контракт
-5. Обновлён _render_error_analysis() под learning_analyzer v2.2
-6. Обновлён _render_patterns() с unique_match_count
-7. Обновлён _render_signals() с priority и unique_match_count
-8. Добавлено отображение warnings и data_incomplete
-9. Убраны match_ledger и другие устаревшие ключи
-10. Обновлён _render_memory() под memory_before_ids и memory_after_ids
-11. Добавлено отображение параметров до/после обучения
-12. Совместимость с LearningBatch v2.1
-13. Совместимость с ErrorClassifier v2.2
 
 ВАЖНО
 ------
@@ -69,17 +67,21 @@ PAGE НЕ:
     • самостоятельно классифицирует ошибки.
 
 Вся бизнес-логика находится в backend:
-    ETCController v3.1
-        ↓
-    ETCLearningEngine v2.0
+    ETCController v4.1 (E-FINAL)
         ↓
     BatchController v2.1
         ↓
     LearningBatch v2.1
         ↓
-    LearningAnalyzer v2.2
+    ETCLearningEngine v2.0
         ↓
     ErrorClassifier v2.2
+        ↓
+    LearningAnalyzer v2.2
+        ↓
+    ParameterOptimizer v2.3
+        ↓
+    Review Gate (NO AUTO-APPLY)
         ↓
     LearningMemory v2.1
 
@@ -104,9 +106,10 @@ from app.etc.etc_controller import ETCController
 # ============================================================
 
 APP_VERSION = "12.1"
-ETC_PAGE_VERSION = "6.1"
+ETC_PAGE_VERSION = "7.0"
 PAGE_TITLE = "FAJ ETC"
 PAGE_ICON = "🧠"
+ETC_CONTROLLER_VERSION = "4.1"
 
 DEFAULT_BATCH_LIMIT = 50
 MAX_BATCH_LIMIT = 1000
@@ -225,30 +228,20 @@ def _get_batches(result: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 # ============================================================
-# EXTRACT ANALYSIS (ИСПРАВЛЕНО v6.1)
+# EXTRACT ANALYSIS
 # ============================================================
 
 def _extract_analysis(result: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Извлекает analysis из результата ETCController v3.1.
-
-    Правильный путь:
-        result
-          └── batches[0]
-                └── learning_result
-                      └── analysis
-
-    Возвращает пустой dict, если analysis не найден.
+    Извлекает analysis из результата ETCController v4.1.
     """
     if not result:
         return {}
 
-    # Прямой путь (если вдруг есть)
     direct = result.get("analysis")
     if isinstance(direct, dict) and direct:
         return direct
 
-    # Правильный путь через batches
     batches = _get_batches(result)
     if batches:
         first_batch = batches[0]
@@ -261,22 +254,12 @@ def _extract_analysis(result: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _extract_warnings(result: Dict[str, Any]) -> List[str]:
-    """
-    Извлекает warnings из result.
-
-    Warnings могут быть в:
-        1. result.warnings (верхний уровень)
-        2. learning_result.warnings
-        3. analysis.warnings
-    """
     warnings: List[str] = []
 
-    # 1. Верхний уровень
     top_warnings = result.get("warnings", [])
     if isinstance(top_warnings, list):
         warnings.extend(top_warnings)
 
-    # 2. Через learning_result
     batches = _get_batches(result)
     if batches:
         first_batch = batches[0]
@@ -285,13 +268,11 @@ def _extract_warnings(result: Dict[str, Any]) -> List[str]:
         if isinstance(lr_warnings, list):
             warnings.extend(lr_warnings)
 
-        # 3. Через analysis
         analysis = _safe_dict(learning_result.get("analysis"))
         analysis_warnings = analysis.get("warnings", [])
         if isinstance(analysis_warnings, list):
             warnings.extend(analysis_warnings)
 
-    # Дедупликация
     seen = set()
     unique = []
     for w in warnings:
@@ -317,18 +298,18 @@ def _render_header() -> None:
     st.info(
         "ETC не изменяет исторические факты. "
         "Он получает готовые данные через backend, "
-        "анализирует ошибки и сохраняет результат "
-        "обучения в LearningMemory."
+        "анализирует ошибки и формирует предложения. "
+        "Автоматическое применение параметров отключено."
     )
     st.divider()
 
 
 # ============================================================
-# FLOW
+# FLOW (E-FINAL)
 # ============================================================
 
 def _render_flow() -> None:
-    st.markdown("### 🔄 Цепочка ETC")
+    st.markdown("### 🔄 Цепочка ETC (E-FINAL)")
     st.code(
         """
 FACTS
@@ -336,8 +317,6 @@ FACTS
 BatchController v2.1
   ↓
 READY
-  ↓
-get_learning_batch()
   ↓
 LearningBatch v2.1
   ↓
@@ -347,16 +326,27 @@ ErrorClassifier v2.2
   ↓
 LearningAnalyzer v2.2
   ↓
-LearningMemory v2.1
+SIGNALS
   ↓
-batch_learning marker
+Signal Adapter (normalization)
   ↓
-BATCH COMPLETED
+ParameterOptimizer v2.3
+  ↓
+PROPOSALS
+  ↓
+Review Gate (v4.1)
+  ↓
+├── pending (все)
+├── rejected (0)
+└── approved (0)
+  ↓
+🔒 AUTO-APPLY: DISABLED
   ↓
 NEXT MATCHES
         """.strip(),
         language="text",
     )
+    st.caption("E-FINAL: все proposals проходят Review Gate. Auto-apply отключён.")
 
 
 # ============================================================
@@ -411,7 +401,7 @@ def _render_status(controller: ETCController) -> Dict[str, Any]:
 def _render_control(controller: ETCController) -> None:
     st.markdown("### 🧠 Запуск обучения")
     st.caption(
-        "ETC получает batch через ETCController. "
+        "ETC получает batch через ETCController v4.1. "
         "Страница не выбирает матчи самостоятельно."
     )
 
@@ -440,7 +430,6 @@ def _render_control(controller: ETCController) -> None:
         "повторное обучение уже обработанного матча."
     )
 
-    # Выбор лиги
     available_leagues = ["РПЛ", "АПЛ", "Ла Лига", "ЛЧ"]
     league = st.selectbox(
         "Турнир",
@@ -494,7 +483,6 @@ def _render_control(controller: ETCController) -> None:
 # ============================================================
 
 def _render_result_status(result: Dict[str, Any]) -> None:
-    """Отображает статус результата. Использует только status (без success)."""
     status = _safe_string(result.get("status"), "unknown")
     errors = _error_count(result.get("errors"))
 
@@ -526,11 +514,10 @@ def _render_result_status(result: Dict[str, Any]) -> None:
 
 
 # ============================================================
-# WARNINGS (НОВОЕ v6.1)
+# WARNINGS
 # ============================================================
 
 def _render_warnings(result: Dict[str, Any]) -> None:
-    """Отображает предупреждения из ErrorClassifier v2.2."""
     warnings = _extract_warnings(result)
 
     if not warnings:
@@ -541,6 +528,222 @@ def _render_warnings(result: Dict[str, Any]) -> None:
 
     for warning in warnings:
         st.warning(f"• {warning}")
+
+
+# ============================================================
+# PROPOSALS (НОВОЕ v7.0)
+# ============================================================
+
+def _render_proposals(result: Dict[str, Any]) -> None:
+    """
+    Отображает proposals из ParameterOptimizer.
+    """
+    # Прямой путь
+    optimization = _safe_dict(result.get("optimization"))
+
+    if not optimization:
+        # Проверяем в batch
+        batches = _get_batches(result)
+        if batches:
+            first_batch = batches[0]
+            optimization = _safe_dict(first_batch.get("optimization"))
+
+    proposals = _safe_list(optimization.get("proposals", []))
+
+    if not proposals:
+        return
+
+    st.markdown("### 📋 ParameterOptimizer Proposals")
+
+    st.caption(f"Всего proposals: {len(proposals)}")
+
+    rows = []
+    for proposal in proposals:
+        rows.append({
+            "Параметр": _safe_string(proposal.get("parameter_name")),
+            "Текущее": round(_safe_float(proposal.get("current_value")), 4),
+            "Предлагаемое": round(_safe_float(proposal.get("proposed_value")), 4),
+            "Delta": round(_safe_float(proposal.get("delta")), 4),
+            "Priority": _safe_string(proposal.get("priority")),
+            "Confidence": round(_safe_float(proposal.get("confidence")), 3),
+            "Evidence": _safe_int(proposal.get("unique_match_count")),
+            "Статус": _safe_string(proposal.get("status")),
+        })
+
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+    # Показать причины
+    for proposal in proposals[:3]:
+        reason = proposal.get("reason")
+        if reason:
+            with st.expander(f"💡 {_safe_string(proposal.get('parameter_name'))} — {_safe_string(proposal.get('priority'))}"):
+                st.write(f"• {reason}")
+
+
+# ============================================================
+# REVIEW GATE (НОВОЕ v7.0)
+# ============================================================
+
+def _render_review_gate(result: Dict[str, Any]) -> None:
+    """
+    Отображает Review Gate (pending/rejected/approved).
+    """
+    # Прямой путь
+    review = _safe_dict(result.get("review"))
+
+    if not review:
+        # Проверяем в batch
+        batches = _get_batches(result)
+        if batches:
+            first_batch = batches[0]
+            review = _safe_dict(first_batch.get("review"))
+
+    if not review:
+        return
+
+    st.markdown("### 🛡️ Review Gate")
+
+    total = _safe_int(review.get("total"))
+    pending = _safe_int(len(review.get("pending", [])))
+    rejected = _safe_int(len(review.get("rejected", [])))
+    approved = _safe_int(len(review.get("approved", [])))
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+
+    with col1:
+        st.metric("Всего", total)
+
+    with col2:
+        st.metric("⏳ Pending", pending)
+
+    with col3:
+        st.metric("❌ Rejected", rejected)
+
+    with col4:
+        st.metric("✅ Approved", approved)
+
+    with col5:
+        st.metric("🔒 Auto-apply", "DISABLED")
+
+    st.caption("E-FINAL: все proposals находятся в статусе pending. Автоматическое применение отключено.")
+
+    # Показать pending proposals
+    pending_proposals = _safe_list(review.get("pending", []))
+    if pending_proposals:
+        with st.expander(f"⏳ Pending proposals ({len(pending_proposals)})", expanded=False):
+            rows = []
+            for proposal in pending_proposals:
+                rows.append({
+                    "Параметр": _safe_string(proposal.get("parameter_name")),
+                    "Предлагаемое": round(_safe_float(proposal.get("proposed_value")), 4),
+                    "Priority": _safe_string(proposal.get("priority")),
+                    "Confidence": round(_safe_float(proposal.get("confidence")), 3),
+                    "Evidence": _safe_int(proposal.get("unique_match_count")),
+                })
+            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+
+# ============================================================
+# SIGNALS (с raw/normalized)
+# ============================================================
+
+def _render_signals(result: Dict[str, Any]) -> None:
+    """Отображает ETC signals (raw и normalized)."""
+    analysis = _extract_analysis(result)
+
+    raw_signals = _safe_list(analysis.get("signals", []))
+
+    # Нормализованные сигналы из optimization
+    optimization = _safe_dict(result.get("optimization"))
+    if not optimization:
+        batches = _get_batches(result)
+        if batches:
+            first_batch = batches[0]
+            optimization = _safe_dict(first_batch.get("optimization"))
+
+    normalized_signals = _safe_list(optimization.get("signals", []))
+    signals_analyzed = _safe_int(optimization.get("signals_analyzed", 0))
+
+    if not raw_signals and not normalized_signals:
+        return
+
+    st.markdown("### 📡 ETC Signals")
+
+    st.warning(
+        "ETC Signal — это аналитический сигнал. "
+        "Он НЕ означает автоматическое изменение параметра."
+    )
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.metric("Raw signals (Analyzer)", len(raw_signals))
+
+    with col2:
+        st.metric("Normalized signals (Optimizer)", signals_analyzed)
+
+    # Показать нормализованные сигналы
+    if normalized_signals:
+        st.caption("**Нормализованные сигналы (вход для ParameterOptimizer)**")
+        rows = []
+        for signal in normalized_signals[:10]:
+            rows.append({
+                "Ошибка": _safe_string(signal.get("error_type")),
+                "Причина": _safe_string(signal.get("cause_type")),
+                "Матчей": _safe_int(signal.get("count")),
+                "Confidence": round(_safe_float(signal.get("confidence")), 3),
+                "Strength": round(_safe_float(signal.get("signal_strength")), 3),
+                "Severity": round(_safe_float(signal.get("average_severity")), 3),
+            })
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+    # Топ сигналы
+    top_signals = _safe_list(analysis.get("top_signals", []))
+    if top_signals:
+        st.caption("**Топ сигналы (аналитические)**")
+        rows = []
+        for signal in top_signals[:5]:
+            rows.append({
+                "Priority": _safe_string(signal.get("priority")),
+                "Ошибка": _safe_string(signal.get("error_type")),
+                "Причина": _safe_string(signal.get("cause_type")),
+                "Матчей": _safe_int(signal.get("unique_match_count")),
+                "Strength": round(_safe_float(signal.get("signal_strength")), 3),
+            })
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+
+# ============================================================
+# MEMORY (только learning events)
+# ============================================================
+
+def _render_memory(result: Dict[str, Any]) -> None:
+    """
+    Отображает LearningMemory — только learning events.
+    НЕТ BEFORE/AFTER snapshots (убраны в E-FINAL).
+    """
+    memory_ids = _normalize_ids(result.get("memory_ids", []))
+    batch_memory_ids = _normalize_ids(result.get("batch_memory_ids", []))
+    learning_events = _safe_int(result.get("learning_events"))
+
+    st.markdown("### 🧠 LearningMemory")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric("Learning Events", learning_events)
+
+    with col2:
+        st.metric("Memory IDs", len(memory_ids))
+
+    with col3:
+        st.metric("Batch Memory", len(batch_memory_ids))
+
+    st.caption("E-FINAL: snapshots НЕ пишутся в LearningMemory")
+
+    if memory_ids:
+        with st.expander("🔎 Показать Memory IDs", expanded=False):
+            st.code(", ".join(str(mid) for mid in memory_ids[:20]))
 
 
 # ============================================================
@@ -558,7 +761,6 @@ def _render_last_result() -> None:
 
     _render_result_status(result)
 
-    # Показываем warnings
     _render_warnings(result)
 
     # Основные метрики
@@ -585,7 +787,7 @@ def _render_last_result() -> None:
         st.metric("Ошибки", failed)
 
     with col5:
-        st.metric("Изменено параметров", learned)
+        st.metric("Применено изменений", learned)
 
     with col6:
         st.metric("Learning Events", learning_events)
@@ -615,22 +817,16 @@ def _render_last_result() -> None:
                     st.code(", ".join(str(mid) for mid in already_processed_ids[:20]))
 
     # ------------------------------------------------------------
-    # PARAMETER CHANGES
+    # PROPOSALS
     # ------------------------------------------------------------
 
-    param_changes = _safe_list(result.get("parameter_changes", []))
-    if param_changes:
-        st.markdown("### 📊 Изменения параметров")
-        rows = []
-        for change in param_changes:
-            rows.append({
-                "Параметр": _safe_string(change.get("parameter")),
-                "Было": round(_safe_float(change.get("old_value")), 4),
-                "Стало": round(_safe_float(change.get("new_value")), 4),
-                "Delta": round(_safe_float(change.get("delta")), 4),
-                "History ID": _safe_int(change.get("history_id")),
-            })
-        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    _render_proposals(result)
+
+    # ------------------------------------------------------------
+    # REVIEW GATE
+    # ------------------------------------------------------------
+
+    _render_review_gate(result)
 
     # ------------------------------------------------------------
     # MEMORY
@@ -676,46 +872,13 @@ def _render_last_result() -> None:
 
 
 # ============================================================
-# MEMORY
-# ============================================================
-
-def _render_memory(result: Dict[str, Any]) -> None:
-    memory_before_ids = _normalize_ids(result.get("memory_before_ids", []))
-    memory_after_ids = _normalize_ids(result.get("memory_after_ids", []))
-    parameter_history_ids = _normalize_ids(result.get("parameter_history_ids", []))
-
-    st.markdown("### 🧠 LearningMemory")
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.metric("BEFORE snapshot", len(memory_before_ids))
-
-    with col2:
-        st.metric("AFTER snapshot", len(memory_after_ids))
-
-    with col3:
-        st.metric("Parameter History", len(parameter_history_ids))
-
-    if memory_before_ids:
-        with st.expander("🔎 BEFORE IDs", expanded=False):
-            st.code(", ".join(str(mid) for mid in memory_before_ids[:20]))
-
-    if memory_after_ids:
-        with st.expander("🔎 AFTER IDs", expanded=False):
-            st.code(", ".join(str(mid) for mid in memory_after_ids[:20]))
-
-
-# ============================================================
 # BATCH
 # ============================================================
 
 def _render_batch(result: Dict[str, Any]) -> None:
-    # Проверяем batch_check в каждой лиге
     batches = _get_batches(result)
 
     if not batches:
-        # Проверяем прямой batch_check
         batch_check = _safe_dict(result.get("batch_check"))
         if batch_check:
             _render_batch_check(batch_check)
@@ -725,7 +888,6 @@ def _render_batch(result: Dict[str, Any]) -> None:
 
     for idx, batch in enumerate(batches):
         with st.expander(f"Batch #{idx + 1}: {_safe_string(batch.get('league'))}", expanded=(idx == 0)):
-            # Batch check
             batch_check = _safe_dict(batch.get("batch_check"))
             if batch_check:
                 _render_batch_check(batch_check)
@@ -742,13 +904,25 @@ def _render_batch(result: Dict[str, Any]) -> None:
                 st.metric("Уже было", _safe_int(batch.get("already_processed")))
 
             with col4:
-                # errors в batch — это int (счётчик), не список
                 st.metric("Ошибки", _safe_int(batch.get("errors")))
 
             with col5:
                 st.metric("Статус", _safe_string(batch.get("status")))
 
-            # Match IDs
+            # Показываем оптимизацию и review для batch
+            optimization = _safe_dict(batch.get("optimization"))
+            if optimization:
+                proposals = _safe_list(optimization.get("proposals", []))
+                if proposals:
+                    st.caption(f"Proposals: {len(proposals)}")
+
+            review = _safe_dict(batch.get("review"))
+            if review:
+                pending = _safe_int(len(review.get("pending", [])))
+                rejected = _safe_int(len(review.get("rejected", [])))
+                approved = _safe_int(len(review.get("approved", [])))
+                st.caption(f"Review: pending={pending}, rejected={rejected}, approved={approved}")
+
             selected_ids = _normalize_ids(batch.get("selected_match_ids", []))
             if selected_ids:
                 st.caption(f"Выбрано матчей: {len(selected_ids)}")
@@ -797,14 +971,10 @@ def _render_batch_check(batch_check: Dict[str, Any]) -> None:
 
 
 # ============================================================
-# ERROR ANALYSIS (ИСПРАВЛЕНО v6.1)
+# ERROR ANALYSIS
 # ============================================================
 
 def _render_error_analysis(result: Dict[str, Any]) -> None:
-    """
-    Отображает результат LearningAnalyzer v2.2.
-    Использует _extract_analysis() для правильного пути.
-    """
     analysis = _extract_analysis(result)
 
     if not analysis:
@@ -818,7 +988,6 @@ def _render_error_analysis(result: Dict[str, Any]) -> None:
 
     st.caption(f"Записей ошибок проанализировано: {records_analyzed} | Уникальных матчей: {unique_matches}")
 
-    # Severity
     severity = _safe_dict(analysis.get("severity"))
     xg = _safe_dict(analysis.get("xg"))
 
@@ -836,23 +1005,17 @@ def _render_error_analysis(result: Dict[str, Any]) -> None:
     with col4:
         st.metric("Средняя xG ошибка", round(_safe_float(xg.get("average")), 3))
 
-    # xG доступность
     has_xg = xg.get("has_xg_data", False)
     if not has_xg:
         st.info("ℹ️ xG данные отсутствуют или неполные.")
     elif xg.get("count", 0) > 0:
         st.caption(f"xG данные доступны: {xg.get('count')} записей")
 
-    # Показываем warnings из analysis
     analysis_warnings = analysis.get("warnings", [])
     if isinstance(analysis_warnings, list) and analysis_warnings:
         st.markdown("#### ⚠️ Предупреждения анализа")
         for warning in analysis_warnings[:5]:
             st.caption(f"• {warning}")
-
-    # ------------------------------------------------------------
-    # ERROR FREQUENCY
-    # ------------------------------------------------------------
 
     error_frequency = _safe_dict(analysis.get("error_frequency"))
     if error_frequency:
@@ -862,10 +1025,6 @@ def _render_error_analysis(result: Dict[str, Any]) -> None:
             for key, value in error_frequency.items()
         ]
         st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-
-    # ------------------------------------------------------------
-    # CAUSE FREQUENCY
-    # ------------------------------------------------------------
 
     cause_frequency = _safe_dict(analysis.get("cause_frequency"))
     if cause_frequency:
@@ -878,11 +1037,10 @@ def _render_error_analysis(result: Dict[str, Any]) -> None:
 
 
 # ============================================================
-# PATTERNS (ИСПРАВЛЕНО v6.1)
+# PATTERNS
 # ============================================================
 
 def _render_patterns(result: Dict[str, Any]) -> None:
-    """Отображает повторяющиеся ошибки. Использует _extract_analysis()."""
     analysis = _extract_analysis(result)
 
     patterns = analysis.get("patterns", [])
@@ -911,65 +1069,12 @@ def _render_patterns(result: Dict[str, Any]) -> None:
 
     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
 
-    # Показать рекомендации
     for pattern in patterns[:3]:
         recommendations = pattern.get("recommendations", [])
         if recommendations:
             with st.expander(f"💡 {_safe_string(pattern.get('error_type'))} → {_safe_string(pattern.get('cause_type'))}"):
                 for rec in recommendations[:3]:
                     st.write(f"• {rec}")
-
-
-# ============================================================
-# SIGNALS (ИСПРАВЛЕНО v6.1)
-# ============================================================
-
-def _render_signals(result: Dict[str, Any]) -> None:
-    """Отображает ETC signals. Использует _extract_analysis()."""
-    analysis = _extract_analysis(result)
-
-    signals = analysis.get("signals", [])
-    if not isinstance(signals, list):
-        return
-
-    signals = [item for item in signals if isinstance(item, dict)]
-    if not signals:
-        return
-
-    st.markdown("### 📡 ETC Signals")
-
-    st.warning(
-        "ETC Signal — это аналитический сигнал "
-        "для следующего уровня ETC. "
-        "Он НЕ означает автоматическое изменение параметра."
-    )
-
-    # Топ сигналы
-    top_signals = analysis.get("top_signals", [])
-    if top_signals:
-        st.caption("**Топ сигналы для приоритетного анализа**")
-
-        rows = []
-        for signal in top_signals[:10]:
-            rows.append({
-                "Priority": _safe_string(signal.get("priority")),
-                "Ошибка": _safe_string(signal.get("error_type")),
-                "Причина": _safe_string(signal.get("cause_type")),
-                "Событий": _safe_int(signal.get("event_count")),
-                "Матчей": _safe_int(signal.get("unique_match_count")),
-                "Severity": round(_safe_float(signal.get("average_severity")), 3),
-                "Strength": round(_safe_float(signal.get("signal_strength")), 3),
-            })
-
-        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-
-        # Показать рекомендации для топ-сигналов
-        for signal in top_signals[:2]:
-            recommendations = signal.get("recommendations", [])
-            if recommendations:
-                with st.expander(f"💡 Signal: {_safe_string(signal.get('error_type'))} (Priority: {_safe_string(signal.get('priority'))})"):
-                    for rec in recommendations[:2]:
-                        st.write(f"• {rec}")
 
 
 # ============================================================
@@ -991,28 +1096,36 @@ def _render_what_happened(result: Optional[Dict[str, Any]]) -> None:
     total = _safe_int(result.get("batch_size", 0))
     learning_events = _safe_int(result.get("learning_events"))
 
+    # Проверяем наличие proposals/review
+    optimization = _safe_dict(result.get("optimization"))
+    proposals = _safe_list(optimization.get("proposals", []))
+    review = _safe_dict(result.get("review"))
+    pending = _safe_int(len(review.get("pending", [])))
+
     if status == "completed" and failed == 0 and total > 0:
         st.success("✅ Полная цепочка ETC завершена.")
         st.markdown(
             f"""
 **{processed} из {total} матчей** успешно прошли ETC.
 
-Цепочка:
+Цепочка E-FINAL:
 1. `FACTS` → `BatchController v2.1`
 2. `LearningBatch v2.1`
 3. `ETCLearningEngine v2.0`
 4. `ErrorClassifier v2.2`
-5. `LearningAnalyzer v2.2`
-6. `LearningMemory v2.1`
-7. `batch_learning marker`
-8. `BATCH COMPLETED`
+5. `LearningAnalyzer v2.2` → **{len(proposals)} proposals**
+6. `Signal Adapter` → нормализация сигналов
+7. `ParameterOptimizer v2.3` → создание proposals
+8. `Review Gate` → **{pending} pending**
+9. 🔒 **AUTO-APPLY: DISABLED**
 
 Создано Learning Events: **{learning_events}**.
-Изменено параметров: **{learned}**.
 """
         )
         if already_processed > 0:
             st.info(f"ℹ️ {already_processed} матчей уже были обработаны ранее.")
+        if proposals:
+            st.info(f"📋 Создано {len(proposals)} proposals. Все ожидают review.")
         return
 
     if processed > 0 and failed > 0:
@@ -1034,7 +1147,7 @@ def _render_next_step(status: Dict[str, Any], result: Optional[Dict[str, Any]]) 
     st.divider()
     st.markdown("## 👉 Что делать дальше")
 
-    pending = _safe_int(status.get("pending_matches"))
+    pending_matches = _safe_int(status.get("pending_matches"))
 
     if result:
         result_status = _safe_string(result.get("status"))
@@ -1046,8 +1159,8 @@ def _render_next_step(status: Dict[str, Any], result: Optional[Dict[str, Any]]) 
 
         if result_status == "completed":
             st.success("✅ Этот batch успешно обучен.")
-            if pending > 0:
-                st.info(f"Следующий шаг: обработать следующий batch. Сейчас готово ещё {pending} матчей.")
+            if pending_matches > 0:
+                st.info(f"Следующий шаг: обработать следующий batch. Сейчас готово ещё {pending_matches} матчей.")
             else:
                 st.info("Сейчас новых готовых матчей нет. Следующий этап — добавить новые подтверждённые FACTS.")
             return
@@ -1056,14 +1169,14 @@ def _render_next_step(status: Dict[str, Any], result: Optional[Dict[str, Any]]) 
             st.info("⏳ Сейчас готовых матчей для обучения нет.")
             return
 
-    if pending > 0:
-        st.info(f"📦 Сейчас доступно {pending} матчей для обучения.")
+    if pending_matches > 0:
+        st.info(f"📦 Сейчас доступно {pending_matches} матчей для обучения.")
     else:
         st.info("⏳ Готовых матчей для нового batch пока нет.")
 
     st.markdown(
         """
-### Рабочий цикл FAJ
+### Рабочий цикл FAJ (E-FINAL)
 **MATCH**
 → итоговый счёт
 → статистика
@@ -1073,7 +1186,11 @@ def _render_next_step(status: Dict[str, Any], result: Optional[Dict[str, Any]]) 
 → ETC
 → ErrorClassifier
 → LearningAnalyzer
-→ LearningMemory
+→ Signal Adapter
+→ ParameterOptimizer
+→ Proposals
+→ Review Gate
+→ PENDING (NO AUTO-APPLY)
 → следующий batch
 """
     )
@@ -1088,7 +1205,7 @@ def _render_technical_details(result: Optional[Dict[str, Any]]) -> None:
         return
 
     st.divider()
-    with st.expander("🔧 Технические детали ETC", expanded=False):
+    with st.expander("🔧 Технические детали ETC (v7.0)", expanded=False):
         st.json(result)
 
 
@@ -1098,7 +1215,7 @@ def _render_technical_details(result: Optional[Dict[str, Any]]) -> None:
 
 def _render_contract() -> None:
     st.divider()
-    st.markdown("### 🛡️ Архитектурные границы ETC v6.1")
+    st.markdown("### 🛡️ Архитектурные границы ETC v7.0 (E-FINAL)")
 
     col1, col2, col3, col4 = st.columns(4)
 
@@ -1115,9 +1232,13 @@ def _render_contract() -> None:
         st.success("Predictions: не изменяются")
 
     st.caption(
-        "ETC Controller v3.1 | LearningBatch v2.1 | "
-        "LearningAnalyzer v2.2 | ErrorClassifier v2.2 | "
-        "ETC Page v6.1"
+        f"ETC Controller v{ETC_CONTROLLER_VERSION} | "
+        "BatchController v2.1 | "
+        "LearningBatch v2.1 | "
+        "LearningAnalyzer v2.2 | "
+        "ParameterOptimizer v2.3 | "
+        "ErrorClassifier v2.2 | "
+        "🔒 AUTO-APPLY: DISABLED"
     )
 
 
@@ -1148,7 +1269,6 @@ def main() -> None:
 
     _render_last_result()
 
-    # Используем _extract_analysis() для всех аналитических компонентов
     if result:
         _render_error_analysis(result)
         _render_patterns(result)
@@ -1162,8 +1282,9 @@ def main() -> None:
     st.divider()
     st.caption(
         f"FAJ Platform v{APP_VERSION} • "
-        f"ETC Page v{ETC_PAGE_VERSION} • "
-        f"Evolution Training Center"
+        f"ETC Page v{ETC_PAGE_VERSION} (E-FINAL) • "
+        f"ETC Controller v{ETC_CONTROLLER_VERSION} • "
+        f"🔒 AUTO-APPLY: DISABLED"
     )
 
 
