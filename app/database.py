@@ -1982,6 +1982,41 @@ class FAJDatabase:
             conn.close()
     
     # ============================================================
+    # 🆕 НОВЫЙ МЕТОД: GET SINGLE MATCH
+    # ============================================================
+    
+    def get_match(self, match_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Возвращает один матч по ID.
+        
+        Args:
+            match_id: ID матча
+        
+        Returns:
+            Словарь с полями matches или None
+        """
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT
+                    m.*,
+                    ht.name AS home_team_name,
+                    at.name AS away_team_name,
+                    r.round_number
+                FROM matches m
+                LEFT JOIN teams ht ON ht.id = m.home_team_id
+                LEFT JOIN teams at ON at.id = m.away_team_id
+                LEFT JOIN rounds r ON r.id = m.round_id
+                WHERE m.id = ?
+                LIMIT 1
+            """, (match_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+    
+    # ============================================================
     # MATCHES — с защитой фактических данных
     # ============================================================
     
