@@ -4576,14 +4576,18 @@ class FAJDatabase:
     # 🆕 НОВЫЙ МЕТОД: GET CURRENT PARAMETER STATE (КАНОНИЧЕСКИЙ)
     # ============================================================
 
-    def get_current_parameter_state(self) -> Dict[str, Any]:
+    def get_current_parameter_state(self, model_version: str = "v12.1") -> Dict[str, Any]:
         """
         Возвращает ТЕКУЩЕЕ СОСТОЯНИЕ ВСЕХ ПАРАМЕТРОВ модели.
         
         ЕДИНСТВЕННЫЙ источник истины для параметров.
         
+        Args:
+            model_version: версия модели (по умолчанию "v12.1")
+        
         Returns:
             {
+                "model_version": str,
                 "revision": int,           # глобальная ревизия модели
                 "parameters": {
                     "attack_sensitivity": float,
@@ -4595,10 +4599,8 @@ class FAJDatabase:
                 }
             }
         
-        Если параметров нет — возвращает default revision=0 и дефолтные значения.
+        Если параметров нет — возвращает default revision=0 и пустой словарь.
         """
-        from app.core.parameter_contract import DEFAULT_PARAMETER_VALUES, CANONICAL_PARAMETER_NAMES
-        
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
@@ -4607,17 +4609,19 @@ class FAJDatabase:
             cursor.execute("""
                 SELECT parameter_name, parameter_value, revision
                 FROM model_parameters
-                WHERE is_current = 1
+                WHERE model_version = ?
+                  AND is_current = 1
                 ORDER BY parameter_name
-            """)
+            """, (model_version,))
             
             rows = cursor.fetchall()
             
             if not rows:
-                logger.info("No model parameters found, using defaults")
+                logger.info("No model parameters found for %s", model_version)
                 return {
+                    "model_version": model_version,
                     "revision": 0,
-                    "parameters": DEFAULT_PARAMETER_VALUES.copy()
+                    "parameters": {}
                 }
             
             # Собираем параметры
@@ -4637,12 +4641,8 @@ class FAJDatabase:
                     logger.warning("Invalid parameter value: %s=%r", name, value)
                     continue
             
-            # Дополняем недостающие канонические параметры значениями по умолчанию
-            for name in CANONICAL_PARAMETER_NAMES:
-                if name not in parameters:
-                    parameters[name] = DEFAULT_PARAMETER_VALUES.get(name, 0.0)
-            
             return {
+                "model_version": model_version,
                 "revision": max_revision,
                 "parameters": parameters
             }
@@ -4660,8 +4660,8 @@ class FAJDatabase:
         new_value: float,
         reason: str,
         confidence: float = 1.0,
+        expected_old_value: Optional[float] = None,
         reference_match_id: Optional[int] = None,
-        expected_revision: Optional[int] = None,
         group_name: str = "learning",
         model_version: str = "v12.1",
         category: str = "etc",
@@ -4674,110 +4674,157 @@ class FAJDatabase:
         При любой ошибке → ROLLBACK → 0 изменений.
         
         Args:
-            parameter_name: имя параметра (должно быть в CANONICAL_PARAMETER_NAMES)
+            parameter_name: имя параметра
             new_value: новое значение
             reason: причина изменения
             confidence: уверенность (0-1)
+            expected_old_value: ожидаемое старое значение (защита от stale proposal)
             reference_match_id: ID матча, вызвавшего изменение
-            expected_revision: ожидаемая ревизия (защита от race condition)
             group_name: группа параметров
             model_version: версия модели
             category: категория
         
         Returns:
             {
-                "status": "success" | "conflict" | "error",
-                "new_revision": int,
-                "old_value": float,
+                "success": bool,
+                "status": "applied" | "stale_proposal" | "no_change" | "error",
+                "parameter_name": str,
+                "old_value": float | None,
                 "new_value": float,
-                "delta": float,
+                "delta": float | None,
+                "revision": int,
+                "history_id": int | None,
+                "message": str | None,
             }
         """
-        from app.core.parameter_contract import CANONICAL_PARAMETER_NAMES, PARAMETER_LIMITS
-        
         # Валидация
-        if parameter_name not in CANONICAL_PARAMETER_NAMES:
-            return {
-                "status": "error",
-                "message": f"Parameter '{parameter_name}' is not in CANONICAL_PARAMETER_NAMES"
-            }
-        
         try:
             new_value = float(new_value)
         except (TypeError, ValueError):
             return {
+                "success": False,
                 "status": "error",
+                "parameter_name": parameter_name,
+                "new_value": new_value,
                 "message": f"Invalid new_value: {new_value}"
             }
         
-        # Проверка пределов
-        limits = PARAMETER_LIMITS.get(parameter_name)
-        if limits:
-            min_val, max_val = limits
-            if new_value < min_val or new_value > max_val:
-                return {
-                    "status": "error",
-                    "message": f"Value {new_value} outside limits [{min_val}, {max_val}]"
-                }
+        if confidence < 0 or confidence > 1:
+            return {
+                "success": False,
+                "status": "error",
+                "parameter_name": parameter_name,
+                "new_value": new_value,
+                "message": f"Confidence must be between 0 and 1: {confidence}"
+            }
         
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
             
             # ====================================================
-            # 1. ПОЛУЧАЕМ ТЕКУЩЕЕ СОСТОЯНИЕ
+            # 1. ПОЛУЧАЕМ ТЕКУЩЕЕ СОСТОЯНИЕ ПАРАМЕТРА
             # ====================================================
             
             cursor.execute("""
                 SELECT parameter_value, revision
                 FROM model_parameters
-                WHERE parameter_name = ?
+                WHERE model_version = ?
+                  AND parameter_name = ?
                   AND is_current = 1
-            """, (parameter_name,))
+            """, (model_version, parameter_name))
             
             current = cursor.fetchone()
+            
             old_value = current["parameter_value"] if current else None
-            current_revision = current["revision"] if current else 0
+            old_revision = current["revision"] if current else 0
             
             # ====================================================
-            # 2. ПРОВЕРКА expected_revision (защита от race)
+            # 2. ПРОВЕРКА expected_old_value (защита от stale)
             # ====================================================
             
-            if expected_revision is not None and current_revision != expected_revision:
+            if expected_old_value is not None:
+                try:
+                    expected_old_value = float(expected_old_value)
+                except (TypeError, ValueError):
+                    return {
+                        "success": False,
+                        "status": "error",
+                        "parameter_name": parameter_name,
+                        "new_value": new_value,
+                        "message": f"Invalid expected_old_value: {expected_old_value}"
+                    }
+                
+                if old_value is None:
+                    return {
+                        "success": False,
+                        "status": "stale_proposal",
+                        "parameter_name": parameter_name,
+                        "new_value": new_value,
+                        "expected_value": expected_old_value,
+                        "current_value": None,
+                        "message": f"Parameter '{parameter_name}' does not exist"
+                    }
+                
+                if abs(old_value - expected_old_value) > 0.0001:
+                    return {
+                        "success": False,
+                        "status": "stale_proposal",
+                        "parameter_name": parameter_name,
+                        "new_value": new_value,
+                        "expected_value": expected_old_value,
+                        "current_value": old_value,
+                        "message": f"Stale proposal: expected {expected_old_value}, current {old_value}"
+                    }
+            
+            # ====================================================
+            # 3. ПРОВЕРКА: ИЗМЕНИЛОСЬ ЛИ ЗНАЧЕНИЕ?
+            # ====================================================
+            
+            if old_value is not None and abs(old_value - new_value) < 0.0001:
                 return {
-                    "status": "conflict",
-                    "message": f"Revision mismatch: expected {expected_revision}, current {current_revision}",
-                    "current_revision": current_revision,
-                    "current_value": old_value,
+                    "success": True,
+                    "status": "no_change",
+                    "parameter_name": parameter_name,
+                    "old_value": old_value,
+                    "new_value": new_value,
+                    "delta": 0.0,
+                    "revision": old_revision,
+                    "history_id": None,
+                    "message": "Value unchanged"
                 }
             
             # ====================================================
-            # 3. ВЫЧИСЛЯЕМ НОВУЮ РЕВИЗИЮ
+            # 4. ВЫЧИСЛЯЕМ НОВУЮ РЕВИЗИЮ
             # ====================================================
             
-            # Получаем глобальную максимальную ревизию
             cursor.execute("""
                 SELECT COALESCE(MAX(revision), 0) + 1 AS next_rev
                 FROM model_parameters
-            """)
+                WHERE model_version = ?
+            """, (model_version,))
+            
             row = cursor.fetchone()
             new_revision = row["next_rev"] if row else 1
             
             # ====================================================
-            # 4. СНИМАЕМ is_current СО СТАРОЙ ЗАПИСИ
+            # 5. СНИМАЕМ is_current СО СТАРОЙ ЗАПИСИ
             # ====================================================
             
             if current:
                 cursor.execute("""
                     UPDATE model_parameters
                     SET is_current = 0
-                    WHERE parameter_name = ?
+                    WHERE model_version = ?
+                      AND parameter_name = ?
                       AND is_current = 1
-                """, (parameter_name,))
+                """, (model_version, parameter_name))
             
             # ====================================================
-            # 5. ВСТАВЛЯЕМ НОВУЮ ЗАПИСЬ
+            # 6. ВСТАВЛЯЕМ НОВУЮ ЗАПИСЬ
             # ====================================================
+            
+            now = datetime.now().isoformat()
             
             cursor.execute("""
                 INSERT INTO model_parameters (
@@ -4794,12 +4841,14 @@ class FAJDatabase:
                 reason,
                 new_revision,
                 1,
-                datetime.now().isoformat(),
+                now,
             ))
             
             # ====================================================
-            # 6. ЗАПИСЫВАЕМ ИСТОРИЮ
+            # 7. ЗАПИСЫВАЕМ ИСТОРИЮ
             # ====================================================
+            
+            history_id = None
             
             if old_value is not None:
                 cursor.execute("""
@@ -4807,8 +4856,9 @@ class FAJDatabase:
                         parameter_name, group_name, model_version,
                         old_value, new_value, delta,
                         reason, confidence,
-                        reference_match_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        reference_match_id,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     parameter_name,
                     group_name,
@@ -4819,35 +4869,46 @@ class FAJDatabase:
                     reason,
                     confidence,
                     reference_match_id,
+                    now,
                 ))
+                
+                history_id = cursor.lastrowid
             
             # ====================================================
-            # 7. COMMIT
+            # 8. COMMIT
             # ====================================================
             
             conn.commit()
             
             logger.info(
-                "PARAMETER APPLIED | %s: %s → %s | revision=%s",
+                "PARAMETER APPLIED | %s: %s → %s | revision=%s | history_id=%s",
                 parameter_name,
                 old_value,
                 new_value,
                 new_revision,
+                history_id,
             )
             
             return {
-                "status": "success",
-                "new_revision": new_revision,
+                "success": True,
+                "status": "applied",
+                "parameter_name": parameter_name,
                 "old_value": old_value,
                 "new_value": new_value,
                 "delta": new_value - old_value if old_value is not None else None,
+                "revision": new_revision,
+                "history_id": history_id,
+                "message": None,
             }
             
         except Exception as exc:
             conn.rollback()
             logger.exception("apply_parameter_change failed for %s", parameter_name)
             return {
+                "success": False,
                 "status": "error",
+                "parameter_name": parameter_name,
+                "new_value": new_value,
                 "message": str(exc),
             }
         finally:
@@ -4857,9 +4918,12 @@ class FAJDatabase:
     # 🆕 НОВЫЙ МЕТОД: GET PARAMETER REVISION
     # ============================================================
 
-    def get_parameter_revision(self) -> int:
+    def get_parameter_revision(self, model_version: str = "v12.1") -> int:
         """
         Возвращает текущую глобальную ревизию модели.
+        
+        Args:
+            model_version: версия модели
         
         Returns:
             int: максимальный revision из model_parameters или 0
@@ -4870,9 +4934,50 @@ class FAJDatabase:
             cursor.execute("""
                 SELECT COALESCE(MAX(revision), 0) AS max_rev
                 FROM model_parameters
-            """)
+                WHERE model_version = ?
+            """, (model_version,))
             row = cursor.fetchone()
             return row["max_rev"] if row else 0
+        finally:
+            conn.close()
+
+    # ============================================================
+    # 🆕 НОВЫЙ МЕТОД: GET PARAMETER HISTORY
+    # ============================================================
+
+    def get_parameter_history(
+        self,
+        parameter_name: str,
+        model_version: str = "v12.1",
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """
+        Возвращает историю изменений параметра.
+        
+        Args:
+            parameter_name: имя параметра
+            model_version: версия модели
+            limit: максимальное количество записей
+        
+        Returns:
+            List[Dict]: список записей parameter_history
+        """
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT *
+                FROM parameter_history
+                WHERE parameter_name = ?
+                  AND model_version = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+            """, (parameter_name, model_version, limit))
+            
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        
         finally:
             conn.close()
     
