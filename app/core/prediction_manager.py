@@ -4,7 +4,7 @@
 """
 =====================================================
 FAJ Platform v12.1 — MEMORY HARDENED
-Prediction Manager v2.4
+Prediction Manager v2.5
 =====================================================
 
 РОЛЬ:
@@ -17,18 +17,22 @@ Prediction Manager v2.4
 
     Manager:
         1. GET PASSPORT + RATING (ОДИН РАЗ)
-        2. GET PARAMETER STATE (ОДИН РАЗ)          ← НОВОЕ v2.4
+        2. GET PARAMETER STATE (ОДИН РАЗ)
         3. VALIDATE
-        4. BUILD CONTEXT (включая parameters)      ← НОВОЕ v2.4
+        4. BUILD CONTEXT (включая parameters)
         5. FREEZE PREDICTION SNAPSHOT (FAIL → STOP)
-        6. PIPELINE.run(same passport + same rating + parameters)  ← НОВОЕ v2.4
+        6. PIPELINE.run(same passport + same rating + parameters)
         7. NORMALIZE DISTRIBUTION ONCE
         8. FINAL_SCORE_ENGINE.calculate(same context + same distribution)
         9. BUILD FINAL PREDICTION
-        10. SAVE_PREDICTION (с parameter_revision) ← НОВОЕ v2.4
+        10. SAVE_PREDICTION (с parameter_revision)
         11. RETURN
 
     Prediction и Fact никогда не смешиваются.
+
+ИСПРАВЛЕНИЯ v2.5:
+    1. Исправлена ошибка _parameter_revision_snapshot (удалён из hash)
+    2. Хеш больше не включает parameter_revision (дедупликация по математике)
 
 ИСПРАВЛЕНИЯ v2.4:
     1. Чтение parameter state через get_current_parameter_state()
@@ -73,9 +77,9 @@ class PredictionContextError(Exception):
 
 
 class PredictionManager:
-    """Prediction Manager v2.4 — Memory Hardened + FAJ Final Score + Parameter State."""
+    """Prediction Manager v2.5 — Memory Hardened + FAJ Final Score + Parameter State."""
 
-    VERSION = "2.4"
+    VERSION = "2.5"
 
     FINISHED_STATUSES: Set[str] = {
         "finished",
@@ -171,7 +175,7 @@ class PredictionManager:
                 }
 
             # ====================================================
-            # 3. GET PARAMETER STATE (ОДИН РАЗ — НОВОЕ v2.4)
+            # 3. GET PARAMETER STATE (ОДИН РАЗ)
             # ====================================================
 
             parameter_state = self.db.get_current_parameter_state()
@@ -247,7 +251,7 @@ class PredictionManager:
                 )
 
             # ====================================================
-            # 8. PIPELINE.run (same passport + same rating + parameters) — НОВОЕ v2.4
+            # 8. PIPELINE.run
             # ====================================================
 
             result = self.pipeline.run(
@@ -258,7 +262,7 @@ class PredictionManager:
                 home_team=home_team,
                 away_team=away_team,
                 league=league,
-                parameters=parameters,  # ← НОВОЕ v2.4
+                parameters=parameters,
             )
 
             if not isinstance(result, dict):
@@ -278,14 +282,13 @@ class PredictionManager:
             normalized_distribution = self._normalize_distribution(math_distribution)
 
             # ====================================================
-            # 10. FAJ FINAL SCORE ENGINE (same context + same distribution)
+            # 10. FAJ FINAL SCORE ENGINE
             # ====================================================
 
             faj_result = None
 
             if normalized_distribution and match_id is not None:
                 try:
-                    # home_advantage из контекста
                     home_advantage = home_context.get("home_advantage", 1.08)
 
                     faj_result = self.final_engine.calculate(
@@ -325,7 +328,7 @@ class PredictionManager:
             result["manager_version"] = self.VERSION
 
             # ====================================================
-            # 12. PARAMETER STATE В РЕЗУЛЬТАТ (НОВОЕ v2.4)
+            # 12. PARAMETER STATE В РЕЗУЛЬТАТ
             # ====================================================
 
             result["parameter_revision"] = parameter_revision
@@ -336,29 +339,23 @@ class PredictionManager:
             # ====================================================
 
             if faj_result and faj_result.get("faj_final_score") != "—":
-                # Math данные
                 result["math_most_likely_score"] = faj_result.get("math_most_likely_score")
                 result["math_score_probability"] = faj_result.get("math_probability", 0.0)
 
-                # FAJ данные
                 result["faj_final_score"] = faj_result.get("faj_final_score")
                 result["faj_confidence"] = faj_result.get("faj_confidence", 0.0)
                 result["faj_score_ranking"] = faj_result.get("faj_score_ranking", [])
 
-                # Decision factors
                 decision_factors = faj_result.get("decision_factors", {})
                 result["decision_factors"] = decision_factors
                 result["context_availability"] = faj_result.get("context_availability", {})
 
-                # История — из decision_factors["history"]
                 history = decision_factors.get("history", {})
                 result["history_count"] = history.get("count", 0)
                 result["history_weight"] = history.get("weight", 0.0)
 
-                # Engine версия — из self.final_engine
                 result["engine_version"] = self.final_engine.VERSION
             else:
-                # Если FAJ не сработал — только математика
                 result["math_most_likely_score"] = result.get("score")
                 result["math_score_probability"] = result.get("score_probability", 0.0)
                 result["faj_final_score"] = None
@@ -371,7 +368,7 @@ class PredictionManager:
                 result["engine_version"] = None
 
             # ====================================================
-            # 14. SAVE PREDICTION (с parameter_revision) — НОВОЕ v2.4
+            # 14. SAVE PREDICTION (с parameter_revision)
             # ====================================================
 
             pred_id = self._save_prediction(
@@ -382,7 +379,7 @@ class PredictionManager:
                 match_id=match_id,
                 memory_state_id=memory_state_id,
                 normalized_distribution=normalized_distribution,
-                parameter_revision=parameter_revision,  # ← НОВОЕ v2.4
+                parameter_revision=parameter_revision,
             )
 
             if pred_id is not None:
@@ -425,18 +422,13 @@ class PredictionManager:
     ) -> Dict[str, Any]:
         """
         Строит ЕДИНЫЙ контекст для PredictionPipeline и FinalScoreEngine.
-
-        ВАЖНО:
-            - passport и rating НЕ ЗАМЕНЯЮТСЯ историей
-            - история добавляется как дополнительный контекст
-            - если история недоступна — используется пустой контекст
         """
         context = {
             "team_id": team_id,
             "season_id": season_id,
             "team_name": team_name,
             "rating": rating,
-            "passport": passport,  # НЕ ЗАМЕНЯЕТСЯ
+            "passport": passport,
             "home_advantage": 1.08,
             "last_match": None,
             "recent_matches": [],
@@ -450,7 +442,6 @@ class PredictionManager:
             }
         }
 
-        # Добавляем историю, если есть данные
         if team_id is not None and season_id is not None and match_date is not None:
             try:
                 db_context = self.db.get_team_recent_context(
@@ -461,7 +452,6 @@ class PredictionManager:
                 )
 
                 if db_context:
-                    # ТОЛЬКО ДОБАВЛЯЕМ историю, НЕ ЗАМЕНЯЕМ passport/rating
                     context["last_match"] = db_context.get("last_match")
                     context["recent_matches"] = db_context.get("recent_matches", [])
                     context["form"] = db_context.get("form")
@@ -491,13 +481,6 @@ class PredictionManager:
         away_context: Dict[str, Any],
         memory_state_id: str,
     ) -> None:
-        """
-        Фиксирует snapshot состояния ДО prediction.
-
-        ВАЖНО:
-            - любая ошибка → PredictionContextError → prediction НЕ сохраняется
-            - snapshot является обязательным для воспроизводимости
-        """
         try:
             home_passport = home_context.get("passport", {})
             away_passport = away_context.get("passport", {})
@@ -566,24 +549,20 @@ class PredictionManager:
         self,
         result: Dict[str, Any],
     ) -> Optional[Union[Dict[str, float], List[Dict[str, Any]]]]:
-        """Извлекает math_distribution из результата Pipeline."""
         extended = result.get("extended", {})
         if not isinstance(extended, dict):
             return None
 
-        # 1. distributions (приоритет)
         if "distributions" in extended:
             distributions = extended.get("distributions")
             if isinstance(distributions, list) and distributions:
                 return distributions
 
-        # 2. score_matrix
         if "score_matrix" in extended:
             score_matrix = extended.get("score_matrix")
             if isinstance(score_matrix, dict) and score_matrix:
                 return score_matrix
 
-        # 3. top_scores → преобразование
         top_scores = extended.get("top_scores", [])
         if isinstance(top_scores, list) and top_scores:
             result_list = []
@@ -614,18 +593,6 @@ class PredictionManager:
         self,
         distribution: Optional[Union[Dict[str, float], List[Dict[str, Any]]]],
     ) -> Optional[List[Dict[str, Any]]]:
-        """
-        Нормализует distribution ОДИН раз.
-
-        Вход:
-            - { "1:1": 0.128, "2:1": 0.109, ... }
-            - [{"home": 1, "away": 1, "probability": 0.128}, ...]
-
-        Выход:
-            - [{"home": 1, "away": 1, "probability": 0.128}, ...]
-            - probability нормализованы (сумма = 1.0)
-            - пустые/некорректные элементы отброшены
-        """
         if not distribution:
             return None
 
@@ -665,7 +632,6 @@ class PredictionManager:
         if not items:
             return None
 
-        # Нормализация
         total = sum(item["probability"] for item in items)
         if total <= 0:
             return None
@@ -673,7 +639,6 @@ class PredictionManager:
         for item in items:
             item["probability"] = round(item["probability"] / total, 6)
 
-        # Сортировка по убыванию вероятности
         items.sort(key=lambda x: x["probability"], reverse=True)
 
         return items
@@ -683,7 +648,6 @@ class PredictionManager:
     # ============================================================
 
     def _get_season_id(self, league: str) -> Optional[int]:
-        """Возвращает ID активного сезона для указанной лиги."""
         seasons = self.db.get_seasons()
 
         for season in seasons:
@@ -694,7 +658,6 @@ class PredictionManager:
                 logger.info("Season detected | league=%s | id=%s", league, season["id"])
                 return season["id"]
 
-        # Fallback: ищем по названию
         for season in seasons:
             name = season.get("name", "")
             season_league = season.get("league", "")
@@ -710,7 +673,6 @@ class PredictionManager:
     # ============================================================
 
     def _get_match_date(self, match_id: int) -> Optional[str]:
-        """Получает дату матча из БД."""
         try:
             match = self._get_match(match_id)
             if match:
@@ -909,7 +871,7 @@ class PredictionManager:
         return f"FAJ-MEM-{self.pipeline.VERSION}-{timestamp}"
 
     # ============================================================
-    # PREDICTION HASH
+    # PREDICTION HASH (ИСПРАВЛЕНО v2.5)
     # ============================================================
 
     def _generate_prediction_hash(
@@ -920,6 +882,14 @@ class PredictionManager:
         away_win: float,
         faj_final_score: Optional[str] = None,
     ) -> str:
+        """
+        Генерирует уникальный хеш для дедупликации прогнозов.
+
+        ВАЖНО v2.5:
+            - parameter_revision НЕ входит в хеш
+            - хеш основан только на математических вероятностях
+            - это позволяет дедуплицировать одинаковые математические прогнозы
+        """
         data = {
             "match_id": match_id,
             "pipeline_version": self.pipeline.VERSION,
@@ -927,7 +897,6 @@ class PredictionManager:
             "draw": round(float(draw), 6),
             "away_win": round(float(away_win), 6),
             "faj_final_score": faj_final_score,
-            "parameter_revision": self._parameter_revision_snapshot,  # ← НОВОЕ v2.4
         }
         encoded = json.dumps(data, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -956,7 +925,6 @@ class PredictionManager:
                 continue
 
             if season_id is not None:
-                # Проверяем season_id через rounds
                 rounds = self.db.get_rounds()
                 for round_item in rounds:
                     if round_item["id"] == match["round_id"] and round_item["season_id"] == season_id:
@@ -966,14 +934,13 @@ class PredictionManager:
                 if match.get("competition") == league:
                     return match["id"]
 
-            # Если нет фильтров — возвращаем первый найденный
             if season_id is None and league is None:
                 return match["id"]
 
         return None
 
     # ============================================================
-    # SAVE PREDICTION (с parameter_revision) — НОВОЕ v2.4
+    # SAVE PREDICTION (с parameter_revision)
     # ============================================================
 
     def _save_prediction(
@@ -985,7 +952,7 @@ class PredictionManager:
         match_id: Optional[int] = None,
         memory_state_id: Optional[str] = None,
         normalized_distribution: Optional[List[Dict[str, Any]]] = None,
-        parameter_revision: Optional[int] = None,  # ← НОВОЕ v2.4
+        parameter_revision: Optional[int] = None,
     ) -> Optional[int]:
 
         if not getattr(config, "SAVE_PREDICTIONS", True):
@@ -1012,13 +979,11 @@ class PredictionManager:
                 confidence_value = 0.5
             confidence_value = max(0.0, min(1.0, confidence_value))
 
-            # FAJ данные
             faj_final_score = result.get("faj_final_score")
             faj_confidence = result.get("faj_confidence")
             decision_factors = result.get("decision_factors", {})
             math_most_likely_score = result.get("math_most_likely_score")
 
-            # HASH с parameter_revision (НОВОЕ v2.4)
             prediction_hash = self._generate_prediction_hash(
                 match_id=match_id,
                 home_win=home_win,
@@ -1032,10 +997,8 @@ class PredictionManager:
             total = extended.get("total", {})
             btts = extended.get("btts", {})
 
-            # Преобразуем parameter_revision в строку для БД
             parameter_revision_str = str(parameter_revision) if parameter_revision is not None else None
 
-            # SAVE MAIN PREDICTION с parameter_revision (НОВОЕ v2.4)
             pred_id = self.db.save_prediction(
                 match_id=match_id,
                 model_version=model_version,
@@ -1053,7 +1016,7 @@ class PredictionManager:
                 faj_final_score=faj_final_score,
                 faj_confidence=int(faj_confidence * 100) if faj_confidence is not None else None,
                 decision_factors=json.dumps(decision_factors) if decision_factors else None,
-                parameter_revision=parameter_revision_str,  # ← НОВОЕ v2.4
+                parameter_revision=parameter_revision_str,
             )
 
             if not pred_id:
@@ -1071,7 +1034,7 @@ class PredictionManager:
                     score_type="math",
                 )
 
-            # TOP SCORES — FAJ (используем faj_score)
+            # TOP SCORES — FAJ
             faj_ranking = result.get("faj_score_ranking", [])
             for item in faj_ranking:
                 self.db.add_prediction_score(
@@ -1082,7 +1045,6 @@ class PredictionManager:
                     score_type="faj",
                 )
 
-            # DISTRIBUTION — используем нормализованную
             distributions_to_save = normalized_distribution or extended.get("distributions", [])
             for dist in distributions_to_save:
                 self.db.add_prediction_distribution(
