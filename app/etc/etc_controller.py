@@ -9,23 +9,35 @@ ETC — Evolution Training Center
 app/etc/etc_controller.py
 ============================================================
 
-ETC CONTROLLER v3.1
+ETC CONTROLLER v4.1 (E-FINAL)
 ============================================================
 
-ИСПРАВЛЕНИЯ v3.1:
-    1. parameter_history_ids разделён на memory_before_ids, memory_after_ids, parameter_history_ids
-    2. AFTER snapshot и parameter_history записываются ТОЛЬКО при success=True
-    3. Разделены processed и learned
-    4. Добавлен pending_matches в status()
-    5. Добавлен last_batch_id в status()
-    6. Добавлен already_processed_match_ids в результат run()
+ИСПРАВЛЕНИЯ v4.1 (E-FINAL):
+    1. Добавлен Signal Adapter — _normalize_optimizer_signals()
+    2. Унифицирован applied_count во всех уровнях
+    3. Исправлена revision chain — последовательное применение
+    4. Review Gate — ВСЕ proposals → pending (НЕТ auto-apply)
+    5. Убраны parameter_before/parameter_after из LearningMemory
+    6. process_match() оставлен без оптимизации (фактическое обучение)
+    7. Версия обновлена до 4.1
+
+ИСПРАВЛЕНИЯ v4.0:
+    1. Подключен LearningAnalyzer для генерации signals
+    2. Подключен ParameterOptimizer для создания proposals
+    3. Добавлен Review Gate (approved/rejected/pending)
+    4. Применение только approved proposals через Parameter State API
+    5. Убрана самостоятельная запись parameter_history (делегировано в State API)
+    6. Убраны жёсткие alpha/beta/gamma/delta — используется get_current_parameter_state()
+    7. BEFORE/AFTER — только как snapshots (без сравнения и записи history)
+    8. learned = количество реально применённых изменений
+    9. Добавлены секции analysis, optimization, review, apply в результат
 
 НАЗНАЧЕНИЕ
 -----------
 
-Верхний оркестратор ETC.
+Верхний оркестратор ETC v4.1.
 
-КОНТРАКТ v3.1:
+КОНТРАКТ v4.1:
 
     MATCH
       ↓
@@ -38,21 +50,31 @@ ETC CONTROLLER v3.1
       ├── check()
       └── get_learning_batch()
       ↓
-    ETCController v3.1
+    ETCController v4.1
       │
-      ├── BEFORE snapshot (параметры до)
+      ├── BEFORE snapshot (параметры до) — только диагностика
       ├── ETCLearningEngine v2.0
       │   ├── process_match()
       │   └── run_batch()
-      ├── AFTER snapshot (параметры после) — ТОЛЬКО при success
-      └── parameter_history — ТОЛЬКО при success
+      ├── LearningAnalyzer v2.2
+      │   └── signals
+      ├── Signal Adapter (НОВОЕ v4.1)
+      │   └── normalized signals
+      ├── ParameterOptimizer v2.3
+      │   └── proposals
+      ├── Review Gate (v4.1 — ВСЕ → pending)
+      │   ├── approved → []
+      │   ├── rejected → []
+      │   └── pending → все proposals
+      ├── Apply (только для approved — но их нет)
+      ├── AFTER snapshot (параметры после) — только диагностика
+      └── parameter_revision — из State API
       ↓
-    LEARNING MEMORY
+    LEARNING MEMORY (только learning events, НЕ snapshots)
       ↓
     SQLite
 
-
-ГРАНИЦЫ ETCController v3.1
+ГРАНИЦЫ ETCController v4.1
 ============================================================
 
 ETCController — ОРКЕСТРАТОР.
@@ -79,56 +101,22 @@ ETCController НЕ:
     - изменяет predictions;
     - изменяет календарь;
     - выполняет DELETE;
-    - выполняет DROP.
+    - выполняет DROP;
+    - пишет SQL напрямую;
+    - записывает parameter_history самостоятельно;
+    - пишет parameter_before/after в LearningMemory.
 
 ETCController ТОЛЬКО:
     1. получает batch от BatchController;
-    2. записывает BEFORE состояние параметров;
+    2. записывает BEFORE snapshot в результат (НЕ в LearningMemory);
     3. передаёт batch в ETCLearningEngine;
     4. получает результат;
-    5. записывает AFTER состояние параметров (если success);
-    6. записывает parameter_history (если success);
-    7. агрегирует результат.
-
-
-НОВОЕ В v3.1: BEFORE ≠ AFTER (с условием success)
-============================================================
-
-Перед запуском обучения:
-
-    BEFORE = текущие параметры модели
-
-После УСПЕШНОГО обучения:
-
-    AFTER = новые параметры модели
-
-Оба состояния записываются в learning_memory
-с event_type = "parameter_before" и "parameter_after".
-
-Все изменения параметров записываются
-в parameter_history через:
-
-    FAJDatabase.record_parameter_history()
-
-Важно: если обучение не успешно, AFTER и parameter_history НЕ записываются.
-
-
-СТАТУСНАЯ МОДЕЛЬ (v3.1)
-============================================================
-
-При запуске ETC Controller определяет статус каждого матча:
-
-    DISCOVERED  → матч найден в batch
-    NEW         → ещё не обработан ETC
-    PROCESSING  → в процессе обработки
-    COMPLETED   → успешно обработан
-    ALREADY_PROCESSED → уже был обработан ранее
-    SKIPPED     → пропущен (нет данных)
-    FAILED      → ошибка обработки
-
-Запускаются только NEW матчи.
-
-============================================================
+    5. вызывает LearningAnalyzer для анализа;
+    6. адаптирует signals через Signal Adapter;
+    7. вызывает ParameterOptimizer для создания proposals;
+    8. применяет Review Gate (ВСЕ → pending);
+    9. записывает AFTER snapshot в результат (НЕ в LearningMemory);
+    10. агрегирует результат.
 """
 
 from __future__ import annotations
@@ -136,7 +124,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 
 from app.database import FAJDatabase
@@ -158,6 +146,14 @@ from app.etc.learning_memory import (
     LearningMemory,
 )
 
+from app.etc.learning_analyzer import (
+    LearningAnalyzer,
+)
+
+from app.etc.parameter_optimizer import (
+    ParameterOptimizer,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +163,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 MODULE_NAME = "ETC Controller"
-MODULE_VERSION = "3.1"
+MODULE_VERSION = "4.1"
 
 
 # ============================================================
@@ -457,22 +453,20 @@ def _serialize_params(
 
 
 # ============================================================
-# ETC CONTROLLER v3.1
+# ETC CONTROLLER v4.1
 # ============================================================
 
 class ETCController:
     """
-    Главный оркестратор Evolution Training Center v3.1.
+    Главный оркестратор Evolution Training Center v4.1.
 
     Контроллер не содержит математической логики.
 
-    Новое в v3.1:
-        - BEFORE/AFTER запись параметров (AFTER только при success)
-        - parameter_history (только при success)
-        - Разделение processed и learned
-        - pending_matches в status()
-        - last_batch_id в status()
-        - already_processed_match_ids в результате run()
+    Новое в v4.1:
+        - Signal Adapter
+        - Review Gate — ВСЕ → pending (НЕТ auto-apply)
+        - Snapshots НЕ пишутся в LearningMemory
+        - Исправлена revision chain
     """
 
     def __init__(
@@ -486,6 +480,12 @@ class ETCController:
         ] = None,
         learning_memory: Optional[
             LearningMemory
+        ] = None,
+        learning_analyzer: Optional[
+            LearningAnalyzer
+        ] = None,
+        optimizer: Optional[
+            ParameterOptimizer
         ] = None,
     ) -> None:
 
@@ -513,6 +513,18 @@ class ETCController:
             or LearningMemory(
                 db=self.db
             )
+        )
+
+        self.learning_analyzer = (
+            learning_analyzer
+            or LearningAnalyzer(
+                db=self.db
+            )
+        )
+
+        self.optimizer = (
+            optimizer
+            or ParameterOptimizer()
         )
 
         # Храним ID последнего batch для status()
@@ -561,9 +573,27 @@ class ETCController:
                 None,
             ),
 
-            "FAJDatabase.record_parameter_history": getattr(
+            "LearningAnalyzer.analyze": getattr(
+                self.learning_analyzer,
+                "analyze",
+                None,
+            ),
+
+            "ParameterOptimizer.run": getattr(
+                self.optimizer,
+                "run",
+                None,
+            ),
+
+            "FAJDatabase.get_current_parameter_state": getattr(
                 self.db,
-                "record_parameter_history",
+                "get_current_parameter_state",
+                None,
+            ),
+
+            "FAJDatabase.apply_parameter_change": getattr(
+                self.db,
+                "apply_parameter_change",
                 None,
             ),
         }
@@ -613,14 +643,28 @@ class ETCController:
                 .__class__.__name__
             ),
 
+            "learning_analyzer": (
+                self.learning_analyzer
+                .__class__.__name__
+            ),
+
+            "optimizer": (
+                self.optimizer
+                .__class__.__name__
+            ),
+
             "pending_matches": pending,
 
             "last_batch_id": self._last_batch_id,
 
             "features": {
-                "before_after_snapshot": True,
-                "parameter_history": True,
+                "learning_analyzer": True,
+                "parameter_optimizer": True,
+                "review_gate": True,
+                "signal_adapter": True,
+                "parameter_state_api": True,
                 "append_only": True,
+                "snapshots_in_learning_memory": False,  # НОВОЕ v4.1
             },
 
             "api_contract": {
@@ -636,6 +680,8 @@ class ETCController:
                 "direct_prediction_mutation",
                 "direct_model_parameter_mutation",
                 "direct_calendar_mutation",
+                "direct_parameter_history_write",
+                "snapshots_in_learning_memory",  # НОВОЕ v4.1
             ],
 
             "missing_api": missing,
@@ -653,12 +699,7 @@ class ETCController:
         force: bool = False,
     ) -> Dict[str, Any]:
         """
-        Запускает ETC batch pipeline с BEFORE/AFTER.
-
-        НОВОЕ v3.1:
-            - BEFORE: запись параметров до обучения
-            - AFTER: запись параметров после обучения (ТОЛЬКО при success)
-            - parameter_history: все изменения (ТОЛЬКО при success)
+        Запускает ETC batch pipeline с новым потоком v4.1.
         """
 
         started_at = _now()
@@ -713,14 +754,21 @@ class ETCController:
 
             "message": "",
 
-            # НОВОЕ v3.1: разделены сущности
-            "memory_before_ids": [],
-            "memory_after_ids": [],
-            "parameter_history_ids": [],
+            # Анализ и оптимизация
+            "analysis": None,
+            "optimization": None,
+            "review": None,
+            "apply": None,
 
+            # BEFORE/AFTER (только диагностика, НЕ в LearningMemory)
             "parameter_before": None,
             "parameter_after": None,
-            "parameter_changes": [],
+            "parameter_revision_before": 0,
+            "parameter_revision_after": 0,
+
+            # ID для диагностики (только learning events)
+            "memory_ids": [],
+            "batch_memory_ids": [],
         }
 
         logger.info(
@@ -728,7 +776,7 @@ class ETCController:
         )
 
         logger.info(
-            "ETC RUN STARTED v3.1 | "
+            "ETC RUN STARTED v4.1 | "
             "league=%s | season=%s | limit=%s | force=%s",
             league,
             season_id,
@@ -967,7 +1015,7 @@ class ETCController:
                     )
 
                 # ---------------------------------------------
-                # PARAMETER HISTORY (НОВОЕ v3.1 — разделены сущности)
+                # PARAMETER STATE (диагностика)
                 # ---------------------------------------------
 
                 param_before = (
@@ -983,35 +1031,50 @@ class ETCController:
                 )
 
                 if param_before is not None:
-
-                    result[
-                        "parameter_before"
-                    ] = param_before
+                    result["parameter_before"] = param_before
 
                 if param_after is not None:
+                    result["parameter_after"] = param_after
 
-                    result[
-                        "parameter_after"
-                    ] = param_after
+                revision_before = league_result.get("parameter_revision_before", 0)
+                revision_after = league_result.get("parameter_revision_after", 0)
 
-                result[
-                    "parameter_changes"
-                ].extend(
-                    league_result.get(
-                        "parameter_changes",
-                        [],
-                    )
+                if revision_before > 0:
+                    result["parameter_revision_before"] = revision_before
+
+                if revision_after > 0:
+                    result["parameter_revision_after"] = revision_after
+
+                # ---------------------------------------------
+                # АНАЛИЗ / ОПТИМИЗАЦИЯ / REVIEW
+                # ---------------------------------------------
+
+                analysis = league_result.get("analysis")
+                if analysis:
+                    result["analysis"] = analysis
+
+                optimization = league_result.get("optimization")
+                if optimization:
+                    result["optimization"] = optimization
+
+                review = league_result.get("review")
+                if review:
+                    result["review"] = review
+
+                apply_result = league_result.get("apply")
+                if apply_result:
+                    result["apply"] = apply_result
+
+                # ---------------------------------------------
+                # MEMORY IDS (только learning events)
+                # ---------------------------------------------
+
+                result["memory_ids"].extend(
+                    league_result.get("memory_ids", [])
                 )
 
-                # Разделяем ID по сущностям
-                result["memory_before_ids"].extend(
-                    league_result.get("memory_before_ids", [])
-                )
-                result["memory_after_ids"].extend(
-                    league_result.get("memory_after_ids", [])
-                )
-                result["parameter_history_ids"].extend(
-                    league_result.get("parameter_history_ids", [])
+                result["batch_memory_ids"].extend(
+                    league_result.get("batch_memory_ids", [])
                 )
 
             # =================================================
@@ -1143,14 +1206,14 @@ class ETCController:
                 )
 
             logger.info(
-                "ETC RUN FINISHED v3.1 | "
+                "ETC RUN FINISHED v4.1 | "
                 "status=%s | "
                 "processed=%s | "
                 "already_processed=%s | "
                 "failed=%s | "
                 "learned=%s | "
                 "memory=%s | "
-                "parameter_changes=%s | "
+                "revision=%s→%s | "
                 "errors=%s",
                 result["status"],
                 result["processed"],
@@ -1158,7 +1221,8 @@ class ETCController:
                 result["failed"],
                 result["learned"],
                 result["memory_events"],
-                len(result["parameter_changes"]),
+                result["parameter_revision_before"],
+                result["parameter_revision_after"],
                 result["errors"],
             )
 
@@ -1192,7 +1256,256 @@ class ETCController:
             return result
 
     # ========================================================
-    # SINGLE LEAGUE
+    # SIGNAL ADAPTER (НОВОЕ v4.1)
+    # ========================================================
+
+    def _normalize_optimizer_signals(
+        self,
+        signals: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """
+        Адаптирует signals от LearningAnalyzer к формату ParameterOptimizer.
+
+        LearningAnalyzer (v2.2):
+            {
+                "signal_type": str,
+                "error_type": str,
+                "cause_type": str,
+                "matches": List[int],
+                "event_count": int,
+                "unique_match_count": int,
+                "average_severity": float,
+                "average_xg_error": Optional[float],
+                "average_confidence": float,
+                "average_impact": float,
+                "signal_strength": float,
+                "priority": str,
+                "recommendations": List[str],
+            }
+
+        ParameterOptimizer (v2.3):
+            {
+                "error_type": str,
+                "cause_type": str,
+                "matches": List[int],
+                "count": int,           # ← unique_match_count
+                "confidence": float,    # ← average_confidence
+                "signal_strength": float,
+                "average_severity": float,
+            }
+        """
+        normalized = []
+
+        for signal in signals:
+            if not isinstance(signal, dict):
+                continue
+
+            # Базовая нормализация
+            normalized_signal = {
+                "error_type": signal.get("error_type", "unknown"),
+                "cause_type": signal.get("cause_type", "unknown"),
+                "matches": signal.get("matches", []),
+                "count": signal.get("unique_match_count", 0),
+                "confidence": signal.get("average_confidence", 0.0),
+                "signal_strength": signal.get("signal_strength", 0.0),
+                "average_severity": signal.get("average_severity", 0.0),
+            }
+
+            # Опциональные поля
+            if "average_xg_error" in signal:
+                normalized_signal["average_xg_error"] = signal["average_xg_error"]
+
+            if "priority" in signal:
+                normalized_signal["priority"] = signal["priority"]
+
+            if "event_count" in signal:
+                normalized_signal["event_count"] = signal["event_count"]
+
+            normalized.append(normalized_signal)
+
+        return normalized
+
+    # ========================================================
+    # REVIEW GATE (НОВОЕ v4.1 — ВСЕ → pending)
+    # ========================================================
+
+    def _review_proposals(
+        self,
+        proposals: List[Dict[str, Any]],
+        league: str,
+    ) -> Dict[str, Any]:
+        """
+        Review Gate — ВСЕ proposals требуют ручного review.
+
+        ВАЖНО:
+            - НЕТ автоматического одобрения.
+            - Никаких auto-apply, пока не накоплена статистика.
+
+        Returns:
+            {
+                "approved": List[Dict],   # всегда []
+                "rejected": List[Dict],
+                "pending": List[Dict],
+                "total": int,
+            }
+        """
+        rejected = []
+        pending = []
+
+        for proposal in proposals:
+            # Конфликтные → pending (требуют ручного review)
+            if proposal.get("status") == "conflict_review":
+                pending.append(proposal)
+                continue
+
+            # ВСЕ proposals → pending
+            # Никакого auto-approve, даже для high/medium
+            pending.append(proposal)
+
+        logger.info(
+            "REVIEW GATE v4.1 | league=%s | pending=%s | rejected=%s",
+            league,
+            len(pending),
+            len(rejected),
+        )
+
+        return {
+            "approved": [],   # всегда пусто
+            "rejected": rejected,
+            "pending": pending,
+            "total": len(proposals),
+        }
+
+    # ========================================================
+    # APPLY (v4.1 — с revision chain)
+    # ========================================================
+
+    def _apply_proposals(
+        self,
+        proposals: List[Dict[str, Any]],
+        league: str,
+        expected_revision: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Применяет approved proposals через Parameter State API.
+
+        ВАЖНО v4.1:
+            - revision chain поддерживается корректно
+            - после каждого применения обновляется expected_revision
+            - applied_count унифицирован
+
+        Returns:
+            {
+                "attempted": int,
+                "applied_count": int,
+                "failed_count": int,
+                "history_ids": List[int],
+                "results": List[Dict],
+            }
+        """
+        applied_count = 0
+        failed_count = 0
+        history_ids = []
+        results = []
+
+        # Текущая ревизия для chain
+        current_expected = expected_revision
+
+        for proposal in proposals:
+            parameter_name = proposal.get("parameter_name")
+            proposed_value = proposal.get("proposed_value")
+            confidence = proposal.get("confidence", 1.0)
+            reason = proposal.get("reason", f"ETC batch (league={league})")
+
+            if not parameter_name or proposed_value is None:
+                failed_count += 1
+                results.append({
+                    "parameter": parameter_name,
+                    "status": "failed",
+                    "reason": "Missing parameter_name or proposed_value",
+                })
+                continue
+
+            try:
+                apply_result = self.db.apply_parameter_change(
+                    parameter_name=parameter_name,
+                    new_value=float(proposed_value),
+                    reason=reason,
+                    confidence=confidence,
+                    expected_revision=current_expected,  # ← актуальная revision
+                    reference_match_id=None,
+                    group_name="learning",
+                    category="etc",
+                )
+
+                if apply_result.get("status") == "applied":
+                    applied_count += 1
+                    results.append({
+                        "parameter": parameter_name,
+                        "status": "applied",
+                        "old_value": apply_result.get("old_value"),
+                        "new_value": apply_result.get("new_value"),
+                        "delta": apply_result.get("delta"),
+                        "revision": apply_result.get("revision"),
+                        "history_id": apply_result.get("history_id"),
+                    })
+
+                    if apply_result.get("history_id"):
+                        history_ids.append(apply_result["history_id"])
+
+                    # Обновляем revision для следующего proposal
+                    current_expected = apply_result.get("revision")
+
+                    logger.info(
+                        "ETC proposal APPLIED | league=%s | %s: %s → %s | revision=%s",
+                        league,
+                        parameter_name,
+                        apply_result.get("old_value"),
+                        apply_result.get("new_value"),
+                        apply_result.get("revision"),
+                    )
+
+                elif apply_result.get("status") == "no_change":
+                    # Значение не изменилось — считаем успешным
+                    results.append({
+                        "parameter": parameter_name,
+                        "status": "no_change",
+                        "old_value": apply_result.get("old_value"),
+                        "new_value": apply_result.get("new_value"),
+                    })
+                    # revision не меняется
+
+                else:
+                    failed_count += 1
+                    results.append({
+                        "parameter": parameter_name,
+                        "status": "failed",
+                        "reason": apply_result.get("message", "Unknown error"),
+                    })
+
+            except Exception as exc:
+                failed_count += 1
+                results.append({
+                    "parameter": parameter_name,
+                    "status": "failed",
+                    "reason": str(exc),
+                })
+                logger.exception(
+                    "ETC proposal APPLY FAILED | league=%s | %s",
+                    league,
+                    parameter_name,
+                )
+
+        return {
+            "attempted": len(proposals),
+            "applied_count": applied_count,  # ← унифицировано
+            "failed_count": failed_count,
+            "history_ids": history_ids,
+            "results": results,
+        }
+
+    # ========================================================
+    # SINGLE LEAGUE (v4.1 — НЕ пишет snapshots в LearningMemory)
     # ========================================================
 
     def _run_league(
@@ -1203,7 +1516,12 @@ class ETCController:
         force: bool,
     ) -> Dict[str, Any]:
         """
-        Полный цикл одного турнира с BEFORE/AFTER.
+        Полный цикл одного турнира с BEFORE/AFTER и анализом.
+
+        ВАЖНО v4.1:
+            - BEFORE/AFTER — ТОЛЬКО диагностика (НЕ в LearningMemory)
+            - Сигналы проходят через Signal Adapter
+            - Review Gate — ВСЕ → pending
         """
 
         result: Dict[str, Any] = {
@@ -1248,14 +1566,21 @@ class ETCController:
 
             "force": bool(force),
 
-            # НОВОЕ v3.1: разделены сущности
-            "memory_before_ids": [],
-            "memory_after_ids": [],
-            "parameter_history_ids": [],
+            # Анализ и оптимизация
+            "analysis": None,
+            "optimization": None,
+            "review": None,
+            "apply": None,
 
+            # BEFORE/AFTER (только диагностика)
             "parameter_before": None,
             "parameter_after": None,
-            "parameter_changes": [],
+            "parameter_revision_before": 0,
+            "parameter_revision_after": 0,
+
+            # Memory IDs (только learning events)
+            "memory_ids": [],
+            "batch_memory_ids": [],
         }
 
         # =====================================================
@@ -1263,8 +1588,7 @@ class ETCController:
         # =====================================================
 
         logger.info(
-            "ETC [%s] STEP 1 — "
-            "BatchController.check()",
+            "ETC [%s] STEP 1 — BatchController.check()",
             league,
         )
 
@@ -1353,8 +1677,7 @@ class ETCController:
         # =====================================================
 
         logger.info(
-            "ETC [%s] STEP 2 — "
-            "BatchController.get_learning_batch()",
+            "ETC [%s] STEP 2 — BatchController.get_learning_batch()",
             league,
         )
 
@@ -1513,63 +1836,27 @@ class ETCController:
             return result
 
         # =====================================================
-        # STEP 3 — BEFORE SNAPSHOT
+        # STEP 3 — BEFORE SNAPSHOT (ТОЛЬКО ДИАГНОСТИКА)
         # =====================================================
 
         logger.info(
-            "ETC [%s] STEP 3 — BEFORE snapshot",
+            "ETC [%s] STEP 3 — BEFORE snapshot (diagnostic only)",
             league,
         )
 
-        before_params = self.db.get_current_parameters()
+        before_state = self.db.get_current_parameter_state()
 
-        result["parameter_before"] = {
-            "alpha": getattr(before_params, "alpha", 0.0),
-            "beta": getattr(before_params, "beta", 0.0),
-            "gamma": getattr(before_params, "gamma", 0.0),
-            "delta": getattr(before_params, "delta", 0.0),
-            "version": getattr(before_params, "version", 0),
-        }
+        result["parameter_before"] = before_state.get("parameters", {})
+        result["parameter_revision_before"] = before_state.get("revision", 0)
 
-        # Записываем BEFORE в learning_memory
-        try:
-
-            before_memory_id = self.learning_memory.record(
-                event_type="parameter_before",
-                object_type=f"league:{league}",
-                feature="model_parameters",
-                before_value=None,
-                after_value=result["parameter_before"],
-                delta=None,
-                reason=f"Параметры до обучения ETC batch (league={league})",
-                confidence=1.0,
-                impact=0.0,
-                algorithm="ETC.Controller",
-                model_version=MODULE_VERSION,
-                reference_id=None,
-            )
-
-            if before_memory_id is not None:
-
-                result["memory_before_ids"].append(
-                    before_memory_id
-                )
-
-        except Exception as exc:
-
-            logger.warning(
-                "BEFORE snapshot write failed: %s",
-                exc,
-            )
+        # ⚠️ НЕ пишем parameter_before в LearningMemory
 
         # =====================================================
         # STEP 4 — LEARNING ENGINE
         # =====================================================
 
         logger.info(
-            "ETC [%s] STEP 4 — "
-            "ETCLearningEngine.run_batch() | "
-            "batch_size=%s",
+            "ETC [%s] STEP 4 — ETCLearningEngine.run_batch() | batch_size=%s",
             league,
             len(selected_batch),
         )
@@ -1665,7 +1952,6 @@ class ETCController:
             )
         )
 
-        # Получаем already_processed_match_ids из learning_result
         already_processed_ids = learning_result.get("already_processed_match_ids", [])
 
         result[
@@ -1688,13 +1974,8 @@ class ETCController:
             "learning_events"
         ] = learning_events
 
-        # ⚠️ learned теперь отдельно от processed
-        result[
-            "learned"
-        ] = 0  # будет заполнено позже
-
         # =====================================================
-        # MEMORY IDS
+        # MEMORY IDS (только learning events)
         # =====================================================
 
         memory_ids = (
@@ -1787,7 +2068,7 @@ class ETCController:
         )
 
         # =====================================================
-        # STEP 5 — AFTER SNAPSHOT (ТОЛЬКО ПРИ SUCCESS)
+        # STEP 5 — LEARNING ANALYZER
         # =====================================================
 
         engine_success = (
@@ -1799,144 +2080,145 @@ class ETCController:
         if engine_success is True:
 
             logger.info(
-                "ETC [%s] STEP 5 — AFTER snapshot (success=True)",
+                "ETC [%s] STEP 5 — LearningAnalyzer.analyze()",
                 league,
             )
 
-            after_params = self.db.get_current_parameters()
-
-            before_values = result.get("parameter_before", {})
-            after_values = {
-                "alpha": getattr(after_params, "alpha", 0.0),
-                "beta": getattr(after_params, "beta", 0.0),
-                "gamma": getattr(after_params, "gamma", 0.0),
-                "delta": getattr(after_params, "delta", 0.0),
-                "version": getattr(after_params, "version", 0),
-            }
-
-            result["parameter_after"] = after_values
-
-            # Записываем AFTER в learning_memory
             try:
 
-                after_memory_id = self.learning_memory.record(
-                    event_type="parameter_after",
-                    object_type=f"league:{league}",
-                    feature="model_parameters",
-                    before_value=result["parameter_before"],
-                    after_value=after_values,
-                    delta=None,
-                    reason=f"Параметры после обучения ETC batch (league={league})",
-                    confidence=1.0,
-                    impact=0.0,
-                    algorithm="ETC.Controller",
-                    model_version=MODULE_VERSION,
-                    reference_id=None,
+                analysis_result = self.learning_analyzer.analyze(
+                    limit=1000,
                 )
 
-                if after_memory_id is not None:
+                result["analysis"] = analysis_result
 
-                    result["memory_after_ids"].append(
-                        after_memory_id
+                # Получаем raw signals
+                raw_signals = analysis_result.get("signals", [])
+
+                # =====================================================
+                # STEP 5.5 — SIGNAL ADAPTER (НОВОЕ v4.1)
+                # =====================================================
+
+                signals = self._normalize_optimizer_signals(raw_signals)
+
+                logger.info(
+                    "ETC [%s] Signals normalized | raw=%s | normalized=%s",
+                    league,
+                    len(raw_signals),
+                    len(signals),
+                )
+
+                # =====================================================
+                # STEP 6 — PARAMETER OPTIMIZER
+                # =====================================================
+
+                if signals:
+
+                    logger.info(
+                        "ETC [%s] STEP 6 — ParameterOptimizer.run() | signals=%s",
+                        league,
+                        len(signals),
                     )
+
+                    current_params = result["parameter_before"]
+
+                    optimization_result = self.optimizer.run(
+                        signals=signals,
+                        current_parameters=current_params,
+                    )
+
+                    result["optimization"] = optimization_result
+
+                    proposals = optimization_result.get("proposals", [])
+
+                    logger.info(
+                        "ETC [%s] ParameterOptimizer | signals=%s | proposals=%s | conflicts=%s",
+                        league,
+                        len(signals),
+                        len(proposals),
+                        optimization_result.get("conflict_count", 0),
+                    )
+
+                    # =====================================================
+                    # STEP 7 — REVIEW GATE (v4.1 — ВСЕ → pending)
+                    # =====================================================
+
+                    if proposals:
+
+                        logger.info(
+                            "ETC [%s] STEP 7 — Review Gate (v4.1 — all → pending)",
+                            league,
+                            len(proposals),
+                        )
+
+                        review_result = self._review_proposals(
+                            proposals,
+                            league=league,
+                        )
+
+                        result["review"] = review_result
+
+                        # Применяем approved (но их нет — все pending)
+                        # Код apply остаётся для будущего использования
+                        approved = review_result.get("approved", [])
+
+                        if approved:
+                            # Этот блок не будет выполняться (approved всегда [])
+                            apply_result = self._apply_proposals(
+                                approved,
+                                league=league,
+                                expected_revision=result["parameter_revision_before"],
+                            )
+                            result["apply"] = apply_result
+
+                            # Обновляем learned
+                            result["learned"] = apply_result.get("applied_count", 0)
+
+                            # Обновляем memory_ids
+                            history_ids = apply_result.get("history_ids", [])
+                            if history_ids:
+                                result["memory_ids"].extend(history_ids)
+
+                            # AFTER snapshot
+                            after_state = self.db.get_current_parameter_state()
+                            result["parameter_after"] = after_state.get("parameters", {})
+                            result["parameter_revision_after"] = after_state.get("revision", 0)
+
+                    # Нет approved — parameter_after = parameter_before
+                    if not result.get("parameter_after"):
+                        result["parameter_after"] = result["parameter_before"]
+                        result["parameter_revision_after"] = result["parameter_revision_before"]
+
+                else:
+                    result["parameter_after"] = result["parameter_before"]
+                    result["parameter_revision_after"] = result["parameter_revision_before"]
 
             except Exception as exc:
 
-                logger.warning(
-                    "AFTER snapshot write failed: %s",
+                logger.exception(
+                    "ETC [%s] Analysis/Optimization failed: %s",
+                    league,
                     exc,
                 )
 
-            # =================================================
-            # STEP 6 — PARAMETER HISTORY (ТОЛЬКО ПРИ SUCCESS)
-            # =================================================
+                result["errors"] += 1
+                result["message"] = f"Analysis/Optimization failed: {exc}"
 
-            logger.info(
-                "ETC [%s] STEP 6 — parameter_history (success=True)",
-                league,
-            )
-
-            param_names = ["alpha", "beta", "gamma", "delta"]
-
-            for param_name in param_names:
-
-                old_val = before_values.get(param_name, 0.0)
-                new_val = after_values.get(param_name, 0.0)
-
-                if old_val != new_val:
-
-                    try:
-
-                        history_id = self.db.record_parameter_history(
-                            parameter_name=param_name,
-                            group_name="learning",
-                            model_version=str(before_values.get("version", 0)),
-                            old_value=float(old_val),
-                            new_value=float(new_val),
-                            delta=float(new_val) - float(old_val),
-                            reason=f"ETC learning cycle (league={league})",
-                            confidence=1.0,
-                            reference_match_id=selected_ids[0] if selected_ids else None,
-                        )
-
-                        if history_id is not None:
-
-                            result["parameter_changes"].append({
-                                "parameter": param_name,
-                                "old_value": old_val,
-                                "new_value": new_val,
-                                "delta": new_val - old_val,
-                                "history_id": history_id,
-                            })
-
-                            result["parameter_history_ids"].append(
-                                history_id
-                            )
-
-                            logger.info(
-                                "ETC [%s] parameter changed: %s %.4f → %.4f",
-                                league,
-                                param_name,
-                                old_val,
-                                new_val,
-                            )
-
-                    except Exception as exc:
-
-                        logger.warning(
-                            "parameter_history write failed for %s: %s",
-                            param_name,
-                            exc,
-                        )
-
-            # Устанавливаем learned = количество реально изменённых параметров
-            result["learned"] = len(result["parameter_changes"])
+                result["parameter_after"] = result["parameter_before"]
+                result["parameter_revision_after"] = result["parameter_revision_before"]
 
         else:
 
             logger.info(
-                "ETC [%s] SKIPPED AFTER snapshot (success=%s)",
+                "ETC [%s] SKIPPED analysis (learning success=False)",
                 league,
-                engine_success,
             )
 
             result["parameter_after"] = result["parameter_before"]
-            result["learned"] = 0
+            result["parameter_revision_after"] = result["parameter_revision_before"]
 
         # =====================================================
-        # SUCCESS FLAG (из learning_result)
-        # =====================================================
-
-        if engine_success is False:
-
-            if result["errors"] == 0:
-
-                result[
-                    "errors"
-                ] = 1
-
-        # =====================================================
-        # BATCH COMPLETED
+        # STEP 8 — FINAL STATUS
         # =====================================================
 
         batch_completed = (
@@ -1945,15 +2227,13 @@ class ETCController:
             )
         )
 
-        # =====================================================
-        # FINAL STATUS
-        # =====================================================
-
         learning_status = (
             _extract_status(
                 learning_result
             )
         )
+
+        applied_changes = result.get("learned", 0)
 
         if (
             learning_status == "completed"
@@ -1967,8 +2247,9 @@ class ETCController:
             result[
                 "message"
             ] = (
-                "ETC batch полностью обработан. "
-                f"Изменено параметров: {len(result['parameter_changes'])}"
+                f"ETC batch полностью обработан. "
+                f"Создано proposals: {len(result.get('optimization', {}).get('proposals', []))} "
+                f"(все ожидают review)"
             )
 
         elif learning_status in {
@@ -1983,8 +2264,9 @@ class ETCController:
             result[
                 "message"
             ] = (
-                "ETC batch обработан частично. "
-                f"Изменено параметров: {len(result['parameter_changes'])}"
+                f"ETC batch обработан частично. "
+                f"Создано proposals: {len(result.get('optimization', {}).get('proposals', []))} "
+                f"(все ожидают review)"
             )
 
         elif learning_status == "empty":
@@ -2069,7 +2351,7 @@ class ETCController:
         # =====================================================
 
         logger.info(
-            "ETC [%s] FINISHED v3.1 | "
+            "ETC [%s] FINISHED v4.1 | "
             "status=%s | "
             "batch=%s | "
             "total=%s | "
@@ -2078,7 +2360,8 @@ class ETCController:
             "failed=%s | "
             "learned=%s | "
             "memory=%s | "
-            "param_changes=%s | "
+            "revision=%s→%s | "
+            "proposals=%s | "
             "batch_completed=%s | "
             "errors=%s",
             league,
@@ -2090,7 +2373,9 @@ class ETCController:
             failed,
             result["learned"],
             result["memory_events"],
-            len(result["parameter_changes"]),
+            result["parameter_revision_before"],
+            result["parameter_revision_after"],
+            len(result.get("optimization", {}).get("proposals", [])),
             batch_completed,
             result["errors"],
         )
@@ -2098,7 +2383,7 @@ class ETCController:
         return result
 
     # ========================================================
-    # SINGLE MATCH
+    # SINGLE MATCH (v4.1 — без оптимизации)
     # ========================================================
 
     def process_match(
@@ -2108,6 +2393,12 @@ class ETCController:
     ) -> Dict[str, Any]:
         """
         Запускает ETC для одного матча.
+
+        ВАЖНО:
+            - Только фактическое обучение
+            - БЕЗ ParameterOptimizer
+            - БЕЗ Review Gate
+            - БЕЗ Apply
         """
 
         normalized_match_id = (
@@ -2135,14 +2426,12 @@ class ETCController:
 
             "force": bool(force),
 
-            # НОВОЕ v3.1: разделены сущности
-            "memory_before_ids": [],
-            "memory_after_ids": [],
-            "parameter_history_ids": [],
+            # Только learning events
+            "memory_ids": [],
+            "marker_id": None,
 
             "parameter_before": None,
             "parameter_after": None,
-            "parameter_changes": [],
         }
 
         if normalized_match_id <= 0:
@@ -2166,48 +2455,18 @@ class ETCController:
             )
 
         # =====================================================
-        # BEFORE
+        # BEFORE (диагностика)
         # =====================================================
 
-        before_params = self.db.get_current_parameters()
-
-        result["parameter_before"] = {
-            "alpha": getattr(before_params, "alpha", 0.0),
-            "beta": getattr(before_params, "beta", 0.0),
-            "gamma": getattr(before_params, "gamma", 0.0),
-            "delta": getattr(before_params, "delta", 0.0),
-            "version": getattr(before_params, "version", 0),
-        }
-
-        # Записываем BEFORE
-        try:
-            before_memory_id = self.learning_memory.record(
-                event_type="parameter_before",
-                object_type=f"match:{normalized_match_id}",
-                feature="model_parameters",
-                before_value=None,
-                after_value=result["parameter_before"],
-                delta=None,
-                reason=f"Параметры до обучения ETC match_id={normalized_match_id}",
-                confidence=1.0,
-                impact=0.0,
-                algorithm="ETC.Controller",
-                model_version=MODULE_VERSION,
-                reference_id=normalized_match_id,
-            )
-
-            if before_memory_id is not None:
-                result["memory_before_ids"].append(before_memory_id)
-
-        except Exception as exc:
-            logger.warning("BEFORE snapshot write failed: %s", exc)
+        before_state = self.db.get_current_parameter_state()
+        result["parameter_before"] = before_state.get("parameters", {})
 
         # =====================================================
         # LEARNING
         # =====================================================
 
         logger.info(
-            "ETC SINGLE MATCH STARTED v3.1 | "
+            "ETC SINGLE MATCH STARTED v4.1 | "
             "match_id=%s | force=%s",
             normalized_match_id,
             force,
@@ -2263,90 +2522,11 @@ class ETCController:
                 )
 
             # =================================================
-            # AFTER (ТОЛЬКО ПРИ SUCCESS)
+            # AFTER (диагностика)
             # =================================================
 
-            after_params = self.db.get_current_parameters()
-
-            result["parameter_after"] = {
-                "alpha": getattr(after_params, "alpha", 0.0),
-                "beta": getattr(after_params, "beta", 0.0),
-                "gamma": getattr(after_params, "gamma", 0.0),
-                "delta": getattr(after_params, "delta", 0.0),
-                "version": getattr(after_params, "version", 0),
-            }
-
-            # Записываем AFTER
-            try:
-                after_memory_id = self.learning_memory.record(
-                    event_type="parameter_after",
-                    object_type=f"match:{normalized_match_id}",
-                    feature="model_parameters",
-                    before_value=result["parameter_before"],
-                    after_value=result["parameter_after"],
-                    delta=None,
-                    reason=f"Параметры после обучения ETC match_id={normalized_match_id}",
-                    confidence=1.0,
-                    impact=0.0,
-                    algorithm="ETC.Controller",
-                    model_version=MODULE_VERSION,
-                    reference_id=normalized_match_id,
-                )
-
-                if after_memory_id is not None:
-                    result["memory_after_ids"].append(after_memory_id)
-
-            except Exception as exc:
-                logger.warning("AFTER snapshot write failed: %s", exc)
-
-            # =================================================
-            # PARAMETER CHANGES
-            # =================================================
-
-            param_names = ["alpha", "beta", "gamma", "delta"]
-
-            for param_name in param_names:
-
-                old_val = result["parameter_before"].get(param_name, 0.0)
-                new_val = result["parameter_after"].get(param_name, 0.0)
-
-                if old_val != new_val:
-
-                    try:
-
-                        history_id = self.db.record_parameter_history(
-                            parameter_name=param_name,
-                            group_name="learning",
-                            model_version=str(result["parameter_before"].get("version", 0)),
-                            old_value=float(old_val),
-                            new_value=float(new_val),
-                            delta=float(new_val) - float(old_val),
-                            reason=f"ETC single match learning (match_id={normalized_match_id})",
-                            confidence=1.0,
-                            reference_match_id=normalized_match_id,
-                        )
-
-                        if history_id is not None:
-
-                            result["parameter_changes"].append({
-                                "parameter": param_name,
-                                "old_value": old_val,
-                                "new_value": new_val,
-                                "delta": new_val - old_val,
-                                "history_id": history_id,
-                            })
-
-                            result["parameter_history_ids"].append(
-                                history_id
-                            )
-
-                    except Exception as exc:
-
-                        logger.warning(
-                            "parameter_history write failed for %s: %s",
-                            param_name,
-                            exc,
-                        )
+            after_state = self.db.get_current_parameter_state()
+            result["parameter_after"] = after_state.get("parameters", {})
 
             # =================================================
             # SUCCESS
@@ -2357,10 +2537,9 @@ class ETCController:
             ] = "completed"
 
             logger.info(
-                "ETC SINGLE MATCH FINISHED v3.1 | "
-                "match_id=%s | param_changes=%s",
+                "ETC SINGLE MATCH FINISHED v4.1 | "
+                "match_id=%s",
                 normalized_match_id,
-                len(result["parameter_changes"]),
             )
 
             return result
@@ -2508,7 +2687,7 @@ def run_etc(
     force: bool = False,
 ) -> Dict[str, Any]:
     """
-    Публичный batch API ETC v3.1.
+    Публичный batch API ETC v4.1.
     """
 
     controller = ETCController(
@@ -2529,7 +2708,7 @@ def process_etc_match(
     force: bool = False,
 ) -> Dict[str, Any]:
     """
-    Публичный single-match API ETC v3.1.
+    Публичный single-match API ETC v4.1.
     """
 
     controller = ETCController(
@@ -2601,7 +2780,7 @@ if __name__ == "__main__":
 
         print()
         print(
-            "ETC STATUS v3.1"
+            "ETC STATUS v4.1 (E-FINAL)"
         )
 
         print(
@@ -2616,7 +2795,7 @@ if __name__ == "__main__":
 
         print()
         print(
-            "НОВОЕ В v3.1:"
+            "НОВОЕ В v4.1 (E-FINAL):"
         )
 
         print(
@@ -2624,32 +2803,28 @@ if __name__ == "__main__":
         )
 
         print(
-            "1. BEFORE — запись параметров до обучения"
+            "1. Signal Adapter — нормализация signals"
         )
 
         print(
-            "2. AFTER — запись параметров после обучения (ТОЛЬКО при success)"
+            "2. Review Gate — ВСЕ → pending (НЕТ auto-apply)"
         )
 
         print(
-            "3. parameter_history — все изменения (ТОЛЬКО при success)"
+            "3. Snapshots НЕ пишутся в LearningMemory"
         )
 
         print(
-            "4. memory_before_ids, memory_after_ids, parameter_history_ids — разделены"
+            "4. Исправлена revision chain"
         )
 
         print(
-            "5. pending_matches и last_batch_id в status()"
-        )
-
-        print(
-            "6. already_processed_match_ids в результате run()"
+            "5. applied_count унифицирован"
         )
 
         print()
         print(
-            "ETC Controller v3.1 готов."
+            "ETC Controller v4.1 (E-FINAL) готов."
         )
 
     except Exception as exc:
