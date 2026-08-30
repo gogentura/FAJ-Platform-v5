@@ -4,7 +4,7 @@
 """
 =====================================================
 FAJ Platform v12.1
-Prediction Pipeline v2.3
+Prediction Pipeline v2.4
 =====================================================
 
 РОЛЬ:
@@ -21,6 +21,12 @@ Prediction Pipeline v2.3
       контроль и источник model agreement.
     - Calibration / Confidence / Risk работают после базового
       математического расчёта.
+
+ИСПРАВЛЕНИЯ v2.4:
+    1. Добавлен параметр parameters в run()
+    2. Передача parameters в XGModel.calculate()
+    3. Добавление parameters_used в результат
+    4. Pipeline остаётся полностью независимым от БД
 
 ИСПРАВЛЕНИЯ v2.3:
     1. Единый вызов XGModel через home_rating / away_rating.
@@ -44,7 +50,7 @@ import math
 import time
 import uuid
 
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from app.config import config
 
@@ -62,10 +68,10 @@ logger = logging.getLogger(__name__)
 
 class PredictionPipeline:
     """
-    FAJ Prediction Pipeline v2.3.
+    FAJ Prediction Pipeline v2.4.
     """
 
-    VERSION = "2.3"
+    VERSION = "2.4"
 
     def __init__(self):
         self.version = self.VERSION
@@ -98,10 +104,15 @@ class PredictionPipeline:
         home_team: str = "",
         away_team: str = "",
         league: str = "РПЛ",
+        parameters: Optional[Dict[str, float]] = None,  # ← НОВОЕ v2.4
     ) -> Dict[str, Any]:
 
         start_time = time.perf_counter()
         prediction_id = str(uuid.uuid4())[:8]
+
+        # Нормализуем параметры
+        parameters = parameters or {}
+        parameters_used = dict(parameters)
 
         try:
             # ====================================================
@@ -120,15 +131,17 @@ class PredictionPipeline:
 
             logger.info(
                 "PIPELINE START | %s vs %s | "
-                "home_rating=%.2f | away_rating=%.2f",
+                "home_rating=%.2f | away_rating=%.2f | "
+                "parameters=%s",
                 home_team,
                 away_team,
                 home_rating,
                 away_rating,
+                parameters,
             )
 
             # ====================================================
-            # 1. XG MODEL
+            # 1. XG MODEL (с параметрами) — НОВОЕ v2.4
             # ====================================================
 
             xg_result = self.xg_model.calculate(
@@ -136,6 +149,7 @@ class PredictionPipeline:
                 away_passport=away_passport,
                 home_rating=home_rating,
                 away_rating=away_rating,
+                parameters=parameters,  # ← НОВОЕ v2.4
             )
 
             if not isinstance(xg_result, dict):
@@ -169,13 +183,20 @@ class PredictionPipeline:
             home_xg = self._clamp_xg(home_xg)
             away_xg = self._clamp_xg(away_xg)
 
+            # Извлекаем parameters_used из XGModel
+            xg_parameters_used = xg_result.get("parameters_used", {})
+            if xg_parameters_used:
+                parameters_used.update(xg_parameters_used)
+
             logger.info(
                 "XG RESULT | %s vs %s | "
-                "home=%.4f | away=%.4f",
+                "home=%.4f | away=%.4f | "
+                "parameters_used=%s",
                 home_team,
                 away_team,
                 home_xg,
                 away_xg,
+                parameters_used,
             )
 
             # ====================================================
@@ -538,13 +559,19 @@ class PredictionPipeline:
                 "version": self.VERSION,
 
                 "processing_time_ms": processing_time,
+
+                # ================================================
+                # НОВОЕ v2.4: параметры, использованные в расчёте
+                # ================================================
+                "parameters_used": parameters_used,
             }
 
             logger.info(
                 "PIPELINE SUCCESS | %s vs %s | "
                 "score=%s | xG=%.2f:%.2f | "
                 "P=%.3f/%.3f/%.3f | "
-                "confidence=%.3f | risk=%s",
+                "confidence=%.3f | risk=%s | "
+                "parameters_used=%s",
                 home_team,
                 away_team,
                 most_likely_score,
@@ -558,6 +585,7 @@ class PredictionPipeline:
                     "level",
                     "MEDIUM",
                 ),
+                parameters_used,
             )
 
             return result
@@ -581,6 +609,7 @@ class PredictionPipeline:
                     ) * 1000,
                     2,
                 ),
+                "parameters_used": parameters_used,
             }
 
     # ============================================================
