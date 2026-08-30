@@ -4,7 +4,7 @@
 """
 =====================================================
 FAJ Platform v12.1 — MEMORY HARDENED
-Prediction Manager v2.3
+Prediction Manager v2.4
 =====================================================
 
 РОЛЬ:
@@ -17,29 +17,25 @@ Prediction Manager v2.3
 
     Manager:
         1. GET PASSPORT + RATING (ОДИН РАЗ)
-        2. VALIDATE
-        3. BUILD CONTEXT
-        4. FREEZE PREDICTION SNAPSHOT (FAIL → STOP)
-        5. PIPELINE.run(same passport + same rating)
-        6. NORMALIZE DISTRIBUTION ONCE
-        7. FINAL_SCORE_ENGINE.calculate(same context + same distribution)
-        8. BUILD FINAL PREDICTION
-        9. SAVE_PREDICTION
-        10. RETURN
+        2. GET PARAMETER STATE (ОДИН РАЗ)          ← НОВОЕ v2.4
+        3. VALIDATE
+        4. BUILD CONTEXT (включая parameters)      ← НОВОЕ v2.4
+        5. FREEZE PREDICTION SNAPSHOT (FAIL → STOP)
+        6. PIPELINE.run(same passport + same rating + parameters)  ← НОВОЕ v2.4
+        7. NORMALIZE DISTRIBUTION ONCE
+        8. FINAL_SCORE_ENGINE.calculate(same context + same distribution)
+        9. BUILD FINAL PREDICTION
+        10. SAVE_PREDICTION (с parameter_revision) ← НОВОЕ v2.4
+        11. RETURN
 
     Prediction и Fact никогда не смешиваются.
 
-ИСПРАВЛЕНИЯ v2.3 (ФИНАЛЬНЫЕ):
-    1. Единый Prediction Context — immutable snapshot
-    2. Pipeline и Engine получают ОДИНАКОВЫЕ passport/rating
-    3. Distribution нормализуется ОДИН раз в Manager
-    4. Snapshot failure → STOP (без сохранения prediction)
-    5. Сезон определяется через league (без хардкода)
-    6. Поиск матча с учётом season_id
-    7. SAVE_PREDICTIONS вместо SAVE_TO_GOLD_DATASET
-    8. history_count/weight из decision_factors
-    9. engine_version из self.final_engine.VERSION
-    10. faj_score (не faj_probability) для FAJ ranking
+ИСПРАВЛЕНИЯ v2.4:
+    1. Чтение parameter state через get_current_parameter_state()
+    2. Передача parameters в PredictionPipeline
+    3. Сохранение parameter_revision в prediction
+    4. Добавление parameters_used в результат
+    5. Использование get_current_parameter_state() (НЕ legacy get_current_parameters())
 """
 
 import hashlib
@@ -77,9 +73,9 @@ class PredictionContextError(Exception):
 
 
 class PredictionManager:
-    """Prediction Manager v2.3 — Memory Hardened + FAJ Final Score."""
+    """Prediction Manager v2.4 — Memory Hardened + FAJ Final Score + Parameter State."""
 
-    VERSION = "2.3"
+    VERSION = "2.4"
 
     FINISHED_STATUSES: Set[str] = {
         "finished",
@@ -175,7 +171,21 @@ class PredictionManager:
                 }
 
             # ====================================================
-            # 3. VALIDATE
+            # 3. GET PARAMETER STATE (ОДИН РАЗ — НОВОЕ v2.4)
+            # ====================================================
+
+            parameter_state = self.db.get_current_parameter_state()
+            parameters = dict(parameter_state.get("parameters", {}))
+            parameter_revision = int(parameter_state.get("revision", 0))
+
+            logger.info(
+                "PARAMETER STATE | revision=%s | parameters=%s",
+                parameter_revision,
+                parameters,
+            )
+
+            # ====================================================
+            # 4. VALIDATE
             # ====================================================
 
             self._validate_passport_for_prediction(home_data["passport"], home_team)
@@ -195,13 +205,13 @@ class PredictionManager:
             )
 
             # ====================================================
-            # 4. MEMORY STATE
+            # 5. MEMORY STATE
             # ====================================================
 
             memory_state_id = self._generate_memory_state_id()
 
             # ====================================================
-            # 5. BUILD PREDICTION CONTEXT (immutable snapshot)
+            # 6. BUILD PREDICTION CONTEXT (immutable snapshot)
             # ====================================================
 
             match_date = self._get_match_date(match_id) if match_id else None
@@ -225,7 +235,7 @@ class PredictionManager:
             )
 
             # ====================================================
-            # 6. FREEZE PREDICTION SNAPSHOT (FAIL → STOP)
+            # 7. FREEZE PREDICTION SNAPSHOT (FAIL → STOP)
             # ====================================================
 
             if match_id is not None:
@@ -237,7 +247,7 @@ class PredictionManager:
                 )
 
             # ====================================================
-            # 7. PIPELINE.run (same passport + same rating)
+            # 8. PIPELINE.run (same passport + same rating + parameters) — НОВОЕ v2.4
             # ====================================================
 
             result = self.pipeline.run(
@@ -248,6 +258,7 @@ class PredictionManager:
                 home_team=home_team,
                 away_team=away_team,
                 league=league,
+                parameters=parameters,  # ← НОВОЕ v2.4
             )
 
             if not isinstance(result, dict):
@@ -260,14 +271,14 @@ class PredictionManager:
                 return result
 
             # ====================================================
-            # 8. NORMALIZE DISTRIBUTION ONCE
+            # 9. NORMALIZE DISTRIBUTION ONCE
             # ====================================================
 
             math_distribution = self._extract_math_distribution(result)
             normalized_distribution = self._normalize_distribution(math_distribution)
 
             # ====================================================
-            # 9. FAJ FINAL SCORE ENGINE (same context + same distribution)
+            # 10. FAJ FINAL SCORE ENGINE (same context + same distribution)
             # ====================================================
 
             faj_result = None
@@ -303,7 +314,7 @@ class PredictionManager:
                     faj_result = None
 
             # ====================================================
-            # 10. MANAGER METADATA
+            # 11. MANAGER METADATA
             # ====================================================
 
             result["match_id"] = match_id
@@ -314,7 +325,14 @@ class PredictionManager:
             result["manager_version"] = self.VERSION
 
             # ====================================================
-            # 11. ОБОГАЩАЕМ РЕЗУЛЬТАТ FAJ-ДАННЫМИ
+            # 12. PARAMETER STATE В РЕЗУЛЬТАТ (НОВОЕ v2.4)
+            # ====================================================
+
+            result["parameter_revision"] = parameter_revision
+            result["parameters_used"] = dict(parameters)
+
+            # ====================================================
+            # 13. ОБОГАЩАЕМ РЕЗУЛЬТАТ FAJ-ДАННЫМИ
             # ====================================================
 
             if faj_result and faj_result.get("faj_final_score") != "—":
@@ -353,7 +371,7 @@ class PredictionManager:
                 result["engine_version"] = None
 
             # ====================================================
-            # 12. SAVE PREDICTION
+            # 14. SAVE PREDICTION (с parameter_revision) — НОВОЕ v2.4
             # ====================================================
 
             pred_id = self._save_prediction(
@@ -364,6 +382,7 @@ class PredictionManager:
                 match_id=match_id,
                 memory_state_id=memory_state_id,
                 normalized_distribution=normalized_distribution,
+                parameter_revision=parameter_revision,  # ← НОВОЕ v2.4
             )
 
             if pred_id is not None:
@@ -908,6 +927,7 @@ class PredictionManager:
             "draw": round(float(draw), 6),
             "away_win": round(float(away_win), 6),
             "faj_final_score": faj_final_score,
+            "parameter_revision": self._parameter_revision_snapshot,  # ← НОВОЕ v2.4
         }
         encoded = json.dumps(data, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -953,7 +973,7 @@ class PredictionManager:
         return None
 
     # ============================================================
-    # SAVE PREDICTION
+    # SAVE PREDICTION (с parameter_revision) — НОВОЕ v2.4
     # ============================================================
 
     def _save_prediction(
@@ -965,6 +985,7 @@ class PredictionManager:
         match_id: Optional[int] = None,
         memory_state_id: Optional[str] = None,
         normalized_distribution: Optional[List[Dict[str, Any]]] = None,
+        parameter_revision: Optional[int] = None,  # ← НОВОЕ v2.4
     ) -> Optional[int]:
 
         if not getattr(config, "SAVE_PREDICTIONS", True):
@@ -997,7 +1018,7 @@ class PredictionManager:
             decision_factors = result.get("decision_factors", {})
             math_most_likely_score = result.get("math_most_likely_score")
 
-            # HASH
+            # HASH с parameter_revision (НОВОЕ v2.4)
             prediction_hash = self._generate_prediction_hash(
                 match_id=match_id,
                 home_win=home_win,
@@ -1011,7 +1032,10 @@ class PredictionManager:
             total = extended.get("total", {})
             btts = extended.get("btts", {})
 
-            # SAVE MAIN PREDICTION
+            # Преобразуем parameter_revision в строку для БД
+            parameter_revision_str = str(parameter_revision) if parameter_revision is not None else None
+
+            # SAVE MAIN PREDICTION с parameter_revision (НОВОЕ v2.4)
             pred_id = self.db.save_prediction(
                 match_id=match_id,
                 model_version=model_version,
@@ -1029,6 +1053,7 @@ class PredictionManager:
                 faj_final_score=faj_final_score,
                 faj_confidence=int(faj_confidence * 100) if faj_confidence is not None else None,
                 decision_factors=json.dumps(decision_factors) if decision_factors else None,
+                parameter_revision=parameter_revision_str,  # ← НОВОЕ v2.4
             )
 
             if not pred_id:
@@ -1068,13 +1093,14 @@ class PredictionManager:
                 )
 
             logger.info(
-                "Prediction saved | prediction_id=%s | match_id=%s | model_version=%s | hash=%s | math=%s | faj=%s",
+                "Prediction saved | prediction_id=%s | match_id=%s | model_version=%s | hash=%s | math=%s | faj=%s | parameter_revision=%s",
                 pred_id,
                 match_id,
                 model_version,
                 prediction_hash[:8],
                 math_most_likely_score,
                 faj_final_score,
+                parameter_revision,
             )
 
             return pred_id
