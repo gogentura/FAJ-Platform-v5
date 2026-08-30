@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-FAJ XG Model v2.0
+FAJ XG Model v2.1
 ============================================================
 
 ФАЙЛ:
@@ -71,6 +71,18 @@ Away xG = League Mean
         × Away Form
 
 ============================================================
+ИСПРАВЛЕНИЯ v2.1
+============================================================
+
+1. Добавлен параметр parameters в calculate()
+2. Динамическая attack_sensitivity (с fallback на ATTACK_SENSITIVITY)
+3. Динамическая defense_sensitivity (с fallback на DEFENSE_SENSITIVITY)
+4. Динамическая control_sensitivity (с fallback на CONTROL_SENSITIVITY)
+5. Динамическая form_sensitivity (с fallback на FORM_SENSITIVITY)
+6. Добавлен parameters_used в результат
+7. Сохранена обратная совместимость (sensitivity=None → static)
+8. Goalkeeper пока остаётся статическим (не обучаем)
+
 ВАЖНО
 ============================================================
 
@@ -103,7 +115,7 @@ logger = logging.getLogger(__name__)
 
 class XGModel:
     """
-    FAJ XG Model v2.0
+    FAJ XG Model v2.1
 
     Рассчитывает предматчевый xG на основе Team Passport.
 
@@ -117,8 +129,8 @@ class XGModel:
         xG -> rating
     """
 
-    VERSION = "2.0"
-    MODEL_VERSION = "FAJ_XG_v2.0"
+    VERSION = "2.1"
+    MODEL_VERSION = "FAJ_XG_v2.1"
 
     # ============================================================
     # BASE MODEL
@@ -154,7 +166,7 @@ class XGModel:
     CENTER = 50.0
 
     # ============================================================
-    # FACTOR SENSITIVITY
+    # FACTOR SENSITIVITY (STATIC DEFAULTS)
     # ============================================================
 
     # Сила влияния компонента.
@@ -211,6 +223,7 @@ class XGModel:
         away_passport: Dict[str, Any],
         home_rating: float = 50.0,
         away_rating: float = 50.0,
+        parameters: Optional[Dict[str, float]] = None,  # ← НОВОЕ v2.1
     ) -> Dict[str, Any]:
         """
         Рассчитывает предматчевый xG.
@@ -219,7 +232,59 @@ class XGModel:
         для диагностической совместимости.
 
         Rating НЕ участвует в математике xG.
+
+        Args:
+            parameters: словарь с параметрами модели
+                - attack_sensitivity: float (default 0.28)
+                - defense_sensitivity: float (default 0.24)
+                - control_sensitivity: float (default 0.12)
+                - form_sensitivity: float (default 0.12)
         """
+
+        # ============================================================
+        # НОРМАЛИЗАЦИЯ ПАРАМЕТРОВ (НОВОЕ v2.1)
+        # ============================================================
+
+        parameters = parameters or {}
+
+        attack_sensitivity = float(
+            parameters.get(
+                "attack_sensitivity",
+                self.ATTACK_SENSITIVITY,
+            )
+        )
+
+        defense_sensitivity = float(
+            parameters.get(
+                "defense_sensitivity",
+                self.DEFENSE_SENSITIVITY,
+            )
+        )
+
+        control_sensitivity = float(
+            parameters.get(
+                "control_sensitivity",
+                self.CONTROL_SENSITIVITY,
+            )
+        )
+
+        form_sensitivity = float(
+            parameters.get(
+                "form_sensitivity",
+                self.FORM_SENSITIVITY,
+            )
+        )
+
+        # Goalkeeper пока статический (не обучаем)
+        goalkeeper_sensitivity = self.GOALKEEPER_SENSITIVITY
+
+        parameters_used = {
+            "attack_sensitivity": round(attack_sensitivity, 6),
+            "defense_sensitivity": round(defense_sensitivity, 6),
+            "control_sensitivity": round(control_sensitivity, 6),
+            "form_sensitivity": round(form_sensitivity, 6),
+            "goalkeeper_sensitivity": round(goalkeeper_sensitivity, 6),
+        }
 
         try:
 
@@ -252,35 +317,41 @@ class XGModel:
             away_form = away["form"]
 
             # ====================================================
-            # 3. COMPONENT FACTORS
+            # 3. COMPONENT FACTORS (С ДИНАМИЧЕСКИМИ ПАРАМЕТРАМИ)
             # ====================================================
 
             home_attack_factor = self._attack_factor(
-                home_attack
+                home_attack,
+                sensitivity=attack_sensitivity,  # ← НОВОЕ
             )
 
             away_attack_factor = self._attack_factor(
-                away_attack
+                away_attack,
+                sensitivity=attack_sensitivity,  # ← НОВОЕ
             )
 
             home_defense_factor = self._defense_factor(
-                home_defense
+                home_defense,
+                sensitivity=defense_sensitivity,  # ← НОВОЕ
             )
 
             away_defense_factor = self._defense_factor(
-                away_defense
+                away_defense,
+                sensitivity=defense_sensitivity,  # ← НОВОЕ
             )
 
             home_keeper_factor = self._goalkeeper_factor(
-                home_goalkeeper
+                home_goalkeeper,
+                sensitivity=goalkeeper_sensitivity,
             )
 
             away_keeper_factor = self._goalkeeper_factor(
-                away_goalkeeper
+                away_goalkeeper,
+                sensitivity=goalkeeper_sensitivity,
             )
 
             # ====================================================
-            # CONTROL
+            # CONTROL (С ДИНАМИЧЕСКИМИ ПАРАМЕТРАМИ)
             # ====================================================
 
             (
@@ -289,18 +360,21 @@ class XGModel:
             ) = self._control_factors(
                 home_control,
                 away_control,
+                sensitivity=control_sensitivity,  # ← НОВОЕ
             )
 
             # ====================================================
-            # FORM
+            # FORM (С ДИНАМИЧЕСКИМИ ПАРАМЕТРАМИ)
             # ====================================================
 
             home_form_factor = self._form_factor(
-                home_form
+                home_form,
+                sensitivity=form_sensitivity,  # ← НОВОЕ
             )
 
             away_form_factor = self._form_factor(
-                away_form
+                away_form,
+                sensitivity=form_sensitivity,  # ← НОВОЕ
             )
 
             # ====================================================
@@ -469,15 +543,17 @@ class XGModel:
             logger.debug(
                 "FAJ XG calculated | "
                 "home_xg=%.3f | away_xg=%.3f | "
-                "raw_home=%.3f | raw_away=%.3f",
+                "raw_home=%.3f | raw_away=%.3f | "
+                "parameters_used=%s",
                 home_xg,
                 away_xg,
                 home_xg_raw,
                 away_xg_raw,
+                parameters_used,
             )
 
             # ====================================================
-            # 7. RESULT
+            # 7. RESULT (С PARAMETERS_USED)
             # ====================================================
 
             return {
@@ -498,6 +574,9 @@ class XGModel:
                 "diagnostic": diagnostic,
 
                 "model_version": self.MODEL_VERSION,
+
+                # НОВОЕ v2.1
+                "parameters_used": parameters_used,
             }
 
         except Exception as exc:
@@ -520,6 +599,8 @@ class XGModel:
                 "diagnostic": {},
 
                 "model_version": self.MODEL_VERSION,
+
+                "parameters_used": parameters_used,
             }
 
     # ============================================================
@@ -665,28 +746,44 @@ class XGModel:
         )
 
     # ============================================================
-    # ATTACK
+    # ATTACK (С ДИНАМИЧЕСКИМ ПАРАМЕТРОМ) — НОВОЕ v2.1
     # ============================================================
 
     def _attack_factor(
         self,
         attack: float,
+        sensitivity: Optional[float] = None,
     ) -> float:
+        """
+        Вычисляет фактор атаки.
+
+        Args:
+            attack: значение атаки из паспорта (0-100)
+            sensitivity: чувствительность (если None — статическая)
+
+        Returns:
+            float: множитель для xG
+        """
+        if sensitivity is None:
+            sensitivity = self.ATTACK_SENSITIVITY
 
         return self._factor(
             attack,
-            self.ATTACK_SENSITIVITY,
+            sensitivity,
         )
 
     # ============================================================
-    # DEFENSE
+    # DEFENSE (С ДИНАМИЧЕСКИМ ПАРАМЕТРОМ) — НОВОЕ v2.1
     # ============================================================
 
     def _defense_factor(
         self,
         defense: float,
+        sensitivity: Optional[float] = None,
     ) -> float:
         """
+        Вычисляет фактор защиты.
+
         Сильная защита соперника должна уменьшать xG.
 
         Поэтому для противостоящей защиты
@@ -695,7 +792,16 @@ class XGModel:
             defense = 50 -> 1.00
             defense > 50 -> factor < 1
             defense < 50 -> factor > 1
+
+        Args:
+            defense: значение защиты из паспорта (0-100)
+            sensitivity: чувствительность (если None — статическая)
+
+        Returns:
+            float: множитель для xG
         """
+        if sensitivity is None:
+            sensitivity = self.DEFENSE_SENSITIVITY
 
         value = self._clamp_passport_value(
             defense
@@ -706,7 +812,7 @@ class XGModel:
         ) / self.CENTER
 
         factor = math.exp(
-            delta * self.DEFENSE_SENSITIVITY
+            delta * sensitivity
         )
 
         return self._clamp_factor(
@@ -714,16 +820,28 @@ class XGModel:
         )
 
     # ============================================================
-    # GOALKEEPER
+    # GOALKEEPER (ПОКА СТАТИЧЕСКИЙ)
     # ============================================================
 
     def _goalkeeper_factor(
         self,
         goalkeeper: float,
+        sensitivity: Optional[float] = None,
     ) -> float:
         """
+        Вычисляет фактор вратаря.
+
         Сильный вратарь соперника уменьшает xG.
+
+        Args:
+            goalkeeper: значение вратаря из паспорта (0-100)
+            sensitivity: чувствительность (если None — статическая)
+
+        Returns:
+            float: множитель для xG
         """
+        if sensitivity is None:
+            sensitivity = self.GOALKEEPER_SENSITIVITY
 
         value = self._clamp_passport_value(
             goalkeeper
@@ -734,7 +852,7 @@ class XGModel:
         ) / self.CENTER
 
         factor = math.exp(
-            delta * self.GOALKEEPER_SENSITIVITY
+            delta * sensitivity
         )
 
         return self._clamp_factor(
@@ -742,29 +860,45 @@ class XGModel:
         )
 
     # ============================================================
-    # FORM
+    # FORM (С ДИНАМИЧЕСКИМ ПАРАМЕТРОМ) — НОВОЕ v2.1
     # ============================================================
 
     def _form_factor(
         self,
         form: float,
+        sensitivity: Optional[float] = None,
     ) -> float:
+        """
+        Вычисляет фактор формы.
+
+        Args:
+            form: значение формы из паспорта (0-100)
+            sensitivity: чувствительность (если None — статическая)
+
+        Returns:
+            float: множитель для xG
+        """
+        if sensitivity is None:
+            sensitivity = self.FORM_SENSITIVITY
 
         return self._factor(
             form,
-            self.FORM_SENSITIVITY,
+            sensitivity,
         )
 
     # ============================================================
-    # CONTROL
+    # CONTROL (С ДИНАМИЧЕСКИМ ПАРАМЕТРОМ) — НОВОЕ v2.1
     # ============================================================
 
     def _control_factors(
         self,
         home_control: float,
         away_control: float,
+        sensitivity: Optional[float] = None,
     ) -> Tuple[float, float]:
         """
+        Вычисляет факторы контроля для обеих команд.
+
         Контроль рассчитывается относительно соперника.
 
         Разница:
@@ -776,7 +910,17 @@ class XGModel:
         Важно:
         контроль не должен самостоятельно создавать голы.
         Поэтому влияние ограничено.
+
+        Args:
+            home_control: контроль хозяев (0-100)
+            away_control: контроль гостей (0-100)
+            sensitivity: чувствительность (если None — статическая)
+
+        Returns:
+            Tuple[float, float]: (home_factor, away_factor)
         """
+        if sensitivity is None:
+            sensitivity = self.CONTROL_SENSITIVITY
 
         home_control = self._clamp_passport_value(
             home_control
@@ -797,12 +941,12 @@ class XGModel:
 
         home_factor = math.exp(
             normalized_diff
-            * self.CONTROL_SENSITIVITY
+            * sensitivity
         )
 
         away_factor = math.exp(
             -normalized_diff
-            * self.CONTROL_SENSITIVITY
+            * sensitivity
         )
 
         return (
@@ -920,6 +1064,14 @@ class XGModel:
             ],
 
             "rating_used_for_xg": False,
+
+            "parameters_supported": True,
+            "learnable_parameters": [
+                "attack_sensitivity",
+                "defense_sensitivity",
+                "control_sensitivity",
+                "form_sensitivity",
+            ],
 
             "status": "READY",
         }
