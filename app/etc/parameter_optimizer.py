@@ -14,6 +14,14 @@ app/etc/parameter_optimizer.py
 Формирование предложений по изменению модельных параметров
 FAJ на основании накопленных сигналов ETC.
 
+ИСПРАВЛЕНИЯ v2.3
+============================================================
+
+1. Поддержка canonical Signal Contract (average_confidence → confidence fallback)
+2. Поддержка average_severity → severity fallback
+3. Документирован канонический Signal Contract
+4. Версия обновлена до 2.3
+
 ИСПРАВЛЕНИЯ v2.2
 ============================================================
 
@@ -51,6 +59,37 @@ ParameterOptimizer НЕ является Evolution Engine.
     - изменяет model_parameters
     - запускает обучение
     - применяет proposal автоматически
+
+
+============================================================
+SIGNAL CONTRACT (канонический)
+============================================================
+
+LearningAnalyzer.generate_signals() возвращает:
+
+{
+    "signal_type": str,                    # "repeated_prediction_error"
+    "error_type": str,                     # "score_miss", "winner_miss", etc.
+    "cause_type": str,                     # "home_attack_overestimated", etc.
+    "matches": List[int],                  # match_id списком
+    "event_count": int,                    # всего событий в группе
+    "unique_match_count": int,             # уникальных матчей (основной evidence)
+    "average_severity": float,             # средняя severity (0-5)
+    "average_xg_error": Optional[float],   # средняя xG ошибка
+    "average_confidence": float,           # средняя confidence (0-1) ← ОСНОВНОЙ
+    "average_impact": float,               # средняя impact (0-1)
+    "signal_strength": float,              # сила сигнала (0-1)
+    "priority": str,                       # "high" | "medium" | "low"
+    "recommendations": List[str],          # рекомендации
+}
+
+ParameterOptimizer читает:
+    - error_type
+    - cause_type
+    - unique_match_count (через _get_evidence_count)
+    - average_confidence (с fallback на confidence)
+    - signal_strength
+    - average_severity (с fallback на severity)
 """
 
 from __future__ import annotations
@@ -63,7 +102,7 @@ from typing import Any, Dict, List, Optional, Set
 logger = logging.getLogger(__name__)
 
 
-MODULE_VERSION = "2.2"
+MODULE_VERSION = "2.3"
 MODULE_NAME = "ETC Parameter Optimizer"
 
 
@@ -159,10 +198,15 @@ class ParameterProposal:
 
 class ParameterOptimizer:
     """
-    ETC Parameter Optimizer v2.2.
+    ETC Parameter Optimizer v2.3.
 
     Только аналитический слой.
     НЕ изменяет БД. НЕ изменяет параметры.
+
+    НОВОЕ v2.3:
+        - Поддержка canonical Signal Contract
+        - average_confidence → confidence fallback
+        - average_severity → severity fallback
     """
 
     def __init__(
@@ -286,18 +330,23 @@ class ParameterOptimizer:
         return "review"
 
     # ========================================================
-    # DELTA (ИСПРАВЛЕНО v2.2)
+    # DELTA (ИСПРАВЛЕНО v2.3)
     # ========================================================
 
     def calculate_delta(self, signal: Dict[str, Any]) -> float:
         """
         Рассчитывает величину proposal.
 
-        ИСПРАВЛЕНИЕ v2.2:
+        ИСПРАВЛЕНИЕ v2.3:
+            - Использует average_confidence с fallback на confidence
             - Использует единый _get_evidence_count()
-            - Безопасная обработка match_id
         """
-        confidence = self._safe_float(signal.get("confidence"))
+        # ✅ ИСПРАВЛЕНИЕ: поддержка canonical Signal Contract
+        confidence = self._safe_float(
+            signal.get("average_confidence"),
+            default=self._safe_float(signal.get("confidence"), 0.0)
+        )
+
         strength = self._safe_float(signal.get("signal_strength"))
 
         # ЕДИНЫЙ ИСТОЧНИК evidence_count
@@ -411,7 +460,7 @@ class ParameterOptimizer:
         )
 
     # ========================================================
-    # SINGLE PROPOSAL (ИСПРАВЛЕНО v2.2)
+    # SINGLE PROPOSAL (ИСПРАВЛЕНО v2.3)
     # ========================================================
 
     def create_proposal(
@@ -438,9 +487,20 @@ class ParameterOptimizer:
         unique_match_ids = self._normalize_matches(matches)
         unique_match_count = len(unique_match_ids) if unique_match_ids else count
 
-        confidence = self._safe_float(signal.get("confidence"))
+        # ✅ ИСПРАВЛЕНИЕ: поддержка canonical Signal Contract
+        # Приоритет: average_confidence > confidence
+        confidence = self._safe_float(
+            signal.get("average_confidence"),
+            default=self._safe_float(signal.get("confidence"), 0.0)
+        )
+
         signal_strength = self._safe_float(signal.get("signal_strength"))
-        average_severity = self._safe_float(signal.get("average_severity"))
+
+        # ✅ ИСПРАВЛЕНИЕ: поддержка average_severity с fallback на severity
+        average_severity = self._safe_float(
+            signal.get("average_severity"),
+            default=self._safe_float(signal.get("severity"), 0.0)
+        )
 
         delta = self.calculate_delta(signal)
         if delta <= 0:
@@ -667,15 +727,42 @@ if __name__ == "__main__":
     print(f"Version: {MODULE_VERSION}")
     print("=" * 70)
 
+    # Тест с canonical Signal Contract
     signals = [
-        {"error_type": "score_miss", "cause_type": "home_attack_overestimated",
-         "count": 6, "average_severity": 3.2, "confidence": 0.80, "signal_strength": 0.70},
-        {"error_type": "over25_miss", "cause_type": "tempo_overestimated",
-         "count": 5, "average_severity": 3.0, "confidence": 0.75, "signal_strength": 0.65},
-        {"error_type": "winner_miss", "cause_type": "match_balance_misread",
-         "count": 8, "average_severity": 4.0, "confidence": 0.90, "signal_strength": 0.80},
-        {"error_type": "score_miss", "cause_type": "home_attack_underestimated",
-         "count": 4, "average_severity": 3.0, "confidence": 0.70, "signal_strength": 0.60},
+        {
+            "error_type": "score_miss",
+            "cause_type": "home_attack_overestimated",
+            "matches": [101, 102, 103, 104, 105],
+            "unique_match_count": 5,
+            "average_severity": 3.2,
+            "average_confidence": 0.80,
+            "signal_strength": 0.70,
+            "priority": "high",
+        },
+        {
+            "error_type": "over25_miss",
+            "cause_type": "tempo_overestimated",
+            "count": 5,
+            "average_severity": 3.0,
+            "confidence": 0.75,
+            "signal_strength": 0.65,
+        },
+        {
+            "error_type": "winner_miss",
+            "cause_type": "match_balance_misread",
+            "count": 8,
+            "average_severity": 4.0,
+            "confidence": 0.90,
+            "signal_strength": 0.80,
+        },
+        {
+            "error_type": "score_miss",
+            "cause_type": "home_attack_underestimated",
+            "count": 4,
+            "average_severity": 3.0,
+            "confidence": 0.70,
+            "signal_strength": 0.60,
+        },
     ]
 
     current_parameters = {
