@@ -40,7 +40,7 @@ LearningMemory отвечает только за:
     2. сериализацию значений;
     3. передачу события в FAJDatabase;
     4. чтение истории learning_memory;
-    5. предоставление специализированных ETC API.
+    5. специализированные ETC API.
 
 
 ВАЖНО
@@ -57,7 +57,6 @@ LearningMemory отвечает только за:
     - изменяет match_results;
     - изменяет match_statistics;
     - изменяет matches;
-    - удаляет память;
     - выполняет DELETE;
     - выполняет UPDATE;
     - изменяет database.py;
@@ -95,6 +94,27 @@ LearningMemory не содержит INSERT SQL.
 LearningMemory не содержит SELECT SQL.
 
 
+PAGINATION CONTRACT (НОВОЕ v3.1)
+--------------------------------
+
+LearningMemory.get() поддерживает:
+    limit
+    offset
+
+Но offset является API адаптера LearningMemory.
+
+Он НЕ передаётся напрямую в database.py.
+
+Это важно, потому что database.py остаётся единственным
+владельцем SQL и не обязан поддерживать offset.
+
+Пагинация выполняется поверх существующего
+FAJDatabase.get_learning_memory().
+
+    database.get_learning_memory(limit=offset + limit)
+    rows[offset:offset + limit]
+
+
 BATCH LEARNING CONTRACT
 -----------------------
 
@@ -102,28 +122,17 @@ BATCH LEARNING CONTRACT
 ETCLearningEngine должен создать событие:
 
     event_type = "batch_learning"
-
     object = "match:<match_id>"
-
     reference_id = <match_id>
-
 
 Именно это событие используется BatchController
 для определения уже обработанного матча.
 
-Таким образом:
+Canonical identity processed-state:
+    event_type + reference_id
 
-    match_results
-          ≠
-    processed match
-
-Обработанным матч считается только после:
-
-    successful ETC learning
-          +
-    batch_learning event
-          +
-    reference_id = match_id
+Поле object НЕ используется BatchController
+для определения processed-state.
 
 
 PRINCIPLE
@@ -156,7 +165,7 @@ from app.database import FAJDatabase
 logger = logging.getLogger(__name__)
 
 
-MODULE_VERSION = "3.0"
+MODULE_VERSION = "3.1"
 MODULE_NAME = "FAJ ETC Learning Memory"
 
 DEFAULT_MODEL_VERSION = "v12.1"
@@ -261,6 +270,7 @@ def _serialize(
             value,
             ensure_ascii=False,
             sort_keys=True,
+            separators=(",", ":"),
         )
 
     return str(value)
@@ -270,42 +280,52 @@ def _deserialize(
     value: Any,
 ) -> Any:
     """
-    Пытается восстановить JSON-значение.
+    Десериализация значения.
 
-    Если значение не является JSON,
-    возвращается исходная строка.
+    ВАЖНО:
+    Исторические значения bool сохраняются как:
+        "1"
+        "0"
+    и восстанавливаются обратно:
+        True
+        False
+
+    JSON-объекты и массивы также восстанавливаются.
+    Обычные строки остаются строками.
     """
 
     if value is None:
-
         return None
 
-    if not isinstance(
-        value,
-        str,
-    ):
-
+    if not isinstance(value, str):
         return value
 
     text = value.strip()
 
     if not text:
-
         return value
 
+    # --------------------------------------------------------
+    # BOOL
+    # --------------------------------------------------------
+    if text == "1":
+        return True
+    if text == "0":
+        return False
+
+    # --------------------------------------------------------
+    # JSON
+    # --------------------------------------------------------
     try:
-
-        return json.loads(
-            text
-        )
-
+        decoded = json.loads(text)
     except (
         TypeError,
         ValueError,
         json.JSONDecodeError,
     ):
-
         return value
+
+    return decoded
 
 
 def _normalize_confidence(
@@ -346,6 +366,11 @@ class LearningMemory:
 
     Чтение выполняется через FAJDatabase.get_learning_memory()
     и FAJDatabase.get_learning_memory_count().
+
+    ПОДДЕРЖИВАЕТ ПАГИНАЦИЮ (НОВОЕ v3.1):
+        get(limit=..., offset=...)
+
+    offset НЕ передаётся в database.py.
     """
 
     def __init__(
@@ -1023,7 +1048,7 @@ class LearningMemory:
         )
 
     # ========================================================
-    # READ (ДЕЛЕГИРОВАНИЕ В DATABASE.PY)
+    # READ (С ПАГИНАЦИЕЙ — НОВОЕ v3.1)
     # ========================================================
 
     def get(
@@ -1033,36 +1058,73 @@ class LearningMemory:
         event_type: Optional[str] = None,
         reference_id: Optional[int] = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """
         Читает историю ETC.
 
-        Только SELECT.
-        Никаких UPDATE / DELETE.
+        Поддерживает:
+            limit
+            offset
 
-        ВСЯ ЛОГИКА ЧТЕНИЯ ДЕЛЕГИРОВАНА В DATABASE.PY:
+        ВАЖНО (НОВОЕ v3.1):
+        offset является частью API LearningMemory.
 
-            FAJDatabase.get_learning_memory()
+        Он НЕ передаётся в database.py.
 
-        SQL принадлежит database.py.
+        Поэтому существующий database.py v12.1
+        менять не требуется.
+
+        Реализация:
+            database.get_learning_memory(limit=offset + limit)
+        затем:
+            rows[offset:offset + limit]
+
+        Это сохраняет database.py единственным
+        владельцем SQL.
+
+        При ошибке database.py исключение
+        НЕ скрывается.
         """
 
-        limit = max(
-            1,
-            _safe_int(
-                limit,
-                100,
-            ),
+        safe_limit = _safe_int(
+            limit,
+            100,
         )
+
+        safe_offset = _safe_int(
+            offset,
+            0,
+        )
+
+        if safe_limit <= 0:
+            return []
+
+        if safe_offset < 0:
+            raise ValueError(
+                "offset не может быть отрицательным"
+            )
+
+        # ----------------------------------------------------
+        # Защита от потенциально бессмысленного offset.
+        # ----------------------------------------------------
+
+        fetch_limit = (
+            safe_offset + safe_limit
+        )
+
+        if fetch_limit <= 0:
+            return []
 
         # ----------------------------------------------------
         # DATABASE CONTRACT
         # ----------------------------------------------------
         #
-        # Никакого SQL здесь нет.
+        # В database.py передаём только те аргументы,
+        # которые являются частью его существующего
+        # контракта.
         #
-        # database.py является единственным
-        # владельцем схемы и операции SELECT.
+        # offset НЕ передаётся.
         #
 
         rows = self.db.get_learning_memory(
@@ -1070,14 +1132,34 @@ class LearningMemory:
             object_type=object_type,
             feature=feature,
             reference_id=reference_id,
-            limit=limit,
+            limit=fetch_limit,
+        )
+
+        if rows is None:
+            rows = []
+
+        # ----------------------------------------------------
+        # ADAPTER PAGINATION
+        # ----------------------------------------------------
+
+        page = list(
+            rows[
+                safe_offset:
+                safe_offset + safe_limit
+            ]
         )
 
         result: List[
             Dict[str, Any]
         ] = []
 
-        for row in rows:
+        for row in page:
+
+            if not isinstance(
+                row,
+                dict,
+            ):
+                continue
 
             item = dict(
                 row
@@ -1147,6 +1229,7 @@ class LearningMemory:
         self,
         match_id: Optional[int] = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """
         Возвращает события batch_learning.
@@ -1157,18 +1240,30 @@ class LearningMemory:
         Только SELECT.
         """
 
+        normalized_match_id = None
+
+        if match_id is not None:
+
+            normalized_match_id = _safe_int(
+                match_id
+            )
+
+            if normalized_match_id <= 0:
+                return []
+
         return self.get(
             object_type=(
-                f"match:{_safe_int(match_id)}"
-                if match_id is not None
+                f"match:{normalized_match_id}"
+                if normalized_match_id is not None
                 else None
             ),
             event_type=BATCH_LEARNING_EVENT,
             limit=limit,
+            offset=offset,
         )
 
     # ========================================================
-    # IS PROCESSED (НОВЫЙ МЕТОД)
+    # IS PROCESSED
     # ========================================================
 
     def is_match_processed(
@@ -1205,6 +1300,7 @@ class LearningMemory:
         self,
         team_id: int,
         limit: int = 50,
+        offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """
         История ETC конкретной команды.
@@ -1223,6 +1319,7 @@ class LearningMemory:
                 f"team:{normalized_team_id}"
             ),
             limit=limit,
+            offset=offset,
         )
 
     # ========================================================
@@ -1233,6 +1330,7 @@ class LearningMemory:
         self,
         match_id: int,
         limit: int = 50,
+        offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """
         История ETC конкретного матча.
@@ -1251,6 +1349,7 @@ class LearningMemory:
                 f"match:{normalized_match_id}"
             ),
             limit=limit,
+            offset=offset,
         )
 
     # ========================================================
@@ -1261,6 +1360,7 @@ class LearningMemory:
         self,
         parameter_name: str,
         limit: int = 50,
+        offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """
         История изменения конкретного параметра.
@@ -1274,6 +1374,7 @@ class LearningMemory:
             object_type="model",
             feature=parameter_name,
             limit=limit,
+            offset=offset,
         )
 
     # ========================================================
@@ -1284,6 +1385,7 @@ class LearningMemory:
         self,
         team_id: int,
         limit: int = 50,
+        offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """
         История xG-событий команды.
@@ -1303,6 +1405,7 @@ class LearningMemory:
             ),
             event_type="xg_calibration",
             limit=limit,
+            offset=offset,
         )
 
     # ========================================================
@@ -1313,6 +1416,7 @@ class LearningMemory:
         self,
         match_id: Optional[int] = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """
         Возвращает ошибки прогнозов.
@@ -1338,6 +1442,7 @@ class LearningMemory:
             ),
             event_type="prediction_error",
             limit=limit,
+            offset=offset,
         )
 
     # ========================================================
@@ -1363,6 +1468,7 @@ class LearningMemory:
             feature=feature,
             event_type=event_type,
             limit=1,
+            offset=0,
         )
 
         return (
@@ -1465,9 +1571,12 @@ def get_learning_memory(
     event_type: Optional[str] = None,
     reference_id: Optional[int] = None,
     limit: int = 100,
+    offset: int = 0,
 ) -> List[Dict[str, Any]]:
     """
     Единая функция чтения памяти ETC.
+
+    Поддерживает пагинацию через offset.
     """
 
     memory = LearningMemory(
@@ -1480,6 +1589,7 @@ def get_learning_memory(
         event_type=event_type,
         reference_id=reference_id,
         limit=limit,
+        offset=offset,
     )
 
 
@@ -1487,6 +1597,7 @@ def get_batch_learning_memory(
     db: FAJDatabase,
     match_id: Optional[int] = None,
     limit: int = 100,
+    offset: int = 0,
 ) -> List[Dict[str, Any]]:
     """
     Module-level API для чтения batch_learning events.
@@ -1499,6 +1610,7 @@ def get_batch_learning_memory(
     return memory.get_batch_learning_memory(
         match_id=match_id,
         limit=limit,
+        offset=offset,
     )
 
 
@@ -1575,6 +1687,8 @@ def get_memory_status() -> Dict[str, Any]:
         "database_count_method": (
             "get_learning_memory_count"
         ),
+
+        "adapter_pagination": True,
     }
 
 
@@ -1684,25 +1798,29 @@ if __name__ == "__main__":
     print()
 
     print(
-        "НОВОЕ В v3.0:"
+        "НОВОЕ В v3.1:"
     )
 
     print(
-        "1. get() делегирует в database.py"
+        "1. get() поддерживает offset"
     )
 
     print(
-        "2. count() делегирует в database.py"
+        "2. offset НЕ передаётся в database.py"
     )
 
     print(
-        "3. is_match_processed() использует count"
+        "3. Пагинация выполняется адаптером (slice)"
+    )
+
+    print(
+        "4. _deserialize() корректно восстанавливает bool из '1'/'0'"
     )
 
     print()
 
     print(
-        "LearningMemory v3.0 готов."
+        "LearningMemory v3.1 готов."
     )
 
     print("=" * 70)
