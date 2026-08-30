@@ -161,6 +161,15 @@ READ ONLY
 
 Никаких изменений базы данных.
 ============================================================
+
+ИСПРАВЛЕНИЯ v2.2
+============================================================
+
+1. _get_processed_match_ids() использует LearningMemory.get(offset=...)
+2. offset теперь поддерживается LearningMemory v3.1
+3. Пагинация корректно работает через адаптерный offset
+4. Версия обновлена до 2.2
+============================================================
 """
 
 from __future__ import annotations
@@ -183,7 +192,7 @@ logger = logging.getLogger(__name__)
 # MODULE
 # ============================================================
 
-MODULE_VERSION = "2.1"
+MODULE_VERSION = "2.2"
 MODULE_NAME = "ETC Batch Controller"
 
 
@@ -848,7 +857,11 @@ class BatchController:
                 exc,
             )
 
-            return []
+            # ❌ НЕ возвращаем пустой список при ошибке
+            # Ошибка чтения календаря — критическая.
+            raise RuntimeError(
+                f"Не удалось прочитать matches: {exc}"
+            ) from exc
 
         finished: List[
             Dict[str, Any]
@@ -1144,21 +1157,24 @@ class BatchController:
 
         Метод только читает БД.
 
-        ✅ ИСПРАВЛЕНИЕ MUST FIX #1:
-            При ошибке НЕ возвращаем пустой set,
-            а пробрасываем исключение (fail-closed).
+        ✅ ИСПРАВЛЕНИЕ v2.2:
+            Использует LearningMemory.get(offset=...)
+            который теперь поддерживается LearningMemory v3.1.
+            offset адаптируется внутри LearningMemory,
+            database.py остаётся без изменений.
 
-        ✅ ИСПРАВЛЕНИЕ MUST FIX #2:
-            Убран хардкод limit=10000.
-            Используется пагинация через цикл.
+        При ошибке чтения:
+            FAIL CLOSED
+
+        Никогда не возвращается пустой set,
+        потому что это могло бы привести к повторному
+        обучению уже обработанных матчей.
         """
 
         processed: Set[int] = set()
 
-        # Используем пагинацию вместо хардкода limit
         offset = 0
-        page_size = 1000  # размер страницы для пагинации
-        total_read = 0
+        page_size = 1000
 
         try:
 
@@ -1195,9 +1211,7 @@ class BatchController:
                             match_id
                         )
 
-                total_read += len(rows)
-
-                # Если получили меньше, чем запросили — это последняя страница
+                # Если получили меньше, чем запросили — последняя страница
                 if len(rows) < page_size:
                     break
 
@@ -1212,7 +1226,6 @@ class BatchController:
 
         except Exception as exc:
 
-            # ✅ ИСПРАВЛЕНИЕ MUST FIX #1: fail-closed
             logger.error(
                 "Unable to read ETC processed matches from learning_memory: %s",
                 exc,
@@ -1457,6 +1470,22 @@ if __name__ == "__main__":
     )
 
     print()
+    print("PAGINATION CONTRACT (v2.2)")
+    print("-" * 70)
+
+    print(
+        "LearningMemory.get(limit, offset) — поддерживается"
+    )
+
+    print(
+        "offset адаптируется внутри LearningMemory"
+    )
+
+    print(
+        "database.py остаётся без изменений"
+    )
+
+    print()
     print("SORT CONTRACT")
     print("-" * 70)
 
@@ -1469,5 +1498,5 @@ if __name__ == "__main__":
     )
 
     print()
-    print("ETC Batch Controller готов.")
+    print("ETC Batch Controller v2.2 готов.")
     print("=" * 70)
