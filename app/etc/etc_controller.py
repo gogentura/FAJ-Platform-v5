@@ -9,8 +9,15 @@ ETC — Evolution Training Center
 app/etc/etc_controller.py
 ============================================================
 
-ETC CONTROLLER v4.1 (E-FINAL)
+ETC CONTROLLER v4.2
 ============================================================
+
+ИСПРАВЛЕНИЯ v4.2:
+    1. Исправлена ошибка 'NoneType' object has no attribute 'get'
+       при обращении к result.get('optimization', {}).get('proposals', [])
+    2. Добавлена защита: optimization = result.get('optimization')
+       proposals_count = len(optimization.get('proposals', [])) if optimization else 0
+    3. Версия обновлена до 4.2
 
 ИСПРАВЛЕНИЯ v4.1 (E-FINAL):
     1. Добавлен Signal Adapter — _normalize_optimizer_signals()
@@ -35,9 +42,9 @@ ETC CONTROLLER v4.1 (E-FINAL)
 НАЗНАЧЕНИЕ
 -----------
 
-Верхний оркестратор ETC v4.1.
+Верхний оркестратор ETC v4.2.
 
-КОНТРАКТ v4.1:
+КОНТРАКТ v4.2:
 
     MATCH
       ↓
@@ -50,7 +57,7 @@ ETC CONTROLLER v4.1 (E-FINAL)
       ├── check()
       └── get_learning_batch()
       ↓
-    ETCController v4.1
+    ETCController v4.2
       │
       ├── BEFORE snapshot (параметры до) — только диагностика
       ├── ETCLearningEngine v2.0
@@ -74,7 +81,7 @@ ETC CONTROLLER v4.1 (E-FINAL)
       ↓
     SQLite
 
-ГРАНИЦЫ ETCController v4.1
+ГРАНИЦЫ ETCController v4.2
 ============================================================
 
 ETCController — ОРКЕСТРАТОР.
@@ -163,7 +170,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 MODULE_NAME = "ETC Controller"
-MODULE_VERSION = "4.1"
+MODULE_VERSION = "4.2"
 
 
 # ============================================================
@@ -453,14 +460,18 @@ def _serialize_params(
 
 
 # ============================================================
-# ETC CONTROLLER v4.1
+# ETC CONTROLLER v4.2
 # ============================================================
 
 class ETCController:
     """
-    Главный оркестратор Evolution Training Center v4.1.
+    Главный оркестратор Evolution Training Center v4.2.
 
     Контроллер не содержит математической логики.
+
+    Новое в v4.2:
+        - Исправлена ошибка 'NoneType' object has no attribute 'get'
+        - Безопасное получение proposals_count
 
     Новое в v4.1:
         - Signal Adapter
@@ -664,7 +675,7 @@ class ETCController:
                 "signal_adapter": True,
                 "parameter_state_api": True,
                 "append_only": True,
-                "snapshots_in_learning_memory": False,  # НОВОЕ v4.1
+                "snapshots_in_learning_memory": False,
             },
 
             "api_contract": {
@@ -681,7 +692,7 @@ class ETCController:
                 "direct_model_parameter_mutation",
                 "direct_calendar_mutation",
                 "direct_parameter_history_write",
-                "snapshots_in_learning_memory",  # НОВОЕ v4.1
+                "snapshots_in_learning_memory",
             ],
 
             "missing_api": missing,
@@ -699,7 +710,7 @@ class ETCController:
         force: bool = False,
     ) -> Dict[str, Any]:
         """
-        Запускает ETC batch pipeline с новым потоком v4.1.
+        Запускает ETC batch pipeline с новым потоком v4.2.
         """
 
         started_at = _now()
@@ -776,7 +787,7 @@ class ETCController:
         )
 
         logger.info(
-            "ETC RUN STARTED v4.1 | "
+            "ETC RUN STARTED v4.2 | "
             "league=%s | season=%s | limit=%s | force=%s",
             league,
             season_id,
@@ -1206,7 +1217,7 @@ class ETCController:
                 )
 
             logger.info(
-                "ETC RUN FINISHED v4.1 | "
+                "ETC RUN FINISHED v4.2 | "
                 "status=%s | "
                 "processed=%s | "
                 "already_processed=%s | "
@@ -1363,7 +1374,7 @@ class ETCController:
             pending.append(proposal)
 
         logger.info(
-            "REVIEW GATE v4.1 | league=%s | pending=%s | rejected=%s",
+            "REVIEW GATE v4.2 | league=%s | pending=%s | rejected=%s",
             league,
             len(pending),
             len(rejected),
@@ -2146,7 +2157,7 @@ class ETCController:
                     if proposals:
 
                         logger.info(
-                            "ETC [%s] STEP 7 — Review Gate (v4.1 — all → pending)",
+                            "ETC [%s] STEP 7 — Review Gate (v4.2 — all → pending)",
                             league,
                             len(proposals),
                         )
@@ -2235,6 +2246,10 @@ class ETCController:
 
         applied_changes = result.get("learned", 0)
 
+        # ✅ ИСПРАВЛЕНИЕ v4.2: безопасное получение proposals
+        optimization = result.get("optimization")
+        proposals_count = len(optimization.get("proposals", [])) if optimization else 0
+
         if (
             learning_status == "completed"
             and result["errors"] == 0
@@ -2248,7 +2263,7 @@ class ETCController:
                 "message"
             ] = (
                 f"ETC batch полностью обработан. "
-                f"Создано proposals: {len(result.get('optimization', {}).get('proposals', []))} "
+                f"Создано proposals: {proposals_count} "
                 f"(все ожидают review)"
             )
 
@@ -2265,7 +2280,7 @@ class ETCController:
                 "message"
             ] = (
                 f"ETC batch обработан частично. "
-                f"Создано proposals: {len(result.get('optimization', {}).get('proposals', []))} "
+                f"Создано proposals: {proposals_count} "
                 f"(все ожидают review)"
             )
 
@@ -2351,7 +2366,7 @@ class ETCController:
         # =====================================================
 
         logger.info(
-            "ETC [%s] FINISHED v4.1 | "
+            "ETC [%s] FINISHED v4.2 | "
             "status=%s | "
             "batch=%s | "
             "total=%s | "
@@ -2375,7 +2390,7 @@ class ETCController:
             result["memory_events"],
             result["parameter_revision_before"],
             result["parameter_revision_after"],
-            len(result.get("optimization", {}).get("proposals", [])),
+            proposals_count,
             batch_completed,
             result["errors"],
         )
@@ -2466,7 +2481,7 @@ class ETCController:
         # =====================================================
 
         logger.info(
-            "ETC SINGLE MATCH STARTED v4.1 | "
+            "ETC SINGLE MATCH STARTED v4.2 | "
             "match_id=%s | force=%s",
             normalized_match_id,
             force,
@@ -2537,7 +2552,7 @@ class ETCController:
             ] = "completed"
 
             logger.info(
-                "ETC SINGLE MATCH FINISHED v4.1 | "
+                "ETC SINGLE MATCH FINISHED v4.2 | "
                 "match_id=%s",
                 normalized_match_id,
             )
@@ -2687,7 +2702,7 @@ def run_etc(
     force: bool = False,
 ) -> Dict[str, Any]:
     """
-    Публичный batch API ETC v4.1.
+    Публичный batch API ETC v4.2.
     """
 
     controller = ETCController(
@@ -2708,7 +2723,7 @@ def process_etc_match(
     force: bool = False,
 ) -> Dict[str, Any]:
     """
-    Публичный single-match API ETC v4.1.
+    Публичный single-match API ETC v4.2.
     """
 
     controller = ETCController(
@@ -2780,7 +2795,7 @@ if __name__ == "__main__":
 
         print()
         print(
-            "ETC STATUS v4.1 (E-FINAL)"
+            "ETC STATUS v4.2"
         )
 
         print(
@@ -2795,7 +2810,7 @@ if __name__ == "__main__":
 
         print()
         print(
-            "НОВОЕ В v4.1 (E-FINAL):"
+            "НОВОЕ В v4.2:"
         )
 
         print(
@@ -2803,28 +2818,16 @@ if __name__ == "__main__":
         )
 
         print(
-            "1. Signal Adapter — нормализация signals"
+            "1. Исправлена ошибка 'NoneType' object has no attribute 'get'"
         )
 
         print(
-            "2. Review Gate — ВСЕ → pending (НЕТ auto-apply)"
-        )
-
-        print(
-            "3. Snapshots НЕ пишутся в LearningMemory"
-        )
-
-        print(
-            "4. Исправлена revision chain"
-        )
-
-        print(
-            "5. applied_count унифицирован"
+            "2. Безопасное получение proposals_count"
         )
 
         print()
         print(
-            "ETC Controller v4.1 (E-FINAL) готов."
+            "ETC Controller v4.2 готов."
         )
 
     except Exception as exc:
