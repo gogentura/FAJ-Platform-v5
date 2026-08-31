@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-FAJ XG Model v2.1
+FAJ XG Model v2.2
 ============================================================
 
 ФАЙЛ:
@@ -39,15 +39,16 @@ FAJ XG Model v2.1
 ПРИНЦИП
 ============================================================
 
-FAJ Rating НЕ является отдельным множителем xG.
+FAJ Rating УЧАСТВУЕТ в математике xG (начиная с v2.2).
 
-xG строится из игровых компонентов паспорта:
+xG строится из игровых компонентов паспорта + рейтинга:
 
     ATTACK
     DEFENSE
     GOALKEEPER
     CONTROL
     FORM
+    RATING
 
 Home Advantage применяется только к хозяевам.
 
@@ -62,6 +63,7 @@ Home xG = League Mean
         × Home Control
         × Home Form
         × Home Advantage
+        × Home Rating Factor
 
 Away xG = League Mean
         × Away Attack
@@ -69,8 +71,17 @@ Away xG = League Mean
         × Home Goalkeeper
         × Away Control
         × Away Form
+        × Away Rating Factor
 
 ============================================================
+ИСПРАВЛЕНИЯ v2.2
+============================================================
+
+1. Добавлен RATING как математический фактор xG
+2. Добавлен параметр rating_sensitivity
+3. rating_used_for_xg = True
+4. Обновлён список learnable_parameters
+
 ИСПРАВЛЕНИЯ v2.1
 ============================================================
 
@@ -86,17 +97,16 @@ Away xG = League Mean
 ВАЖНО
 ============================================================
 
-1. FAJ Rating не участвует напрямую в xG.
-2. Prediction xG отделён от Observed xG.
-3. Модель не использует результаты будущего матча.
-4. Модель детерминирована.
-5. Нет JSON-конфигурации.
-6. Параметры берутся из Config там, где это возможно.
-7. Некорректный паспорт не должен приводить к crash.
-8. Ограничение xG применяется только после расчёта.
-9. Факторы не должны искусственно схлопывать команды
+1. Prediction xG отделён от Observed xG.
+2. Модель не использует результаты будущего матча.
+3. Модель детерминирована.
+4. Нет JSON-конфигурации.
+5. Параметры берутся из Config там, где это возможно.
+6. Некорректный паспорт не должен приводить к crash.
+7. Ограничение xG применяется только после расчёта.
+8. Факторы не должны искусственно схлопывать команды
    в диапазон 0.85–1.15.
-10. Модель не занимается Poisson / Monte Carlo.
+9. Модель не занимается Poisson / Monte Carlo.
 ============================================================
 """
 
@@ -115,22 +125,21 @@ logger = logging.getLogger(__name__)
 
 class XGModel:
     """
-    FAJ XG Model v2.1
+    FAJ XG Model v2.2
 
-    Рассчитывает предматчевый xG на основе Team Passport.
+    Рассчитывает предматчевый xG на основе Team Passport и Rating.
 
     Ответственность модели:
-        passport -> xG
+        passport + rating -> xG
 
     Не входит в ответственность:
         xG -> Poisson
         xG -> Monte Carlo
         xG -> learning
-        xG -> rating
     """
 
-    VERSION = "2.1"
-    MODEL_VERSION = "FAJ_XG_v2.1"
+    VERSION = "2.2"
+    MODEL_VERSION = "FAJ_XG_v2.2"
 
     # ============================================================
     # BASE MODEL
@@ -186,6 +195,13 @@ class XGModel:
     FORM_SENSITIVITY = 0.12
 
     # ============================================================
+    # RATING SENSITIVITY (НОВОЕ v2.2)
+    # ============================================================
+
+    RATING_BASELINE = 1500.0  # нейтральный уровень рейтинга
+    RATING_SENSITIVITY = 0.15  # ±100 рейтинга → ±15% xG
+
+    # ============================================================
     # FACTOR SAFETY LIMITS
     # ============================================================
 
@@ -205,12 +221,16 @@ class XGModel:
             "FAJ XG Model v%s initialized | "
             "league_mean=%.3f | "
             "home_advantage=%.3f | "
-            "xg_range=%.2f-%.2f",
+            "xg_range=%.2f-%.2f | "
+            "rating_baseline=%.1f | "
+            "rating_sensitivity=%.3f",
             self.VERSION,
             self.LEAGUE_MEAN_XG,
             self.HOME_ADVANTAGE,
             self.XG_MIN,
             self.XG_MAX,
+            self.RATING_BASELINE,
+            self.RATING_SENSITIVITY,
         )
 
     # ============================================================
@@ -221,17 +241,14 @@ class XGModel:
         self,
         home_passport: Dict[str, Any],
         away_passport: Dict[str, Any],
-        home_rating: float = 50.0,
-        away_rating: float = 50.0,
-        parameters: Optional[Dict[str, float]] = None,  # ← НОВОЕ v2.1
+        home_rating: float = 1500.0,
+        away_rating: float = 1500.0,
+        parameters: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
         """
         Рассчитывает предматчевый xG.
 
-        home_rating / away_rating сохраняются только
-        для диагностической совместимости.
-
-        Rating НЕ участвует в математике xG.
+        home_rating / away_rating УЧАСТВУЮТ в математике xG (v2.2).
 
         Args:
             parameters: словарь с параметрами модели
@@ -239,10 +256,11 @@ class XGModel:
                 - defense_sensitivity: float (default 0.24)
                 - control_sensitivity: float (default 0.12)
                 - form_sensitivity: float (default 0.12)
+                - rating_sensitivity: float (default 0.15)  # НОВОЕ v2.2
         """
 
         # ============================================================
-        # НОРМАЛИЗАЦИЯ ПАРАМЕТРОВ (НОВОЕ v2.1)
+        # НОРМАЛИЗАЦИЯ ПАРАМЕТРОВ
         # ============================================================
 
         parameters = parameters or {}
@@ -275,6 +293,13 @@ class XGModel:
             )
         )
 
+        rating_sensitivity = float(
+            parameters.get(
+                "rating_sensitivity",
+                self.RATING_SENSITIVITY,
+            )
+        )
+
         # Goalkeeper пока статический (не обучаем)
         goalkeeper_sensitivity = self.GOALKEEPER_SENSITIVITY
 
@@ -283,6 +308,7 @@ class XGModel:
             "defense_sensitivity": round(defense_sensitivity, 6),
             "control_sensitivity": round(control_sensitivity, 6),
             "form_sensitivity": round(form_sensitivity, 6),
+            "rating_sensitivity": round(rating_sensitivity, 6),  # НОВОЕ v2.2
             "goalkeeper_sensitivity": round(goalkeeper_sensitivity, 6),
         }
 
@@ -317,27 +343,27 @@ class XGModel:
             away_form = away["form"]
 
             # ====================================================
-            # 3. COMPONENT FACTORS (С ДИНАМИЧЕСКИМИ ПАРАМЕТРАМИ)
+            # 3. COMPONENT FACTORS
             # ====================================================
 
             home_attack_factor = self._attack_factor(
                 home_attack,
-                sensitivity=attack_sensitivity,  # ← НОВОЕ
+                sensitivity=attack_sensitivity,
             )
 
             away_attack_factor = self._attack_factor(
                 away_attack,
-                sensitivity=attack_sensitivity,  # ← НОВОЕ
+                sensitivity=attack_sensitivity,
             )
 
             home_defense_factor = self._defense_factor(
                 home_defense,
-                sensitivity=defense_sensitivity,  # ← НОВОЕ
+                sensitivity=defense_sensitivity,
             )
 
             away_defense_factor = self._defense_factor(
                 away_defense,
-                sensitivity=defense_sensitivity,  # ← НОВОЕ
+                sensitivity=defense_sensitivity,
             )
 
             home_keeper_factor = self._goalkeeper_factor(
@@ -351,7 +377,7 @@ class XGModel:
             )
 
             # ====================================================
-            # CONTROL (С ДИНАМИЧЕСКИМИ ПАРАМЕТРАМИ)
+            # CONTROL
             # ====================================================
 
             (
@@ -360,25 +386,38 @@ class XGModel:
             ) = self._control_factors(
                 home_control,
                 away_control,
-                sensitivity=control_sensitivity,  # ← НОВОЕ
+                sensitivity=control_sensitivity,
             )
 
             # ====================================================
-            # FORM (С ДИНАМИЧЕСКИМИ ПАРАМЕТРАМИ)
+            # FORM
             # ====================================================
 
             home_form_factor = self._form_factor(
                 home_form,
-                sensitivity=form_sensitivity,  # ← НОВОЕ
+                sensitivity=form_sensitivity,
             )
 
             away_form_factor = self._form_factor(
                 away_form,
-                sensitivity=form_sensitivity,  # ← НОВОЕ
+                sensitivity=form_sensitivity,
             )
 
             # ====================================================
-            # 4. RAW XG
+            # RATING FACTOR (НОВОЕ v2.2)
+            # ====================================================
+
+            rating_factor = self._rating_factor(
+                home_rating,
+                away_rating,
+                sensitivity=rating_sensitivity,
+            )
+
+            home_rating_factor = rating_factor["home"]
+            away_rating_factor = rating_factor["away"]
+
+            # ====================================================
+            # 4. RAW XG (С УЧЁТОМ РЕЙТИНГА)
             # ====================================================
 
             home_xg_raw = (
@@ -389,6 +428,7 @@ class XGModel:
                 * home_control_factor
                 * home_form_factor
                 * self.HOME_ADVANTAGE
+                * home_rating_factor  # НОВОЕ v2.2
             )
 
             away_xg_raw = (
@@ -398,6 +438,7 @@ class XGModel:
                 * home_keeper_factor
                 * away_control_factor
                 * away_form_factor
+                * away_rating_factor  # НОВОЕ v2.2
             )
 
             # ====================================================
@@ -462,6 +503,19 @@ class XGModel:
                     4,
                 ),
 
+                "home_rating_factor": round(
+                    home_rating_factor,
+                    4,
+                ),
+                "away_rating_factor": round(
+                    away_rating_factor,
+                    4,
+                ),
+                "rating_sensitivity_used": round(
+                    rating_sensitivity,
+                    6,
+                ),
+
                 "home_advantage": round(
                     self.HOME_ADVANTAGE,
                     4,
@@ -475,7 +529,7 @@ class XGModel:
                     away_rating
                 ),
 
-                "rating_used_for_xg": False,
+                "rating_used_for_xg": True,  # ИЗМЕНЕНО v2.2
             }
 
             diagnostic = {
@@ -544,16 +598,19 @@ class XGModel:
                 "FAJ XG calculated | "
                 "home_xg=%.3f | away_xg=%.3f | "
                 "raw_home=%.3f | raw_away=%.3f | "
+                "rating_home=%.1f | rating_away=%.1f | "
                 "parameters_used=%s",
                 home_xg,
                 away_xg,
                 home_xg_raw,
                 away_xg_raw,
+                home_rating,
+                away_rating,
                 parameters_used,
             )
 
             # ====================================================
-            # 7. RESULT (С PARAMETERS_USED)
+            # 7. RESULT
             # ====================================================
 
             return {
@@ -575,7 +632,6 @@ class XGModel:
 
                 "model_version": self.MODEL_VERSION,
 
-                # НОВОЕ v2.1
                 "parameters_used": parameters_used,
             }
 
@@ -746,7 +802,63 @@ class XGModel:
         )
 
     # ============================================================
-    # ATTACK (С ДИНАМИЧЕСКИМ ПАРАМЕТРОМ) — НОВОЕ v2.1
+    # RATING FACTOR (НОВОЕ v2.2)
+    # ============================================================
+
+    def _rating_factor(
+        self,
+        home_rating: float,
+        away_rating: float,
+        sensitivity: float,
+    ) -> Dict[str, float]:
+        """
+        Вычисляет фактор рейтинга для xG.
+
+        Формула:
+            factor = 1 + (rating - RATING_BASELINE) / RATING_BASELINE * sensitivity
+
+        Пример:
+            rating=1650 → factor ≈ 1.15
+            rating=1500 → factor = 1.00
+            rating=1350 → factor ≈ 0.85
+
+        Args:
+            home_rating: рейтинг хозяев
+            away_rating: рейтинг гостей
+            sensitivity: чувствительность рейтинга
+
+        Returns:
+            Dict с home_factor и away_factor
+        """
+        # Защита от некорректных значений
+        try:
+            home_rating = float(home_rating)
+        except (TypeError, ValueError):
+            home_rating = self.RATING_BASELINE
+
+        try:
+            away_rating = float(away_rating)
+        except (TypeError, ValueError):
+            away_rating = self.RATING_BASELINE
+
+        if not math.isfinite(home_rating):
+            home_rating = self.RATING_BASELINE
+
+        if not math.isfinite(away_rating):
+            away_rating = self.RATING_BASELINE
+
+        # Расчёт факторов
+        home_factor = 1.0 + (home_rating - self.RATING_BASELINE) / self.RATING_BASELINE * sensitivity
+        away_factor = 1.0 + (away_rating - self.RATING_BASELINE) / self.RATING_BASELINE * sensitivity
+
+        # Безопасное ограничение
+        return {
+            "home": self._clamp_factor(home_factor),
+            "away": self._clamp_factor(away_factor),
+        }
+
+    # ============================================================
+    # ATTACK
     # ============================================================
 
     def _attack_factor(
@@ -773,7 +885,7 @@ class XGModel:
         )
 
     # ============================================================
-    # DEFENSE (С ДИНАМИЧЕСКИМ ПАРАМЕТРОМ) — НОВОЕ v2.1
+    # DEFENSE
     # ============================================================
 
     def _defense_factor(
@@ -860,7 +972,7 @@ class XGModel:
         )
 
     # ============================================================
-    # FORM (С ДИНАМИЧЕСКИМ ПАРАМЕТРОМ) — НОВОЕ v2.1
+    # FORM
     # ============================================================
 
     def _form_factor(
@@ -887,7 +999,7 @@ class XGModel:
         )
 
     # ============================================================
-    # CONTROL (С ДИНАМИЧЕСКИМ ПАРАМЕТРОМ) — НОВОЕ v2.1
+    # CONTROL
     # ============================================================
 
     def _control_factors(
@@ -1005,7 +1117,7 @@ class XGModel:
         )
 
     # ============================================================
-    # RATING — DIAGNOSTIC ONLY
+    # RATING — SAFE
     # ============================================================
 
     def _safe_rating(
@@ -1020,7 +1132,7 @@ class XGModel:
             if not math.isfinite(
                 value
             ):
-                return 50.0
+                return self.RATING_BASELINE
 
             return round(
                 value,
@@ -1032,7 +1144,7 @@ class XGModel:
             ValueError,
         ):
 
-            return 50.0
+            return self.RATING_BASELINE
 
     # ============================================================
     # STATUS
@@ -1063,14 +1175,17 @@ class XGModel:
                 self.PASSPORT_MAX,
             ],
 
-            "rating_used_for_xg": False,
+            "rating_baseline": self.RATING_BASELINE,
+            "rating_sensitivity_default": self.RATING_SENSITIVITY,
+            "rating_used_for_xg": True,  # ИЗМЕНЕНО v2.2
 
             "parameters_supported": True,
-            "learnable_parameters": [
+            "learnable_parameters": [  # ОБНОВЛЕНО v2.2
                 "attack_sensitivity",
                 "defense_sensitivity",
                 "control_sensitivity",
                 "form_sensitivity",
+                "rating_sensitivity",
             ],
 
             "status": "READY",
