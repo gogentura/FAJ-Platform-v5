@@ -7,7 +7,7 @@ ETC — Evolution Training Center
 ============================================================
 ФАЙЛ:
     app/pages/etc.py
-ETC PAGE v7.1 (E-FINAL UI)
+ETC PAGE v7.2 (E-FINAL UI)
 ============================================================
 НАЗНАЧЕНИЕ
 -----------
@@ -25,6 +25,11 @@ ETC PAGE v7.1 (E-FINAL UI)
     • Review Gate (pending/rejected/approved);
     • Auto-apply: DISABLED;
     • следующий шаг цикла.
+
+ИСПРАВЛЕНИЯ v7.2
+============================================================
+1. Добавлены карточки конкретных матчей из learning_records
+2. Показывает для каждого матча: прогноз, факт, ошибки, классификацию, вывод
 
 ИСПРАВЛЕНИЯ v7.1
 ============================================================
@@ -76,7 +81,7 @@ from app.etc.etc_controller import ETCController
 # ============================================================
 
 APP_VERSION = "12.1"
-ETC_PAGE_VERSION = "7.1"
+ETC_PAGE_VERSION = "7.2"
 PAGE_TITLE = "FAJ ETC"
 PAGE_ICON = "🧠"
 ETC_CONTROLLER_VERSION = "4.1"
@@ -677,6 +682,101 @@ def _render_signals(result: Dict[str, Any]) -> None:
 
 
 # ============================================================
+# MATCH CARDS (ПАТЧ №6)
+# ============================================================
+
+def _render_match_cards(result: Dict[str, Any]) -> None:
+    """Показывает карточки конкретных матчей из learning_records."""
+    processed_ids = _normalize_ids(result.get("processed_match_ids", []))
+    
+    if not processed_ids:
+        return
+    
+    st.divider()
+    st.markdown("## ⚽ Разбор матчей")
+    
+    try:
+        db = FAJDatabase()
+        records = db.get_learning_records(match_ids=processed_ids)
+    except Exception as e:
+        st.warning(f"⚠️ Не удалось загрузить learning_records: {e}")
+        return
+    
+    if not records:
+        st.info("ℹ️ Данные для карточек матчей пока отсутствуют.")
+        return
+    
+    # Группируем по match_id (на случай, если несколько записей на матч)
+    records_by_match: Dict[int, Dict[str, Any]] = {}
+    for record in records:
+        match_id = record.get("match_id")
+        if match_id is None:
+            continue
+        if match_id not in records_by_match:
+            records_by_match[match_id] = record
+    
+    # Показываем карточки
+    for match_id in processed_ids:
+        record = records_by_match.get(match_id)
+        if not record:
+            st.info(f"ℹ️ Матч #{match_id} — данные для карточки отсутствуют.")
+            continue
+        
+        home_team = _safe_string(record.get('home_team'), '?')
+        away_team = _safe_string(record.get('away_team'), '?')
+        
+        with st.expander(f"⚽ Матч #{match_id}: {home_team} — {away_team}", expanded=True):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**📊 FAJ прогноз**")
+                st.write(f"Счёт: {_safe_string(record.get('faj_score'), '—')}")
+                faj_home = _display_number(record.get('faj_xg_home'), 2)
+                faj_away = _display_number(record.get('faj_xg_away'), 2)
+                st.write(f"xG: {faj_home} — {faj_away}")
+            
+            with col2:
+                st.markdown("**📋 Факт**")
+                st.write(f"Счёт: {_safe_string(record.get('actual_score'), '—')}")
+                actual_home = _display_number(record.get('actual_xg_home'), 2)
+                actual_away = _display_number(record.get('actual_xg_away'), 2)
+                st.write(f"xG: {actual_home} — {actual_away}")
+            
+            # Ошибки
+            st.markdown("**🔴 Ошибки**")
+            errors = []
+            if record.get('error_score') is not None:
+                errors.append(f"Счёт: {record.get('error_score')}")
+            if record.get('error_xg') is not None:
+                errors.append(f"xG: {_display_number(record.get('error_xg'), 3)}")
+            if record.get('error_btts') is not None:
+                errors.append(f"BTTS: {record.get('error_btts')}")
+            if record.get('error_total_25') is not None:
+                errors.append(f"O2.5: {record.get('error_total_25')}")
+            
+            if errors:
+                st.write(", ".join(errors))
+            else:
+                st.write("—")
+            
+            # Тип и причина
+            error_type = record.get('error_type')
+            cause_type = record.get('cause_type')
+            if error_type or cause_type:
+                st.markdown("**🏷️ Классификация**")
+                st.write(f"Тип: {_safe_string(error_type, '—')} | Причина: {_safe_string(cause_type, '—')}")
+                severity = record.get('error_severity')
+                if severity is not None:
+                    st.write(f"Severity: {severity}/5")
+            
+            # Рекомендация
+            recommendation = record.get('recommendation')
+            if recommendation:
+                st.markdown("**💡 Вывод**")
+                st.write(recommendation)
+
+
+# ============================================================
 # LAST RESULT (ОЧИЩЕН ОТ ТЕХНИЧЕСКОГО МУСОРА — ПАТЧ №4)
 # ============================================================
 
@@ -1002,7 +1102,7 @@ def _render_technical_details(result: Optional[Dict[str, Any]]) -> None:
         return
 
     st.divider()
-    with st.expander("🔧 Технические детали ETC (v7.1)", expanded=False):
+    with st.expander("🔧 Технические детали ETC (v7.2)", expanded=False):
         # Цепочка ETC
         _render_flow_technical()
 
@@ -1075,7 +1175,7 @@ def _render_technical_details(result: Optional[Dict[str, Any]]) -> None:
 
 def _render_contract() -> None:
     st.divider()
-    st.markdown("### 🛡️ Архитектурные границы ETC v7.1 (E-FINAL)")
+    st.markdown("### 🛡️ Архитектурные границы ETC v7.2 (E-FINAL)")
 
     col1, col2, col3, col4 = st.columns(4)
 
@@ -1129,6 +1229,7 @@ def main() -> None:
 
     if result:
         _render_error_analysis(result)
+        _render_match_cards(result)  # ← НОВОЕ v7.2
         _render_patterns(result)
         _render_signals(result)
 
