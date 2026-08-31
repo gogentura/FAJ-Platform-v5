@@ -104,7 +104,7 @@ class PredictionPipeline:
         home_team: str = "",
         away_team: str = "",
         league: str = "РПЛ",
-        parameters: Optional[Dict[str, float]] = None,  # ← НОВОЕ v2.4
+        parameters: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
 
         start_time = time.perf_counter()
@@ -149,7 +149,7 @@ class PredictionPipeline:
                 away_passport=away_passport,
                 home_rating=home_rating,
                 away_rating=away_rating,
-                parameters=parameters,  # ← НОВОЕ v2.4
+                parameters=parameters,
             )
 
             if not isinstance(xg_result, dict):
