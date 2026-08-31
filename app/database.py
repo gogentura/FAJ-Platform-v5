@@ -3969,7 +3969,7 @@ class FAJDatabase:
         finally:
             conn.close()
     
-        def get_learning_records(
+    def get_learning_records(
         self,
         match_ids: Optional[List[int]] = None,
         limit: Optional[int] = None,
