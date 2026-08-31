@@ -3969,21 +3969,85 @@ class FAJDatabase:
         finally:
             conn.close()
     
-    def get_learning_records(self, status=None):
+        def get_learning_records(
+        self,
+        match_ids: Optional[List[int]] = None,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Read-only доступ к learning_records.
+
+        Args:
+            match_ids:
+                Необязательный список match_id.
+                Если передан — возвращаются только записи
+                указанных матчей.
+            limit:
+                Необязательное максимальное количество записей.
+
+        Returns:
+            Список обычных dict.
+
+        ВАЖНО:
+            - только SELECT;
+            - ничего не изменяет в БД;
+            - схему не меняет;
+            - таблицу learning_records не создаёт;
+            - отсутствующие match_ids не являются ошибкой.
+        """
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
-            if status:
-                cursor.execute("""
-                    SELECT * FROM learning_records
-                    WHERE status = ?
-                    ORDER BY created_at DESC
-                """, (status,))
-            else:
-                cursor.execute("""
-                    SELECT * FROM learning_records ORDER BY created_at DESC
-                """)
-            return cursor.fetchall()
+
+            sql = """
+                SELECT *
+                FROM learning_records
+            """
+
+            params = []
+            conditions = []
+
+            if match_ids:
+                normalized_ids = []
+
+                for match_id in match_ids:
+                    if match_id is None:
+                        continue
+
+                    try:
+                        normalized_ids.append(int(match_id))
+                    except (TypeError, ValueError):
+                        continue
+
+                if normalized_ids:
+                    placeholders = ", ".join("?" for _ in normalized_ids)
+                    conditions.append(
+                        f"match_id IN ({placeholders})"
+                    )
+                    params.extend(normalized_ids)
+
+            if conditions:
+                sql += " WHERE " + " AND ".join(conditions)
+
+            sql += """
+                ORDER BY datetime(created_at) DESC, id DESC
+            """
+
+            if limit is not None:
+                try:
+                    limit_value = int(limit)
+                except (TypeError, ValueError):
+                    limit_value = 0
+
+                if limit_value > 0:
+                    sql += " LIMIT ?"
+                    params.append(limit_value)
+
+            cursor.execute(sql, tuple(params))
+            rows = cursor.fetchall()
+
+            return [dict(row) for row in rows]
+
         finally:
             conn.close()
     
