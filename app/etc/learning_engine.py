@@ -9,8 +9,13 @@ ETC — Evolution Training Center
 app/etc/learning_engine.py
 ============================================================
 
-ETC LEARNING ENGINE v2.3
+ETC LEARNING ENGINE v2.4
 ============================================================
+
+ИСПРАВЛЕНИЯ v2.4:
+    1. Подключен ObservedXG вместо db.get_match_stats()
+    2. Сохранён полный трассируемый xG-контекст в событие
+    3. Логирование источника xG (реальный / fallback)
 
 ИСПРАВЛЕНИЯ v2.3:
     1. Добавлен PredictionErrorAnalyzer и ErrorClassifier
@@ -57,8 +62,9 @@ ETCLearningEngine — исполнитель ETC.
       ▼
     ETCLearningEngine
       │
-      ▼
-    StatisticalAnalyzer
+      ├── StatisticalAnalyzer
+      ├── ObservedXG (НОВОЕ v2.4)
+      └── PredictionErrorAnalyzer + ErrorClassifier
       │
       ▼
     analysis
@@ -153,6 +159,10 @@ from app.etc.error_classifier import (
     ErrorClassifier,
 )
 
+from app.etc.observed_xg import (
+    ObservedXG,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +171,7 @@ logger = logging.getLogger(__name__)
 # MODULE
 # ============================================================
 
-MODULE_VERSION = "2.3"
+MODULE_VERSION = "2.4"
 MODULE_NAME = "FAJ ETC Learning Engine"
 
 PROCESSED_EVENT_TYPE = "batch_learning"
@@ -246,7 +256,7 @@ def _first(
 
 class ETCLearningEngine:
     """
-    Главный исполнитель ETC v2.3.
+    Главный исполнитель ETC v2.4.
 
     Контракт:
 
@@ -254,7 +264,9 @@ class ETCLearningEngine:
               ↓
         StatisticalAnalyzer
               ↓
-        PredictionErrorAnalyzer + ErrorClassifier  ← НОВОЕ v2.3
+        ObservedXG  ← НОВОЕ v2.4
+              ↓
+        PredictionErrorAnalyzer + ErrorClassifier
               ↓
         ETC memory-event builder
               ↓
@@ -309,6 +321,9 @@ class ETCLearningEngine:
             or ErrorClassifier()
         )
 
+        # НОВОЕ v2.4
+        self.observed_xg = ObservedXG(self.db)
+
     # ========================================================
     # SINGLE MATCH
     # ========================================================
@@ -320,6 +335,10 @@ class ETCLearningEngine:
     ) -> Dict[str, Any]:
         """
         Полностью обрабатывает один матч.
+
+        НОВОЕ v2.4:
+            - Подключен ObservedXG
+            - Сохранён полный xG-контекст
 
         НОВОЕ v2.3:
             - Добавлен PredictionErrorAnalyzer + ErrorClassifier
@@ -409,13 +428,31 @@ class ETCLearningEngine:
                 return base_result
 
         # ----------------------------------------------------
-        # GET PREDICTION, FACT, XG
+        # GET PREDICTION, FACT, XG (ИСПРАВЛЕНО v2.4)
         # ----------------------------------------------------
 
         try:
             prediction = self.db.get_latest_prediction(safe_match_id)
             fact = self.db.get_match_result(safe_match_id)
-            xg = self.db.get_match_stats(safe_match_id)
+
+            # НОВОЕ v2.4: ObservedXG вместо db.get_match_stats()
+            observed_xg_result = self.observed_xg.get_match(safe_match_id)
+            if not isinstance(observed_xg_result, dict):
+                observed_xg_result = {}
+            xg = observed_xg_result
+
+            logger.info(
+                "ETC ObservedXG | match_id=%s | "
+                "available=%s | home_xg=%s | away_xg=%s | "
+                "home_source=%s | away_source=%s",
+                safe_match_id,
+                xg.get("observed_xg_available"),
+                xg.get("home_xg"),
+                xg.get("away_xg"),
+                xg.get("home_xg_source"),
+                xg.get("away_xg_source"),
+            )
+
         except Exception as exc:
             logger.exception("ETC data read failed | match_id=%s", safe_match_id)
             base_result["status"] = "data_read_error"
@@ -1030,7 +1067,7 @@ class ETCLearningEngine:
         return bool(rows)
 
     # ========================================================
-    # PREDICTION ERROR  ← НОВОЕ v2.3
+    # PREDICTION ERROR
     # ========================================================
 
     def _build_prediction_error(
@@ -1299,10 +1336,23 @@ class ETCLearningEngine:
         event["prediction_error_analysis"] = error_analysis
         event["classification"] = classification
 
+        # Полный трассируемый xG-контекст (ПАТЧ №2 v2.4)
+        event["xg"] = {
+            "predicted_home_xg": error_analysis.get("predicted_home_xg"),
+            "predicted_away_xg": error_analysis.get("predicted_away_xg"),
+            "actual_home_xg": error_analysis.get("actual_home_xg"),
+            "actual_away_xg": error_analysis.get("actual_away_xg"),
+            "home_xg_delta": error_analysis.get("home_xg_delta"),
+            "away_xg_delta": error_analysis.get("away_xg_delta"),
+            "total_xg_delta": error_analysis.get("total_xg_delta"),
+            "error_xg": error_analysis.get("error_xg"),
+            "xg_available": error_analysis.get("xg_available", False),
+        }
+
         return event
 
     # ========================================================
-    # SAFE NUMERIC EXTRACTION  ← НОВОЕ v2.3
+    # SAFE NUMERIC EXTRACTION
     # ========================================================
 
     @staticmethod
@@ -1334,7 +1384,7 @@ class ETCLearningEngine:
         return None
 
     # ========================================================
-    # MEMORY EVENT BUILDER (ОСНОВНОЕ ИСПРАВЛЕНИЕ v2.1)
+    # MEMORY EVENT BUILDER
     # ========================================================
 
     def _build_memory_events(
@@ -1648,6 +1698,7 @@ class ETCLearningEngine:
             "memory": self.memory.__class__.__name__,
             "prediction_error_analyzer": self.prediction_error_analyzer.__class__.__name__,
             "error_classifier": self.error_classifier.__class__.__name__,
+            "observed_xg": self.observed_xg.__class__.__name__,
             "append_only": True,
             "batch_controller_is_authority": True,
             "processed_marker": PROCESSED_EVENT_TYPE,
@@ -1657,7 +1708,7 @@ class ETCLearningEngine:
                 "analysis.memory_events",
                 "analysis.observations",
                 "analysis.prediction_error (NEW v2.3)",
-                "xg_data",
+                "xg_data (via ObservedXG v2.4)",
                 "analysis_completed (fallback)",
             ],
             "historical_facts_modified": False,
@@ -1738,13 +1789,12 @@ if __name__ == "__main__":
             print(f"{key}: {value}")
 
         print()
-        print("ETCLearningEngine v2.3 готов.")
+        print("ETCLearningEngine v2.4 готов.")
         print()
-        print("НОВОЕ В v2.3:")
-        print("1. Добавлен PredictionErrorAnalyzer + ErrorClassifier")
-        print("2. Восстановлена цепочка Prediction + Fact + Observed xG → prediction_error")
-        print("3. LearningAnalyzer теперь получает records > 0")
-        print("4. None ≠ 0 для xG данных")
+        print("НОВОЕ В v2.4:")
+        print("1. Подключен ObservedXG вместо db.get_match_stats()")
+        print("2. Сохранён полный трассируемый xG-контекст в событие")
+        print("3. Логирование источника xG (реальный / fallback)")
 
     except Exception as exc:
         print(f"ETC Learning Engine initialization error: {exc}")
