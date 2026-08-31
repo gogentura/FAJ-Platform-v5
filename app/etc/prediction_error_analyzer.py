@@ -23,6 +23,12 @@ ETC — Prediction Error Analyzer v2.1
 6. error_score переименован в score_distance
 7. Пороги вынесены в конфиг
 
+ИСПРАВЛЕНИЯ v2.2 (2026-08-31)
+============================================================
+
+1. Добавлена нормализация sqlite3.Row → dict в начале analyze()
+2. Исправлена ошибка AttributeError: 'sqlite3.Row' object has no attribute 'get'
+
 ЦЕПОЧКА:
 
     FAJ Prediction
@@ -61,8 +67,8 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 
-ANALYZER_VERSION = "2.1"
-ANALYZER_NAME = "FAJ ETC Prediction Error Analyzer v2.1"
+ANALYZER_VERSION = "2.2"
+ANALYZER_NAME = "FAJ ETC Prediction Error Analyzer v2.2"
 
 
 # ============================================================
@@ -173,6 +179,22 @@ class PredictionErrorAnalyzer:
         """
         Полный анализ ошибки одного матча.
         """
+        # =================================================
+        # НОРМАЛИЗАЦИЯ ВХОДНЫХ ДАННЫХ (sqlite3.Row → dict)
+        # =================================================
+        #
+        # Исправление v2.2: FAJDatabase возвращает sqlite3.Row,
+        # у которого нет метода .get(). Преобразуем в dict.
+        #
+        if hasattr(prediction, 'keys'):  # sqlite3.Row имеет keys()
+            prediction = dict(prediction)
+        if hasattr(result, 'keys'):
+            result = dict(result)
+        if predicted_xg is not None and hasattr(predicted_xg, 'keys'):
+            predicted_xg = dict(predicted_xg)
+        if observed_xg is not None and hasattr(observed_xg, 'keys'):
+            observed_xg = dict(observed_xg)
+
         prediction = prediction or {}
         result = result or {}
         predicted_xg = predicted_xg or {}
