@@ -13,6 +13,13 @@ app/etc/learning_analyzer.py
 -----------
 Анализ накопленной памяти и результатов обучения ETC.
 
+ИСПРАВЛЕНИЯ v2.3
+============================================================
+
+1. error_xg = None для обычных prediction_error (НЕ 0.0)
+2. error_xg = реальное значение только для xG-связанных событий
+3. MISSING ≠ ZERO — сохранён главный инвариант
+
 ИСПРАВЛЕНИЯ v2.2
 ============================================================
 
@@ -55,7 +62,7 @@ from app.database import FAJDatabase
 
 logger = logging.getLogger(__name__)
 
-MODULE_VERSION = "2.2"
+MODULE_VERSION = "2.3"
 MODULE_NAME = "ETC Learning Analyzer"
 
 
@@ -142,7 +149,7 @@ class ErrorPattern:
 
 class LearningAnalyzer:
     """
-    Анализатор накопленного опыта ETC v2.2.
+    Анализатор накопленного опыта ETC v2.3.
     Только чтение.
     """
 
@@ -191,13 +198,17 @@ class LearningAnalyzer:
             return []
 
     # ========================================================
-    # NORMALIZE MEMORY (ИСПРАВЛЕНО v2.2)
+    # NORMALIZE MEMORY (ИСПРАВЛЕНО v2.3)
     # ========================================================
 
     @staticmethod
     def normalize_memory(memory: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Приводит learning_memory к аналитическому формату.
+
+        ИСПРАВЛЕНИЯ v2.3:
+            - error_xg = None для обычных prediction_error (НЕ 0.0)
+            - MISSING ≠ ZERO — сохранён главный инвариант
 
         ИСПРАВЛЕНИЯ v2.2:
             - cause_type извлекается из reason, НЕ из feature
@@ -236,13 +247,21 @@ class LearningAnalyzer:
                 severity = _safe_int(after_value, 0)
 
             # ================================================
-            # ERROR_XG — ТОЛЬКО если xG-связан
+            # ERROR_XG — ИСПРАВЛЕНО v2.3
             # ================================================
-            error_xg = 0.0
+            # MISSING ≠ ZERO:
+            #   - None = данные отсутствуют
+            #   - 0.0 = реальная ошибка равна нулю
+            # ================================================
+            error_xg = None  # ← ИЗМЕНЕНО: None вместо 0.0
+
             if feature in ("xg_miss", "xg_miscalibration", "xg_error", "xg_calibration"):
-                error_xg = _safe_float(row.get("delta"), 0.0)
-                if error_xg == 0.0 and isinstance(after_value, (int, float)):
-                    error_xg = _safe_float(after_value, 0.0)
+                delta_value = row.get("delta")
+                if delta_value is not None:
+                    error_xg = _safe_float(delta_value, None)
+                    # Если delta = None, пробуем after_value
+                    if error_xg is None and isinstance(after_value, (int, float)):
+                        error_xg = _safe_float(after_value, None)
 
             # ================================================
             # CAUSE_TYPE — из reason (НОВОЕ v2.2)
