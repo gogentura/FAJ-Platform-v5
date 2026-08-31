@@ -9,8 +9,16 @@ ETC — Evolution Training Center
 app/etc/learning_engine.py
 ============================================================
 
-ETC LEARNING ENGINE v2.2
+ETC LEARNING ENGINE v2.3
 ============================================================
+
+ИСПРАВЛЕНИЯ v2.3:
+    1. Добавлен PredictionErrorAnalyzer и ErrorClassifier
+    2. Восстановлена цепочка Prediction + Fact + Observed xG → prediction_error
+    3. Добавлен метод _build_prediction_error()
+    4. Добавлен helper _first_numeric() (None ≠ 0)
+    5. prediction_error передаётся в _build_memory_events()
+    6. LearningAnalyzer теперь получает records > 0
 
 ИСПРАВЛЕНИЯ v2.2:
     1. Исправлен вызов _get_match() → get_match() (публичный метод database.py)
@@ -56,7 +64,7 @@ ETCLearningEngine — исполнитель ETC.
     analysis
       │
       ├── observations (обязательно)
-      ├── prediction_error (готовый от анализатора)
+      ├── prediction_error (от PredictionErrorAnalyzer + ErrorClassifier)
       ├── prediction (optional)
       ├── fact (optional)
       ├── xg (optional)
@@ -66,7 +74,7 @@ ETCLearningEngine — исполнитель ETC.
       │
       ├── analysis.memory_events
       ├── analysis.observations
-      ├── analysis.prediction_error (НОВОЕ)
+      ├── analysis.prediction_error (ОТ PREDICTION ERROR ANALYZER)
       ├── xG data
       └── analysis_completed fallback
       │
@@ -137,6 +145,14 @@ from app.etc.statistical_analyzer import (
     StatisticalAnalyzer,
 )
 
+from app.etc.prediction_error_analyzer import (
+    PredictionErrorAnalyzer,
+)
+
+from app.etc.error_classifier import (
+    ErrorClassifier,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +161,7 @@ logger = logging.getLogger(__name__)
 # MODULE
 # ============================================================
 
-MODULE_VERSION = "2.2"
+MODULE_VERSION = "2.3"
 MODULE_NAME = "FAJ ETC Learning Engine"
 
 PROCESSED_EVENT_TYPE = "batch_learning"
@@ -230,13 +246,15 @@ def _first(
 
 class ETCLearningEngine:
     """
-    Главный исполнитель ETC v2.2.
+    Главный исполнитель ETC v2.3.
 
     Контракт:
 
         BatchController
               ↓
         StatisticalAnalyzer
+              ↓
+        PredictionErrorAnalyzer + ErrorClassifier  ← НОВОЕ v2.3
               ↓
         ETC memory-event builder
               ↓
@@ -254,6 +272,8 @@ class ETCLearningEngine:
         batch_controller: Optional[BatchController] = None,
         analyzer: Optional[StatisticalAnalyzer] = None,
         memory: Optional[LearningMemory] = None,
+        prediction_error_analyzer: Optional[PredictionErrorAnalyzer] = None,
+        error_classifier: Optional[ErrorClassifier] = None,
     ) -> None:
 
         self.db = db or FAJDatabase()
@@ -279,6 +299,16 @@ class ETCLearningEngine:
             )
         )
 
+        self.prediction_error_analyzer = (
+            prediction_error_analyzer
+            or PredictionErrorAnalyzer()
+        )
+
+        self.error_classifier = (
+            error_classifier
+            or ErrorClassifier()
+        )
+
     # ========================================================
     # SINGLE MATCH
     # ========================================================
@@ -290,6 +320,10 @@ class ETCLearningEngine:
     ) -> Dict[str, Any]:
         """
         Полностью обрабатывает один матч.
+
+        НОВОЕ v2.3:
+            - Добавлен PredictionErrorAnalyzer + ErrorClassifier
+            - prediction_error создаётся и передаётся в memory
 
         НОВОЕ v2.1:
             - force: принудительная переобработка
@@ -422,6 +456,42 @@ class ETCLearningEngine:
             base_result["error"] = analysis.get("error", analysis.get("status", "analysis_failed"))
             base_result["errors"] = analysis.get("errors", [])
             return base_result
+
+        # ====================================================
+        # PREDICTION ERROR ANALYSIS  ← НОВОЕ v2.3
+        # ====================================================
+
+        try:
+            prediction_error = self._build_prediction_error(
+                match_id=safe_match_id,
+                prediction=prediction,
+                fact=fact,
+                xg=xg,
+            )
+            if prediction_error is not None:
+                analysis["prediction_error"] = prediction_error
+                logger.info(
+                    "ETC prediction_error created | match_id=%s | error_type=%s | cause=%s | severity=%s",
+                    safe_match_id,
+                    prediction_error.get("error_type"),
+                    prediction_error.get("cause_type"),
+                    prediction_error.get("severity"),
+                )
+            else:
+                logger.info(
+                    "ETC prediction_error not created | match_id=%s",
+                    safe_match_id,
+                )
+        except Exception as exc:
+            logger.exception(
+                "ETC PredictionError analysis failed | match_id=%s",
+                safe_match_id,
+            )
+            base_result["status"] = "prediction_error_analysis_failed"
+            base_result["error"] = str(exc)
+            return base_result
+
+        base_result["analysis"] = analysis
 
         # ----------------------------------------------------
         # ТРАНЗАКЦИОННОЕ СОХРАНЕНИЕ
@@ -960,6 +1030,310 @@ class ETCLearningEngine:
         return bool(rows)
 
     # ========================================================
+    # PREDICTION ERROR  ← НОВОЕ v2.3
+    # ========================================================
+
+    def _build_prediction_error(
+        self,
+        match_id: int,
+        prediction: Optional[Dict[str, Any]],
+        fact: Optional[Dict[str, Any]],
+        xg: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Строит единый prediction_error:
+            Prediction
+                 +
+            Fact
+                 +
+            Observed xG
+                 ↓
+        PredictionErrorAnalyzer
+                 ↓
+           ErrorClassifier
+                 ↓
+        prediction_error
+
+        ВАЖНО:
+            - ничего не записывает в БД;
+            - не изменяет Prediction;
+            - не изменяет Fact;
+            - не вычисляет новый xG;
+            - отсутствующий xG НЕ превращается в 0.
+        """
+        prediction = prediction or {}
+        fact = fact or {}
+        xg = xg or {}
+
+        if not prediction:
+            logger.info(
+                "Prediction unavailable | match_id=%s",
+                match_id,
+            )
+            return None
+
+        if not fact:
+            logger.info(
+                "Fact unavailable | match_id=%s",
+                match_id,
+            )
+            return None
+
+        # ----------------------------------------------------
+        # PREDICTED xG
+        # ----------------------------------------------------
+        #
+        # Используем только реально существующие значения.
+        # Никаких default=0.
+        #
+        predicted_home_xg = self._first_numeric(
+            prediction,
+            (
+                "predicted_home_xg",
+                "xg_home",
+                "home_xg",
+            ),
+        )
+        predicted_away_xg = self._first_numeric(
+            prediction,
+            (
+                "predicted_away_xg",
+                "xg_away",
+                "away_xg",
+            ),
+        )
+        predicted_xg = {
+            "xg_home": predicted_home_xg,
+            "xg_away": predicted_away_xg,
+        }
+
+        # ----------------------------------------------------
+        # OBSERVED xG
+        # ----------------------------------------------------
+        #
+        # Только фактически присутствующие значения.
+        # Если источник вернул другую структуру — не изобретаем
+        # значения.
+        #
+        observed_home_xg = self._first_numeric(
+            xg,
+            (
+                "home_xg",
+                "xg_home",
+                "actual_home_xg",
+            ),
+        )
+        observed_away_xg = self._first_numeric(
+            xg,
+            (
+                "away_xg",
+                "xg_away",
+                "actual_away_xg",
+            ),
+        )
+        observed_xg = {
+            "home_xg": observed_home_xg,
+            "away_xg": observed_away_xg,
+        }
+
+        # ----------------------------------------------------
+        # STEP 1 — PREDICTION ERROR ANALYZER
+        # ----------------------------------------------------
+        error_analysis = self.prediction_error_analyzer.analyze(
+            prediction=prediction,
+            result=fact,
+            predicted_xg=predicted_xg,
+            observed_xg=observed_xg,
+        )
+
+        if not isinstance(error_analysis, dict):
+            raise RuntimeError(
+                "PredictionErrorAnalyzer вернул некорректный результат."
+            )
+
+        if not error_analysis.get("success", False):
+            warnings = error_analysis.get("warnings", [])
+            logger.info(
+                "PredictionErrorAnalyzer incomplete | match_id=%s | warnings=%s",
+                match_id,
+                warnings,
+            )
+            return None
+
+        # ----------------------------------------------------
+        # STEP 2 — NORMALIZED PREDICTION FOR CLASSIFIER
+        # ----------------------------------------------------
+        classifier_prediction = {
+            "match_id": match_id,
+            "predicted_score": error_analysis.get(
+                "predicted_score"
+            ),
+            "predicted_winner": error_analysis.get(
+                "predicted_winner"
+            ),
+            "predicted_btts": error_analysis.get(
+                "predicted_btts"
+            ),
+            "predicted_over25": error_analysis.get(
+                "predicted_over25"
+            ),
+            "predicted_over35": error_analysis.get(
+                "predicted_over35"
+            ),
+            "predicted_home_xg": error_analysis.get(
+                "predicted_home_xg"
+            ),
+            "predicted_away_xg": error_analysis.get(
+                "predicted_away_xg"
+            ),
+        }
+
+        # ----------------------------------------------------
+        # STEP 3 — NORMALIZED FACT FOR CLASSIFIER
+        # ----------------------------------------------------
+        classifier_fact = {
+            "match_id": match_id,
+            "actual_score": error_analysis.get(
+                "actual_score"
+            ),
+            "actual_home_goals": self._first_numeric(
+                fact,
+                (
+                    "home_goals",
+                    "actual_home_goals",
+                ),
+                integer=True,
+            ),
+            "actual_away_goals": self._first_numeric(
+                fact,
+                (
+                    "away_goals",
+                    "actual_away_goals",
+                ),
+                integer=True,
+            ),
+            "actual_home_xg": error_analysis.get(
+                "actual_home_xg"
+            ),
+            "actual_away_xg": error_analysis.get(
+                "actual_away_xg"
+            ),
+        }
+
+        # ----------------------------------------------------
+        # STEP 4 — ERROR CLASSIFIER
+        # ----------------------------------------------------
+        classification = self.error_classifier.classify(
+            prediction=classifier_prediction,
+            fact=classifier_fact,
+        )
+
+        if not isinstance(classification, dict):
+            raise RuntimeError(
+                "ErrorClassifier вернул некорректный результат."
+            )
+
+        if not classification.get("success", False):
+            logger.info(
+                "ErrorClassifier incomplete | match_id=%s | warnings=%s",
+                match_id,
+                classification.get("warnings", []),
+            )
+            return None
+
+        error_type = classification.get("error_type")
+
+        # correct / data_incomplete не являются prediction_error
+        if error_type in (None, "correct", "data_incomplete"):
+            logger.info(
+                "No model error | match_id=%s | error_type=%s",
+                match_id,
+                error_type,
+            )
+            return None
+
+        # ----------------------------------------------------
+        # STEP 5 — UNIFIED MEMORY EVENT
+        # ----------------------------------------------------
+        severity = classification.get("severity")
+        error_xg = classification.get("error_xg")
+        cause_type = classification.get("cause_type")
+        recommendation = classification.get(
+            "recommendation",
+            "",
+        )
+
+        event = {
+            "event_type": "prediction_error",
+            "object_type": f"match:{match_id}",
+            "feature": error_type,
+            "before_value": classification.get(
+                "error_score"
+            ),
+            "after_value": severity,
+            "delta": error_xg,
+            "reason": (
+                f"{cause_type}: {recommendation}"
+                if cause_type
+                else recommendation
+            ),
+            "confidence": 1.0,
+            "impact": (
+                min(1.0, float(severity) / 5.0)
+                if severity is not None
+                else 0.0
+            ),
+            "algorithm": "ETC.ErrorClassifier",
+            "model_version": (
+                classification.get(
+                    "version",
+                    MODULE_VERSION,
+                )
+            ),
+            "reference_id": match_id,
+        }
+
+        # Дополнительная диагностическая информация
+        # сохраняется в analysis, но не используется как
+        # отдельные memory events.
+        event["prediction_error_analysis"] = error_analysis
+        event["classification"] = classification
+
+        return event
+
+    # ========================================================
+    # SAFE NUMERIC EXTRACTION  ← НОВОЕ v2.3
+    # ========================================================
+
+    @staticmethod
+    def _first_numeric(
+        data: Optional[Dict[str, Any]],
+        keys: Tuple[str, ...],
+        integer: bool = False,
+    ) -> Optional[float]:
+        """
+        Возвращает первое реально существующее числовое значение.
+        ВАЖНО:
+            None НЕ превращается в 0.
+        """
+        if not isinstance(data, dict):
+            return None
+
+        for key in keys:
+            value = data.get(key)
+            if value is None:
+                continue
+
+            try:
+                if integer:
+                    return int(value)
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+
+        return None
+
+    # ========================================================
     # MEMORY EVENT BUILDER (ОСНОВНОЕ ИСПРАВЛЕНИЕ v2.1)
     # ========================================================
 
@@ -975,7 +1349,7 @@ class ETCLearningEngine:
 
             1. analysis["memory_events"]       — готовые события
             2. analysis["observations"]        — основной источник
-            3. analysis["prediction_error"]    — готовый prediction_error (НОВОЕ)
+            3. analysis["prediction_error"]    — готовый prediction_error (НОВОЕ v2.3)
             4. xG data                         — xg_calibration
             5. analysis_completed fallback
         """
@@ -1011,7 +1385,7 @@ class ETCLearningEngine:
                 events.append(event)
 
         # ====================================================
-        # 3. PREDICTION ERROR (ГОТОВЫЙ ОТ АНАЛИЗАТОРА) — НОВОЕ v2.1
+        # 3. PREDICTION ERROR (ГОТОВЫЙ ОТ АНАЛИЗАТОРА) — НОВОЕ v2.3
         # ====================================================
 
         prediction_error = analysis.get("prediction_error")
@@ -1272,6 +1646,8 @@ class ETCLearningEngine:
             "batch_controller": self.batch_controller.__class__.__name__,
             "analyzer": self.analyzer.__class__.__name__,
             "memory": self.memory.__class__.__name__,
+            "prediction_error_analyzer": self.prediction_error_analyzer.__class__.__name__,
+            "error_classifier": self.error_classifier.__class__.__name__,
             "append_only": True,
             "batch_controller_is_authority": True,
             "processed_marker": PROCESSED_EVENT_TYPE,
@@ -1280,7 +1656,7 @@ class ETCLearningEngine:
             "memory_event_sources": [
                 "analysis.memory_events",
                 "analysis.observations",
-                "analysis.prediction_error",
+                "analysis.prediction_error (NEW v2.3)",
                 "xg_data",
                 "analysis_completed (fallback)",
             ],
@@ -1362,11 +1738,13 @@ if __name__ == "__main__":
             print(f"{key}: {value}")
 
         print()
-        print("ETCLearningEngine v2.2 готов.")
+        print("ETCLearningEngine v2.3 готов.")
         print()
-        print("НОВОЕ В v2.2:")
-        print("1. Исправлен вызов _get_match() → get_match()")
-        print("2. Использован публичный метод database.py")
+        print("НОВОЕ В v2.3:")
+        print("1. Добавлен PredictionErrorAnalyzer + ErrorClassifier")
+        print("2. Восстановлена цепочка Prediction + Fact + Observed xG → prediction_error")
+        print("3. LearningAnalyzer теперь получает records > 0")
+        print("4. None ≠ 0 для xG данных")
 
     except Exception as exc:
         print(f"ETC Learning Engine initialization error: {exc}")
