@@ -7,7 +7,7 @@ ETC — Evolution Training Center
 ============================================================
 ФАЙЛ:
     app/pages/etc.py
-ETC PAGE v7.0 (E-FINAL UI)
+ETC PAGE v7.1 (E-FINAL UI)
 ============================================================
 НАЗНАЧЕНИЕ
 -----------
@@ -17,8 +17,6 @@ ETC PAGE v7.0 (E-FINAL UI)
     • готовые матчи;
     • уже обработанные матчи;
     • последний batch;
-    • batch fingerprint;
-    • LearningMemory (только learning events);
     • ошибки FAJ;
     • xG deviations;
     • повторяющиеся error patterns;
@@ -26,32 +24,25 @@ ETC PAGE v7.0 (E-FINAL UI)
     • ParameterOptimizer proposals;
     • Review Gate (pending/rejected/approved);
     • Auto-apply: DISABLED;
-    • ошибки отдельных матчей;
     • следующий шаг цикла.
+
+ИСПРАВЛЕНИЯ v7.1
+============================================================
+1. None НЕ превращается в 0.0 (_safe_float)
+2. Добавлена _display_number() для отображения None как "—"
+3. Технические детали перенесены в expander
+4. Убран технический мусор с главного экрана
+5. Сохранены proposals и review gate
 
 ИСПРАВЛЕНИЯ v7.0 (E-FINAL UI)
 ============================================================
 1. Обновлён Flow под E-FINAL цепочку
-2. Убраны BEFORE/AFTER snapshots из UI (не пишутся в LearningMemory)
+2. Убраны BEFORE/AFTER snapshots из UI
 3. Убраны parameter_changes (заменены на proposals)
-4. Добавлен блок Review Gate (pending/rejected/approved)
-5. Добавлен блок Proposals (с параметрами и приоритетами)
+4. Добавлен блок Review Gate
+5. Добавлен блок Proposals
 6. Добавлено отображение normalized signals
-7. Обновлены версии (ETCController v4.1, ETC Page v7.0)
-8. Явно показано AUTO-APPLY: DISABLED
-
-ИСПРАВЛЕНИЯ v6.1
-============================================================
-1. Добавлено отображение warnings из ErrorClassifier v2.2
-2. Добавлено отображение data_incomplete в error_type
-3. Убран некорректный fallback analysis → learning_result → analysis
-4. Использован правильный путь: result → batches → learning_result → analysis
-5. Убран устаревший ключ success, используется status
-6. Исправлен вызов _render_error_analysis() с правильным анализом
-7. Исправлен вызов _render_patterns() с правильным анализом
-8. Исправлен вызов _render_signals() с правильным анализом
-9. Добавлена функция _extract_analysis() для единого получения analysis
-10. Добавлена функция _extract_warnings() для получения warnings
+7. Явно показано AUTO-APPLY: DISABLED
 
 ВАЖНО
 ------
@@ -61,30 +52,9 @@ PAGE НЕ:
     • изменяет match_results;
     • изменяет predictions;
     • изменяет model_parameters;
-    • изменяет learning_memory;
-    • самостоятельно определяет, обучен матч или нет;
-    • самостоятельно рассчитывает xG;
-    • самостоятельно классифицирует ошибки.
+    • изменяет learning_memory.
 
-Вся бизнес-логика находится в backend:
-    ETCController v4.1 (E-FINAL)
-        ↓
-    BatchController v2.1
-        ↓
-    LearningBatch v2.1
-        ↓
-    ETCLearningEngine v2.0
-        ↓
-    ErrorClassifier v2.2
-        ↓
-    LearningAnalyzer v2.2
-        ↓
-    ParameterOptimizer v2.3
-        ↓
-    Review Gate (NO AUTO-APPLY)
-        ↓
-    LearningMemory v2.1
-
+Вся бизнес-логика находится в backend.
 PAGE только отображает полученное состояние.
 ============================================================
 """
@@ -106,7 +76,7 @@ from app.etc.etc_controller import ETCController
 # ============================================================
 
 APP_VERSION = "12.1"
-ETC_PAGE_VERSION = "7.0"
+ETC_PAGE_VERSION = "7.1"
 PAGE_TITLE = "FAJ ETC"
 PAGE_ICON = "🧠"
 ETC_CONTROLLER_VERSION = "4.1"
@@ -166,11 +136,15 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
-def _safe_float(value: Any, default: float = 0.0) -> float:
+# ПАТЧ №3: None НЕ превращается в 0.0
+def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
     try:
         if value is None:
             return default
-        return float(value)
+        result = float(value)
+        if pd.isna(result):
+            return default
+        return result
     except (TypeError, ValueError):
         return default
 
@@ -227,14 +201,23 @@ def _get_batches(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [item for item in raw if isinstance(item, dict)]
 
 
+# ПАТЧ №3: отображение числа с заменой None на "—"
+def _display_number(value: Any, digits: int = 2) -> str:
+    """Отображает число, заменяя None на '—'."""
+    if value is None:
+        return "—"
+    try:
+        return f"{float(value):.{digits}f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
 # ============================================================
 # EXTRACT ANALYSIS
 # ============================================================
 
 def _extract_analysis(result: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Извлекает analysis из результата ETCController v4.1.
-    """
+    """Извлекает analysis из результата ETCController v4.1."""
     if not result:
         return {}
 
@@ -305,10 +288,11 @@ def _render_header() -> None:
 
 
 # ============================================================
-# FLOW (E-FINAL)
+# FLOW (перенесено в технические детали — ПАТЧ №4)
 # ============================================================
 
-def _render_flow() -> None:
+def _render_flow_technical() -> None:
+    """Цепочка ETC — показывается только в технических деталях."""
     st.markdown("### 🔄 Цепочка ETC (E-FINAL)")
     st.code(
         """
@@ -381,14 +365,6 @@ def _render_status(controller: ETCController) -> Dict[str, Any]:
 
     with col4:
         st.metric("Обновлено", timestamp[:19] if len(timestamp) > 19 else timestamp)
-
-    # Дополнительная информация
-    features = _safe_dict(status.get("features", {}))
-    if features:
-        cols = st.columns(len(features))
-        for idx, (key, value) in enumerate(features.items()):
-            with cols[idx]:
-                st.caption(f"{key}: {'✅' if value else '❌'}")
 
     st.divider()
     return status
@@ -531,18 +507,14 @@ def _render_warnings(result: Dict[str, Any]) -> None:
 
 
 # ============================================================
-# PROPOSALS (НОВОЕ v7.0)
+# PROPOSALS
 # ============================================================
 
 def _render_proposals(result: Dict[str, Any]) -> None:
-    """
-    Отображает proposals из ParameterOptimizer.
-    """
-    # Прямой путь
+    """Отображает proposals из ParameterOptimizer."""
     optimization = _safe_dict(result.get("optimization"))
 
     if not optimization:
-        # Проверяем в batch
         batches = _get_batches(result)
         if batches:
             first_batch = batches[0]
@@ -561,18 +533,17 @@ def _render_proposals(result: Dict[str, Any]) -> None:
     for proposal in proposals:
         rows.append({
             "Параметр": _safe_string(proposal.get("parameter_name")),
-            "Текущее": round(_safe_float(proposal.get("current_value")), 4),
-            "Предлагаемое": round(_safe_float(proposal.get("proposed_value")), 4),
-            "Delta": round(_safe_float(proposal.get("delta")), 4),
+            "Текущее": _display_number(proposal.get("current_value"), 4),
+            "Предлагаемое": _display_number(proposal.get("proposed_value"), 4),
+            "Delta": _display_number(proposal.get("delta"), 4),
             "Priority": _safe_string(proposal.get("priority")),
-            "Confidence": round(_safe_float(proposal.get("confidence")), 3),
+            "Confidence": _display_number(proposal.get("confidence"), 3),
             "Evidence": _safe_int(proposal.get("unique_match_count")),
             "Статус": _safe_string(proposal.get("status")),
         })
 
     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
 
-    # Показать причины
     for proposal in proposals[:3]:
         reason = proposal.get("reason")
         if reason:
@@ -581,18 +552,14 @@ def _render_proposals(result: Dict[str, Any]) -> None:
 
 
 # ============================================================
-# REVIEW GATE (НОВОЕ v7.0)
+# REVIEW GATE
 # ============================================================
 
 def _render_review_gate(result: Dict[str, Any]) -> None:
-    """
-    Отображает Review Gate (pending/rejected/approved).
-    """
-    # Прямой путь
+    """Отображает Review Gate (pending/rejected/approved)."""
     review = _safe_dict(result.get("review"))
 
     if not review:
-        # Проверяем в batch
         batches = _get_batches(result)
         if batches:
             first_batch = batches[0]
@@ -627,7 +594,6 @@ def _render_review_gate(result: Dict[str, Any]) -> None:
 
     st.caption("E-FINAL: все proposals находятся в статусе pending. Автоматическое применение отключено.")
 
-    # Показать pending proposals
     pending_proposals = _safe_list(review.get("pending", []))
     if pending_proposals:
         with st.expander(f"⏳ Pending proposals ({len(pending_proposals)})", expanded=False):
@@ -635,16 +601,16 @@ def _render_review_gate(result: Dict[str, Any]) -> None:
             for proposal in pending_proposals:
                 rows.append({
                     "Параметр": _safe_string(proposal.get("parameter_name")),
-                    "Предлагаемое": round(_safe_float(proposal.get("proposed_value")), 4),
+                    "Предлагаемое": _display_number(proposal.get("proposed_value"), 4),
                     "Priority": _safe_string(proposal.get("priority")),
-                    "Confidence": round(_safe_float(proposal.get("confidence")), 3),
+                    "Confidence": _display_number(proposal.get("confidence"), 3),
                     "Evidence": _safe_int(proposal.get("unique_match_count")),
                 })
             st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
 
 
 # ============================================================
-# SIGNALS (с raw/normalized)
+# SIGNALS
 # ============================================================
 
 def _render_signals(result: Dict[str, Any]) -> None:
@@ -653,7 +619,6 @@ def _render_signals(result: Dict[str, Any]) -> None:
 
     raw_signals = _safe_list(analysis.get("signals", []))
 
-    # Нормализованные сигналы из optimization
     optimization = _safe_dict(result.get("optimization"))
     if not optimization:
         batches = _get_batches(result)
@@ -682,7 +647,6 @@ def _render_signals(result: Dict[str, Any]) -> None:
     with col2:
         st.metric("Normalized signals (Optimizer)", signals_analyzed)
 
-    # Показать нормализованные сигналы
     if normalized_signals:
         st.caption("**Нормализованные сигналы (вход для ParameterOptimizer)**")
         rows = []
@@ -691,13 +655,12 @@ def _render_signals(result: Dict[str, Any]) -> None:
                 "Ошибка": _safe_string(signal.get("error_type")),
                 "Причина": _safe_string(signal.get("cause_type")),
                 "Матчей": _safe_int(signal.get("count")),
-                "Confidence": round(_safe_float(signal.get("confidence")), 3),
-                "Strength": round(_safe_float(signal.get("signal_strength")), 3),
-                "Severity": round(_safe_float(signal.get("average_severity")), 3),
+                "Confidence": _display_number(signal.get("confidence"), 3),
+                "Strength": _display_number(signal.get("signal_strength"), 3),
+                "Severity": _display_number(signal.get("average_severity"), 3),
             })
         st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
 
-    # Топ сигналы
     top_signals = _safe_list(analysis.get("top_signals", []))
     if top_signals:
         st.caption("**Топ сигналы (аналитические)**")
@@ -708,46 +671,13 @@ def _render_signals(result: Dict[str, Any]) -> None:
                 "Ошибка": _safe_string(signal.get("error_type")),
                 "Причина": _safe_string(signal.get("cause_type")),
                 "Матчей": _safe_int(signal.get("unique_match_count")),
-                "Strength": round(_safe_float(signal.get("signal_strength")), 3),
+                "Strength": _display_number(signal.get("signal_strength"), 3),
             })
         st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
 
 
 # ============================================================
-# MEMORY (только learning events)
-# ============================================================
-
-def _render_memory(result: Dict[str, Any]) -> None:
-    """
-    Отображает LearningMemory — только learning events.
-    НЕТ BEFORE/AFTER snapshots (убраны в E-FINAL).
-    """
-    memory_ids = _normalize_ids(result.get("memory_ids", []))
-    batch_memory_ids = _normalize_ids(result.get("batch_memory_ids", []))
-    learning_events = _safe_int(result.get("learning_events"))
-
-    st.markdown("### 🧠 LearningMemory")
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.metric("Learning Events", learning_events)
-
-    with col2:
-        st.metric("Memory IDs", len(memory_ids))
-
-    with col3:
-        st.metric("Batch Memory", len(batch_memory_ids))
-
-    st.caption("E-FINAL: snapshots НЕ пишутся в LearningMemory")
-
-    if memory_ids:
-        with st.expander("🔎 Показать Memory IDs", expanded=False):
-            st.code(", ".join(str(mid) for mid in memory_ids[:20]))
-
-
-# ============================================================
-# LAST RESULT
+# LAST RESULT (ОЧИЩЕН ОТ ТЕХНИЧЕСКОГО МУСОРА — ПАТЧ №4)
 # ============================================================
 
 def _render_last_result() -> None:
@@ -760,19 +690,15 @@ def _render_last_result() -> None:
     st.markdown("## 📦 Последний batch")
 
     _render_result_status(result)
-
     _render_warnings(result)
 
-    # Основные метрики
+    # Только основные метрики (без technical мусора)
     processed = _safe_int(result.get("processed"))
     already_processed = _safe_int(result.get("already_processed"))
     failed = _safe_int(result.get("failed"))
-    learned = _safe_int(result.get("learned"))
     total = _safe_int(result.get("batch_size", 0))
-    learning_events = _safe_int(result.get("learning_events"))
-    memory_events = _safe_int(result.get("memory_events"))
 
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
         st.metric("Всего матчей", total)
@@ -786,16 +712,7 @@ def _render_last_result() -> None:
     with col4:
         st.metric("Ошибки", failed)
 
-    with col5:
-        st.metric("Применено изменений", learned)
-
-    with col6:
-        st.metric("Learning Events", learning_events)
-
-    # ------------------------------------------------------------
-    # PROCESSED MATCH IDS
-    # ------------------------------------------------------------
-
+    # Показываем только матчи (без technical IDs)
     processed_ids = _normalize_ids(result.get("processed_match_ids", []))
     already_processed_ids = _normalize_ids(result.get("already_processed_match_ids", []))
 
@@ -816,34 +733,11 @@ def _render_last_result() -> None:
                 with st.expander("🔎 Показать match_id", expanded=False):
                     st.code(", ".join(str(mid) for mid in already_processed_ids[:20]))
 
-    # ------------------------------------------------------------
-    # PROPOSALS
-    # ------------------------------------------------------------
-
+    # Proposals и Review Gate (оставляем — они нужны)
     _render_proposals(result)
-
-    # ------------------------------------------------------------
-    # REVIEW GATE
-    # ------------------------------------------------------------
-
     _render_review_gate(result)
 
-    # ------------------------------------------------------------
-    # MEMORY
-    # ------------------------------------------------------------
-
-    _render_memory(result)
-
-    # ------------------------------------------------------------
-    # BATCH CHECK
-    # ------------------------------------------------------------
-
-    _render_batch(result)
-
-    # ------------------------------------------------------------
-    # ERRORS
-    # ------------------------------------------------------------
-
+    # Ошибки (если есть)
     errors = _error_count(result.get("errors"))
     if errors:
         raw_errors = _get_errors(result)
@@ -872,105 +766,6 @@ def _render_last_result() -> None:
 
 
 # ============================================================
-# BATCH
-# ============================================================
-
-def _render_batch(result: Dict[str, Any]) -> None:
-    batches = _get_batches(result)
-
-    if not batches:
-        batch_check = _safe_dict(result.get("batch_check"))
-        if batch_check:
-            _render_batch_check(batch_check)
-        return
-
-    st.markdown("### 📦 Детали batch")
-
-    for idx, batch in enumerate(batches):
-        with st.expander(f"Batch #{idx + 1}: {_safe_string(batch.get('league'))}", expanded=(idx == 0)):
-            batch_check = _safe_dict(batch.get("batch_check"))
-            if batch_check:
-                _render_batch_check(batch_check)
-
-            col1, col2, col3, col4, col5 = st.columns(5)
-
-            with col1:
-                st.metric("Размер", _safe_int(batch.get("batch_size")))
-
-            with col2:
-                st.metric("Обработано", _safe_int(batch.get("processed")))
-
-            with col3:
-                st.metric("Уже было", _safe_int(batch.get("already_processed")))
-
-            with col4:
-                st.metric("Ошибки", _safe_int(batch.get("errors")))
-
-            with col5:
-                st.metric("Статус", _safe_string(batch.get("status")))
-
-            # Показываем оптимизацию и review для batch
-            optimization = _safe_dict(batch.get("optimization"))
-            if optimization:
-                proposals = _safe_list(optimization.get("proposals", []))
-                if proposals:
-                    st.caption(f"Proposals: {len(proposals)}")
-
-            review = _safe_dict(batch.get("review"))
-            if review:
-                pending = _safe_int(len(review.get("pending", [])))
-                rejected = _safe_int(len(review.get("rejected", [])))
-                approved = _safe_int(len(review.get("approved", [])))
-                st.caption(f"Review: pending={pending}, rejected={rejected}, approved={approved}")
-
-            selected_ids = _normalize_ids(batch.get("selected_match_ids", []))
-            if selected_ids:
-                st.caption(f"Выбрано матчей: {len(selected_ids)}")
-                with st.expander("🔎 Показать match_id", expanded=False):
-                    st.code(", ".join(str(mid) for mid in selected_ids[:20]))
-
-
-def _render_batch_check(batch_check: Dict[str, Any]) -> None:
-    status = _safe_string(batch_check.get("status"))
-    required = _safe_int(batch_check.get("required_matches"))
-    completed = _safe_int(batch_check.get("completed_matches"))
-    processed = _safe_int(batch_check.get("processed_matches"))
-    new_matches = _safe_int(batch_check.get("new_matches"))
-    remaining = _safe_int(batch_check.get("remaining_matches"))
-    league = _safe_string(batch_check.get("league"))
-    reason = _safe_string(batch_check.get("reason"))
-
-    col1, col2, col3, col4, col5 = st.columns(5)
-
-    with col1:
-        st.metric("Статус", status)
-
-    with col2:
-        st.metric("Требуется", required)
-
-    with col3:
-        st.metric("Новых", new_matches)
-
-    with col4:
-        st.metric("Осталось", remaining)
-
-    with col5:
-        st.metric("Всего завершено", completed)
-
-    st.caption(f"Лига: {league} | Обработано ранее: {processed}")
-
-    if reason:
-        st.caption(f"Причина: {reason}")
-
-    fingerprint = batch_check.get("batch_fingerprint")
-    if fingerprint:
-        st.success("🔐 Batch fingerprint присутствует.")
-        st.code(str(fingerprint)[:64] + ("..." if len(str(fingerprint)) > 64 else ""))
-    else:
-        st.info("ℹ️ Batch fingerprint не предоставлен.")
-
-
-# ============================================================
 # ERROR ANALYSIS
 # ============================================================
 
@@ -994,7 +789,7 @@ def _render_error_analysis(result: Dict[str, Any]) -> None:
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        st.metric("Средняя severity", round(_safe_float(severity.get("average")), 3))
+        st.metric("Средняя severity", _display_number(severity.get("average"), 3))
 
     with col2:
         st.metric("Max severity", _safe_int(severity.get("max")))
@@ -1003,7 +798,11 @@ def _render_error_analysis(result: Dict[str, Any]) -> None:
         st.metric("xG записей", _safe_int(xg.get("count")))
 
     with col4:
-        st.metric("Средняя xG ошибка", round(_safe_float(xg.get("average")), 3))
+        xg_avg = xg.get("average")
+        if xg_avg is None:
+            st.metric("Средняя xG ошибка", "—")
+        else:
+            st.metric("Средняя xG ошибка", _display_number(xg_avg, 3))
 
     has_xg = xg.get("has_xg_data", False)
     if not has_xg:
@@ -1060,10 +859,10 @@ def _render_patterns(result: Dict[str, Any]) -> None:
             "Причина": _safe_string(pattern.get("cause_type")),
             "Событий": _safe_int(pattern.get("event_count")),
             "Матчей": _safe_int(pattern.get("unique_match_count")),
-            "Severity": round(_safe_float(pattern.get("average_severity")), 3),
-            "xG dev": round(_safe_float(pattern.get("average_xg_error")), 3),
-            "Confidence": round(_safe_float(pattern.get("average_confidence")), 3),
-            "Strength": round(_safe_float(pattern.get("signal_strength")), 3),
+            "Severity": _display_number(pattern.get("average_severity"), 3),
+            "xG dev": _display_number(pattern.get("average_xg_error"), 3),
+            "Confidence": _display_number(pattern.get("average_confidence"), 3),
+            "Strength": _display_number(pattern.get("signal_strength"), 3),
             "Priority": _safe_string(pattern.get("priority")),
         })
 
@@ -1092,11 +891,9 @@ def _render_what_happened(result: Optional[Dict[str, Any]]) -> None:
     processed = _safe_int(result.get("processed"))
     already_processed = _safe_int(result.get("already_processed"))
     failed = _safe_int(result.get("failed"))
-    learned = _safe_int(result.get("learned"))
     total = _safe_int(result.get("batch_size", 0))
     learning_events = _safe_int(result.get("learning_events"))
 
-    # Проверяем наличие proposals/review
     optimization = _safe_dict(result.get("optimization"))
     proposals = _safe_list(optimization.get("proposals", []))
     review = _safe_dict(result.get("review"))
@@ -1197,7 +994,7 @@ def _render_next_step(status: Dict[str, Any], result: Optional[Dict[str, Any]]) 
 
 
 # ============================================================
-# TECHNICAL DETAILS
+# TECHNICAL DETAILS (ПАТЧ №4 — сюда перенесён технический мусор)
 # ============================================================
 
 def _render_technical_details(result: Optional[Dict[str, Any]]) -> None:
@@ -1205,7 +1002,70 @@ def _render_technical_details(result: Optional[Dict[str, Any]]) -> None:
         return
 
     st.divider()
-    with st.expander("🔧 Технические детали ETC (v7.0)", expanded=False):
+    with st.expander("🔧 Технические детали ETC (v7.1)", expanded=False):
+        # Цепочка ETC
+        _render_flow_technical()
+
+        # Memory IDs
+        memory_ids = _normalize_ids(result.get("memory_ids", []))
+        batch_memory_ids = _normalize_ids(result.get("batch_memory_ids", []))
+        learning_events = _safe_int(result.get("learning_events"))
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Learning Events", learning_events)
+        with col2:
+            st.metric("Memory IDs", len(memory_ids))
+        with col3:
+            st.metric("Batch Memory", len(batch_memory_ids))
+
+        if memory_ids:
+            st.code(", ".join(str(mid) for mid in memory_ids[:20]))
+
+        # Batch детали
+        batches = _get_batches(result)
+        if batches:
+            st.markdown("#### 📦 Детали batch")
+            for idx, batch in enumerate(batches):
+                with st.expander(f"Batch #{idx + 1}: {_safe_string(batch.get('league'))}", expanded=False):
+                    batch_check = _safe_dict(batch.get("batch_check"))
+                    if batch_check:
+                        status = _safe_string(batch_check.get("status"))
+                        required = _safe_int(batch_check.get("required_matches"))
+                        completed = _safe_int(batch_check.get("completed_matches"))
+                        processed = _safe_int(batch_check.get("processed_matches"))
+                        new_matches = _safe_int(batch_check.get("new_matches"))
+                        remaining = _safe_int(batch_check.get("remaining_matches"))
+                        league = _safe_string(batch_check.get("league"))
+                        reason = _safe_string(batch_check.get("reason"))
+
+                        c1, c2, c3, c4, c5 = st.columns(5)
+                        with c1:
+                            st.metric("Статус", status)
+                        with c2:
+                            st.metric("Требуется", required)
+                        with c3:
+                            st.metric("Новых", new_matches)
+                        with c4:
+                            st.metric("Осталось", remaining)
+                        with c5:
+                            st.metric("Всего завершено", completed)
+
+                        st.caption(f"Лига: {league} | Обработано ранее: {processed}")
+                        if reason:
+                            st.caption(f"Причина: {reason}")
+
+                        fingerprint = batch_check.get("batch_fingerprint")
+                        if fingerprint:
+                            st.success("🔐 Batch fingerprint присутствует.")
+                            st.code(str(fingerprint)[:64] + ("..." if len(str(fingerprint)) > 64 else ""))
+
+                    selected_ids = _normalize_ids(batch.get("selected_match_ids", []))
+                    if selected_ids:
+                        st.caption(f"Выбрано матчей: {len(selected_ids)}")
+                        st.code(", ".join(str(mid) for mid in selected_ids[:20]))
+
+        # Полный JSON
         st.json(result)
 
 
@@ -1215,7 +1075,7 @@ def _render_technical_details(result: Optional[Dict[str, Any]]) -> None:
 
 def _render_contract() -> None:
     st.divider()
-    st.markdown("### 🛡️ Архитектурные границы ETC v7.0 (E-FINAL)")
+    st.markdown("### 🛡️ Архитектурные границы ETC v7.1 (E-FINAL)")
 
     col1, col2, col3, col4 = st.columns(4)
 
@@ -1257,8 +1117,6 @@ def main() -> None:
         st.exception(exc)
         st.stop()
 
-    _render_flow()
-
     status = _render_status(controller)
 
     _render_control(controller)
@@ -1276,7 +1134,10 @@ def main() -> None:
 
     _render_what_happened(result)
     _render_next_step(status, result)
+
+    # Технические детали — в отдельном expander (ПАТЧ №4)
     _render_technical_details(result)
+
     _render_contract()
 
     st.divider()
