@@ -1268,7 +1268,7 @@ def _get_cards_range(
 
 
 # ============================================================
-# FORM CONTEXT CARD (NEW)
+# FORM CONTEXT CARD
 # ============================================================
 
 def _form_result_string(
@@ -1416,12 +1416,15 @@ def render_form_context_card(
         except (TypeError, ValueError):
             return "—"
 
+    # ========================================================
+    # FIX: match_types → difficulty
+    # ========================================================
     home_match_types = home_context.get(
-        "match_types",
+        "difficulty",
         [],
     )
     away_match_types = away_context.get(
-        "match_types",
+        "difficulty",
         [],
     )
 
@@ -2896,7 +2899,7 @@ def render_match_setup(
                     )
 
     # ========================================================
-    # FORM CONTEXT CARD (NEW)
+    # FORM CONTEXT CARD
     # ========================================================
 
     form_context_data = (
