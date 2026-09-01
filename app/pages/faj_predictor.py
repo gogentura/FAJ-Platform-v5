@@ -66,6 +66,7 @@ import streamlit as st
 
 from app.database import FAJDatabase
 from app.parsers.soccer365_parser import Soccer365Parser
+from app.core.faj_brain import FAJBrain
 
 
 # ============================================================
@@ -891,612 +892,336 @@ def build_team_summary(
 
 
 # ============================================================
-# TEMPORARY FAJ BRAIN
+# FAJ REVOLUTION BRAIN
 # ============================================================
 
-def poisson_probability(
-    goals: int,
-    expected: float,
-) -> float:
-
-    if expected <= 0:
-        return 0.0
-
-    return (
-        math.exp(-expected)
-        * expected ** goals
-        / math.factorial(goals)
-    )
+@st.cache_resource
+def get_faj_brain() -> FAJBrain:
+    return FAJBrain()
 
 
-def probability_over(
-    total_xg: float,
-    line: float,
-) -> float:
-
-    threshold = int(
-        math.floor(line)
-    )
-
-    probability_under_or_equal = 0.0
-
-    for goals in range(
-        0,
-        threshold + 1,
-    ):
-
-        probability_under_or_equal += (
-            poisson_probability(
-                goals,
-                total_xg,
-            )
-        )
-
-    return clamp(
-        1.0 - probability_under_or_equal,
-        0.0,
-        1.0,
-    )
+def _percent_to_fraction(
+    value: Optional[float],
+) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value) / 100.0
+    except (TypeError, ValueError):
+        return None
 
 
-def probability_btts(
-    home_xg: float,
-    away_xg: float,
-) -> float:
-
-    home_zero = math.exp(
-        -home_xg
-    )
-
-    away_zero = math.exp(
-        -away_xg
-    )
-
-    return clamp(
-        1.0
-        - home_zero
-        - away_zero
-        + home_zero * away_zero,
-        0.0,
-        1.0,
-    )
-
-
-def score_distribution(
-    home_xg: float,
-    away_xg: float,
-    max_goals: int = 7,
-) -> List[Tuple[str, float]]:
-
-    result = []
-
-    for home_goals in range(
-        max_goals + 1
-    ):
-
-        home_probability = (
-            poisson_probability(
-                home_goals,
-                home_xg,
-            )
-        )
-
-        for away_goals in range(
-            max_goals + 1
-        ):
-
-            away_probability = (
-                poisson_probability(
-                    away_goals,
-                    away_xg,
-                )
-            )
-
-            result.append(
-                (
-                    f"{home_goals}:{away_goals}",
-                    home_probability
-                    * away_probability,
-                )
-            )
-
-    result.sort(
-        key=lambda item: item[1],
-        reverse=True,
-    )
-
-    return result
-
-
-def build_baseline_brain(
+def build_prediction(
     home_team: str,
     away_team: str,
-    home_records: List[Dict[str, Any]],
-    away_records: List[Dict[str, Any]],
+    history_home: List[Dict[str, Any]],
+    history_away: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-
-    home = build_team_summary(
-        home_records,
-        home_team,
+    """
+    Единая точка подключения нового FAJ Brain к UI.
+    UI получает старый стабильный формат данных,
+    а расчёт полностью выполняет новый faj_brain.py.
+    """
+    brain = get_faj_brain()
+    result = brain.predict(
+        home_team=home_team,
+        away_team=away_team,
+        home_matches=history_home,
+        away_matches=history_away,
     )
-
-    away = build_team_summary(
-        away_records,
-        away_team,
-    )
-
-    # --------------------------------------------------------
-    # GOALS
-    # --------------------------------------------------------
-
-    home_attack = (
-        home.get(
-            "goals_for_recent"
-        )
-        if home.get(
-            "goals_for_recent"
-        ) is not None
-        else home.get(
-            "goals_for_avg"
-        )
-    )
-
-    away_attack = (
-        away.get(
-            "goals_for_recent"
-        )
-        if away.get(
-            "goals_for_recent"
-        ) is not None
-        else away.get(
-            "goals_for_avg"
-        )
-    )
-
-    home_defence = (
-        home.get(
-            "goals_against_recent"
-        )
-        if home.get(
-            "goals_against_recent"
-        ) is not None
-        else home.get(
-            "goals_against_avg"
-        )
-    )
-
-    away_defence = (
-        away.get(
-            "goals_against_recent"
-        )
-        if away.get(
-            "goals_against_recent"
-        ) is not None
-        else away.get(
-            "goals_against_avg"
-        )
-    )
-
-    home_attack = (
-        home_attack
-        if home_attack is not None
-        else 1.0
-    )
-
-    away_attack = (
-        away_attack
-        if away_attack is not None
-        else 1.0
-    )
-
-    home_defence = (
-        home_defence
-        if home_defence is not None
-        else 1.0
-    )
-
-    away_defence = (
-        away_defence
-        if away_defence is not None
-        else 1.0
-    )
-
-    # Home advantage.
-    home_xg = (
-        0.58 * home_attack
-        + 0.32 * away_defence
-        + 0.10
-    )
-
-    away_xg = (
-        0.58 * away_attack
-        + 0.32 * home_defence
-    )
-
-    home_xg = clamp(
-        home_xg,
-        0.15,
-        4.5,
-    )
-
-    away_xg = clamp(
-        away_xg,
-        0.15,
-        4.5,
-    )
-
-    # --------------------------------------------------------
-    # XG DATA — if available, use as stabilizer.
-    # It is NOT exposed as the main user-facing prediction.
-    # --------------------------------------------------------
-
-    home_xg_hist = home.get(
-        "xg_avg"
-    )
-
-    away_xg_hist = away.get(
-        "xg_avg"
-    )
-
-    if home_xg_hist is not None:
-
-        home_xg = (
-            0.72 * home_xg
-            + 0.28 * home_xg_hist
-        )
-
-    if away_xg_hist is not None:
-
-        away_xg = (
-            0.72 * away_xg
-            + 0.28 * away_xg_hist
-        )
-
-    # --------------------------------------------------------
-    # SCORE DISTRIBUTION
-    # --------------------------------------------------------
-
-    scores = score_distribution(
-        home_xg,
-        away_xg,
-    )
-
-    home_win = 0.0
-    draw = 0.0
-    away_win = 0.0
-
-    for score, probability in scores:
-
-        h, a = parse_score(score)
-
-        if h is None or a is None:
-            continue
-
-        if h > a:
-            home_win += probability
-
-        elif h == a:
-            draw += probability
-
-        else:
-            away_win += probability
-
-    total = (
-        home_win
-        + draw
-        + away_win
-    )
-
-    if total > 0:
-
-        home_win /= total
-        draw /= total
-        away_win /= total
-
-    btts = probability_btts(
-        home_xg,
-        away_xg,
-    )
-
-    over25 = probability_over(
-        home_xg + away_xg,
-        2.5,
-    )
-
-    over35 = probability_over(
-        home_xg + away_xg,
-        3.5,
-    )
-
-    # --------------------------------------------------------
-    # CORNERS
-    # --------------------------------------------------------
-
-    home_corners = (
-        home.get(
-            "corners_avg"
-        )
-        or 0.0
-    )
-
-    away_corners = (
-        away.get(
-            "corners_avg"
-        )
-        or 0.0
-    )
-
-    expected_corners = (
-        home_corners
-        + away_corners
-    )
-
-    corner_lines = {}
-
-    for line in (
-        7.5,
-        8.5,
-        9.5,
-        10.5,
-    ):
-
-        # Normal approximation baseline.
-        corner_probability = clamp(
-            1.0
-            - (
-                0.5
-                ** max(
-                    0.1,
-                    expected_corners
-                    - line
-                    + 1.0,
-                )
-            ),
-            0.05,
-            0.95,
-        )
-
-        corner_lines[
-            str(line)
-        ] = corner_probability
-
-    if expected_corners < 8:
-        corner_range = "7–9"
-    elif expected_corners < 10:
-        corner_range = "8–10"
-    elif expected_corners < 12:
-        corner_range = "9–11"
-    else:
-        corner_range = "10–12+"
-
-    # --------------------------------------------------------
-    # CARDS
-    # --------------------------------------------------------
-
-    home_cards = (
-        home.get(
-            "cards_avg"
-        )
-        or 0.0
-    )
-
-    away_cards = (
-        away.get(
-            "cards_avg"
-        )
-        or 0.0
-    )
-
-    expected_cards = (
-        home_cards
-        + away_cards
-    )
-
-    card_lines = {}
-
-    for line in (
-        2.5,
-        3.5,
-        4.5,
-    ):
-
-        card_probability = clamp(
-            1.0
-            - (
-                0.5
-                ** max(
-                    0.1,
-                    expected_cards
-                    - line
-                    + 1.0,
-                )
-            ),
-            0.05,
-            0.95,
-        )
-
-        card_lines[
-            str(line)
-        ] = card_probability
-
-    if expected_cards < 3:
-        card_range = "2–3"
-    elif expected_cards < 4:
-        card_range = "3–4"
-    elif expected_cards < 5:
-        card_range = "4–5"
-    else:
-        card_range = "5+"
-
-    # --------------------------------------------------------
-    # CONFIDENCE
-    # --------------------------------------------------------
-
-    sample_size = min(
-        len(home_records),
-        len(away_records),
-    )
-
-    data_confidence = clamp(
-        sample_size / 6.0,
-        0.25,
-        1.0,
-    )
-
-    outcome_gap = abs(
-        home_win - away_win
-    )
-
-    confidence = clamp(
-        0.55 * data_confidence
-        + 0.45 * (
-            0.5
-            + outcome_gap
-        ),
-        0.25,
-        0.95,
-    )
-
-    if confidence >= 0.75:
-        risk = "Низкий"
-    elif confidence >= 0.60:
-        risk = "Средний"
-    else:
-        risk = "Повышенный"
-
-    # --------------------------------------------------------
-    # VERDICT
-    # --------------------------------------------------------
-
-    if home_win >= away_win and home_win >= draw:
-
-        advantage = (
-            f"преимущество {home_team}"
-        )
-
-        if home_win >= 0.65:
-            scenario = (
-                "Основной сценарий — "
-                "победа хозяев."
-            )
-        else:
-            scenario = (
-                "Хозяева имеют преимущество, "
-                "но сценарий не является однозначным."
-            )
-
-    elif away_win >= home_win and away_win >= draw:
-
-        advantage = (
-            f"преимущество {away_team}"
-        )
-
-        if away_win >= 0.65:
-            scenario = (
-                "Основной сценарий — "
-                "победа гостей."
-            )
-        else:
-            scenario = (
-                "Гости имеют преимущество, "
-                "но сценарий не является однозначным."
-            )
-
-    else:
-
-        advantage = "равновесие"
-
-        scenario = (
-            "Модель не видит выраженного "
-            "преимущества одной из сторон."
-        )
-
-    if btts >= 0.55:
-        btts_text = "Обе команды имеют хороший шанс забить."
-    else:
-        btts_text = "Сценарий с голом обеих команд не является основным."
-
-    if over25 >= 0.55:
-        goals_text = (
-            "Вероятность результативного матча повышена."
-        )
-    else:
-        goals_text = (
-            "Модель не считает результативный матч "
-            "основным сценарием."
-        )
-
-    analysis = (
-        f"FAJ: {advantage}. "
-        f"{scenario} "
-        f"{btts_text} "
-        f"{goals_text}"
-    )
-
-    # --------------------------------------------------------
-    # SCORE OUTPUT
-    # --------------------------------------------------------
-
-    top_scores = [
-        {
-            "score": score,
-            "probability": probability,
-        }
-        for score, probability
-        in scores[:3]
-    ]
 
     return {
+        # ----------------------------------------------------
+        # META
+        # ----------------------------------------------------
+        "model_version": result.get(
+            "calculation_meta",
+            {},
+        ).get(
+            "brain_version",
+            "FAJ-BRAIN",
+        ),
+        "home_team": result.get(
+            "home_team",
+            home_team,
+        ),
+        "away_team": result.get(
+            "away_team",
+            away_team,
+        ),
 
-        "model_version": MODEL_VERSION,
-
-        "home_team": home_team,
-        "away_team": away_team,
-
-        "home_win_probability": home_win,
-        "draw_probability": draw,
-        "away_win_probability": away_win,
-
-        "btts_probability": btts,
-
-        "over25_probability": over25,
-        "over35_probability": over35,
-
-        "scores": top_scores,
-
-        "home_xg_internal": home_xg,
-        "away_xg_internal": away_xg,
-
-        "corners_expected": expected_corners,
-        "home_corners_expected": home_corners,
-        "away_corners_expected": away_corners,
-
-        "corners_lines": corner_lines,
-        "corners_range": corner_range,
-
-        "cards_expected": expected_cards,
-        "home_cards_expected": home_cards,
-        "away_cards_expected": away_cards,
-
-        "cards_lines": card_lines,
-        "cards_range": card_range,
-
-        "confidence": confidence,
-        "risk": risk,
-
-        "analysis": analysis,
-
-        "data": {
-            "home_summary": home,
-            "away_summary": away,
-            "home_matches": len(
-                home_records
+        # ----------------------------------------------------
+        # MAIN OUTCOME
+        # UI expects probabilities 0..1
+        # Brain returns probabilities 0..100
+        # ----------------------------------------------------
+        "home_win_probability":
+            _percent_to_fraction(
+                result.get(
+                    "home_win_probability"
+                )
             ),
-            "away_matches": len(
-                away_records
+        "draw_probability":
+            _percent_to_fraction(
+                result.get(
+                    "draw_probability"
+                )
             ),
+        "away_win_probability":
+            _percent_to_fraction(
+                result.get(
+                    "away_win_probability"
+                )
+            ),
+        "confidence":
+            _percent_to_fraction(
+                result.get(
+                    "confidence"
+                )
+            ),
+        "risk": result.get(
+            "risk",
+            "—",
+        ),
+
+        # ----------------------------------------------------
+        # GOALS
+        # ----------------------------------------------------
+        "btts": (
+            "ДА"
+            if (
+                result.get(
+                    "btts_probability"
+                ) is not None
+                and result.get(
+                    "btts_probability"
+                ) >= 50
+            )
+            else "НЕТ"
+        ),
+        "btts_probability":
+            _percent_to_fraction(
+                result.get(
+                    "btts_probability"
+                )
+            ),
+        "over25": (
+            "ДА"
+            if (
+                result.get(
+                    "over25_probability"
+                ) is not None
+                and result.get(
+                    "over25_probability"
+                ) >= 50
+            )
+            else "НЕТ"
+        ),
+        "over25_probability":
+            _percent_to_fraction(
+                result.get(
+                    "over25_probability"
+                )
+            ),
+        "over35": (
+            "ДА"
+            if (
+                result.get(
+                    "over35_probability"
+                ) is not None
+                and result.get(
+                    "over35_probability"
+                ) >= 50
+            )
+            else "НЕТ"
+        ),
+        "over35_probability":
+            _percent_to_fraction(
+                result.get(
+                    "over35_probability"
+                )
+            ),
+
+        # xG сохраняем для внутренней аналитики.
+        # В основной карточке пока не показываем.
+        "home_xg_internal":
+            result.get(
+                "home_xg"
+            ),
+        "away_xg_internal":
+            result.get(
+                "away_xg"
+            ),
+
+        # ----------------------------------------------------
+        # TOP 3 SCORES
+        # ----------------------------------------------------
+        "scores": [
+            {
+                "score": result.get(
+                    "most_likely_score",
+                    "—",
+                ),
+                "probability": None,  # probability not provided for individual scores
+            },
+            {
+                "score": result.get(
+                    "second_likely_score",
+                    "—",
+                ),
+                "probability": None,
+            },
+            {
+                "score": result.get(
+                    "third_likely_score",
+                    "—",
+                ),
+                "probability": None,
+            },
+        ],
+
+        # ----------------------------------------------------
+        # CORNERS
+        # ----------------------------------------------------
+        "corners_expected":
+            result.get(
+                "corners_expected"
+            ),
+        "home_corners_expected":
+            result.get(
+                "home_corners_expected"
+            ),
+        "away_corners_expected":
+            result.get(
+                "away_corners_expected"
+            ),
+        "corners_lines": {
+            "7.5":
+                _percent_to_fraction(
+                    result.get(
+                        "over75_corners_probability"
+                    )
+                ),
+            "8.5":
+                _percent_to_fraction(
+                    result.get(
+                        "over85_corners_probability"
+                    )
+                ),
+            "9.5":
+                _percent_to_fraction(
+                    result.get(
+                        "over95_corners_probability"
+                    )
+                ),
+            "10.5":
+                _percent_to_fraction(
+                    result.get(
+                        "over105_corners_probability"
+                    )
+                ),
         },
+        "corners_range": _get_corners_range(
+            result.get(
+                "corners_expected"
+            )
+        ),
+
+        # ----------------------------------------------------
+        # CARDS
+        # ----------------------------------------------------
+        "cards_expected":
+            result.get(
+                "cards_expected"
+            ),
+        "home_cards_expected":
+            result.get(
+                "home_cards_expected"
+            ),
+        "away_cards_expected":
+            result.get(
+                "away_cards_expected"
+            ),
+        "cards_lines": {
+            "2.5":
+                _percent_to_fraction(
+                    result.get(
+                        "over25_cards_probability"
+                    )
+                ),
+            "3.5":
+                _percent_to_fraction(
+                    result.get(
+                        "over35_cards_probability"
+                    )
+                ),
+            "4.5":
+                _percent_to_fraction(
+                    result.get(
+                        "over45_cards_probability"
+                    )
+                ),
+        },
+        "cards_range": _get_cards_range(
+            result.get(
+                "cards_expected"
+            )
+        ),
+
+        # ----------------------------------------------------
+        # ANALYSIS
+        # ----------------------------------------------------
+        "analysis":
+            result.get(
+                "conclusion",
+                "Аналитический вывод FAJ пока недоступен.",
+            ),
+
+        # ----------------------------------------------------
+        # DATA STATUS
+        # ----------------------------------------------------
+        "data": {
+            "home_summary": None,
+            "away_summary": None,
+            "home_matches":
+                len(history_home),
+            "away_matches":
+                len(history_away),
+        },
+
+        # ----------------------------------------------------
+        # INTERNAL CALCULATION DATA
+        # ----------------------------------------------------
+        "brain_result": result,
     }
+
+
+def _get_corners_range(
+    expected: Optional[float],
+) -> str:
+    if expected is None:
+        return "—"
+    if expected < 8:
+        return "7–9"
+    if expected < 10:
+        return "8–10"
+    if expected < 12:
+        return "9–11"
+    return "10–12+"
+
+
+def _get_cards_range(
+    expected: Optional[float],
+) -> str:
+    if expected is None:
+        return "—"
+    if expected < 3:
+        return "2–3"
+    if expected < 4:
+        return "3–4"
+    if expected < 5:
+        return "4–5"
+    return "5+"
 
 
 # ============================================================
@@ -2293,7 +2018,7 @@ def render_prediction_card(
                 </div>
 
                 <div class="faj-muted">
-                {pct(item.get("probability"))}
+                {pct(item.get("probability")) if item.get("probability") is not None else "—"}
                 </div>
 
                 </div>
@@ -3184,15 +2909,11 @@ def generate_prediction(
             f"рекомендует минимум 3 матча."
         )
 
-    prediction = build_baseline_brain(
-
+    prediction = build_prediction(
         home_team=home_team["name"],
-
         away_team=away_team["name"],
-
-        home_records=home_records,
-
-        away_records=away_records,
+        history_home=home_records,
+        history_away=away_records,
     )
 
     # --------------------------------------------------------
