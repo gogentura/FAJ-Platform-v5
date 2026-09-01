@@ -74,12 +74,14 @@ from app.faj_club_ratings import (
 )
 
 # ============================================================
-# NEW BRIDGE IMPORTS
+# NEW: TEAM IDENTITY
 # ============================================================
 
-from app.services.team_registry_bridge import TeamRegistryBridge
-from app.services.faj_database_bridge import FAJDatabaseBridge
-from app.services.faj_match_bridge import FAJMatchBridge
+from app.core.team_identity import (
+    canonicalize_team_name,
+    resolve_team_name,
+    same_team,
+)
 
 
 # ============================================================
@@ -98,7 +100,7 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# DATABASE / PARSER / BRIDGES
+# DATABASE / PARSER
 # ============================================================
 
 @st.cache_resource
@@ -109,21 +111,6 @@ def get_database() -> FAJDatabase:
 @st.cache_resource
 def get_soccer365_parser() -> Soccer365Parser:
     return Soccer365Parser()
-
-
-@st.cache_resource
-def get_team_registry() -> TeamRegistryBridge:
-    return TeamRegistryBridge()
-
-
-@st.cache_resource
-def get_database_bridge() -> FAJDatabaseBridge:
-    return FAJDatabaseBridge()
-
-
-@st.cache_resource
-def get_match_bridge() -> FAJMatchBridge:
-    return FAJMatchBridge()
 
 
 # ============================================================
@@ -255,7 +242,7 @@ def init_state() -> None:
         "faj_matches": [],
         "faj_collected": {},
         "faj_predictions": {},
-        "faj_team_cache": {},  # NEW: cache for team IDs
+        "faj_team_cache": {},
     }
 
     for key, value in defaults.items():
@@ -275,41 +262,24 @@ def reset_workspace() -> None:
 
 
 # ============================================================
-# TEAM DATA (UPDATED: using TeamRegistryBridge)
+# TEAM DATA
 # ============================================================
 
 def load_teams(
     db: FAJDatabase,
     league: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """
-    Загружает команды через TeamRegistryBridge.
-    Сохраняет обратную совместимость с существующим UI.
-    """
+
     try:
-        if league:
-            # Используем мост для получения команд с реальными SQLite ID
-            registry = get_team_registry()
-            teams = registry.get_tournament_teams(league)
-            
-            # Кешируем ID для быстрого доступа
-            for team in teams:
-                team_name = team.get("name")
-                team_id = team.get("id")
-                if team_name and team_id:
-                    st.session_state.faj_team_cache[team_name] = team_id
-            
-            return teams
-        else:
-            # Fallback на старый метод, если лига не указана
-            return db.get_teams(league=league)
+        return db.get_teams(league=league)
     except Exception as exc:
+
         logger.exception(
-            "Ошибка загрузки команд через мост: %s",
+            "Ошибка загрузки команд: %s",
             exc,
         )
-        # Fallback на старый метод
-        return db.get_teams(league=league)
+
+        return []
 
 
 def team_label(
@@ -343,106 +313,6 @@ def find_team(
 
 
 # ============================================================
-# NEW: TEAM SYNC FUNCTIONS
-# ============================================================
-
-def ensure_faj_team(
-    tournament: str,
-    team_name: str,
-) -> Optional[int]:
-    """
-    Связывает команду из FAJ_CLUB_RATINGS
-    с командой в SQLite через TeamRegistryBridge.
-    """
-    if not tournament or not team_name:
-        return None
-
-    # Проверяем кеш
-    cache_key = f"{tournament}:{team_name}"
-    if cache_key in st.session_state.faj_team_cache:
-        cached_id = st.session_state.faj_team_cache[cache_key]
-        if cached_id is not None:
-            return cached_id
-
-    try:
-        registry = get_team_registry()
-        team_id = registry.ensure_team(
-            team_name=team_name,
-            tournament=tournament,
-        )
-        
-        # Сохраняем в кеш
-        if team_id is not None:
-            st.session_state.faj_team_cache[cache_key] = team_id
-            st.session_state.faj_team_cache[team_name] = team_id
-        
-        return team_id
-        
-    except Exception as exc:
-        logger.exception(
-            "Ошибка ensure_faj_team: %s / %s",
-            tournament,
-            team_name,
-        )
-        st.error(
-            f"Не удалось подключить команду "
-            f"«{team_name}» к базе."
-        )
-        return None
-
-
-def ensure_selected_match(
-    tournament: str,
-    home_team: str,
-    away_team: str,
-) -> Optional[Dict[str, Any]]:
-    """
-    Создаёт единый контекст прогнозируемого матча.
-    Команды берутся из FAJ Club Ratings.
-    Их постоянные ID берутся из SQLite.
-    """
-    if not home_team or not away_team:
-        return None
-
-    home_id = ensure_faj_team(
-        tournament=tournament,
-        team_name=home_team,
-    )
-    away_id = ensure_faj_team(
-        tournament=tournament,
-        team_name=away_team,
-    )
-
-    if home_id is None or away_id is None:
-        logger.error(
-            "Команды не подключены: %s=%s, %s=%s",
-            home_team,
-            home_id,
-            away_team,
-            away_id,
-        )
-        return None
-
-    try:
-        match_bridge = get_match_bridge()
-        context = match_bridge.prepare_match(
-            tournament=tournament,
-            home_team_id=home_id,
-            away_team_id=away_id,
-        )
-        return context
-    except Exception as exc:
-        logger.exception(
-            "Ошибка создания контекста матча: %s",
-            exc,
-        )
-        st.error(
-            f"Не удалось создать матч в базе: {exc}"
-        )
-        return None
-
-
-# ============================================================
 # MATCH SLOTS
 # ============================================================
 
@@ -451,8 +321,8 @@ def create_match_slot() -> Dict[str, Any]:
     return {
         "home_id": None,
         "away_id": None,
-        "home_name": None,  # NEW: store team names for sync
-        "away_name": None,  # NEW: store team names for sync
+        "home_name": None,
+        "away_name": None,
         "urls_home": [""] * MAX_HISTORY_MATCHES,
         "urls_away": [""] * MAX_HISTORY_MATCHES,
     }
@@ -518,23 +388,39 @@ def ensure_session(
         return current
 
     try:
-        # Используем мост для создания сессии
-        db_bridge = get_database_bridge()
-        
-        # Получаем competition_id через мост
-        registry = get_team_registry()
-        competition_id = registry.ensure_competition(competition_name)
-        
-        session_id = db_bridge.create_session(
-            competition_id=competition_id,
-            title=(
-                f"FAJ | "
-                f"{competition_name}"
-            ),
-            notes=(
-                "Персональная "
-                "аналитическая сессия FAJ."
-            ),
+
+        competitions = (
+            db.get_competitions()
+        )
+
+        competition_id = None
+
+        for competition in competitions:
+
+            if normalize_name(
+                competition.get("name")
+            ) == normalize_name(
+                competition_name
+            ):
+
+                competition_id = (
+                    competition.get("id")
+                )
+
+                break
+
+        session_id = (
+            db.create_analysis_session(
+                competition_id=competition_id,
+                title=(
+                    f"FAJ | "
+                    f"{competition_name}"
+                ),
+                notes=(
+                    "Персональная "
+                    "аналитическая сессия FAJ."
+                ),
+            )
         )
 
         st.session_state.faj_session_id = (
@@ -572,53 +458,91 @@ def parse_soccer365(
     )
 
 
+# ============================================================
+# VALIDATE PARSED MATCH (UPDATED with Team Identity)
+# ============================================================
+
 def validate_parsed_match(
     parsed: Dict[str, Any],
     selected_team: str,
 ) -> Tuple[bool, str]:
 
-    home = parsed.get(
-        "home_team"
-    )
-
-    away = parsed.get(
-        "away_team"
-    )
+    home = parsed.get("home_team")
+    away = parsed.get("away_team")
 
     if not home or not away:
-
         return (
             False,
             "Не удалось определить команды.",
         )
 
-    target = normalize_name(
+    selected_canonical = resolve_team_name(
         selected_team
     )
+    home_canonical = resolve_team_name(
+        home
+    )
+    away_canonical = resolve_team_name(
+        away
+    )
 
-    if (
-        target != normalize_name(home)
-        and
-        target != normalize_name(away)
-    ):
+    logger.info(
+        "FAJ TEAM IDENTITY: selected=%r→%r | "
+        "home=%r→%r | away=%r→%r",
+        selected_team,
+        selected_canonical,
+        home,
+        home_canonical,
+        away,
+        away_canonical,
+    )
 
-        return (
-            False,
-            (
-                f"Матч {home} — {away} "
-                f"не содержит выбранную команду "
-                f"{selected_team}."
-            ),
-        )
+    # --------------------------------------------------------
+    # Если выбранная команда известна FAJ
+    # --------------------------------------------------------
+    if selected_canonical:
+        if (
+            selected_canonical != home_canonical
+            and
+            selected_canonical != away_canonical
+        ):
+            return (
+                False,
+                (
+                    f"Матч {home} — {away} "
+                    f"не содержит выбранную команду "
+                    f"{selected_team}."
+                ),
+            )
+
+    # --------------------------------------------------------
+    # Если внешний источник неизвестен identity layer
+    # --------------------------------------------------------
+    else:
+        if not same_team(selected_team, home) and not same_team(
+            selected_team,
+            away,
+        ):
+            return (
+                False,
+                (
+                    f"Не удалось сопоставить команду "
+                    f"«{selected_team}» "
+                    f"с матчем {home} — {away}."
+                ),
+            )
 
     return (
         True,
-        f"{home} — {away}",
+        (
+            f"{canonicalize_team_name(home)} — "
+            f"{canonicalize_team_name(away)}"
+        ),
     )
 
 
 # ============================================================
-# NORMALIZATION OF SOCCER365 RECORD
+# NORMALIZATION OF SOCCER365 RECORD (UPDATED with canonical names)
 # ============================================================
 
 def build_history_record(
@@ -638,6 +562,13 @@ def build_history_record(
         "away_team"
     )
 
+    canonical_home = canonicalize_team_name(
+        home
+    )
+    canonical_away = canonicalize_team_name(
+        away
+    )
+
     score = parsed.get(
         "score"
     )
@@ -648,8 +579,8 @@ def build_history_record(
 
     return {
 
-        "home_team": home,
-        "away_team": away,
+        "home_team": canonical_home,
+        "away_team": canonical_away,
 
         "score": score,
 
@@ -780,7 +711,7 @@ def build_history_record(
 
 
 # ============================================================
-# TEAM-SPECIFIC DATA
+# TEAM-SPECIFIC DATA (UPDATED with Team Identity)
 # ============================================================
 
 def team_side(
@@ -788,16 +719,34 @@ def team_side(
     team_name: str,
 ) -> Optional[str]:
 
-    target = normalize_name(
+    target = resolve_team_name(
+        team_name
+    )
+    home = resolve_team_name(
+        record.get("home_team")
+    )
+    away = resolve_team_name(
+        record.get("away_team")
+    )
+
+    if target is not None:
+        if target == home:
+            return "home"
+        if target == away:
+            return "away"
+        return None
+
+    # Fallback для неизвестного внешнего имени
+    normalized_target = normalize_name(
         team_name
     )
 
-    if target == normalize_name(
+    if normalized_target == normalize_name(
         record.get("home_team")
     ):
         return "home"
 
-    if target == normalize_name(
+    if normalized_target == normalize_name(
         record.get("away_team")
     ):
         return "away"
@@ -1188,7 +1137,7 @@ def build_prediction(
                     "most_likely_score",
                     "—",
                 ),
-                "probability": None,  # probability not provided for individual scores
+                "probability": None,
             },
             {
                 "score": result.get(
@@ -1351,7 +1300,7 @@ def _get_cards_range(
 
 
 # ============================================================
-# DATABASE SAVE (UPDATED: using FAJDatabaseBridge)
+# DATABASE SAVE
 # ============================================================
 
 def save_prediction_to_database(
@@ -1473,9 +1422,7 @@ def save_prediction_to_database(
             "analysis_json": prediction,
         }
 
-        # Используем мост для сохранения
-        db_bridge = get_database_bridge()
-        return db_bridge.save_prediction(
+        return db.save_prediction(
             analysis_match_id=match_id,
             prediction=db_prediction,
             model_version=MODEL_VERSION,
@@ -1492,7 +1439,7 @@ def save_prediction_to_database(
 
 
 # ============================================================
-# SAVE HISTORY (UPDATED: using FAJDatabaseBridge)
+# SAVE HISTORY
 # ============================================================
 
 def save_history(
@@ -1503,16 +1450,27 @@ def save_history(
     records: List[Dict[str, Any]],
 ) -> None:
 
-    db_bridge = get_database_bridge()
-
     for record in records:
 
-        source_id = db_bridge.create_source(
-            analysis_match_id=analysis_match_id,
+        source_id = db.add_source(
+
+            analysis_match_id=(
+                analysis_match_id
+            ),
+
             team_id=selected_team_id,
-            source_url=record.get("source_url"),
-            parser_version=record.get("parser_version"),
+
+            source_type="soccer365",
+
             source_name="Soccer365",
+
+            source_url=record.get(
+                "source_url"
+            ),
+
+            parser_version=record.get(
+                "parser_version"
+            ),
         )
 
         home_name = record.get(
@@ -1575,27 +1533,41 @@ def save_history(
                 home_id = opponent_team_id
                 away_id = selected_team_id
 
-            historical_id = db_bridge.save_historical_match(
-                analysis_match_id=analysis_match_id,
-                team_id=home_id,
-                opponent_team_id=away_id,
-                source_id=source_id,
-                match_date=None,
-                is_home=True,
-                goals_for=home_goals,
-                goals_against=away_goals,
-                result=home_result,
-                external_match_id=None,
-                raw_metadata={
-                    "source": "Soccer365",
-                    "source_url": record.get(
-                        "source_url"
+            historical_id = (
+                db.save_historical_match(
+                    analysis_match_id=(
+                        analysis_match_id
                     ),
-                },
+
+                    team_id=home_id,
+
+                    opponent_team_id=away_id,
+
+                    source_id=source_id,
+
+                    match_date=None,
+
+                    is_home=True,
+
+                    goals_for=home_goals,
+
+                    goals_against=away_goals,
+
+                    result=home_result,
+
+                    external_match_id=None,
+
+                    raw_metadata={
+                        "source": "Soccer365",
+                        "source_url": record.get(
+                            "source_url"
+                        ),
+                    },
+                )
             )
 
             save_stats_for_side(
-                db_bridge,
+                db,
                 historical_id,
                 record,
                 "home",
@@ -1605,27 +1577,41 @@ def save_history(
         # AWAY SIDE
         # ----------------------------------------------------
 
-        historical_id = db_bridge.save_historical_match(
-            analysis_match_id=analysis_match_id,
-            team_id=away_id,
-            opponent_team_id=home_id,
-            source_id=source_id,
-            match_date=None,
-            is_home=False,
-            goals_for=away_goals,
-            goals_against=home_goals,
-            result=away_result,
-            external_match_id=None,
-            raw_metadata={
-                "source": "Soccer365",
-                "source_url": record.get(
-                    "source_url"
+        historical_id = (
+            db.save_historical_match(
+                analysis_match_id=(
+                    analysis_match_id
                 ),
-            },
+
+                team_id=away_id,
+
+                opponent_team_id=home_id,
+
+                source_id=source_id,
+
+                match_date=None,
+
+                is_home=False,
+
+                goals_for=away_goals,
+
+                goals_against=home_goals,
+
+                result=away_result,
+
+                external_match_id=None,
+
+                raw_metadata={
+                    "source": "Soccer365",
+                    "source_url": record.get(
+                        "source_url"
+                    ),
+                },
+            )
         )
 
         save_stats_for_side(
-            db_bridge,
+            db,
             historical_id,
             record,
             "away",
@@ -1633,7 +1619,7 @@ def save_history(
 
 
 def save_stats_for_side(
-    db_bridge: FAJDatabaseBridge,
+    db: FAJDatabase,
     historical_id: int,
     record: Dict[str, Any],
     side: str,
@@ -1653,53 +1639,67 @@ def save_stats_for_side(
             )
         )
 
-    db_bridge.save_historical_stats(
+    db.save_historical_stats(
+
         historical_id,
+
         {
+
             "possession": get(
                 "possession",
                 side,
             ),
+
             "shots": get(
                 "shots",
                 side,
             ),
+
             "shots_on_target": get(
                 "shots_on_target",
                 side,
             ),
+
             "corners": get(
                 "corners",
                 side,
             ),
+
             "fouls": get(
                 "fouls",
                 side,
             ),
+
             "yellow_cards": get(
                 "cards",
                 side,
             ),
+
             "xg": get(
                 "xg",
                 side,
             ),
+
             "big_chances": get(
                 "big_chances",
                 side,
             ),
+
             "passes": get(
                 "passes",
                 side,
             ),
+
             "pass_accuracy": get(
                 "pass_accuracy",
                 side,
             ),
+
             "tackles": get(
                 "tackles",
                 side,
             ),
+
             "raw_metadata": {
                 "source": "Soccer365",
                 "source_url": record.get(
@@ -1711,7 +1711,7 @@ def save_stats_for_side(
 
 
 # ============================================================
-# COLLECTION (UPDATED: using bridges for team sync)
+# COLLECTION
 # ============================================================
 
 def collect_team_history(
@@ -2339,7 +2339,7 @@ def render_data_summary(
 
 
 # ============================================================
-# UI — MATCH SETUP (UPDATED: stores team names for sync)
+# UI — MATCH SETUP
 # ============================================================
 
 def render_match_setup(
@@ -2680,7 +2680,7 @@ def render_match_setup(
 
 
 # ============================================================
-# COLLECTION + DATABASE (UPDATED: using bridges)
+# COLLECTION + DATABASE
 # ============================================================
 
 def collect_and_store_match(
@@ -2703,35 +2703,6 @@ def collect_and_store_match(
         st.error("Не выбран турнир.")
         return
 
-    # ========================================================
-    # 1. ПОДКЛЮЧАЕМ КОМАНДЫ К FAJ DATABASE
-    # ========================================================
-    context = ensure_selected_match(
-        tournament=tournament,
-        home_team=home_name,
-        away_team=away_name,
-    )
-
-    if not context:
-        st.error(
-            "Не удалось загрузить выбранные команды."
-        )
-        return
-
-    home_id = context["home_team_id"]
-    away_id = context["away_team_id"]
-
-    logger.info(
-        "FAJ MATCH READY: %s (%s) — %s (%s)",
-        home_name,
-        home_id,
-        away_name,
-        away_id,
-    )
-
-    # ========================================================
-    # 2. СОЗДАЁМ АНАЛИТИЧЕСКУЮ СЕССИЮ
-    # ========================================================
     session_id = ensure_session(
         db,
         tournament,
@@ -2741,14 +2712,13 @@ def collect_and_store_match(
         return
 
     # ========================================================
-    # 3. СОЗДАЁМ ANALYSIS MATCH
+    # СОЗДАЁМ ANALYSIS MATCH
     # ========================================================
     try:
-        db_bridge = get_database_bridge()
-        analysis_match_id = db_bridge.create_analysis_match(
+        analysis_match_id = db.add_analysis_match(
             session_id=session_id,
-            home_team_id=home_id,
-            away_team_id=away_id,
+            home_team_id=match["home_id"],
+            away_team_id=match["away_id"],
         )
     except Exception as exc:
         logger.exception(
@@ -2836,8 +2806,8 @@ def collect_and_store_match(
                 analysis_match_id=(
                     analysis_match_id
                 ),
-                selected_team_id=home_id,
-                opponent_team_id=away_id,
+                selected_team_id=match["home_id"],
+                opponent_team_id=match["away_id"],
                 records=home_records,
             )
 
@@ -2869,8 +2839,8 @@ def collect_and_store_match(
                 analysis_match_id=(
                     analysis_match_id
                 ),
-                selected_team_id=away_id,
-                opponent_team_id=home_id,
+                selected_team_id=match["away_id"],
+                opponent_team_id=match["home_id"],
                 records=away_records,
             )
 
@@ -2893,8 +2863,8 @@ def collect_and_store_match(
         index
     ] = {
         "tournament": tournament,
-        "home_team_id": home_id,
-        "away_team_id": away_id,
+        "home_team_id": match["home_id"],
+        "away_team_id": match["away_id"],
         "analysis_match_id": analysis_match_id,
         "home_records": home_records,
         "away_records": away_records,
@@ -2911,7 +2881,7 @@ def collect_and_store_match(
 
 
 # ============================================================
-# PREDICTION (UPDATED: using context from collected data)
+# PREDICTION
 # ============================================================
 
 def generate_prediction(
@@ -3116,7 +3086,7 @@ def main() -> None:
     )
 
     # --------------------------------------------------------
-    # TEAMS (из FAJ_CLUB_RATINGS через мост)
+    # TEAMS (из FAJ_CLUB_RATINGS через БД)
     # --------------------------------------------------------
 
     teams = load_teams(db, tournament)
