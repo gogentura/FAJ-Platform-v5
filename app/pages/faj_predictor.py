@@ -74,6 +74,12 @@ from app.faj_club_ratings import (
     get_team_rating,
 )
 
+# ============================================================
+# FORM CONTEXT
+# ============================================================
+
+from app.core.form_context import build_form_context
+
 
 # ============================================================
 # CONFIG
@@ -235,6 +241,7 @@ def init_state() -> None:
         "faj_collected": {},
         "faj_predictions": {},
         "faj_team_cache": {},
+        "faj_form_context": {},  # NEW: храним form_context
     }
 
     for key, value in defaults.items():
@@ -251,6 +258,7 @@ def reset_workspace() -> None:
     st.session_state.faj_collected = {}
     st.session_state.faj_predictions = {}
     st.session_state.faj_team_cache = {}
+    st.session_state.faj_form_context = {}
 
 
 # ============================================================
@@ -369,6 +377,11 @@ def remove_match(
         None,
     )
 
+    st.session_state.faj_form_context.pop(
+        index,
+        None,
+    )
+
 
 # ============================================================
 # SESSION
@@ -457,10 +470,6 @@ def parse_soccer365(
         url.strip()
     )
 
-
-# ============================================================
-# VALIDATE PARSED MATCH
-# ============================================================
 
 def validate_parsed_match(
     parsed: Dict[str, Any],
@@ -936,6 +945,8 @@ def build_prediction(
     away_team: str,
     history_home: List[Dict[str, Any]],
     history_away: List[Dict[str, Any]],
+    home_form_context: Optional[Dict[str, Any]] = None,
+    away_form_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Единая точка подключения нового FAJ Brain к UI.
@@ -949,6 +960,12 @@ def build_prediction(
         home_matches=history_home,
         away_matches=history_away,
     )
+
+    # Добавляем form_context в результат
+    if home_form_context:
+        result["home_form_context"] = home_form_context
+    if away_form_context:
+        result["away_form_context"] = away_form_context
 
     return {
         # ----------------------------------------------------
@@ -1208,6 +1225,12 @@ def build_prediction(
             "away_matches":
                 len(history_away),
         },
+
+        # ----------------------------------------------------
+        # FORM CONTEXT
+        # ----------------------------------------------------
+        "home_form_context": home_form_context,
+        "away_form_context": away_form_context,
 
         # ----------------------------------------------------
         # INTERNAL CALCULATION DATA
@@ -2916,7 +2939,7 @@ def get_or_create_team(
 
 
 # ============================================================
-# PREDICTION
+# PREDICTION (UPDATED: добавляем form_context)
 # ============================================================
 
 def generate_prediction(
@@ -2974,11 +2997,35 @@ def generate_prediction(
             f"рекомендует минимум 3 матча."
         )
 
+    # ========================================================
+    # FORM CONTEXT
+    # ========================================================
+
+    home_form_context = build_form_context(
+        team_name=home_name,
+        records=home_records,
+        limit=5,
+    )
+
+    away_form_context = build_form_context(
+        team_name=away_name,
+        records=away_records,
+        limit=5,
+    )
+
+    # Сохраняем в session_state для отображения
+    st.session_state.faj_form_context[index] = {
+        "home": home_form_context,
+        "away": away_form_context,
+    }
+
     prediction = build_prediction(
         home_team=home_name,
         away_team=away_name,
         history_home=home_records,
         history_away=away_records,
+        home_form_context=home_form_context,
+        away_form_context=away_form_context,
     )
 
     # --------------------------------------------------------
