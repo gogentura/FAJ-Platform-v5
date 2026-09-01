@@ -3,34 +3,52 @@
 
 """
 ============================================================
-FAJ Platform v12.1
-FORM CONTEXT v1.0
+FAJ PLATFORM v12.1
+FORM CONTEXT v1.1
 ============================================================
 
 НАЗНАЧЕНИЕ
 ----------
 
-Простой аналитический слой формы команды перед прогнозом.
+Простой человеческий контекст последних матчей команды.
 
-Form Context НЕ:
+FORM CONTEXT НЕ является моделью прогноза.
 
-    - собирает данные;
-    - парсит Soccer365;
-    - записывает данные в SQLite;
-    - изменяет рейтинг клуба;
-    - изменяет прогноз;
+Он только отвечает на вопросы:
+
+    Как команда сыграла?
+    Где играла?
+    Сколько создала?
+    Сколько позволила создать?
+    Насколько тяжёлым был матч?
+    Что произошло при победе / ничьей / поражении?
+
+FORM CONTEXT НЕ:
+
+    - считает FAJ Rating;
+    - изменяет FAJ Rating;
     - обучает модель;
-    - рассчитывает итоговые вероятности.
+    - изменяет xG;
+    - пишет в SQLite;
+    - работает с букмекерами;
+    - использует таблицу чемпионата;
+    - использует рейтинг лиги.
 
-Он только получает уже собранную историю матчей
-и превращает её в компактный контекст:
+Источник данных:
 
-    В-Н-В-П-В
+    последние фактические матчи команды.
+
+Пример результата:
+
+    Зенит
+
+    Последние 5:
+        В-Н-В-П-В
 
     Дома:
         2-0-1
 
-    В гостях:
+    Гости:
         1-1-0
 
     xG:
@@ -43,110 +61,30 @@ Form Context НЕ:
         лёгкий
         средний
         тяжёлый
-        тяжёлый
+        очень тяжёлый
         средний
 
 ============================================================
-
-ГЛАВНЫЙ ПРИНЦИП
----------------
-
-Form Context работает ТОЛЬКО с последними матчами,
-которые Predictor уже получил для конкретной команды.
-
-Никаких дополнительных запросов к Soccer365.
-
-Никаких дополнительных запросов к БД.
-
-Никакого изменения существующей архитектуры.
-
+VERSION 1.1
 ============================================================
 
-ВХОД
-----
+Изменения:
 
-История матчей может содержать:
-
-    date
-    home_team
-    away_team
-    home_score
-    away_score
-    home_xg
-    away_xg
-
-Допускаются также распространённые варианты названий
-полей, используемые существующим Predictor.
-
-============================================================
-
-ВЫХОД
-------
-
-Например:
-
-{
-    "team": "Зенит",
-
-    "form_string": "В-Н-В-П-В",
-
-    "home_record": "2-0-1",
-    "away_record": "1-1-0",
-
-    "home_wins": 2,
-    "home_draws": 0,
-    "home_losses": 1,
-
-    "away_wins": 1,
-    "away_draws": 1,
-    "away_losses": 0,
-
-    "avg_xg": 1.74,
-    "avg_xga": 0.91,
-
-    "match_levels": [
-        "лёгкий",
-        "средний",
-        "тяжёлый",
-        "тяжёлый",
-        "средний"
-    ],
-
-    "matches_count": 5
-}
-
-============================================================
-
-ВАЖНО
-------
-
-Уровень матча здесь НЕ является глобальным рейтингом
-соперника.
-
-Мы оцениваем только конкретную сыгранную встречу.
-
-Простая логика:
-
-    победа 3:0
-        → лёгкий
-
-    победа 2:0
-        → средний
-
-    победа 1:0
-        → тяжёлый
-
-Но xG используется как дополнительный сигнал.
-
-Это первая версия.
-
-Математику позже можно изменить, не ломая Predictor.
-
+    - победы классифицируются по разнице мячей;
+    - поражения НЕ зеркалят победы;
+    - крупное поражение может быть
+      "очень тяжёлым";
+    - xG используется для понимания поражения;
+    - отсутствие xG не превращается в 0;
+    - домашние / гостевые показатели считаются отдельно;
+    - порядок матчей сохраняется:
+      от самого свежего к старому.
 ============================================================
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, asdict
 from typing import Any, Dict, Iterable, List, Optional
 
 
@@ -154,47 +92,44 @@ from typing import Any, Dict, Iterable, List, Optional
 # VERSION
 # ============================================================
 
-FORM_CONTEXT_VERSION = "1.0"
+FORM_CONTEXT_VERSION = "1.1"
+
+DEFAULT_MATCH_LIMIT = 5
 
 
 # ============================================================
 # HELPERS
 # ============================================================
 
-def _first_value(
-    record: Dict[str, Any],
-    keys: Iterable[str],
-) -> Any:
-    """
-    Возвращает первое существующее непустое значение.
-    """
-
-    for key in keys:
-        if key in record and record[key] is not None:
-            return record[key]
-
-    return None
-
-
-def _safe_float(
-    value: Any,
-) -> Optional[float]:
+def _safe_float(value: Any) -> Optional[float]:
     """
     Безопасное преобразование в float.
+
+    None остаётся None.
+    Пустые значения не превращаются в 0.
     """
 
     if value is None:
         return None
 
+    if isinstance(value, bool):
+        return None
+
     try:
-        return float(value)
+        text = str(value).strip()
+
+        if not text:
+            return None
+
+        text = text.replace(",", ".")
+
+        return float(text)
+
     except (TypeError, ValueError):
         return None
 
 
-def _safe_int(
-    value: Any,
-) -> Optional[int]:
+def _safe_int(value: Any) -> Optional[int]:
     """
     Безопасное преобразование в int.
     """
@@ -202,375 +137,597 @@ def _safe_int(
     if value is None:
         return None
 
+    if isinstance(value, bool):
+        return None
+
     try:
-        return int(float(value))
+        return int(value)
+
     except (TypeError, ValueError):
         return None
 
 
-def _team_name(
-    record: Dict[str, Any],
-    home: bool,
+def _get_value(
+    record: Any,
+    *keys: str,
+) -> Any:
+    """
+    Унифицированное получение поля из:
+
+        dict
+        sqlite3.Row
+        объекта с атрибутами
+    """
+
+    if record is None:
+        return None
+
+    for key in keys:
+
+        # dict
+        if isinstance(record, dict):
+
+            if key in record:
+                return record[key]
+
+        # sqlite3.Row
+        try:
+
+            if key in record.keys():
+
+                return record[key]
+
+        except (AttributeError, TypeError):
+            pass
+
+        # object
+        try:
+
+            value = getattr(
+                record,
+                key,
+            )
+
+            return value
+
+        except AttributeError:
+            pass
+
+    return None
+
+
+# ============================================================
+# MATCH RESULT
+# ============================================================
+
+def determine_result(
+    team_goals: Optional[int],
+    opponent_goals: Optional[int],
 ) -> Optional[str]:
     """
-    Получить название домашней / гостевой команды.
+    Определяет результат команды:
+
+        W = победа
+        D = ничья
+        L = поражение
+
+    Если счёт неизвестен → None.
     """
 
-    if home:
-        return _first_value(
-            record,
-            (
-                "home_team",
-                "home",
-                "home_name",
-            ),
-        )
+    if (
+        team_goals is None
+        or opponent_goals is None
+    ):
+        return None
 
-    return _first_value(
-        record,
-        (
-            "away_team",
-            "away",
-            "away_name",
-        ),
+    if team_goals > opponent_goals:
+        return "W"
+
+    if team_goals == opponent_goals:
+        return "D"
+
+    return "L"
+
+
+# ============================================================
+# MATCH DIFFICULTY
+# ============================================================
+
+def classify_match_difficulty(
+    result: Optional[str],
+    team_goals: Optional[int],
+    opponent_goals: Optional[int],
+    team_xg: Optional[float] = None,
+    opponent_xg: Optional[float] = None,
+) -> str:
+    """
+    Простая классификация сложности матча.
+
+    ВАЖНО:
+
+    Победа:
+        +3 и больше → лёгкий
+        +2          → средний
+        +1          → тяжёлый
+
+    Ничья:
+        оценивается по xG, если он доступен.
+
+    Поражение:
+
+        Здесь НЕ зеркалим победу.
+
+        Поражение 1 мяч:
+            тяжёлый
+
+        Поражение 2 мяча:
+            тяжёлый
+
+        Поражение 3+:
+            очень тяжёлый
+
+    Но xG позволяет немного лучше понять ситуацию.
+
+    Например:
+
+        0:3
+        xG 1.70 : 1.10
+
+    Это всё равно тяжёлое поражение,
+    но команда хотя бы создавала моменты.
+
+    А:
+
+        0:3
+        xG 0.25 : 2.40
+
+    Это уже очень тяжёлый матч.
+
+    xG НИКОГДА не отменяет факт поражения.
+    """
+
+    if result is None:
+        return "неизвестно"
+
+    if (
+        team_goals is None
+        or opponent_goals is None
+    ):
+        return "неизвестно"
+
+    difference = abs(
+        team_goals - opponent_goals
     )
 
-
-def _score(
-    record: Dict[str, Any],
-    home: bool,
-) -> Optional[int]:
-    """
-    Получить голы команды.
-
-    Поддерживает:
-
-        home_score / away_score
-
-    и:
-
-        score_home / score_away
-    """
-
-    if home:
-        value = _first_value(
-            record,
-            (
-                "home_score",
-                "score_home",
-                "goals_home",
-            ),
-        )
-    else:
-        value = _first_value(
-            record,
-            (
-                "away_score",
-                "score_away",
-                "goals_away",
-            ),
-        )
-
-    return _safe_int(value)
-
-
-def _xg(
-    record: Dict[str, Any],
-    home: bool,
-) -> Optional[float]:
-    """
-    Получить xG команды.
-    """
-
-    if home:
-        value = _first_value(
-            record,
-            (
-                "home_xg",
-                "xg_home",
-                "home_expected_goals",
-            ),
-        )
-    else:
-        value = _first_value(
-            record,
-            (
-                "away_xg",
-                "xg_away",
-                "away_expected_goals",
-            ),
-        )
-
-    return _safe_float(value)
-
-
-# ============================================================
-# RESULT
-# ============================================================
-
-def _result_symbol(
-    goals_for: Optional[int],
-    goals_against: Optional[int],
-) -> Optional[str]:
-    """
-    В / Н / П
-    """
-
-    if goals_for is None or goals_against is None:
-        return None
-
-    if goals_for > goals_against:
-        return "В"
-
-    if goals_for == goals_against:
-        return "Н"
-
-    return "П"
-
-
-# ============================================================
-# MATCH LEVEL
-# ============================================================
-
-def classify_match_level(
-    goals_for: Optional[int],
-    goals_against: Optional[int],
-    xg_for: Optional[float] = None,
-    xg_against: Optional[float] = None,
-) -> Optional[str]:
-    """
-    Определяет уровень конкретного матча.
-
-    Это НЕ рейтинг соперника.
-
-    Базовая логика:
-
-        победа с разницей 3+
-            → лёгкий
-
-        победа с разницей 2
-            → средний
-
-        победа с разницей 1
-            → тяжёлый
-
-        поражение с разницей 3+
-            → лёгкий
-
-        поражение с разницей 2
-            → средний
-
-        поражение с разницей 1
-            → тяжёлый
-
-        ничья
-            → зависит от разницы xG
-
-    xG используется только как дополнительный сигнал
-    для ничьих и близких матчей.
-
-    Важно:
-
-        это первая простая версия.
-
-    Сейчас НЕ пытаемся построить сложную модель силы
-    соперника.
-    """
-
-    if goals_for is None or goals_against is None:
-        return None
-
-    difference = goals_for - goals_against
-    abs_difference = abs(difference)
-
     # --------------------------------------------------------
-    # Крупный перевес по счёту
+    # ПОБЕДА
     # --------------------------------------------------------
 
-    if abs_difference >= 3:
-        return "лёгкий"
+    if result == "W":
 
-    # --------------------------------------------------------
-    # Разница в два мяча
-    # --------------------------------------------------------
+        if difference >= 3:
+            return "лёгкий"
 
-    if abs_difference == 2:
-        return "средний"
+        if difference == 2:
+            return "средний"
 
-    # --------------------------------------------------------
-    # Разница в один мяч
-    # --------------------------------------------------------
-
-    if abs_difference == 1:
         return "тяжёлый"
 
     # --------------------------------------------------------
-    # Ничья
+    # НИЧЬЯ
     # --------------------------------------------------------
 
-    if xg_for is not None and xg_against is not None:
+    if result == "D":
 
-        xg_difference = xg_for - xg_against
+        if (
+            team_xg is not None
+            and opponent_xg is not None
+        ):
 
-        if xg_difference >= 1.0:
-            return "средний"
+            xg_difference = (
+                team_xg - opponent_xg
+            )
 
-        if xg_difference <= -1.0:
+            # Команда заметно доминировала,
+            # но не выиграла.
+            if xg_difference >= 0.75:
+                return "тяжёлый"
+
+            # Противник заметно доминировал.
+            if xg_difference <= -0.75:
+                return "очень тяжёлый"
+
+        return "средний"
+
+    # --------------------------------------------------------
+    # ПОРАЖЕНИЕ
+    # --------------------------------------------------------
+
+    if result == "L":
+
+        # Крупное поражение — всегда серьёзный сигнал.
+        if difference >= 3:
+
+            # Если xG команды совсем маленький,
+            # а соперник создавал значительно больше,
+            # это максимально плохой сценарий.
+            if (
+                team_xg is not None
+                and opponent_xg is not None
+            ):
+
+                if (
+                    team_xg < 0.75
+                    and opponent_xg >= 1.50
+                ):
+                    return "очень тяжёлый"
+
+            return "очень тяжёлый"
+
+        # Поражение в 2 мяча —
+        # серьёзный матч, но не автоматически катастрофа.
+        if difference == 2:
+
+            if (
+                team_xg is not None
+                and opponent_xg is not None
+            ):
+
+                # Команда проиграла,
+                # но создала сопоставимо много.
+                if (
+                    team_xg >= 1.20
+                    and opponent_xg - team_xg <= 0.50
+                ):
+                    return "тяжёлый"
+
             return "тяжёлый"
 
-    return "средний"
+        # Поражение в один мяч.
+        return "тяжёлый"
+
+    return "неизвестно"
 
 
 # ============================================================
-# SINGLE MATCH
+# MATCH CONTEXT
 # ============================================================
 
-def analyze_match(
-    team: str,
-    record: Dict[str, Any],
-) -> Optional[Dict[str, Any]]:
-    """
-    Анализ одного исторического матча.
-
-    Возвращает нормализованный аналитический объект.
-    """
-
-    if not isinstance(record, dict):
-        return None
-
-    home_team = _team_name(
-        record,
-        home=True,
-    )
-
-    away_team = _team_name(
-        record,
-        home=False,
-    )
-
-    if not home_team or not away_team:
-        return None
+@dataclass
+class MatchContext:
 
     # --------------------------------------------------------
-    # Определяем положение команды
+    # Identity
     # --------------------------------------------------------
 
-    team_lower = str(team).strip().lower()
+    opponent: Optional[str] = None
 
-    home_lower = str(home_team).strip().lower()
-    away_lower = str(away_team).strip().lower()
+    venue: Optional[str] = None
 
-    if team_lower == home_lower:
-        is_home = True
+    # --------------------------------------------------------
+    # Result
+    # --------------------------------------------------------
 
-    elif team_lower == away_lower:
-        is_home = False
+    result: Optional[str] = None
+
+    result_symbol: Optional[str] = None
+
+    # --------------------------------------------------------
+    # Score
+    # --------------------------------------------------------
+
+    team_goals: Optional[int] = None
+
+    opponent_goals: Optional[int] = None
+
+    # --------------------------------------------------------
+    # xG
+    # --------------------------------------------------------
+
+    team_xg: Optional[float] = None
+
+    opponent_xg: Optional[float] = None
+
+    # --------------------------------------------------------
+    # Difficulty
+    # --------------------------------------------------------
+
+    difficulty: str = "неизвестно"
+
+
+# ============================================================
+# SYMBOL
+# ============================================================
+
+def result_symbol(
+    result: Optional[str],
+) -> str:
+
+    if result == "W":
+        return "В"
+
+    if result == "D":
+        return "Н"
+
+    if result == "L":
+        return "П"
+
+    return "?"
+
+
+# ============================================================
+# BUILD MATCH CONTEXT
+# ============================================================
+
+def build_match_context(
+    record: Any,
+    team_name: str,
+) -> MatchContext:
+    """
+    Преобразует одну запись исторического матча
+    в простой MatchContext.
+
+    Поддерживает наиболее распространённые имена полей.
+    """
+
+    home_team = _get_value(
+        record,
+        "home_team",
+        "home_name",
+        "home",
+    )
+
+    away_team = _get_value(
+        record,
+        "away_team",
+        "away_name",
+        "away",
+    )
+
+    # --------------------------------------------------------
+    # Определяем сторону команды
+    # --------------------------------------------------------
+
+    is_home = (
+        str(home_team).strip().lower()
+        == str(team_name).strip().lower()
+    )
+
+    is_away = (
+        str(away_team).strip().lower()
+        == str(team_name).strip().lower()
+    )
+
+    # --------------------------------------------------------
+    # Fallback: если структура уже содержит venue
+    # --------------------------------------------------------
+
+    venue = _get_value(
+        record,
+        "venue",
+        "location",
+        "home_away",
+    )
+
+    if venue:
+
+        venue_text = str(
+            venue
+        ).strip().lower()
+
+        if venue_text in (
+            "home",
+            "дома",
+            "h",
+        ):
+            is_home = True
+            is_away = False
+
+        elif venue_text in (
+            "away",
+            "гости",
+            "гостях",
+            "a",
+        ):
+            is_home = False
+            is_away = True
+
+    # --------------------------------------------------------
+    # Venue
+    # --------------------------------------------------------
+
+    if is_home:
+        venue_normalized = "дома"
+
+    elif is_away:
+        venue_normalized = "гости"
 
     else:
-        # Команда не найдена в матче.
-        return None
+        venue_normalized = None
 
     # --------------------------------------------------------
-    # Голы
+    # Opponent
     # --------------------------------------------------------
 
-    home_score = _score(
-        record,
-        home=True,
+    if is_home:
+
+        opponent = away_team
+
+    elif is_away:
+
+        opponent = home_team
+
+    else:
+
+        opponent = _get_value(
+            record,
+            "opponent",
+            "opponent_name",
+        )
+
+    # --------------------------------------------------------
+    # Goals
+    # --------------------------------------------------------
+
+    home_goals = _safe_int(
+        _get_value(
+            record,
+            "home_goals",
+            "home_score",
+            "goals_home",
+        )
     )
 
-    away_score = _score(
-        record,
-        home=False,
+    away_goals = _safe_int(
+        _get_value(
+            record,
+            "away_goals",
+            "away_score",
+            "goals_away",
+        )
+    )
+
+    # Иногда счёт хранится одной строкой.
+    if (
+        home_goals is None
+        or away_goals is None
+    ):
+
+        score = _get_value(
+            record,
+            "score",
+            "result",
+        )
+
+        if score:
+
+            import re
+
+            match = re.search(
+                r"(\d+)\s*[:\-]\s*(\d+)",
+                str(score),
+            )
+
+            if match:
+
+                home_goals = _safe_int(
+                    match.group(1)
+                )
+
+                away_goals = _safe_int(
+                    match.group(2)
+                )
+
+    # --------------------------------------------------------
+    # Team / opponent goals
+    # --------------------------------------------------------
+
+    if is_home:
+
+        team_goals = home_goals
+        opponent_goals = away_goals
+
+    elif is_away:
+
+        team_goals = away_goals
+        opponent_goals = home_goals
+
+    else:
+
+        team_goals = _safe_int(
+            _get_value(
+                record,
+                "team_goals",
+            )
+        )
+
+        opponent_goals = _safe_int(
+            _get_value(
+                record,
+                "opponent_goals",
+            )
+        )
+
+    # --------------------------------------------------------
+    # Result
+    # --------------------------------------------------------
+
+    result = determine_result(
+        team_goals,
+        opponent_goals,
+    )
+
+    # --------------------------------------------------------
+    # xG
+    # --------------------------------------------------------
+
+    home_xg = _safe_float(
+        _get_value(
+            record,
+            "home_xg",
+        )
+    )
+
+    away_xg = _safe_float(
+        _get_value(
+            record,
+            "away_xg",
+        )
     )
 
     if is_home:
 
-        goals_for = home_score
-        goals_against = away_score
+        team_xg = home_xg
+        opponent_xg = away_xg
 
-        xg_for = _xg(
-            record,
-            home=True,
-        )
+    elif is_away:
 
-        xg_against = _xg(
-            record,
-            home=False,
-        )
-
-        opponent = away_team
+        team_xg = away_xg
+        opponent_xg = home_xg
 
     else:
 
-        goals_for = away_score
-        goals_against = home_score
-
-        xg_for = _xg(
-            record,
-            home=False,
+        team_xg = _safe_float(
+            _get_value(
+                record,
+                "team_xg",
+            )
         )
 
-        xg_against = _xg(
-            record,
-            home=True,
+        opponent_xg = _safe_float(
+            _get_value(
+                record,
+                "opponent_xg",
+            )
         )
 
-        opponent = home_team
-
     # --------------------------------------------------------
-    # Результат
+    # Difficulty
     # --------------------------------------------------------
 
-    result = _result_symbol(
-        goals_for,
-        goals_against,
+    difficulty = classify_match_difficulty(
+        result=result,
+        team_goals=team_goals,
+        opponent_goals=opponent_goals,
+        team_xg=team_xg,
+        opponent_xg=opponent_xg,
     )
 
-    # --------------------------------------------------------
-    # Уровень матча
-    # --------------------------------------------------------
-
-    level = classify_match_level(
-        goals_for=goals_for,
-        goals_against=goals_against,
-        xg_for=xg_for,
-        xg_against=xg_against,
-    )
-
-    # --------------------------------------------------------
-    # Дата
-    # --------------------------------------------------------
-
-    date = _first_value(
-        record,
-        (
-            "date",
-            "match_date",
-            "played_at",
-            "datetime",
+    return MatchContext(
+        opponent=(
+            str(opponent).strip()
+            if opponent
+            else None
         ),
+        venue=venue_normalized,
+        result=result,
+        result_symbol=result_symbol(result),
+        team_goals=team_goals,
+        opponent_goals=opponent_goals,
+        team_xg=team_xg,
+        opponent_xg=opponent_xg,
+        difficulty=difficulty,
     )
-
-    return {
-        "team": team,
-        "opponent": opponent,
-        "venue": "home" if is_home else "away",
-
-        "home_team": home_team,
-        "away_team": away_team,
-
-        "date": date,
-
-        "goals_for": goals_for,
-        "goals_against": goals_against,
-
-        "xg_for": xg_for,
-        "xg_against": xg_against,
-
-        "result": result,
-        "level": level,
-    }
 
 
 # ============================================================
@@ -578,67 +735,60 @@ def analyze_match(
 # ============================================================
 
 def build_form_context(
-    team: str,
-    matches: Iterable[Dict[str, Any]],
-    limit: int = 5,
+    team_name: str,
+    records: Iterable[Any],
+    limit: int = DEFAULT_MATCH_LIMIT,
 ) -> Dict[str, Any]:
     """
-    Построить контекст последних матчей команды.
+    Создаёт полный контекст последних матчей команды.
 
     ВАЖНО:
 
-        порядок матчей должен приходить уже правильно
-        сформированным Predictor / DB:
+        records должны приходить уже в правильном
+        порядке:
 
-            последний матч
+            самый свежий
                 ↓
-            предыдущий
+            старше
                 ↓
-            ...
-                ↓
-            пятый
+            старше
 
-    Form Context сам НЕ обращается к БД и НЕ определяет
-    календарь.
+    Функция НЕ пытается сама угадывать даты.
 
-    Это защищает архитектуру от смешивания ответственности.
+    Поэтому правильная выборка должна быть сделана
+    на уровне Predictor / Database.
+
+    Здесь мы только ограничиваем количество
+    последними `limit` переданными записями.
     """
 
-    analyzed: List[Dict[str, Any]] = []
+    if limit <= 0:
+        limit = DEFAULT_MATCH_LIMIT
 
-    if matches is None:
-        matches = []
+    records_list = list(records)
 
-    for record in matches:
+    records_list = records_list[:limit]
 
-        result = analyze_match(
-            team=team,
+    matches: List[MatchContext] = []
+
+    for record in records_list:
+
+        context = build_match_context(
             record=record,
+            team_name=team_name,
         )
 
-        if result is None:
-            continue
-
-        analyzed.append(result)
-
-        if len(analyzed) >= limit:
-            break
+        matches.append(
+            context
+        )
 
     # ========================================================
-    # FORM
+    # FORM STRING
     # ========================================================
 
-    form_symbols: List[str] = []
-
-    for match in analyzed:
-
-        result = match.get("result")
-
-        if result in ("В", "Н", "П"):
-            form_symbols.append(result)
-
-    form_string = "-".join(
-        form_symbols
+    form = "-".join(
+        match.result_symbol
+        for match in matches
     )
 
     # ========================================================
@@ -653,67 +803,67 @@ def build_form_context(
     away_draws = 0
     away_losses = 0
 
-    for match in analyzed:
-
-        result = match.get("result")
-        venue = match.get("venue")
-
-        if venue == "home":
-
-            if result == "В":
-                home_wins += 1
-
-            elif result == "Н":
-                home_draws += 1
-
-            elif result == "П":
-                home_losses += 1
-
-        elif venue == "away":
-
-            if result == "В":
-                away_wins += 1
-
-            elif result == "Н":
-                away_draws += 1
-
-            elif result == "П":
-                away_losses += 1
-
     # ========================================================
-    # xG
+    # AGGREGATES
     # ========================================================
 
     xg_values: List[float] = []
     xga_values: List[float] = []
 
-    for match in analyzed:
+    for match in matches:
 
-        xg_for = match.get("xg_for")
-        xg_against = match.get("xg_against")
+        if match.venue == "дома":
 
-        if xg_for is not None:
+            if match.result == "W":
+                home_wins += 1
+
+            elif match.result == "D":
+                home_draws += 1
+
+            elif match.result == "L":
+                home_losses += 1
+
+        elif match.venue == "гости":
+
+            if match.result == "W":
+                away_wins += 1
+
+            elif match.result == "D":
+                away_draws += 1
+
+            elif match.result == "L":
+                away_losses += 1
+
+        if match.team_xg is not None:
+
             xg_values.append(
-                float(xg_for)
+                match.team_xg
             )
 
-        if xg_against is not None:
+        if match.opponent_xg is not None:
+
             xga_values.append(
-                float(xg_against)
+                match.opponent_xg
             )
 
-    avg_xg = (
+    # ========================================================
+    # AVERAGE XG
+    # ========================================================
+
+    average_xg = (
         round(
-            sum(xg_values) / len(xg_values),
+            sum(xg_values)
+            / len(xg_values),
             2,
         )
         if xg_values
         else None
     )
 
-    avg_xga = (
+    average_xga = (
         round(
-            sum(xga_values) / len(xga_values),
+            sum(xga_values)
+            / len(xga_values),
             2,
         )
         if xga_values
@@ -721,71 +871,90 @@ def build_form_context(
     )
 
     # ========================================================
-    # MATCH LEVELS
+    # DIFFICULTY LIST
     # ========================================================
 
-    match_levels = [
-        match["level"]
-        for match in analyzed
-        if match.get("level")
+    difficulties = [
+        match.difficulty
+        for match in matches
     ]
 
     # ========================================================
-    # OPPONENTS
+    # RESULT COUNTS
     # ========================================================
 
-    opponents = [
-        match["opponent"]
-        for match in analyzed
-        if match.get("opponent")
-    ]
+    wins = sum(
+        1
+        for match in matches
+        if match.result == "W"
+    )
+
+    draws = sum(
+        1
+        for match in matches
+        if match.result == "D"
+    )
+
+    losses = sum(
+        1
+        for match in matches
+        if match.result == "L"
+    )
 
     # ========================================================
-    # RESULT
+    # RETURN
     # ========================================================
 
     return {
         "version": FORM_CONTEXT_VERSION,
 
-        "team": team,
+        "team": team_name,
 
-        "matches_count": len(analyzed),
+        "matches_count": len(matches),
 
-        "form_string": form_string,
+        "form": form,
 
-        "home_record": (
-            f"{home_wins}-"
-            f"{home_draws}-"
-            f"{home_losses}"
-        ),
+        "wins": wins,
+        "draws": draws,
+        "losses": losses,
 
-        "away_record": (
-            f"{away_wins}-"
-            f"{away_draws}-"
-            f"{away_losses}"
-        ),
+        "home": {
+            "matches": (
+                home_wins
+                + home_draws
+                + home_losses
+            ),
+            "wins": home_wins,
+            "draws": home_draws,
+            "losses": home_losses,
+        },
 
-        "home_wins": home_wins,
-        "home_draws": home_draws,
-        "home_losses": home_losses,
+        "away": {
+            "matches": (
+                away_wins
+                + away_draws
+                + away_losses
+            ),
+            "wins": away_wins,
+            "draws": away_draws,
+            "losses": away_losses,
+        },
 
-        "away_wins": away_wins,
-        "away_draws": away_draws,
-        "away_losses": away_losses,
+        "xg": average_xg,
 
-        "avg_xg": avg_xg,
-        "avg_xga": avg_xga,
+        "xga": average_xga,
 
-        "match_levels": match_levels,
+        "matches": [
+            asdict(match)
+            for match in matches
+        ],
 
-        "opponents": opponents,
-
-        "matches": analyzed,
+        "difficulty": difficulties,
     }
 
 
 # ============================================================
-# DISPLAY
+# HUMAN SUMMARY
 # ============================================================
 
 def format_form_context(
@@ -794,18 +963,8 @@ def format_form_context(
     """
     Человекочитаемое представление.
 
-    Например:
-
-        Зенит
-        В-Н-В-П-В
-        Дома 2-0-1
-        Гости 1-1-0
-        xG 1.74
-        xGA 0.91
-        Матчи:
-        ✓ лёгкий
-        ✓ средний
-        ✓ тяжёлый
+    Это только UI/helper.
+    Никакой математической логики здесь нет.
     """
 
     team = context.get(
@@ -813,67 +972,86 @@ def format_form_context(
         "Команда",
     )
 
-    lines: List[str] = []
+    form = context.get(
+        "form",
+        "",
+    )
+
+    home = context.get(
+        "home",
+        {},
+    )
+
+    away = context.get(
+        "away",
+        {},
+    )
+
+    xg = context.get(
+        "xg",
+    )
+
+    xga = context.get(
+        "xga",
+    )
+
+    difficulties = context.get(
+        "difficulty",
+        [],
+    )
+
+    lines = []
 
     lines.append(
         str(team)
     )
 
     lines.append(
-        str(
-            context.get(
-                "form_string",
-                "",
+        f"Последние 5: {form or '—'}"
+    )
+
+    lines.append(
+        "Дома: "
+        f"{home.get('wins', 0)}-"
+        f"{home.get('draws', 0)}-"
+        f"{home.get('losses', 0)}"
+    )
+
+    lines.append(
+        "Гости: "
+        f"{away.get('wins', 0)}-"
+        f"{away.get('draws', 0)}-"
+        f"{away.get('losses', 0)}"
+    )
+
+    lines.append(
+        "xG: "
+        + (
+            f"{xg:.2f}"
+            if xg is not None
+            else "—"
+        )
+    )
+
+    lines.append(
+        "xGA: "
+        + (
+            f"{xga:.2f}"
+            if xga is not None
+            else "—"
+        )
+    )
+
+    lines.append(
+        "Матчи: "
+        + (
+            " / ".join(
+                difficulties
             )
-        )
-    )
-
-    lines.append(
-        f"Дома {context.get('home_record', '0-0-0')}"
-    )
-
-    lines.append(
-        f"Гости {context.get('away_record', '0-0-0')}"
-    )
-
-    avg_xg = context.get(
-        "avg_xg"
-    )
-
-    avg_xga = context.get(
-        "avg_xga"
-    )
-
-    lines.append(
-        "xG "
-        + (
-            f"{avg_xg:.2f}"
-            if avg_xg is not None
+            if difficulties
             else "—"
         )
     )
-
-    lines.append(
-        "xGA "
-        + (
-            f"{avg_xga:.2f}"
-            if avg_xga is not None
-            else "—"
-        )
-    )
-
-    lines.append(
-        "Матчи:"
-    )
-
-    for level in context.get(
-        "match_levels",
-        [],
-    ):
-
-        lines.append(
-            f"✓ {level}"
-        )
 
     return "\n".join(
         lines
@@ -881,121 +1059,67 @@ def format_form_context(
 
 
 # ============================================================
-# SIMPLE API
-# ============================================================
-
-def get_form_context(
-    team: str,
-    matches: Iterable[Dict[str, Any]],
-    limit: int = 5,
-) -> Dict[str, Any]:
-    """
-    Основная публичная функция.
-
-    Predictor в будущем сможет делать:
-
-        context = get_form_context(
-            team="Зенит",
-            matches=history,
-        )
-
-    Никаких других зависимостей нет.
-    """
-
-    return build_form_context(
-        team=team,
-        matches=matches,
-        limit=limit,
-    )
-
-
-# ============================================================
-# SELF TEST
+# DEBUG
 # ============================================================
 
 if __name__ == "__main__":
 
-    import json
-
-    sample_matches = [
+    sample = [
 
         {
-            "date": "2026-08-29",
             "home_team": "Зенит",
-            "away_team": "Ростов",
-            "home_score": 3,
-            "away_score": 0,
-            "home_xg": 2.31,
-            "away_xg": 0.42,
+            "away_team": "Краснодар",
+            "home_goals": 3,
+            "away_goals": 0,
+            "home_xg": 2.10,
+            "away_xg": 0.40,
         },
 
         {
-            "date": "2026-08-22",
-            "home_team": "Краснодар",
-            "away_team": "Зенит",
-            "home_score": 1,
-            "away_score": 1,
-            "home_xg": 1.14,
-            "away_xg": 1.18,
-        },
-
-        {
-            "date": "2026-08-18",
-            "home_team": "Зенит",
-            "away_team": "Ахмат",
-            "home_score": 2,
-            "away_score": 0,
-            "home_xg": 1.72,
-            "away_xg": 0.51,
-        },
-
-        {
-            "date": "2026-08-12",
             "home_team": "Спартак",
             "away_team": "Зенит",
-            "home_score": 1,
-            "away_score": 0,
-            "home_xg": 1.31,
-            "away_xg": 0.74,
+            "home_goals": 1,
+            "away_goals": 1,
+            "home_xg": 1.20,
+            "away_xg": 1.60,
         },
 
         {
-            "date": "2026-08-07",
             "home_team": "Зенит",
-            "away_team": "Динамо Москва",
-            "home_score": 1,
-            "away_score": 0,
-            "home_xg": 1.52,
-            "away_xg": 0.88,
+            "away_team": "ЦСКА Москва",
+            "home_goals": 2,
+            "away_goals": 1,
+            "home_xg": 1.80,
+            "away_xg": 1.20,
+        },
+
+        {
+            "home_team": "Локомотив Москва",
+            "away_team": "Зенит",
+            "home_goals": 3,
+            "away_goals": 1,
+            "home_xg": 2.20,
+            "away_xg": 0.50,
+        },
+
+        {
+            "home_team": "Зенит",
+            "away_team": "Ростов",
+            "home_goals": 1,
+            "away_goals": 1,
+            "home_xg": 1.40,
+            "away_xg": 1.10,
         },
     ]
 
-    context = get_form_context(
-        team="Зенит",
-        matches=sample_matches,
+    context = build_form_context(
+        team_name="Зенит",
+        records=sample,
         limit=5,
     )
-
-    print("=" * 60)
-    print(
-        f"FAJ FORM CONTEXT v{FORM_CONTEXT_VERSION}"
-    )
-    print("=" * 60)
-
-    print()
 
     print(
         format_form_context(
             context
-        )
-    )
-
-    print()
-
-    print(
-        json.dumps(
-            context,
-            ensure_ascii=False,
-            indent=2,
         )
     )
