@@ -67,6 +67,10 @@ import streamlit as st
 from app.database import FAJDatabase
 from app.parsers.soccer365_parser import Soccer365Parser
 from app.core.faj_brain import FAJBrain
+from app.faj_club_ratings import (
+    get_all_tournaments,
+    get_all_teams,
+)
 
 
 # ============================================================
@@ -76,13 +80,6 @@ from app.core.faj_brain import FAJBrain
 PAGE_TITLE = "FAJ — Персональный прогноз"
 
 MODEL_VERSION = "FAJ-PERSONAL-BRAIN-0.1"
-
-TOURNAMENTS = [
-    "РПЛ",
-    "АПЛ",
-    "Ла Лига",
-    "Лига чемпионов",
-]
 
 MIN_EXTENDED_MATCHES = 3
 MAX_HISTORY_MATCHES = 6
@@ -3016,22 +3013,24 @@ def main() -> None:
     db = get_database()
 
     # --------------------------------------------------------
-    # TOURNAMENT
+    # TOURNAMENT (из FAJ_CLUB_RATINGS)
     # --------------------------------------------------------
 
     st.subheader(
         "1. Турнир"
     )
 
+    tournaments = get_all_tournaments()
+
     tournament = st.selectbox(
         "Выберите турнир",
-        TOURNAMENTS,
+        tournaments,
         index=(
-            TOURNAMENTS.index(
+            tournaments.index(
                 st.session_state.faj_competition
             )
             if st.session_state.faj_competition
-            in TOURNAMENTS
+            in tournaments
             else 0
         ),
     )
@@ -3053,19 +3052,26 @@ def main() -> None:
         "из любых соревнований."
     )
 
-    teams = load_teams(
-        db,
-        league=tournament,
-    )
+    # --------------------------------------------------------
+    # TEAMS (из FAJ_CLUB_RATINGS)
+    # --------------------------------------------------------
 
-    if not teams:
+    teams_from_ratings = get_all_teams(tournament)
+
+    if not teams_from_ratings:
 
         st.warning(
-            f"В базе пока нет активных команд "
+            f"В реестре FAJ пока нет команд "
             f"для турнира «{tournament}»."
         )
 
         return
+
+    # Преобразуем в формат, который ожидает UI
+    teams = [
+        {"id": idx, "name": name, "league": tournament}
+        for idx, name in enumerate(teams_from_ratings)
+    ]
 
     # --------------------------------------------------------
     # MATCHES
