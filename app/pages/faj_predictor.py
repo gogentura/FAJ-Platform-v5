@@ -241,7 +241,7 @@ def init_state() -> None:
         "faj_collected": {},
         "faj_predictions": {},
         "faj_team_cache": {},
-        "faj_form_context": {},  # NEW: храним form_context
+        "faj_form_context": {},
     }
 
     for key, value in defaults.items():
@@ -1265,6 +1265,244 @@ def _get_cards_range(
     if expected < 5:
         return "4–5"
     return "5+"
+
+
+# ============================================================
+# FORM CONTEXT CARD (NEW)
+# ============================================================
+
+def _form_result_string(
+    context: Optional[Dict[str, Any]],
+) -> str:
+    """
+    Короткая форма команды:
+        В-Н-В-П-В
+    Ничего не рассчитывает.
+    Только отображает уже подготовленный form_context.
+    """
+    if not context:
+        return "—"
+
+    # Основной вариант
+    form = context.get("form")
+    if isinstance(form, list):
+        values = []
+        for item in form[:5]:
+            value = str(item).strip().upper()
+            if value in {"W", "WIN"}:
+                values.append("В")
+            elif value in {"D", "DRAW"}:
+                values.append("Н")
+            elif value in {"L", "LOSS"}:
+                values.append("П")
+            else:
+                values.append(value)
+        if values:
+            return "-".join(values)
+
+    # Запасной вариант — если form_context хранит строку
+    if isinstance(form, str) and form.strip():
+        return form.strip()
+
+    return "—"
+
+
+def _home_away_string(
+    context: Optional[Dict[str, Any]],
+) -> Tuple[str, str]:
+    """
+    Возвращает:
+        Дома: 2-0-1
+        Гости: 1-1-0
+    Формат:
+        победы-ничьи-поражения
+    """
+    if not context:
+        return "—", "—"
+
+    home = context.get("home", {})
+    away = context.get("away", {})
+
+    if not isinstance(home, dict):
+        home = {}
+    if not isinstance(away, dict):
+        away = {}
+
+    home_text = (
+        f"{home.get('wins', 0)}-"
+        f"{home.get('draws', 0)}-"
+        f"{home.get('losses', 0)}"
+    )
+
+    away_text = (
+        f"{away.get('wins', 0)}-"
+        f"{away.get('draws', 0)}-"
+        f"{away.get('losses', 0)}"
+    )
+
+    return home_text, away_text
+
+
+def format_match_types(values: Any) -> str:
+    """Форматирует список сложности матчей для отображения."""
+    if not isinstance(values, list):
+        return "—"
+
+    labels = []
+    for value in values[:5]:
+        text = str(value).strip().lower()
+        mapping = {
+            "easy": "лёгкий",
+            "medium": "средний",
+            "hard": "тяжёлый",
+            "very_hard": "очень тяжёлый",
+            "light": "лёгкий",
+        }
+        labels.append(
+            mapping.get(
+                text,
+                text,
+            )
+        )
+
+    return " · ".join(labels) if labels else "—"
+
+
+def render_form_context_card(
+    home_team: str,
+    away_team: str,
+    home_context: Optional[Dict[str, Any]],
+    away_context: Optional[Dict[str, Any]],
+) -> None:
+    """
+    Компактная визуальная карточка текущей формы.
+    ВАЖНО:
+    Эта функция ничего не считает.
+    Она только показывает уже рассчитанный
+    form_context.
+    Поэтому она безопасна для текущего
+    prediction pipeline.
+    """
+    home_context = home_context or {}
+    away_context = away_context or {}
+
+    home_form = _form_result_string(home_context)
+    away_form = _form_result_string(away_context)
+
+    home_home, home_away = _home_away_string(home_context)
+    away_home, away_away = _home_away_string(away_context)
+
+    home_xg = home_context.get("xg")
+    if home_xg is None:
+        home_xg = home_context.get("xg_avg")
+
+    home_xga = home_context.get("xga")
+    if home_xga is None:
+        home_xga = home_context.get("xga_avg")
+
+    away_xg = away_context.get("xg")
+    if away_xg is None:
+        away_xg = away_context.get("xg_avg")
+
+    away_xga = away_context.get("xga")
+    if away_xga is None:
+        away_xga = away_context.get("xga_avg")
+
+    def fmt(value: Any) -> str:
+        if value is None:
+            return "—"
+        try:
+            return f"{float(value):.2f}"
+        except (TypeError, ValueError):
+            return "—"
+
+    home_match_types = home_context.get(
+        "match_types",
+        [],
+    )
+    away_match_types = away_context.get(
+        "match_types",
+        [],
+    )
+
+    with st.container(
+        border=True,
+        key="faj_form_context_card",
+    ):
+        st.markdown(
+            "### 📊 Форма перед матчем"
+        )
+
+        col_home, col_away = st.columns(
+            2,
+            gap="medium",
+        )
+
+        # ====================================================
+        # HOME TEAM
+        # ====================================================
+        with col_home:
+            st.markdown(
+                f"**🏠 {home_team}**"
+            )
+            st.markdown(
+                f"**Последние 5:** "
+                f"`{home_form}`"
+            )
+            st.caption(
+                f"Дома: {home_home}  ·  "
+                f"В гостях: {home_away}"
+            )
+
+            metric1, metric2 = st.columns(2)
+            metric1.metric(
+                "xG",
+                fmt(home_xg),
+            )
+            metric2.metric(
+                "xGA",
+                fmt(home_xga),
+            )
+
+            st.caption(
+                "Матчи: "
+                + format_match_types(
+                    home_match_types
+                )
+            )
+
+        # ====================================================
+        # AWAY TEAM
+        # ====================================================
+        with col_away:
+            st.markdown(
+                f"**✈️ {away_team}**"
+            )
+            st.markdown(
+                f"**Последние 5:** "
+                f"`{away_form}`"
+            )
+            st.caption(
+                f"Дома: {away_home}  ·  "
+                f"В гостях: {away_away}"
+            )
+
+            metric1, metric2 = st.columns(2)
+            metric1.metric(
+                "xG",
+                fmt(away_xg),
+            )
+            metric2.metric(
+                "xGA",
+                fmt(away_xga),
+            )
+
+            st.caption(
+                "Матчи: "
+                + format_match_types(
+                    away_match_types
+                )
+            )
 
 
 # ============================================================
@@ -2656,6 +2894,41 @@ def render_match_setup(
                     st.warning(
                         error
                     )
+
+    # ========================================================
+    # FORM CONTEXT CARD (NEW)
+    # ========================================================
+
+    form_context_data = (
+        st.session_state
+        .faj_form_context
+        .get(index)
+    )
+
+    if form_context_data:
+
+        home_context = (
+            form_context_data.get(
+                "home"
+            )
+        )
+
+        away_context = (
+            form_context_data.get(
+                "away"
+            )
+        )
+
+        render_form_context_card(
+            home_team=selected_home,
+            away_team=selected_away,
+            home_context=home_context,
+            away_context=away_context,
+        )
+
+    # ========================================================
+    # PREDICTION CARD
+    # ========================================================
 
     prediction = (
         st.session_state
