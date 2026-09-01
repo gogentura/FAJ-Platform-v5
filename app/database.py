@@ -584,6 +584,26 @@ def init_database() -> None:
             )
         """)
 
+        # ----------------------------------------------------
+        # MIGRATION: PREDICTIONS
+        # ----------------------------------------------------
+        prediction_columns = {
+            row["name"]
+            for row in cursor.execute(
+                "PRAGMA table_info(predictions)"
+            ).fetchall()
+        }
+
+        if "analysis_match_id" not in prediction_columns:
+            cursor.execute("""
+                ALTER TABLE predictions
+                ADD COLUMN analysis_match_id INTEGER
+            """)
+            logger.info(
+                "Добавлена колонка analysis_match_id "
+                "в таблицу predictions"
+            )
+
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_predictions_match
             ON predictions(analysis_match_id)
