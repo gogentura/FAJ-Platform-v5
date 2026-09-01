@@ -54,6 +54,11 @@ SOCCER365 PARSER v1.2
     - Улучшенное извлечение команд через .live_game_ht / .live_game_at
     - Логирование пропущенных полей
     - Устойчивость к изменениям структуры
+
+ИЗМЕНЕНИЯ V1.2.1:
+    - Интеграция с FAJ Team Identity
+    - canonicalize_parsed_team() для приведения названий
+    - Двойная защита в parse()
 ============================================================
 """
 
@@ -67,6 +72,12 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 from bs4 import BeautifulSoup
 
+# ============================================================
+# FAJ TEAM IDENTITY
+# ============================================================
+
+from app.core.team_identity import resolve_team_name
+
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +86,7 @@ logger = logging.getLogger(__name__)
 # CONFIG
 # ============================================================
 
-PARSER_VERSION = "1.2"
+PARSER_VERSION = "1.2.1"
 SOURCE_NAME = "soccer365"
 
 DEFAULT_TIMEOUT = 20
@@ -296,6 +307,43 @@ def normalize_label(value: Any) -> str:
 
 
 # ============================================================
+# FAJ TEAM IDENTITY WRAPPER
+# ============================================================
+
+def canonicalize_parsed_team(value: Any) -> Optional[str]:
+    """
+    Приводит название команды из внешнего источника
+    к canonical FAJ identity.
+
+    Пример:
+        ЦСКА Москва
+            ↓
+        ЦСКА
+
+    Если команда неизвестна FAJ Identity Registry,
+    сохраняем исходное название, чтобы не потерять факт.
+    """
+    text = normalize_text(value)
+    if not text:
+        return None
+
+    canonical = resolve_team_name(text)
+    if canonical:
+        logger.debug(
+            "Soccer365 team identity: %r -> %r",
+            text,
+            canonical,
+        )
+        return canonical
+
+    logger.warning(
+        "Soccer365: команда не найдена в FAJ Identity Registry: %r",
+        text,
+    )
+    return text
+
+
+# ============================================================
 # NUMBERS
 # ============================================================
 
@@ -464,7 +512,7 @@ def make_soup(
 
 
 # ============================================================
-# TEAMS — DOM-based
+# TEAMS — DOM-based (UPDATED: canonicalize names)
 # ============================================================
 
 def extract_teams(
@@ -505,8 +553,8 @@ def extract_teams(
         if home and away:
 
             return (
-                home,
-                away,
+                canonicalize_parsed_team(home),
+                canonicalize_parsed_team(away),
             )
 
     # --------------------------------------------------------
@@ -551,8 +599,8 @@ def extract_teams(
                 if home and away:
 
                     return (
-                        home,
-                        away,
+                        canonicalize_parsed_team(home),
+                        canonicalize_parsed_team(away),
                     )
 
     # --------------------------------------------------------
@@ -590,8 +638,8 @@ def extract_teams(
             if home and away:
 
                 return (
-                    home,
-                    away,
+                    canonicalize_parsed_team(home),
+                    canonicalize_parsed_team(away),
                 )
 
     # --------------------------------------------------------
@@ -638,8 +686,8 @@ def extract_teams(
             if len(team_names) >= 2:
 
                 return (
-                    team_names[0],
-                    team_names[-1],
+                    canonicalize_parsed_team(team_names[0]),
+                    canonicalize_parsed_team(team_names[-1]),
                 )
 
     return (
@@ -977,7 +1025,7 @@ def calculate_quality(
 class Soccer365Parser:
 
     """
-    Production parser Soccer365 v1.2.
+    Production parser Soccer365 v1.2.1.
 
     Совместимость:
 
@@ -1036,7 +1084,7 @@ class Soccer365Parser:
             )
 
             # ------------------------------------------------
-            # TEAMS
+            # TEAMS — с дополнительной защитой identity
             # ------------------------------------------------
 
             (
@@ -1044,6 +1092,14 @@ class Soccer365Parser:
                 away_team,
             ) = extract_teams(
                 soup
+            )
+
+            # Двойная защита: приводим к canonical
+            home_team = canonicalize_parsed_team(
+                home_team
+            )
+            away_team = canonicalize_parsed_team(
+                away_team
             )
 
             result[
