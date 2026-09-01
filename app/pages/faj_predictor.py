@@ -73,16 +73,6 @@ from app.faj_club_ratings import (
     get_team_rating,
 )
 
-# ============================================================
-# NEW: TEAM IDENTITY
-# ============================================================
-
-from app.core.team_identity import (
-    canonicalize_team_name,
-    resolve_team_name,
-    same_team,
-)
-
 
 # ============================================================
 # CONFIG
@@ -262,52 +252,61 @@ def reset_workspace() -> None:
 
 
 # ============================================================
-# TEAM DATA
+# TEAM DATA (UPDATED: источник — FAJ_CLUB_RATINGS)
 # ============================================================
 
 def load_teams(
     db: FAJDatabase,
     league: Optional[str] = None,
-) -> List[Dict[str, Any]]:
-
+) -> List[str]:
+    """
+    Источник команд для FAJ Predictor — единый реестр
+    FAJ Club Ratings.
+    database.py здесь НЕ используется для формирования
+    списка команд UI.
+    """
     try:
-        return db.get_teams(league=league)
-    except Exception as exc:
-
+        teams = get_all_teams(league)
+        if not teams:
+            logger.warning(
+                "FAJ Predictor: для турнира '%s' "
+                "нет команд в FAJ_CLUB_RATINGS",
+                league,
+            )
+            return []
+        return list(teams)
+    except Exception:
         logger.exception(
-            "Ошибка загрузки команд: %s",
-            exc,
+            "FAJ Predictor: ошибка загрузки команд "
+            "из FAJ_CLUB_RATINGS для '%s'",
+            league,
         )
-
         return []
 
 
 def team_label(
-    team: Dict[str, Any],
+    team_name: str,
+    league: Optional[str] = None,
 ) -> str:
 
-    name = team.get("name", "Команда")
-
-    league = team.get("league")
-
     if league:
-        return f"{name} · {league}"
+        return f"{team_name} · {league}"
 
-    return str(name)
+    return team_name
 
 
-def find_team(
-    teams: List[Dict[str, Any]],
-    team_id: Optional[int],
-) -> Optional[Dict[str, Any]]:
+def find_team_by_name(
+    team_names: List[str],
+    team_name: Optional[str],
+) -> Optional[str]:
 
-    if team_id is None:
+    if team_name is None:
         return None
 
-    for team in teams:
+    for name in team_names:
 
-        if team.get("id") == team_id:
-            return team
+        if name == team_name:
+            return name
 
     return None
 
@@ -319,8 +318,6 @@ def find_team(
 def create_match_slot() -> Dict[str, Any]:
 
     return {
-        "home_id": None,
-        "away_id": None,
         "home_name": None,
         "away_name": None,
         "urls_home": [""] * MAX_HISTORY_MATCHES,
@@ -458,91 +455,53 @@ def parse_soccer365(
     )
 
 
-# ============================================================
-# VALIDATE PARSED MATCH (UPDATED with Team Identity)
-# ============================================================
-
 def validate_parsed_match(
     parsed: Dict[str, Any],
     selected_team: str,
 ) -> Tuple[bool, str]:
 
-    home = parsed.get("home_team")
-    away = parsed.get("away_team")
+    home = parsed.get(
+        "home_team"
+    )
+
+    away = parsed.get(
+        "away_team"
+    )
 
     if not home or not away:
+
         return (
             False,
             "Не удалось определить команды.",
         )
 
-    selected_canonical = resolve_team_name(
+    target = normalize_name(
         selected_team
     )
-    home_canonical = resolve_team_name(
-        home
-    )
-    away_canonical = resolve_team_name(
-        away
-    )
 
-    logger.info(
-        "FAJ TEAM IDENTITY: selected=%r→%r | "
-        "home=%r→%r | away=%r→%r",
-        selected_team,
-        selected_canonical,
-        home,
-        home_canonical,
-        away,
-        away_canonical,
-    )
+    if (
+        target != normalize_name(home)
+        and
+        target != normalize_name(away)
+    ):
 
-    # --------------------------------------------------------
-    # Если выбранная команда известна FAJ
-    # --------------------------------------------------------
-    if selected_canonical:
-        if (
-            selected_canonical != home_canonical
-            and
-            selected_canonical != away_canonical
-        ):
-            return (
-                False,
-                (
-                    f"Матч {home} — {away} "
-                    f"не содержит выбранную команду "
-                    f"{selected_team}."
-                ),
-            )
-
-    # --------------------------------------------------------
-    # Если внешний источник неизвестен identity layer
-    # --------------------------------------------------------
-    else:
-        if not same_team(selected_team, home) and not same_team(
-            selected_team,
-            away,
-        ):
-            return (
-                False,
-                (
-                    f"Не удалось сопоставить команду "
-                    f"«{selected_team}» "
-                    f"с матчем {home} — {away}."
-                ),
-            )
+        return (
+            False,
+            (
+                f"Матч {home} — {away} "
+                f"не содержит выбранную команду "
+                f"{selected_team}."
+            ),
+        )
 
     return (
         True,
-        (
-            f"{canonicalize_team_name(home)} — "
-            f"{canonicalize_team_name(away)}"
-        ),
+        f"{home} — {away}",
     )
 
 
 # ============================================================
-# NORMALIZATION OF SOCCER365 RECORD (UPDATED with canonical names)
+# NORMALIZATION OF SOCCER365 RECORD
 # ============================================================
 
 def build_history_record(
@@ -562,13 +521,6 @@ def build_history_record(
         "away_team"
     )
 
-    canonical_home = canonicalize_team_name(
-        home
-    )
-    canonical_away = canonicalize_team_name(
-        away
-    )
-
     score = parsed.get(
         "score"
     )
@@ -579,8 +531,8 @@ def build_history_record(
 
     return {
 
-        "home_team": canonical_home,
-        "away_team": canonical_away,
+        "home_team": home,
+        "away_team": away,
 
         "score": score,
 
@@ -711,7 +663,7 @@ def build_history_record(
 
 
 # ============================================================
-# TEAM-SPECIFIC DATA (UPDATED with Team Identity)
+# TEAM-SPECIFIC DATA
 # ============================================================
 
 def team_side(
@@ -719,34 +671,16 @@ def team_side(
     team_name: str,
 ) -> Optional[str]:
 
-    target = resolve_team_name(
-        team_name
-    )
-    home = resolve_team_name(
-        record.get("home_team")
-    )
-    away = resolve_team_name(
-        record.get("away_team")
-    )
-
-    if target is not None:
-        if target == home:
-            return "home"
-        if target == away:
-            return "away"
-        return None
-
-    # Fallback для неизвестного внешнего имени
-    normalized_target = normalize_name(
+    target = normalize_name(
         team_name
     )
 
-    if normalized_target == normalize_name(
+    if target == normalize_name(
         record.get("home_team")
     ):
         return "home"
 
-    if normalized_target == normalize_name(
+    if target == normalize_name(
         record.get("away_team")
     ):
         return "away"
@@ -2339,42 +2273,27 @@ def render_data_summary(
 
 
 # ============================================================
-# UI — MATCH SETUP
+# UI — MATCH SETUP (UPDATED: работаем с именами, а не ID)
 # ============================================================
 
 def render_match_setup(
     index: int,
     match: Dict[str, Any],
-    teams: List[Dict[str, Any]],
+    team_names: List[str],
 ) -> None:
 
     st.markdown(
         f"## Матч {index + 1}"
     )
 
-    home_team = find_team(
-        teams,
-        match.get("home_id"),
-    )
+    home_current = match.get("home_name")
+    away_current = match.get("away_name")
 
-    away_team = find_team(
-        teams,
-        match.get("away_id"),
-    )
+    # Если нет выбранной команды — берём первую из списка
+    if home_current not in team_names:
+        home_current = team_names[0] if team_names else ""
 
-    team_names = [
-        team_label(team)
-        for team in teams
-    ]
-
-    home_current = (
-        team_label(home_team)
-        if home_team
-        else team_names[0]
-        if team_names
-        else ""
-    )
-
+    # Исключаем домашнюю команду из списка гостей
     away_options = [
         name
         for name in team_names
@@ -2390,27 +2309,19 @@ def render_match_setup(
 
         return
 
-    current_away = (
-        team_label(away_team)
-        if away_team
-        and team_label(away_team)
-        in away_options
-        else away_options[0]
-    )
+    if away_current not in away_options:
+        away_current = away_options[0] if away_options else ""
 
     c1, c2 = st.columns(2)
 
     with c1:
 
-        selected_home_label = st.selectbox(
+        selected_home = st.selectbox(
             "🏠 Хозяева",
             team_names,
             index=(
-                team_names.index(
-                    home_current
-                )
-                if home_current
-                in team_names
+                team_names.index(home_current)
+                if home_current in team_names
                 else 0
             ),
             key=f"home_{index}",
@@ -2421,63 +2332,25 @@ def render_match_setup(
         available_away = [
             name
             for name in team_names
-            if name != selected_home_label
+            if name != selected_home
         ]
 
         if not available_away:
             return
 
-        selected_away_label = st.selectbox(
+        selected_away = st.selectbox(
             "✈️ Гости",
             available_away,
             index=(
-                available_away.index(
-                    current_away
-                )
-                if current_away
-                in available_away
+                available_away.index(away_current)
+                if away_current in available_away
                 else 0
             ),
             key=f"away_{index}",
         )
 
-    selected_home = next(
-        (
-            team
-            for team in teams
-            if team_label(team)
-            == selected_home_label
-        ),
-        None,
-    )
-
-    selected_away = next(
-        (
-            team
-            for team in teams
-            if team_label(team)
-            == selected_away_label
-        ),
-        None,
-    )
-
-    if selected_home:
-
-        match["home_id"] = (
-            selected_home["id"]
-        )
-        match["home_name"] = (
-            selected_home["name"]
-        )
-
-    if selected_away:
-
-        match["away_id"] = (
-            selected_away["id"]
-        )
-        match["away_name"] = (
-            selected_away["name"]
-        )
+    match["home_name"] = selected_home
+    match["away_name"] = selected_away
 
     st.markdown(
         "#### История хозяев"
@@ -2636,14 +2509,14 @@ def render_match_setup(
         with c1:
 
             render_data_summary(
-                selected_home_label,
+                selected_home,
                 home_records,
             )
 
         with c2:
 
             render_data_summary(
-                selected_away_label,
+                selected_away,
                 away_records,
             )
 
@@ -2680,7 +2553,7 @@ def render_match_setup(
 
 
 # ============================================================
-# COLLECTION + DATABASE
+# COLLECTION + DATABASE (UPDATED: работаем с именами)
 # ============================================================
 
 def collect_and_store_match(
@@ -2703,6 +2576,19 @@ def collect_and_store_match(
         st.error("Не выбран турнир.")
         return
 
+    # --------------------------------------------------------
+    # ПОЛУЧАЕМ ID КОМАНД ИЗ БД (создаём если нет)
+    # --------------------------------------------------------
+
+    home_id = get_or_create_team(db, home_name, tournament)
+    away_id = get_or_create_team(db, away_name, tournament)
+
+    if home_id is None or away_id is None:
+        st.error(
+            "Не удалось загрузить выбранные команды."
+        )
+        return
+
     session_id = ensure_session(
         db,
         tournament,
@@ -2717,8 +2603,8 @@ def collect_and_store_match(
     try:
         analysis_match_id = db.add_analysis_match(
             session_id=session_id,
-            home_team_id=match["home_id"],
-            away_team_id=match["away_id"],
+            home_team_id=home_id,
+            away_team_id=away_id,
         )
     except Exception as exc:
         logger.exception(
@@ -2806,8 +2692,8 @@ def collect_and_store_match(
                 analysis_match_id=(
                     analysis_match_id
                 ),
-                selected_team_id=match["home_id"],
-                opponent_team_id=match["away_id"],
+                selected_team_id=home_id,
+                opponent_team_id=away_id,
                 records=home_records,
             )
 
@@ -2839,8 +2725,8 @@ def collect_and_store_match(
                 analysis_match_id=(
                     analysis_match_id
                 ),
-                selected_team_id=match["away_id"],
-                opponent_team_id=match["home_id"],
+                selected_team_id=away_id,
+                opponent_team_id=home_id,
                 records=away_records,
             )
 
@@ -2863,8 +2749,8 @@ def collect_and_store_match(
         index
     ] = {
         "tournament": tournament,
-        "home_team_id": match["home_id"],
-        "away_team_id": match["away_id"],
+        "home_team_id": home_id,
+        "away_team_id": away_id,
         "analysis_match_id": analysis_match_id,
         "home_records": home_records,
         "away_records": away_records,
@@ -2881,7 +2767,51 @@ def collect_and_store_match(
 
 
 # ============================================================
-# PREDICTION
+# TEAM MANAGEMENT (NEW)
+# ============================================================
+
+def get_or_create_team(
+    db: FAJDatabase,
+    team_name: str,
+    league: str,
+) -> Optional[int]:
+
+    try:
+        # Проверяем, есть ли команда в БД
+        teams = db.get_teams(league=league)
+        for team in teams:
+            if team.get("name") == team_name:
+                return team.get("id")
+
+        # Если нет — создаём
+        from app.faj_club_ratings import get_team_rating
+        rating = get_team_rating(team_name, league)
+
+        # Добавляем команду в БД
+        with db.get_connection() as conn:
+            cursor = conn.execute("""
+                INSERT INTO teams (name, league)
+                VALUES (?, ?)
+                ON CONFLICT(name, league) DO UPDATE SET
+                    active = 1
+                RETURNING id
+            """, (team_name, league))
+            row = cursor.fetchone()
+            if row:
+                return row["id"]
+
+        return None
+
+    except Exception as exc:
+        logger.exception(
+            "Ошибка получения/создания команды: %s",
+            exc,
+        )
+        return None
+
+
+# ============================================================
+# PREDICTION (UPDATED: работаем с именами)
 # ============================================================
 
 def generate_prediction(
@@ -3086,12 +3016,12 @@ def main() -> None:
     )
 
     # --------------------------------------------------------
-    # TEAMS (из FAJ_CLUB_RATINGS через БД)
+    # TEAMS (из FAJ_CLUB_RATINGS, НЕ из БД)
     # --------------------------------------------------------
 
-    teams = load_teams(db, tournament)
+    team_names = load_teams(db, tournament)
 
-    if not teams:
+    if not team_names:
 
         st.warning(
             f"В реестре FAJ пока нет команд "
@@ -3128,7 +3058,7 @@ def main() -> None:
             render_match_setup(
                 index=index,
                 match=match,
-                teams=teams,
+                team_names=team_names,
             )
 
             if len(
