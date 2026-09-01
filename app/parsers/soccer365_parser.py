@@ -59,6 +59,12 @@ SOCCER365 PARSER v1.2
     - Интеграция с FAJ Team Identity
     - canonicalize_parsed_team() для приведения названий
     - Двойная защита в parse()
+
+ИЗМЕНЕНИЯ V1.2.2:
+    - Добавлено извлечение даты матча (match_date)
+    - Функция extract_match_date()
+    - Дата сохраняется в результате парсинга
+    - Используется для фильтрации истории в FAJ Predictor
 ============================================================
 """
 
@@ -86,7 +92,7 @@ logger = logging.getLogger(__name__)
 # CONFIG
 # ============================================================
 
-PARSER_VERSION = "1.2.1"
+PARSER_VERSION = "1.2.2"
 SOURCE_NAME = "soccer365"
 
 DEFAULT_TIMEOUT = 20
@@ -250,6 +256,7 @@ def empty_result() -> Dict[str, Any]:
         "away_team": None,
 
         "score": None,
+        "match_date": None,  # NEW: дата матча
 
         "source": SOURCE_NAME,
         "source_url": None,
@@ -751,6 +758,166 @@ def extract_score(
 
 
 # ============================================================
+# MATCH DATE (NEW)
+# ============================================================
+
+def extract_match_date(
+    soup: BeautifulSoup,
+) -> Optional[str]:
+    """
+    Извлекает дату матча из страницы Soccer365.
+
+    Стратегии:
+        1. Мета-тег article:published_time
+        2. Элемент .live_game_date или .live_game_datetime
+        3. Мета-тег description
+        4. fallback: URL
+    """
+    # --------------------------------------------------------
+    # STRATEGY 1: META article:published_time
+    # --------------------------------------------------------
+    meta_date = soup.find(
+        "meta",
+        attrs={
+            "property": "article:published_time"
+        }
+    )
+
+    if meta_date:
+        content = meta_date.get("content")
+        if content:
+            # Пробуем парсить ISO дату
+            try:
+                # Формат: 2026-08-29T18:30:00+03:00
+                dt = datetime.fromisoformat(
+                    content.replace('Z', '+00:00')
+                )
+                return dt.date().isoformat()
+            except (ValueError, TypeError):
+                # Пробуем просто взять первые 10 символов
+                if len(content) >= 10:
+                    date_str = content[:10]
+                    if re.match(r"\d{4}-\d{2}-\d{2}", date_str):
+                        return date_str
+
+    # --------------------------------------------------------
+    # STRATEGY 2: .live_game_date or .live_game_datetime
+    # --------------------------------------------------------
+    date_elem = soup.select_one(
+        ".live_game_date"
+    )
+
+    if not date_elem:
+        date_elem = soup.select_one(
+            ".live_game_datetime"
+        )
+
+    if date_elem:
+        text = normalize_text(
+            date_elem.get_text(
+                " ",
+                strip=True,
+            )
+        )
+        if text:
+            # Пробуем парсить дату в формате: 29.08.2026
+            match = re.search(
+                r"(\d{2})\.(\d{2})\.(\d{4})",
+                text
+            )
+            if match:
+                day, month, year = match.groups()
+                return f"{year}-{month}-{day}"
+
+            # Формат: 29 августа 2026
+            months = {
+                "января": "01",
+                "февраля": "02",
+                "марта": "03",
+                "апреля": "04",
+                "мая": "05",
+                "июня": "06",
+                "июля": "07",
+                "августа": "08",
+                "сентября": "09",
+                "октября": "10",
+                "ноября": "11",
+                "декабря": "12",
+            }
+            for month_name, month_num in months.items():
+                if month_name in text.lower():
+                    match = re.search(
+                        rf"(\d{{1,2}})\s+{month_name}\s+(\d{{4}})",
+                        text,
+                        re.IGNORECASE
+                    )
+                    if match:
+                        day, year = match.groups()
+                        return f"{year}-{month_num}-{int(day):02d}"
+
+    # --------------------------------------------------------
+    # STRATEGY 3: META DESCRIPTION
+    # --------------------------------------------------------
+    meta_desc = soup.find(
+        "meta",
+        attrs={
+            "name": "description"
+        }
+    )
+
+    if meta_desc:
+        content = meta_desc.get("content")
+        if content:
+            # Ищем дату в описании: 29 августа 2026
+            text = normalize_text(content)
+            months = {
+                "января": "01",
+                "февраля": "02",
+                "марта": "03",
+                "апреля": "04",
+                "мая": "05",
+                "июня": "06",
+                "июля": "07",
+                "августа": "08",
+                "сентября": "09",
+                "октября": "10",
+                "ноября": "11",
+                "декабря": "12",
+            }
+            for month_name, month_num in months.items():
+                if month_name in text.lower():
+                    match = re.search(
+                        rf"(\d{{1,2}})\s+{month_name}\s+(\d{{4}})",
+                        text,
+                        re.IGNORECASE
+                    )
+                    if match:
+                        day, year = match.groups()
+                        return f"{year}-{month_num}-{int(day):02d}"
+
+            # Или формат: 29.08.2026
+            match = re.search(
+                r"(\d{2})\.(\d{2})\.(\d{4})",
+                text
+            )
+            if match:
+                day, month, year = match.groups()
+                return f"{year}-{month}-{day}"
+
+    # --------------------------------------------------------
+    # STRATEGY 4: URL
+    # --------------------------------------------------------
+    # Из URL можно извлечь ID матча, но не дату.
+    # Возвращаем None, если ничего не нашли.
+    # --------------------------------------------------------
+
+    logger.debug(
+        "Soccer365: не удалось извлечь дату матча"
+    )
+    return None
+
+
+# ============================================================
 # STATISTICS — DOM-based (v1.2)
 # ============================================================
 
@@ -1025,7 +1192,7 @@ def calculate_quality(
 class Soccer365Parser:
 
     """
-    Production parser Soccer365 v1.2.1.
+    Production parser Soccer365 v1.2.2.
 
     Совместимость:
 
@@ -1125,6 +1292,16 @@ class Soccer365Parser:
             )
 
             # ------------------------------------------------
+            # MATCH DATE (NEW)
+            # ------------------------------------------------
+
+            result[
+                "match_date"
+            ] = extract_match_date(
+                soup
+            )
+
+            # ------------------------------------------------
             # STATISTICS — DOM-based
             # ------------------------------------------------
 
@@ -1209,6 +1386,10 @@ class Soccer365Parser:
 
             "score": parsed.get(
                 "score"
+            ),
+
+            "match_date": parsed.get(
+                "match_date"
             ),
 
             "data_quality": parsed.get(
