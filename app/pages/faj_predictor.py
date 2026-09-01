@@ -59,6 +59,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 from datetime import date, datetime
 from statistics import mean
 from typing import Any, Dict, List, Optional, Tuple
@@ -1509,6 +1510,277 @@ def render_form_context_card(
 
 
 # ============================================================
+# DATE PARSER (NEW)
+# ============================================================
+
+def _parse_date(
+    value: Any,
+) -> Optional[date]:
+    """
+    Приводит дату к datetime.date.
+    Поддерживает:
+        YYYY-MM-DD
+        YYYY-MM-DD HH:MM:SS
+        YYYY-MM-DDTHH:MM:SS
+        YYYY-MM-DDTHH:MM:SS+03:00
+        DD.MM.YYYY
+    Используется только для сравнения дат.
+    Исходное значение match_date не изменяет.
+    """
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    # --------------------------------------------------------
+    # ISO: YYYY-MM-DD...
+    # --------------------------------------------------------
+    match = re.search(
+        r"(\d{4})-(\d{2})-(\d{2})",
+        text,
+    )
+    if match:
+        year, month, day = match.groups()
+        try:
+            return date(
+                int(year),
+                int(month),
+                int(day),
+            )
+        except ValueError:
+            return None
+
+    # --------------------------------------------------------
+    # DD.MM.YYYY
+    # --------------------------------------------------------
+    match = re.search(
+        r"(\d{2})\.(\d{2})\.(\d{4})",
+        text,
+    )
+    if match:
+        day, month, year = match.groups()
+        try:
+            return date(
+                int(year),
+                int(month),
+                int(day),
+            )
+        except ValueError:
+            return None
+
+    return None
+
+
+# ============================================================
+# COLLECTION (UPDATED: фильтрация по дате с _parse_date)
+# ============================================================
+
+def collect_team_history(
+    team_name: str,
+    urls: List[str],
+    forecast_date: Optional[str] = None,
+) -> Tuple[
+    List[Dict[str, Any]],
+    List[str],
+]:
+    """
+    Собирает историю команды из Soccer365.
+    Логика:
+        Soccer365 URLs
+              ↓
+        parse_soccer365()
+              ↓
+        validate
+              ↓
+        build_history_record()
+              ↓
+        дата матча
+              ↓
+        только матчи ДО даты прогноза
+              ↓
+        сортировка DESC
+              ↓
+        последние 5 матчей
+    ВАЖНО:
+        История каждой команды собирается отдельно.
+        forecast_date относится только к прогнозируемому
+        матчу и используется как граница истории.
+        Матч в день прогноза НЕ считается прошлым.
+    """
+    clean_urls = [
+        url.strip()
+        for url in urls
+        if url and url.strip()
+    ]
+
+    # --------------------------------------------------------
+    # УБИРАЕМ ДУБЛИКАТЫ
+    # --------------------------------------------------------
+    clean_urls = list(
+        dict.fromkeys(
+            clean_urls
+        )
+    )
+
+    records: List[Dict[str, Any]] = []
+    errors: List[str] = []
+
+    # --------------------------------------------------------
+    # НОРМАЛИЗУЕМ ДАТУ ПРОГНОЗА ОДИН РАЗ
+    # --------------------------------------------------------
+    forecast_date_obj = _parse_date(
+        forecast_date
+    )
+
+    if forecast_date and not forecast_date_obj:
+        errors.append(
+            "Некорректная дата прогноза: "
+            f"{forecast_date}"
+        )
+        return (
+            records,
+            errors,
+        )
+
+    # --------------------------------------------------------
+    # PARSE ALL PROVIDED MATCHES
+    # --------------------------------------------------------
+    for position, url in enumerate(
+        clean_urls,
+        start=1,
+    ):
+        try:
+            parsed = parse_soccer365(
+                url
+            )
+        except Exception as exc:
+            errors.append(
+                f"{position}. {exc}"
+            )
+            continue
+
+        # ----------------------------------------------------
+        # PARSER ERROR
+        # ----------------------------------------------------
+        if parsed.get("error"):
+            errors.append(
+                f"{position}. "
+                f"{parsed.get('error')}"
+            )
+            continue
+
+        # ----------------------------------------------------
+        # VALIDATION
+        # ----------------------------------------------------
+        valid, message = (
+            validate_parsed_match(
+                parsed,
+                team_name,
+            )
+        )
+        if not valid:
+            errors.append(
+                f"{position}. {message}"
+            )
+            continue
+
+        # ----------------------------------------------------
+        # BUILD RECORD
+        # ----------------------------------------------------
+        record = build_history_record(
+            parsed
+        )
+
+        # ----------------------------------------------------
+        # DATE REQUIRED
+        # ----------------------------------------------------
+        match_date = record.get(
+            "match_date"
+        )
+        if not match_date:
+            errors.append(
+                f"{position}. "
+                f"Не удалось определить дату "
+                f"матча."
+            )
+            continue
+
+        # ----------------------------------------------------
+        # НОРМАЛЬНАЯ ДАТА
+        # ----------------------------------------------------
+        match_date_obj = _parse_date(
+            match_date
+        )
+        if not match_date_obj:
+            errors.append(
+                f"{position}. "
+                f"Некорректная дата матча: "
+                f"{match_date}"
+            )
+            continue
+
+        # ----------------------------------------------------
+        # FUTURE MATCH PROTECTION
+        #
+        # Только матчи строго ДО даты прогноза.
+        #
+        # Например:
+        #
+        # прогноз: 2026-08-30
+        #
+        # 2026-08-29 → берём
+        # 2026-08-30 → НЕ берём
+        # 2026-08-31 → НЕ берём
+        # ----------------------------------------------------
+        if forecast_date_obj:
+            if match_date_obj >= forecast_date_obj:
+                errors.append(
+                    f"{position}. "
+                    f"Матч от {match_date} "
+                    f"не является прошлым "
+                    f"относительно "
+                    f"{forecast_date}."
+                )
+                continue
+
+        # ----------------------------------------------------
+        # СОХРАНЯЕМ
+        # ----------------------------------------------------
+        records.append(
+            record
+        )
+
+    # --------------------------------------------------------
+    # SORT: НОВЕЙШИЙ → СТАРЫЙ
+    # --------------------------------------------------------
+    records.sort(
+        key=lambda record: (
+            _parse_date(
+                record.get(
+                    "match_date"
+                )
+            )
+            or date.min
+        ),
+        reverse=True,
+    )
+
+    # --------------------------------------------------------
+    # ONLY LAST 5
+    # --------------------------------------------------------
+    records = records[
+        :MAX_RECENT_HISTORY
+    ]
+
+    return (
+        records,
+        errors,
+    )
+
+
+# ============================================================
 # DATABASE SAVE
 # ============================================================
 
@@ -1920,147 +2192,6 @@ def save_stats_for_side(
                 ),
             },
         },
-    )
-
-
-# ============================================================
-# COLLECTION (UPDATED: фильтрация по дате)
-# ============================================================
-
-def collect_team_history(
-    team_name: str,
-    urls: List[str],
-    forecast_date: Optional[str] = None,
-) -> Tuple[
-    List[Dict[str, Any]],
-    List[str],
-]:
-    """
-    Собирает историю команды из Soccer365 URL.
-    Фильтрует по дате прогноза и сортирует по убыванию даты.
-    """
-    clean_urls = [
-        url.strip()
-        for url in urls
-        if url and url.strip()
-    ]
-
-    # Убираем дубликаты URL, сохраняя порядок ввода
-    clean_urls = list(
-        dict.fromkeys(clean_urls)
-    )
-
-    records: List[Dict[str, Any]] = []
-    errors: List[str] = []
-
-    # --------------------------------------------------------
-    # PARSE ALL PROVIDED MATCHES
-    # --------------------------------------------------------
-    for position, url in enumerate(
-        clean_urls,
-        start=1,
-    ):
-        try:
-            parsed = parse_soccer365(
-                url
-            )
-        except Exception as exc:
-            errors.append(
-                f"{position}. {exc}"
-            )
-            continue
-
-        if parsed.get("error"):
-            errors.append(
-                f"{position}. "
-                f"{parsed.get('error')}"
-            )
-            continue
-
-        valid, message = (
-            validate_parsed_match(
-                parsed,
-                team_name,
-            )
-        )
-        if not valid:
-            errors.append(
-                f"{position}. {message}"
-            )
-            continue
-
-        record = build_history_record(
-            parsed
-        )
-
-        # ----------------------------------------------------
-        # DATE REQUIRED FOR ORDERING
-        # ----------------------------------------------------
-        match_date = record.get(
-            "match_date"
-        )
-        if not match_date:
-            errors.append(
-                f"{position}. "
-                f"{message}: "
-                f"не удалось определить дату матча."
-            )
-            continue
-
-        # ----------------------------------------------------
-        # FUTURE MATCH PROTECTION
-        # ----------------------------------------------------
-        if forecast_date:
-            try:
-                if (
-                    str(match_date)
-                    >= str(forecast_date)
-                ):
-                    errors.append(
-                        f"{position}. "
-                        f"{message}: "
-                        f"матч от {match_date} "
-                        f"не является прошлым "
-                        f"относительно "
-                        f"{forecast_date}."
-                    )
-                    continue
-            except Exception:
-                errors.append(
-                    f"{position}. "
-                    f"{message}: "
-                    f"некорректная дата "
-                    f"{match_date}."
-                )
-                continue
-
-        records.append(
-            record
-        )
-
-    # --------------------------------------------------------
-    # SORT: новейший → старый
-    # --------------------------------------------------------
-    records.sort(
-        key=lambda record: str(
-            record.get(
-                "match_date",
-                ""
-            )
-        ),
-        reverse=True,
-    )
-
-    # --------------------------------------------------------
-    # ONLY LAST 5
-    # --------------------------------------------------------
-    records = records[
-        :MAX_RECENT_HISTORY
-    ]
-
-    return (
-        records,
-        errors,
     )
 
 
