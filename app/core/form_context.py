@@ -79,6 +79,17 @@ VERSION 1.1
     - домашние / гостевые показатели считаются отдельно;
     - порядок матчей сохраняется:
       от самого свежего к старому.
+
+============================================================
+VERSION 1.2
+============================================================
+
+Изменения:
+
+    - Исправлено получение xG из структуры
+      xg = {"home": ..., "away": ...}
+    - Теперь form_context корректно извлекает xG
+      из записей, созданных build_history_record()
 ============================================================
 """
 
@@ -92,7 +103,7 @@ from typing import Any, Dict, Iterable, List, Optional
 # VERSION
 # ============================================================
 
-FORM_CONTEXT_VERSION = "1.1"
+FORM_CONTEXT_VERSION = "1.2"
 
 DEFAULT_MATCH_LIMIT = 5
 
@@ -658,42 +669,42 @@ def build_match_context(
     )
 
     # --------------------------------------------------------
-    # xG
+    # xG (UPDATED: извлекаем из структуры xg = {"home": ..., "away": ...})
     # --------------------------------------------------------
+    xg_values = _get_value(
+        record,
+        "xg",
+    )
+
+    if not isinstance(
+        xg_values,
+        dict,
+    ):
+        xg_values = {}
 
     home_xg = _safe_float(
-        _get_value(
-            record,
-            "home_xg",
-        )
+        xg_values.get("home")
     )
 
     away_xg = _safe_float(
-        _get_value(
-            record,
-            "away_xg",
-        )
+        xg_values.get("away")
     )
 
     if is_home:
-
         team_xg = home_xg
         opponent_xg = away_xg
 
     elif is_away:
-
         team_xg = away_xg
         opponent_xg = home_xg
 
     else:
-
         team_xg = _safe_float(
             _get_value(
                 record,
                 "team_xg",
             )
         )
-
         opponent_xg = _safe_float(
             _get_value(
                 record,
@@ -1071,8 +1082,10 @@ if __name__ == "__main__":
             "away_team": "Краснодар",
             "home_goals": 3,
             "away_goals": 0,
-            "home_xg": 2.10,
-            "away_xg": 0.40,
+            "xg": {
+                "home": 2.10,
+                "away": 0.40,
+            },
         },
 
         {
@@ -1080,8 +1093,10 @@ if __name__ == "__main__":
             "away_team": "Зенит",
             "home_goals": 1,
             "away_goals": 1,
-            "home_xg": 1.20,
-            "away_xg": 1.60,
+            "xg": {
+                "home": 1.20,
+                "away": 1.60,
+            },
         },
 
         {
@@ -1089,8 +1104,10 @@ if __name__ == "__main__":
             "away_team": "ЦСКА Москва",
             "home_goals": 2,
             "away_goals": 1,
-            "home_xg": 1.80,
-            "away_xg": 1.20,
+            "xg": {
+                "home": 1.80,
+                "away": 1.20,
+            },
         },
 
         {
@@ -1098,8 +1115,10 @@ if __name__ == "__main__":
             "away_team": "Зенит",
             "home_goals": 3,
             "away_goals": 1,
-            "home_xg": 2.20,
-            "away_xg": 0.50,
+            "xg": {
+                "home": 2.20,
+                "away": 0.50,
+            },
         },
 
         {
@@ -1107,8 +1126,10 @@ if __name__ == "__main__":
             "away_team": "Ростов",
             "home_goals": 1,
             "away_goals": 1,
-            "home_xg": 1.40,
-            "away_xg": 1.10,
+            "xg": {
+                "home": 1.40,
+                "away": 1.10,
+            },
         },
     ]
 
