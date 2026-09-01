@@ -949,6 +949,98 @@ class FAJDatabase:
             return cursor.lastrowid
 
     # ========================================================
+    # RECENT HISTORICAL MATCHES
+    # ========================================================
+
+    def get_recent_historical_matches(
+        self,
+        team_id: int,
+        before_date: Optional[str],
+        limit: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """
+        Возвращает последние завершённые исторические матчи
+        конкретной команды перед датой прогнозируемого матча.
+
+        Правило FAJ:
+            team
+                ↓
+            before forecast date
+                ↓
+            match_date DESC
+                ↓
+            LIMIT 5
+
+        Важно:
+            будущие матчи и сам прогнозируемый матч
+            в историю не попадают.
+        """
+        if not team_id:
+            return []
+
+        try:
+            limit = max(
+                1,
+                min(int(limit), 20),
+            )
+        except (TypeError, ValueError):
+            limit = 5
+
+        with self.get_connection() as conn:
+            if before_date:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        hm.*,
+                        t.name AS team_name,
+                        ot.name AS opponent_name
+                    FROM historical_matches hm
+                    JOIN teams t
+                        ON t.id = hm.team_id
+                    LEFT JOIN teams ot
+                        ON ot.id = hm.opponent_team_id
+                    WHERE hm.team_id = ?
+                      AND hm.match_date IS NOT NULL
+                      AND date(hm.match_date) < date(?)
+                    ORDER BY
+                        date(hm.match_date) DESC,
+                        hm.id DESC
+                    LIMIT ?
+                    """,
+                    (
+                        team_id,
+                        before_date,
+                        limit,
+                    ),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        hm.*,
+                        t.name AS team_name,
+                        ot.name AS opponent_name
+                    FROM historical_matches hm
+                    JOIN teams t
+                        ON t.id = hm.team_id
+                    LEFT JOIN teams ot
+                        ON ot.id = hm.opponent_team_id
+                    WHERE hm.team_id = ?
+                      AND hm.match_date IS NOT NULL
+                    ORDER BY
+                        date(hm.match_date) DESC,
+                        hm.id DESC
+                    LIMIT ?
+                    """,
+                    (
+                        team_id,
+                        limit,
+                    ),
+                ).fetchall()
+
+            return rows_to_dicts(rows)
+
+    # ========================================================
     # PREDICTIONS
     # ========================================================
 
