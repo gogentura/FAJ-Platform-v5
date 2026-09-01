@@ -168,6 +168,51 @@ def init_database() -> None:
         """)
 
         # ----------------------------------------------------
+        # MIGRATION: TEAMS
+        # ----------------------------------------------------
+        team_columns = {
+            row["name"]
+            for row in cursor.execute(
+                "PRAGMA table_info(teams)"
+            ).fetchall()
+        }
+
+        if "active" not in team_columns:
+            cursor.execute("""
+                ALTER TABLE teams
+                ADD COLUMN active INTEGER NOT NULL DEFAULT 1
+            """)
+            logger.info("Добавлена колонка active в таблицу teams")
+
+        if "country" not in team_columns:
+            cursor.execute("""
+                ALTER TABLE teams
+                ADD COLUMN country TEXT
+            """)
+            logger.info("Добавлена колонка country в таблицу teams")
+
+        if "api_id" not in team_columns:
+            cursor.execute("""
+                ALTER TABLE teams
+                ADD COLUMN api_id INTEGER
+            """)
+            logger.info("Добавлена колонка api_id в таблицу teams")
+
+        if "logo_url" not in team_columns:
+            cursor.execute("""
+                ALTER TABLE teams
+                ADD COLUMN logo_url TEXT
+            """)
+            logger.info("Добавлена колонка logo_url в таблицу teams")
+
+        if "created_at" not in team_columns:
+            cursor.execute("""
+                ALTER TABLE teams
+                ADD COLUMN created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            """)
+            logger.info("Добавлена колонка created_at в таблицу teams")
+
+        # ----------------------------------------------------
         # COMPETITIONS
         # ----------------------------------------------------
 
@@ -185,6 +230,58 @@ def init_database() -> None:
                 UNIQUE(name, season)
             )
         """)
+
+        # ----------------------------------------------------
+        # MIGRATION: COMPETITIONS
+        # ----------------------------------------------------
+        competition_columns = {
+            row["name"]
+            for row in cursor.execute(
+                "PRAGMA table_info(competitions)"
+            ).fetchall()
+        }
+
+        if "active" not in competition_columns:
+            cursor.execute("""
+                ALTER TABLE competitions
+                ADD COLUMN active INTEGER NOT NULL DEFAULT 1
+            """)
+            logger.info("Добавлена колонка active в таблицу competitions")
+
+        if "country" not in competition_columns:
+            cursor.execute("""
+                ALTER TABLE competitions
+                ADD COLUMN country TEXT
+            """)
+            logger.info("Добавлена колонка country в таблицу competitions")
+
+        if "competition_type" not in competition_columns:
+            cursor.execute("""
+                ALTER TABLE competitions
+                ADD COLUMN competition_type TEXT DEFAULT 'league'
+            """)
+            logger.info("Добавлена колонка competition_type в таблицу competitions")
+
+        if "season" not in competition_columns:
+            cursor.execute("""
+                ALTER TABLE competitions
+                ADD COLUMN season TEXT
+            """)
+            logger.info("Добавлена колонка season в таблицу competitions")
+
+        if "api_id" not in competition_columns:
+            cursor.execute("""
+                ALTER TABLE competitions
+                ADD COLUMN api_id INTEGER
+            """)
+            logger.info("Добавлена колонка api_id в таблицу competitions")
+
+        if "created_at" not in competition_columns:
+            cursor.execute("""
+                ALTER TABLE competitions
+                ADD COLUMN created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            """)
+            logger.info("Добавлена колонка created_at в таблицу competitions")
 
         # ----------------------------------------------------
         # TEAM / COMPETITION
