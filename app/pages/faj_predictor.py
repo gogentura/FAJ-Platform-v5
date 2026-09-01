@@ -59,6 +59,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+from datetime import date, datetime
 from statistics import mean
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -85,6 +86,7 @@ MODEL_VERSION = "FAJ-PERSONAL-BRAIN-0.1"
 MIN_EXTENDED_MATCHES = 3
 MAX_HISTORY_MATCHES = 6
 MAX_ANALYSIS_MATCHES = 6
+MAX_RECENT_HISTORY = 5
 
 logger = logging.getLogger(__name__)
 
@@ -312,7 +314,7 @@ def find_team_by_name(
 
 
 # ============================================================
-# MATCH SLOTS
+# MATCH SLOTS (UPDATED: added match_date)
 # ============================================================
 
 def create_match_slot() -> Dict[str, Any]:
@@ -320,6 +322,7 @@ def create_match_slot() -> Dict[str, Any]:
     return {
         "home_name": None,
         "away_name": None,
+        "match_date": None,  # ISO format: YYYY-MM-DD
         "urls_home": [""] * MAX_HISTORY_MATCHES,
         "urls_away": [""] * MAX_HISTORY_MATCHES,
     }
@@ -455,6 +458,10 @@ def parse_soccer365(
     )
 
 
+# ============================================================
+# VALIDATE PARSED MATCH
+# ============================================================
+
 def validate_parsed_match(
     parsed: Dict[str, Any],
     selected_team: str,
@@ -501,7 +508,7 @@ def validate_parsed_match(
 
 
 # ============================================================
-# NORMALIZATION OF SOCCER365 RECORD
+# NORMALIZATION OF SOCCER365 RECORD (UPDATED: added match_date)
 # ============================================================
 
 def build_history_record(
@@ -533,6 +540,10 @@ def build_history_record(
 
         "home_team": home,
         "away_team": away,
+
+        "match_date": parsed.get(
+            "match_date"
+        ),
 
         "score": score,
 
@@ -1373,7 +1384,7 @@ def save_prediction_to_database(
 
 
 # ============================================================
-# SAVE HISTORY
+# SAVE HISTORY (UPDATED: сохраняем match_date)
 # ============================================================
 
 def save_history(
@@ -1479,7 +1490,9 @@ def save_history(
 
                     source_id=source_id,
 
-                    match_date=None,
+                    match_date=record.get(
+                        "match_date"
+                    ),
 
                     is_home=True,
 
@@ -1523,7 +1536,9 @@ def save_history(
 
                 source_id=source_id,
 
-                match_date=None,
+                match_date=record.get(
+                    "match_date"
+                ),
 
                 is_home=False,
 
@@ -1645,56 +1660,57 @@ def save_stats_for_side(
 
 
 # ============================================================
-# COLLECTION
+# COLLECTION (UPDATED: фильтрация по дате)
 # ============================================================
 
 def collect_team_history(
     team_name: str,
     urls: List[str],
+    forecast_date: Optional[str] = None,
 ) -> Tuple[
     List[Dict[str, Any]],
     List[str],
 ]:
-
+    """
+    Собирает историю команды из Soccer365 URL.
+    Фильтрует по дате прогноза и сортирует по убыванию даты.
+    """
     clean_urls = [
         url.strip()
         for url in urls
         if url and url.strip()
     ]
 
-    clean_urls = clean_urls[
-        :MAX_HISTORY_MATCHES
-    ]
+    # Убираем дубликаты URL, сохраняя порядок ввода
+    clean_urls = list(
+        dict.fromkeys(clean_urls)
+    )
 
-    records = []
-    errors = []
+    records: List[Dict[str, Any]] = []
+    errors: List[str] = []
 
+    # --------------------------------------------------------
+    # PARSE ALL PROVIDED MATCHES
+    # --------------------------------------------------------
     for position, url in enumerate(
         clean_urls,
         start=1,
     ):
-
         try:
-
             parsed = parse_soccer365(
                 url
             )
-
         except Exception as exc:
-
             errors.append(
                 f"{position}. {exc}"
             )
-
             continue
 
         if parsed.get("error"):
-
             errors.append(
                 f"{position}. "
                 f"{parsed.get('error')}"
             )
-
             continue
 
         valid, message = (
@@ -1703,22 +1719,80 @@ def collect_team_history(
                 team_name,
             )
         )
-
         if not valid:
-
             errors.append(
                 f"{position}. {message}"
             )
-
             continue
 
         record = build_history_record(
             parsed
         )
 
+        # ----------------------------------------------------
+        # DATE REQUIRED FOR ORDERING
+        # ----------------------------------------------------
+        match_date = record.get(
+            "match_date"
+        )
+        if not match_date:
+            errors.append(
+                f"{position}. "
+                f"{message}: "
+                f"не удалось определить дату матча."
+            )
+            continue
+
+        # ----------------------------------------------------
+        # FUTURE MATCH PROTECTION
+        # ----------------------------------------------------
+        if forecast_date:
+            try:
+                if (
+                    str(match_date)
+                    >= str(forecast_date)
+                ):
+                    errors.append(
+                        f"{position}. "
+                        f"{message}: "
+                        f"матч от {match_date} "
+                        f"не является прошлым "
+                        f"относительно "
+                        f"{forecast_date}."
+                    )
+                    continue
+            except Exception:
+                errors.append(
+                    f"{position}. "
+                    f"{message}: "
+                    f"некорректная дата "
+                    f"{match_date}."
+                )
+                continue
+
         records.append(
             record
         )
+
+    # --------------------------------------------------------
+    # SORT: новейший → старый
+    # --------------------------------------------------------
+    records.sort(
+        key=lambda record: str(
+            record.get(
+                "match_date",
+                ""
+            )
+        ),
+        reverse=True,
+    )
+
+    # --------------------------------------------------------
+    # ONLY LAST 5
+    # --------------------------------------------------------
+    records = records[
+        :MAX_RECENT_HISTORY
+    ]
 
     return (
         records,
@@ -2273,7 +2347,7 @@ def render_data_summary(
 
 
 # ============================================================
-# UI — MATCH SETUP (UPDATED: работаем с именами, а не ID)
+# UI — MATCH SETUP (UPDATED: added date picker)
 # ============================================================
 
 def render_match_setup(
@@ -2351,6 +2425,29 @@ def render_match_setup(
 
     match["home_name"] = selected_home
     match["away_name"] = selected_away
+
+    # --------------------------------------------------------
+    # FORECAST MATCH DATE
+    # --------------------------------------------------------
+    current_match_date = match.get("match_date")
+
+    if current_match_date:
+        try:
+            default_match_date = date.fromisoformat(
+                current_match_date
+            )
+        except (TypeError, ValueError):
+            default_match_date = date.today()
+    else:
+        default_match_date = date.today()
+
+    forecast_date = st.date_input(
+        "📅 Дата прогнозируемого матча",
+        value=default_match_date,
+        key=f"match_date_{index}",
+    )
+
+    match["match_date"] = forecast_date.isoformat()
 
     st.markdown(
         "#### История хозяев"
@@ -2553,7 +2650,7 @@ def render_match_setup(
 
 
 # ============================================================
-# COLLECTION + DATABASE (UPDATED: работаем с именами)
+# COLLECTION + DATABASE (UPDATED: с датой прогноза)
 # ============================================================
 
 def collect_and_store_match(
@@ -2565,6 +2662,7 @@ def collect_and_store_match(
     home_name = match.get("home_name")
     away_name = match.get("away_name")
     tournament = st.session_state.faj_competition
+    forecast_date = match.get("match_date")
 
     if not home_name or not away_name:
         st.error(
@@ -2574,6 +2672,10 @@ def collect_and_store_match(
 
     if not tournament:
         st.error("Не выбран турнир.")
+        return
+
+    if not forecast_date:
+        st.error("Укажите дату прогнозируемого матча.")
         return
 
     # --------------------------------------------------------
@@ -2598,13 +2700,14 @@ def collect_and_store_match(
         return
 
     # ========================================================
-    # СОЗДАЁМ ANALYSIS MATCH
+    # СОЗДАЁМ ANALYSIS MATCH С ДАТОЙ ПРОГНОЗА
     # ========================================================
     try:
         analysis_match_id = db.add_analysis_match(
             session_id=session_id,
             home_team_id=home_id,
             away_team_id=away_id,
+            match_date=forecast_date,
         )
     except Exception as exc:
         logger.exception(
@@ -2634,6 +2737,7 @@ def collect_and_store_match(
                     "urls_home",
                     [],
                 ),
+                forecast_date=forecast_date,
             )
         )
 
@@ -2660,6 +2764,7 @@ def collect_and_store_match(
                     "urls_away",
                     [],
                 ),
+                forecast_date=forecast_date,
             )
         )
 
@@ -2767,7 +2872,7 @@ def collect_and_store_match(
 
 
 # ============================================================
-# TEAM MANAGEMENT (NEW)
+# TEAM MANAGEMENT
 # ============================================================
 
 def get_or_create_team(
@@ -2811,7 +2916,7 @@ def get_or_create_team(
 
 
 # ============================================================
-# PREDICTION (UPDATED: работаем с именами)
+# PREDICTION
 # ============================================================
 
 def generate_prediction(
