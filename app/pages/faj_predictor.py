@@ -965,13 +965,9 @@ def build_prediction(
         away_team=away_team,
         home_matches=history_home,
         away_matches=history_away,
+        home_form_context=home_form_context,
+        away_form_context=away_form_context,
     )
-
-    # Добавляем form_context в результат
-    if home_form_context:
-        result["home_form_context"] = home_form_context
-    if away_form_context:
-        result["away_form_context"] = away_form_context
 
     return {
         # ----------------------------------------------------
