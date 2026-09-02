@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ PLATFORM v12.1
-FORM CONTEXT v1.6
+FORM CONTEXT v1.7
 ============================================================
 
 НАЗНАЧЕНИЕ
@@ -138,6 +138,25 @@ VERSION 1.6
     - Добавлен защитный комментарий в build_form_context()
     - M1 = самый старый, M6 = самый свежий
     - FormModel получает M1 → M6 с весами 1..6
+
+============================================================
+VERSION 1.7
+============================================================
+
+Изменения:
+
+    - Расширен MatchContext: добавлены угловые и карточки
+    - Добавлены истории: corners_for_history, corners_against_history
+    - Добавлены истории: team_cards_history, opponent_cards_history
+    - Добавлены агрегаты: corners_for_avg, corners_against_avg
+    - Добавлены агрегаты: team_cards_avg, opponent_cards_avg
+    - Добавлены истории: goals_for_history, goals_against_history
+    - Добавлены истории: team_xg_history, opponent_xg_history
+    - Добавлены истории: venue_history, difficulty_history
+    - Добавлены истории: results_history
+    - Все истории синхронизированы по одной временной оси (старый → новый)
+    - None не заменяется на 0
+    - Средние считаются только по доступным значениям
 ============================================================
 """
 
@@ -151,7 +170,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 # VERSION
 # ============================================================
 
-FORM_CONTEXT_VERSION = "1.6"
+FORM_CONTEXT_VERSION = "1.7"
 
 DEFAULT_MATCH_LIMIT = 6
 
@@ -488,6 +507,22 @@ class MatchContext:
     opponent_xg: Optional[float] = None
 
     # --------------------------------------------------------
+    # Corners
+    # --------------------------------------------------------
+
+    corners_for: Optional[int] = None
+
+    corners_against: Optional[int] = None
+
+    # --------------------------------------------------------
+    # Cards
+    # --------------------------------------------------------
+
+    team_cards: Optional[int] = None
+
+    opponent_cards: Optional[int] = None
+
+    # --------------------------------------------------------
     # Difficulty
     # --------------------------------------------------------
 
@@ -761,6 +796,84 @@ def build_match_context(
         )
 
     # --------------------------------------------------------
+    # CORNERS
+    # --------------------------------------------------------
+    home_corners = _safe_int(
+        _get_value(
+            record,
+            "home_corners",
+            "corners_home",
+        )
+    )
+    away_corners = _safe_int(
+        _get_value(
+            record,
+            "away_corners",
+            "corners_away",
+        )
+    )
+
+    if is_home:
+        corners_for = home_corners
+        corners_against = away_corners
+    elif is_away:
+        corners_for = away_corners
+        corners_against = home_corners
+    else:
+        corners_for = _safe_int(
+            _get_value(
+                record,
+                "corners_for",
+            )
+        )
+        corners_against = _safe_int(
+            _get_value(
+                record,
+                "corners_against",
+            )
+        )
+
+    # --------------------------------------------------------
+    # CARDS
+    # --------------------------------------------------------
+    home_cards = _safe_int(
+        _get_value(
+            record,
+            "home_yellow_cards",
+            "home_cards",
+            "yellow_cards_home",
+        )
+    )
+    away_cards = _safe_int(
+        _get_value(
+            record,
+            "away_yellow_cards",
+            "away_cards",
+            "yellow_cards_away",
+        )
+    )
+
+    if is_home:
+        team_cards = home_cards
+        opponent_cards = away_cards
+    elif is_away:
+        team_cards = away_cards
+        opponent_cards = home_cards
+    else:
+        team_cards = _safe_int(
+            _get_value(
+                record,
+                "team_cards",
+            )
+        )
+        opponent_cards = _safe_int(
+            _get_value(
+                record,
+                "opponent_cards",
+            )
+        )
+
+    # --------------------------------------------------------
     # Difficulty
     # --------------------------------------------------------
 
@@ -785,6 +898,10 @@ def build_match_context(
         opponent_goals=opponent_goals,
         team_xg=team_xg,
         opponent_xg=opponent_xg,
+        corners_for=corners_for,
+        corners_against=corners_against,
+        team_cards=team_cards,
+        opponent_cards=opponent_cards,
         difficulty=difficulty,
     )
 
@@ -861,6 +978,38 @@ def build_form_context(
         )
 
     # ========================================================
+    # FACT HISTORY
+    #
+    # ВАЖНО:
+    # matches уже отсортированы одним общим временным рядом.
+    # Все history строятся из него.
+    #
+    # Порядок:
+    # oldest -> newest
+    # ========================================================
+    results_history: List[Optional[str]] = []
+    goals_for_history: List[Optional[int]] = []
+    goals_against_history: List[Optional[int]] = []
+    team_xg_history: List[Optional[float]] = []
+    opponent_xg_history: List[Optional[float]] = []
+    venue_history: List[Optional[str]] = []
+    difficulty_history: List[str] = []
+    corners_for_history: List[Optional[int]] = []
+    corners_against_history: List[Optional[int]] = []
+    team_cards_history: List[Optional[int]] = []
+    opponent_cards_history: List[Optional[int]] = []
+
+    # ========================================================
+    # DERIVED NUMERIC COLLECTIONS
+    # ========================================================
+    xg_values: List[float] = []
+    xga_values: List[float] = []
+    corners_for_values: List[float] = []
+    corners_against_values: List[float] = []
+    team_cards_values: List[float] = []
+    opponent_cards_values: List[float] = []
+
+    # ========================================================
     # FORM STRING
     # ========================================================
 
@@ -885,14 +1034,29 @@ def build_form_context(
     # AGGREGATES
     # ========================================================
 
-    xg_values: List[float] = []
-    xga_values: List[float] = []
-
     recent_xg: List[Optional[float]] = []
     recent_xga: List[Optional[float]] = []
 
     for match in matches:
 
+        # ----------------------------------------------------
+        # PRIMARY FACT HISTORY
+        # ----------------------------------------------------
+        results_history.append(match.result)
+        goals_for_history.append(match.team_goals)
+        goals_against_history.append(match.opponent_goals)
+        team_xg_history.append(match.team_xg)
+        opponent_xg_history.append(match.opponent_xg)
+        venue_history.append(match.venue)
+        difficulty_history.append(match.difficulty)
+        corners_for_history.append(match.corners_for)
+        corners_against_history.append(match.corners_against)
+        team_cards_history.append(match.team_cards)
+        opponent_cards_history.append(match.opponent_cards)
+
+        # ----------------------------------------------------
+        # HOME / AWAY COUNTS
+        # ----------------------------------------------------
         if match.venue == "дома":
 
             if match.result == "W":
@@ -915,7 +1079,9 @@ def build_form_context(
             elif match.result == "L":
                 away_losses += 1
 
-        # Собираем xG для истории
+        # ----------------------------------------------------
+        # xG
+        # ----------------------------------------------------
         recent_xg.append(match.team_xg)
         recent_xga.append(match.opponent_xg)
 
@@ -929,6 +1095,30 @@ def build_form_context(
 
             xga_values.append(
                 match.opponent_xg
+            )
+
+        # ----------------------------------------------------
+        # CORNERS NUMERIC OBSERVATIONS
+        # ----------------------------------------------------
+        if match.corners_for is not None:
+            corners_for_values.append(
+                float(match.corners_for)
+            )
+        if match.corners_against is not None:
+            corners_against_values.append(
+                float(match.corners_against)
+            )
+
+        # ----------------------------------------------------
+        # CARDS NUMERIC OBSERVATIONS
+        # ----------------------------------------------------
+        if match.team_cards is not None:
+            team_cards_values.append(
+                float(match.team_cards)
+            )
+        if match.opponent_cards is not None:
+            opponent_cards_values.append(
+                float(match.opponent_cards)
             )
 
     # ========================================================
@@ -952,6 +1142,54 @@ def build_form_context(
             2,
         )
         if xga_values
+        else None
+    )
+
+    # ========================================================
+    # AVERAGE CORNERS
+    # ========================================================
+
+    corners_for_avg = (
+        round(
+            sum(corners_for_values)
+            / len(corners_for_values),
+            2,
+        )
+        if corners_for_values
+        else None
+    )
+
+    corners_against_avg = (
+        round(
+            sum(corners_against_values)
+            / len(corners_against_values),
+            2,
+        )
+        if corners_against_values
+        else None
+    )
+
+    # ========================================================
+    # AVERAGE CARDS
+    # ========================================================
+
+    team_cards_avg = (
+        round(
+            sum(team_cards_values)
+            / len(team_cards_values),
+            2,
+        )
+        if team_cards_values
+        else None
+    )
+
+    opponent_cards_avg = (
+        round(
+            sum(opponent_cards_values)
+            / len(opponent_cards_values),
+            2,
+        )
+        if opponent_cards_values
         else None
     )
 
@@ -1028,6 +1266,70 @@ def build_form_context(
         "xg": average_xg,
 
         "xga": average_xga,
+
+        # ====================================================
+        # CORNERS AGGREGATES
+        # ====================================================
+
+        "corners_for_avg": corners_for_avg,
+        "corners_against_avg": corners_against_avg,
+
+        # ====================================================
+        # CARDS AGGREGATES
+        # ====================================================
+
+        "team_cards_avg": team_cards_avg,
+        "opponent_cards_avg": opponent_cards_avg,
+
+        # ====================================================
+        # PRIMARY FACT HISTORY
+        # ====================================================
+
+        "results": tuple(results_history),
+        "goals_for_history": tuple(
+            goals_for_history
+        ),
+        "goals_against_history": tuple(
+            goals_against_history
+        ),
+        "team_xg_history": tuple(
+            team_xg_history
+        ),
+        "opponent_xg_history": tuple(
+            opponent_xg_history
+        ),
+        "venue_history": tuple(
+            venue_history
+        ),
+        "difficulty_history": tuple(
+            difficulty_history
+        ),
+
+        # ====================================================
+        # CORNERS HISTORY
+        # ====================================================
+
+        "corners_for_history": tuple(
+            corners_for_history
+        ),
+        "corners_against_history": tuple(
+            corners_against_history
+        ),
+
+        # ====================================================
+        # CARDS HISTORY
+        # ====================================================
+
+        "team_cards_history": tuple(
+            team_cards_history
+        ),
+        "opponent_cards_history": tuple(
+            opponent_cards_history
+        ),
+
+        # ====================================================
+        # OLD COMPATIBILITY (will be deprecated)
+        # ====================================================
 
         "recent_xg": tuple(recent_xg),
         "recent_xga": tuple(recent_xga),
