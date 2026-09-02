@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ BRAIN — DATA CONTRACT v3.0
+FAJ BRAIN — DATA CONTRACT v3.1
 
 Строгий контракт данных нового аналитического Brain.
 
@@ -84,7 +84,7 @@ from typing import Any, Dict, Optional, Tuple
 # CONTRACT VERSION
 # ============================================================
 
-CONTRACT_VERSION = "3.0"
+CONTRACT_VERSION = "3.1"
 
 HISTORY_MATCHES = 6
 
@@ -699,62 +699,125 @@ class FormModelResult:
     Конкретные формулы будут разрабатываться отдельно.
     """
 
-    form_score: Number = None
+    # ========================================================
+    # METADATA
+    # ========================================================
 
-    attack_strength: Number = None
+    version: Optional[str] = None
+    team: Optional[str] = None
+    matches_count: int = 0
 
-    defense_strength: Number = None
+    # ========================================================
+    # RESULT STATE
+    # ========================================================
 
-    home_strength: Number = None
+    raw_points: Number = None
+    points_rate: Number = None
+    recent_points_rate: Number = None
+    result_strength: Number = None
 
-    away_strength: Number = None
+    # ========================================================
+    # DIFFICULTY STATE
+    # ========================================================
 
+    hard_points_rate: Number = None
+    medium_points_rate: Number = None
+    easy_points_rate: Number = None
+
+    hard_adjustment: Number = None
+    medium_adjustment: Number = None
+    easy_adjustment: Number = None
+
+    hard_recent_points_rate: Number = None
+    medium_recent_points_rate: Number = None
+    easy_recent_points_rate: Number = None
+
+    # ========================================================
+    # PERFORMANCE STATE — GOALS
+    # ========================================================
+
+    goals_for_avg: Number = None
+    goals_against_avg: Number = None
+
+    # ========================================================
+    # PERFORMANCE STATE — xG
+    # ========================================================
+
+    xg_avg: Number = None
+    xga_avg: Number = None
+
+    xg_history: Tuple[Number, ...] = ()
+    xga_history: Tuple[Number, ...] = ()
+
+    xg_recent: Number = None
+    xga_recent: Number = None
+
+    xg_trend: Number = None
+    xga_trend: Number = None
+
+    # ========================================================
+    # REALIZATION
+    # ========================================================
+
+    finishing_delta: Number = None
+    finishing_ratio: Number = None
+    defensive_delta: Number = None
+
+    # ========================================================
+    # DYNAMICS
+    # ========================================================
+
+    trend_score: Number = None
     trend: Optional[str] = None
-
     consistency: Number = None
 
-    # --------------------------------------------------------
-    # DIFFICULTY INTERPRETATION
-    # --------------------------------------------------------
+    # ========================================================
+    # VENUE
+    # ========================================================
 
-    hard_match_strength: Number = None
+    home_points_rate: Number = None
+    home_coverage: Number = None
+    away_points_rate: Number = None
+    away_coverage: Number = None
 
-    medium_match_strength: Number = None
+    # ========================================================
+    # FORM SCORE (UNDEFINED IN V1)
+    # ========================================================
 
-    easy_match_strength: Number = None
+    form_score: Number = None
+    form_score_status: str = "UNDEFINED_PENDING_CALIBRATION"
 
-    difficulty_adjustment: Number = None
+    # ========================================================
+    # STRENGTH (UNDEFINED IN V1)
+    # ========================================================
 
-    # --------------------------------------------------------
-    # GOAL / xG INTERPRETATION
-    # --------------------------------------------------------
-
+    attack_strength: Number = None
+    defense_strength: Number = None
     goal_strength: Number = None
-
     xg_strength: Number = None
-
     realization_strength: Number = None
-
     defensive_xg_strength: Number = None
 
-    # --------------------------------------------------------
+    # ========================================================
+    # DIFFICULTY INTERPRETATION
+    # ========================================================
+
+    hard_match_strength: Number = None
+    medium_match_strength: Number = None
+    easy_match_strength: Number = None
+    difficulty_adjustment: Number = None
+
+    # ========================================================
     # SPECIAL EFFECTS
-    # --------------------------------------------------------
+    # ========================================================
 
     dark_horse_effect: Number = None
-
     lukaku_effect: Number = None
-
     gladiator_effect: Number = None
-
     fortress_effect: Number = None
-
     leicester_effect: Number = None
-
     kepa_effect: Number = None
-
     haaland_effect: Number = None
-
     god_kiss_effect: Number = None
 
 
