@@ -55,7 +55,7 @@ FAJ Personal Prediction Brain
 
     3+ матча — расширенный анализ.
 
-    5–6 матчей — предпочтительный режим.
+    6 матчей — предпочтительный режим.
 
     10+ матчей — возможно, но более старые матчи
     должны иметь меньший вес.
@@ -88,7 +88,7 @@ BRAIN_VERSION = "FAJ-BRAIN-0.1"
 
 MIN_MATCHES = 1
 EXTENDED_ANALYSIS_MATCHES = 3
-PREFERRED_MATCHES = 5
+PREFERRED_MATCHES = 6
 MAX_RECOMMENDED_MATCHES = 10
 
 
@@ -175,10 +175,10 @@ def _weighted_mean(
 
     # Последние матчи имеют больший вес.
     #
-    # Например для 5 матчей:
-    # 1, 2, 3, 4, 5
+    # Например для 6 матчей:
+    # 1, 2, 3, 4, 5, 6
     #
-    # где 5 — самый свежий.
+    # где 6 — самый свежий.
 
     weights = list(range(1, len(clean) + 1))
 
