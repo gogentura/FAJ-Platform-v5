@@ -91,9 +91,14 @@ PAGE_TITLE = "FAJ — Персональный прогноз"
 MODEL_VERSION = "FAJ-PERSONAL-BRAIN-0.1"
 
 MIN_EXTENDED_MATCHES = 3
+# Максимальное количество исторических матчей,
+# которые пользователь может передать для одной команды.
 MAX_HISTORY_MATCHES = 6
+# Максимальное количество прогнозируемых матчей одновременно.
 MAX_ANALYSIS_MATCHES = 6
-MAX_RECENT_HISTORY = 5
+# Сколько последних фактических матчей реально
+# передаём в FAJ Brain и Form Context.
+MAX_RECENT_HISTORY = MAX_HISTORY_MATCHES
 
 logger = logging.getLogger(__name__)
 
@@ -1288,7 +1293,7 @@ def _form_result_string(
     form = context.get("form")
     if isinstance(form, list):
         values = []
-        for item in form[:5]:
+        for item in form[:MAX_HISTORY_MATCHES]:
             value = str(item).strip().upper()
             if value in {"W", "WIN"}:
                 values.append("В")
@@ -1350,7 +1355,7 @@ def format_match_types(values: Any) -> str:
         return "—"
 
     labels = []
-    for value in values[:5]:
+    for value in values[:MAX_HISTORY_MATCHES]:
         text = str(value).strip().lower()
         mapping = {
             "easy": "лёгкий",
@@ -1450,7 +1455,7 @@ def render_form_context_card(
                 f"**🏠 {home_team}**"
             )
             st.markdown(
-                f"**Последние 5:** "
+                f"**Последние {MAX_HISTORY_MATCHES}:** "
                 f"`{home_form}`"
             )
             st.caption(
@@ -1483,7 +1488,7 @@ def render_form_context_card(
                 f"**✈️ {away_team}**"
             )
             st.markdown(
-                f"**Последние 5:** "
+                f"**Последние {MAX_HISTORY_MATCHES}:** "
                 f"`{away_form}`"
             )
             st.caption(
@@ -1598,7 +1603,7 @@ def collect_team_history(
               ↓
         только матчи ДО даты прогноза (если указана)
               ↓
-        последние 5 (сохраняя порядок URL)
+        последние MAX_RECENT_HISTORY (сохраняя порядок URL)
     ВАЖНО:
         - URL уже поступают в порядке от свежих к старым
         - НЕ сортируем по match_date, доверяем порядку пользователя
@@ -1608,8 +1613,7 @@ def collect_team_history(
     """
     clean_urls = [
         url.strip()
-        for url in urls
-        if url and url.strip()
+        for url in urls        if url and url.strip()
     ]
 
     # --------------------------------------------------------
@@ -1750,7 +1754,7 @@ def collect_team_history(
         )
 
     # --------------------------------------------------------
-    # ONLY LAST 5 (сохраняя порядок URL)
+    # ONLY LAST MAX_RECENT_HISTORY (сохраняя порядок URL)
     #
     # URL уже поступают из Soccer365 в порядке:
     # новейший матч → более старый матч.
@@ -3331,7 +3335,7 @@ def get_or_create_team(
 
 
 # ============================================================
-# PREDICTION (UPDATED: добавляем form_context + DEBUG)
+# PREDICTION (UPDATED: добавляем form_context + DEBUG, limit = MAX_HISTORY_MATCHES)
 # ============================================================
 
 def generate_prediction(
@@ -3422,19 +3426,19 @@ def generate_prediction(
     )
 
     # ========================================================
-    # FORM CONTEXT
+    # FORM CONTEXT (limit = MAX_HISTORY_MATCHES)
     # ========================================================
 
     home_form_context = build_form_context(
         team_name=home_name,
         records=home_records,
-        limit=5,
+        limit=MAX_HISTORY_MATCHES,
     )
 
     away_form_context = build_form_context(
         team_name=away_name,
         records=away_records,
-        limit=5,
+        limit=MAX_HISTORY_MATCHES,
     )
 
     # Сохраняем в session_state для отображения
