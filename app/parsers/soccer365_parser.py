@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-SOCCER365 PARSER v1.2
+SOCCER365 PARSER v1.2.3
 ============================================================
 
 НАЗНАЧЕНИЕ:
@@ -65,6 +65,12 @@ SOCCER365 PARSER v1.2
     - Функция extract_match_date()
     - Дата сохраняется в результате парсинга
     - Используется для фильтрации истории в FAJ Predictor
+
+ИЗМЕНЕНИЯ V1.2.3:
+    - Исправлено извлечение счёта
+    - extract_score() теперь использует .live_game_goals .live_game_goal span
+    - Больше не использует .score1 / .score2 (они содержат не финальный счёт)
+    - Это исправляет ошибки с неправильными результатами в form_context
 ============================================================
 """
 
@@ -92,7 +98,7 @@ logger = logging.getLogger(__name__)
 # CONFIG
 # ============================================================
 
-PARSER_VERSION = "1.2.2"
+PARSER_VERSION = "1.2.3"
 SOURCE_NAME = "soccer365"
 
 DEFAULT_TIMEOUT = 20
@@ -256,7 +262,7 @@ def empty_result() -> Dict[str, Any]:
         "away_team": None,
 
         "score": None,
-        "match_date": None,  # NEW: дата матча
+        "match_date": None,
 
         "source": SOURCE_NAME,
         "source_url": None,
@@ -704,57 +710,68 @@ def extract_teams(
 
 
 # ============================================================
-# SCORE
+# SCORE (UPDATED v1.2.3 — используем .live_game_goals)
 # ============================================================
 
 def extract_score(
     soup: BeautifulSoup,
 ) -> Optional[str]:
+    """
+    Извлекает финальный счёт матча Soccer365.
 
-    score1 = soup.select_one(
-        ".score1"
+    Основной источник:
+        .live_game_goals .live_game_goal span
+
+    ВАЖНО:
+        .score1 / .score2 НЕ используем.
+        На странице Soccer365 они могут содержать
+        не финальный счёт матча.
+    """
+    goals = soup.select(
+        ".live_game_goals .live_game_goal span"
     )
 
-    score2 = soup.select_one(
-        ".score2"
-    )
-
-    if not score1 or not score2:
-
+    if len(goals) < 2:
+        logger.warning(
+            "Soccer365: не найден финальный счёт "
+            "в .live_game_goals"
+        )
         return None
 
     home = safe_int(
-        score1.get_text(
+        goals[0].get_text(
             " ",
             strip=True,
         )
     )
 
     away = safe_int(
-        score2.get_text(
+        goals[1].get_text(
             " ",
             strip=True,
         )
     )
 
-    if (
-        home is None
-        or away is None
-    ):
-
+    if home is None or away is None:
+        logger.warning(
+            "Soccer365: не удалось преобразовать "
+            "счёт в числа"
+        )
         return None
 
     if home < 0 or away < 0:
-
         return None
 
     if home > 20 or away > 20:
-
+        logger.warning(
+            "Soccer365: подозрительный счёт "
+            "%s:%s",
+            home,
+            away,
+        )
         return None
 
-    return (
-        f"{home}:{away}"
-    )
+    return f"{home}:{away}"
 
 
 # ============================================================
@@ -1192,7 +1209,7 @@ def calculate_quality(
 class Soccer365Parser:
 
     """
-    Production parser Soccer365 v1.2.2.
+    Production parser Soccer365 v1.2.3.
 
     Совместимость:
 
@@ -1278,11 +1295,7 @@ class Soccer365Parser:
             ] = away_team
 
             # ------------------------------------------------
-            # SCORE
-            #
-            # Только диагностический факт.
-            # import_facts решает сам,
-            # как использовать счёт.
+            # SCORE (UPDATED v1.2.3)
             # ------------------------------------------------
 
             result[
@@ -1292,7 +1305,7 @@ class Soccer365Parser:
             )
 
             # ------------------------------------------------
-            # MATCH DATE (NEW)
+            # MATCH DATE
             # ------------------------------------------------
 
             result[
