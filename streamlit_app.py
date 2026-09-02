@@ -141,52 +141,96 @@ st.markdown(
 
 
 # ============================================================
+# SIDEBAR NAVIGATION
+# ============================================================
+
+def render_sidebar() -> None:
+    """Рендерит боковую панель с навигацией."""
+    with st.sidebar:
+        st.markdown(
+            """
+            <div style="text-align:center; margin-bottom: 1.5rem;">
+                <div style="font-size: 2rem;">⚽</div>
+                <div style="font-weight: 700; font-size: 1.1rem;">FAJ</div>
+                <div style="opacity: 0.5; font-size: 0.8rem;">v12.1</div>
+            </div>
+            """
+        )
+
+        st.markdown("---")
+
+        if st.button(
+            "📊 Прогноз",
+            use_container_width=True,
+            type="primary",
+        ):
+            st.session_state.faj_page = "predictor"
+            st.rerun()
+
+        if st.button(
+            "🔬 Диагностика Soccer365",
+            use_container_width=True,
+        ):
+            st.session_state.faj_page = "diagnostic"
+            st.rerun()
+
+        st.markdown("---")
+
+        st.caption(
+            "FAJ — Personal Football Analyst\n"
+            "Личный футбольный аналитик"
+        )
+
+
+# ============================================================
 # MAIN PAGE
 # ============================================================
 
 def main() -> None:
 
-    try:
+    # Инициализация состояния страницы
+    if "faj_page" not in st.session_state:
+        st.session_state.faj_page = "predictor"
 
-        from app.pages.faj_predictor import main as predictor_main
+    # Рендерим сайдбар
+    render_sidebar()
 
-    except Exception as exc:
+    # Рендерим выбранную страницу
+    if st.session_state.faj_page == "predictor":
+        try:
+            from app.pages.faj_predictor import main as predictor_main
+            predictor_main()
 
-        st.error(
-            "❌ Не удалось загрузить FAJ Predictor."
-        )
+        except Exception as exc:
+            st.error(
+                "❌ Не удалось загрузить FAJ Predictor."
+            )
+            with st.expander(
+                "Техническая информация",
+                expanded=True,
+            ):
+                st.exception(exc)
+            logger.exception(
+                "FAJ Predictor import failed"
+            )
 
-        with st.expander(
-            "Техническая информация",
-            expanded=True,
-        ):
-            st.exception(exc)
+    elif st.session_state.faj_page == "diagnostic":
+        try:
+            from app.pages.soccer365_diagnostic import main as diagnostic_main
+            diagnostic_main()
 
-        logger.exception(
-            "FAJ Predictor import failed"
-        )
-
-        return
-
-    try:
-
-        predictor_main()
-
-    except Exception as exc:
-
-        st.error(
-            "❌ Ошибка работы FAJ Predictor."
-        )
-
-        with st.expander(
-            "Техническая информация",
-            expanded=True,
-        ):
-            st.exception(exc)
-
-        logger.exception(
-            "FAJ Predictor runtime error"
-        )
+        except Exception as exc:
+            st.error(
+                "❌ Не удалось загрузить диагностику Soccer365."
+            )
+            with st.expander(
+                "Техническая информация",
+                expanded=True,
+            ):
+                st.exception(exc)
+            logger.exception(
+                "Soccer365 Diagnostic import failed"
+            )
 
 
 # ============================================================
