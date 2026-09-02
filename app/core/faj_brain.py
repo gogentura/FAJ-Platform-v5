@@ -34,7 +34,9 @@ FAJ Personal Prediction Brain
           ↓
     FormModelResult
           ↓
-    expected goals
+    GoalModel (из goal_model.py)
+          ↓
+    home_xg / away_xg
           ↓
     score distribution
           ↓
@@ -88,12 +90,18 @@ from typing import Any, Dict, Iterable, List, Optional
 from app.core.form_model import FormModel, FormModelResult
 from app.core.brain_contract import FormContext as ContractFormContext
 
+# ============================================================
+# GOAL MODEL — синтез ожидаемых голов
+# ============================================================
+
+from app.core.goal_model import GoalModel
+
 
 # ============================================================
 # VERSION
 # ============================================================
 
-BRAIN_VERSION = "FAJ-BRAIN-0.2"
+BRAIN_VERSION = "FAJ-BRAIN-0.3"
 
 MIN_MATCHES = 1
 EXTENDED_ANALYSIS_MATCHES = 3
@@ -576,6 +584,12 @@ class FAJBrain:
 
         self.form_model = FormModel()
 
+        # ========================================================
+        # NEW: GoalModel подключён для синтеза ожидаемых голов
+        # ========================================================
+
+        self.goal_model = GoalModel()
+
     # ========================================================
     # NORMALIZATION
     # ========================================================
@@ -913,118 +927,30 @@ class FAJBrain:
         )
 
     # ========================================================
-    # EXPECTED GOALS — НОВАЯ ВЕРСИЯ С ИСПОЛЬЗОВАНИЕМ FORMMODEL
+    # EXPECTED GOALS — ИСПОЛЬЗУЕТ GOALMODEL
     # ========================================================
 
     def _calculate_expected_goals(
         self,
-        home_profile: TeamProfile,
-        away_profile: TeamProfile,
-        home_form_result: Optional[Dict[str, Any]] = None,
-        away_form_result: Optional[Dict[str, Any]] = None,
-    ) -> tuple[float, float]:
+        home_form_result: Dict[str, Any],
+        away_form_result: Dict[str, Any],
+    ) -> tuple[Optional[float], Optional[float]]:
         """
-        Рассчитывает ожидаемые голы.
+        Рассчитывает ожидаемые голы через GoalModel.
 
-        Если FormModelResult доступен, использует его данные.
-        В противном случае использует старую логику (fallback).
+        GoalModel синтезирует:
+            Home xG = (home_xg_avg + away_xga_avg) / 2
+            Away xG = (away_xg_avg + home_xga_avg) / 2
+
+        Если xG или xGA отсутствует — результат None.
         """
-        # ========================================================
-        # Если есть FormModelResult — используем его
-        # ========================================================
-
-        if home_form_result is not None and away_form_result is not None:
-            # Используем xG из FormModel
-            home_xg_form = home_form_result.get("xg_avg")
-            away_xg_form = away_form_result.get("xg_avg")
-
-            # Используем данные о голах из FormModel
-            home_goals = home_form_result.get("goals_for_avg")
-            away_goals = away_form_result.get("goals_for_avg")
-
-            # Используем реализацию из FormModel
-            home_finishing = home_form_result.get("finishing_delta")
-            away_finishing = away_form_result.get("finishing_delta")
-
-            # Базовая xG из данных
-            if home_xg_form is not None:
-                home_xg = home_xg_form
-            else:
-                home_xg = home_profile.xg or 1.2
-
-            if away_xg_form is not None:
-                away_xg = away_xg_form
-            else:
-                away_xg = away_profile.xg or 1.2
-
-            # Корректировка на реализацию (только как сигнал, не как множитель)
-            # В v1 это diagnostic observation, а не корректировка xG
-            # Поэтому оставляем xG как есть
-
-            # Домашнее преимущество
-            home_advantage = 1.12
-
-            # Применяем домашнее преимущество к xG хозяев
-            home_xg = home_xg * home_advantage
-
-            # Ограничиваем экстремальные значения
-            home_xg = _clamp(home_xg, 0.20, 4.50)
-            away_xg = _clamp(away_xg, 0.20, 4.50)
-
-            return (
-                round(home_xg, 3),
-                round(away_xg, 3),
-            )
-
-        # ========================================================
-        # FALLBACK: старая логика
-        # ========================================================
-
-        # Базовая модель.
-        home_attack = home_profile.attack
-        away_attack = away_profile.attack
-
-        home_defence = home_profile.defence
-        away_defence = away_profile.defence
-
-        # Домашнее преимущество.
-        home_advantage = 1.12
-
-        # Атакующая способность хозяев сталкивается с защитой гостей.
-        home_xg = (
-            home_attack
-            * (0.65 + away_defence)
-            * home_advantage
-            / 2.0
+        # Вызываем GoalModel с FormModelResult
+        goal_result = self.goal_model.analyze(
+            home_form=home_form_result,
+            away_form=away_form_result,
         )
 
-        away_xg = (
-            away_attack
-            * (0.65 + home_defence)
-            / 2.0
-        )
-
-        # Если есть реальные xG, используем их как дополнительный сигнал.
-        if home_profile.xg is not None:
-            home_xg = (
-                0.60 * home_xg
-                + 0.40 * home_profile.xg
-            )
-
-        if away_profile.xg is not None:
-            away_xg = (
-                0.60 * away_xg
-                + 0.40 * away_profile.xg
-            )
-
-        # Ограничиваем экстремальные значения.
-        home_xg = _clamp(home_xg, 0.20, 4.50)
-        away_xg = _clamp(away_xg, 0.20, 4.50)
-
-        return (
-            round(home_xg, 3),
-            round(away_xg, 3),
-        )
+        return goal_result.home_xg, goal_result.away_xg
 
     # ========================================================
     # RESULT PROBABILITIES
@@ -1413,7 +1339,7 @@ class FAJBrain:
         return conclusion, factors
 
     # ========================================================
-    # PUBLIC PREDICTION — ОБНОВЛЁННАЯ ВЕРСИЯ
+    # PUBLIC PREDICTION — ОБНОВЛЁННАЯ ВЕРСИЯ С GOALMODEL
     # ========================================================
 
     def predict(
@@ -1468,21 +1394,7 @@ class FAJBrain:
         away_form_result = self.form_model.analyze(away_form_context)
 
         # ========================================================
-        # 3. Строим старые профили для совместимости (fallback)
-        # ========================================================
-
-        home_profile = self.build_profile(
-            home_team,
-            home_history,
-        )
-
-        away_profile = self.build_profile(
-            away_team,
-            away_history,
-        )
-
-        # ========================================================
-        # 4. Преобразуем FormModelResult в dict для передачи
+        # 3. Преобразуем FormModelResult в dict для GoalModel
         # ========================================================
 
         home_form_dict = {
@@ -1528,6 +1440,20 @@ class FAJBrain:
         }
 
         # ========================================================
+        # 4. Строим старые профили для совместимости (corners/cards)
+        # ========================================================
+
+        home_profile = self.build_profile(
+            home_team,
+            home_history,
+        )
+
+        away_profile = self.build_profile(
+            away_team,
+            away_history,
+        )
+
+        # ========================================================
         # 5. ANALYSIS MODE
         # ========================================================
 
@@ -1546,16 +1472,12 @@ class FAJBrain:
             analysis_mode = "Экспресс"
 
         # ========================================================
-        # 6. XG — с использованием FormModel
+        # 6. XG — через GoalModel
         # ========================================================
 
-        home_xg, away_xg = (
-            self._calculate_expected_goals(
-                home_profile,
-                away_profile,
-                home_form_dict,
-                away_form_dict,
-            )
+        home_xg, away_xg = self._calculate_expected_goals(
+            home_form_dict,
+            away_form_dict,
         )
 
         # ========================================================
@@ -1794,8 +1716,7 @@ class FAJBrain:
 
                 "method":
                     "FormModel v1.0 + "
-                    "weighted_recent_form + "
-                    "attack_defence + "
+                    "GoalModel v1.0 + "
                     "poisson_score_distribution",
 
                 "xg_internal":
@@ -1805,10 +1726,11 @@ class FAJBrain:
                     },
 
                 "note":
-                    "Версия 0.2. FormModel подключён как "
-                    "математический слой. "
-                    "Формулы будут расширяться после проверки "
-                    "на реальных данных.",
+                    "Версия 0.3. GoalModel подключён. "
+                    "xG рассчитывается как: "
+                    "(home_xg_avg + away_xga_avg) / 2 и "
+                    "(away_xg_avg + home_xga_avg) / 2. "
+                    "Без домашнего преимущества и прочих корректировок.",
             },
         )
 
