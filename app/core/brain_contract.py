@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ BRAIN — DATA CONTRACT v2.0
+FAJ BRAIN — DATA CONTRACT v3.0
 
-Единый строгий контракт нового аналитического Brain.
+Строгий контракт данных нового аналитического Brain.
 
 Архитектура:
 
@@ -29,57 +29,65 @@ FAJ BRAIN — DATA CONTRACT v2.0
     BrainOutput
 
 
+ГЛАВНЫЙ ПРИНЦИП
+---------------
+
+MatchRecord
+    = факты одного прошлого матча
+
+FormContext
+    = агрегированная история команды
+
+PatternState
+    = измеренные закономерности истории
+
+FormModel
+    = математическая интерпретация этих закономерностей
+
+
 ВАЖНО
 -----
 
 Этот файл:
 
-    НЕ собирает данные
-    НЕ парсит Soccer365
+    НЕ парсит данные
     НЕ обращается к database.py
     НЕ считает прогноз
-    НЕ содержит математических формул эффектов
+    НЕ рассчитывает специальные эффекты
+    НЕ определяет веса моделей
 
 Его задача:
 
-    определить ГРАНИЦУ данных нового Brain.
+    определить строгую границу данных Brain.
 
-Принцип:
 
-    DATA
-      ↓
-    CONTRACT
-      ↓
-    MODEL
-      ↓
-    BRAIN
+ИСТОРИЧЕСКОЕ ОКНО
+-----------------
 
-Новый Brain работает с фиксированным историческим окном:
+Рабочее окно Brain:
 
-    6 последних завершённых матчей
+    6 последних завершённых матчей.
 
-Это НЕ означает, что источник обязан собрать только 6 матчей.
-Источник может собрать больше.
-
-Но в Brain рабочим контекстом являются последние 6.
+Источник может передать больше матчей,
+но перед входом в Brain рабочий контекст
+должен быть ограничен шестью последними матчами.
 """
+
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 
 # ============================================================
 # CONTRACT VERSION
 # ============================================================
 
-CONTRACT_VERSION = "2.0"
+CONTRACT_VERSION = "3.0"
 
-# Рабочее историческое окно Brain.
 HISTORY_MATCHES = 6
 
-# Допустимый размер рабочего окна.
 MIN_HISTORY_MATCHES = 6
 MAX_HISTORY_MATCHES = 6
 
@@ -92,7 +100,7 @@ Number = Optional[float]
 
 
 # ============================================================
-# ENUM-LIKE CONSTANTS
+# RESULTS
 # ============================================================
 
 RESULT_WIN = "В"
@@ -104,6 +112,11 @@ VALID_RESULTS = (
     RESULT_DRAW,
     RESULT_LOSS,
 )
+
+
+# ============================================================
+# DIFFICULTY
+# ============================================================
 
 DIFFICULTY_EASY = "лёгкий"
 DIFFICULTY_MEDIUM = "средний"
@@ -197,9 +210,13 @@ MAX_PASS_ACCURACY = 100.0
 MIN_QUALITY = 0.0
 MAX_QUALITY = 1.0
 
-# Probability
+# Probability / normalized score
 MIN_PROBABILITY = 0.0
 MAX_PROBABILITY = 1.0
+
+# Generic normalized signal
+MIN_SIGNAL = -1.0
+MAX_SIGNAL = 1.0
 
 
 # ============================================================
@@ -211,27 +228,14 @@ class MatchRecord:
     """
     Один завершённый фактический матч.
 
-    Это атомарная единица истории Brain.
+    MatchRecord содержит только факты.
 
-    ВАЖНО:
+    НЕ содержит:
 
-    MatchRecord содержит ФАКТЫ.
-
-    Он не содержит:
         прогнозов
-        вероятностей будущего
+        будущих вероятностей
         специальных эффектов
-        интерпретаций Brain
-
-    Источник обычно:
-
-        Soccer365
-            ↓
-        parser
-            ↓
-        build_history_record()
-            ↓
-        MatchRecord
+        интерпретации Brain
     """
 
     home_team: str
@@ -324,15 +328,17 @@ class MatchRecord:
 @dataclass(frozen=True)
 class FormContext:
     """
-    Исторический контекст команды.
+    Агрегированный исторический контекст команды.
 
-    FormContext описывает ПРОШЛОЕ.
+    FormContext отвечает на вопрос:
 
-    Он НЕ является прогнозом.
+        ЧТО ПРОИЗОШЛО В ПОСЛЕДНИХ 6 МАТЧАХ?
 
-    Он НЕ рассчитывает специальные эффекты.
+    Он не отвечает на вопрос:
 
-    FormModel получает FormContext и интерпретирует его.
+        ЧТО ПРОИЗОЙДЁТ В СЛЕДУЮЩЕМ МАТЧЕ?
+
+    Это задача FormModel / GoalModel.
     """
 
     team: str
@@ -356,11 +362,13 @@ class FormContext:
     # --------------------------------------------------------
 
     home_matches: int = 0
+
     home_wins: int = 0
     home_draws: int = 0
     home_losses: int = 0
 
     away_matches: int = 0
+
     away_wins: int = 0
     away_draws: int = 0
     away_losses: int = 0
@@ -425,71 +433,230 @@ class FormContext:
 @dataclass(frozen=True)
 class PatternState:
     """
-    Выявленные закономерности истории команды.
+    Математическое описание закономерностей последних 6 матчей.
 
-    Это промежуточный слой между:
+    PatternState НЕ является прогнозом.
 
-        FormContext
-            ↓
-        PatternState
-            ↓
-        FormModel
+    Он фиксирует:
 
-    Здесь фиксируется:
+        КАКОЙ ПАТТЕРН ОБНАРУЖЕН
 
-        ЧТО ПРОИСХОДИТ
+    FormModel затем определяет:
 
-    Но не фиксируется окончательное:
+        КАК ЭТОТ ПАТТЕРН ДОЛЖЕН ВЛИЯТЬ НА МОДЕЛЬ
 
-        НАСКОЛЬКО ЭТО ВЛИЯЕТ НА ПРОГНОЗ
 
-    Вес каждого эффекта будет определяться математическими
-    моделями после отдельного тестирования.
+    ВАЖНО
+    -----
+
+    Числовые поля здесь — признаки / сигналы.
+
+    Они НЕ являются коэффициентами прогноза.
+
+    Например:
+
+        gladiator_signal = 1.0
+
+    означает наличие сильного паттерна,
+
+    но НЕ означает:
+
+        +10% к победе.
+
+
+    Веса будут определяться отдельно
+    при тестировании математических моделей.
     """
 
-    # --------------------------------------------------------
-    # MATCH SAMPLE
-    # --------------------------------------------------------
+    # ========================================================
+    # SAMPLE
+    # ========================================================
 
     matches_count: int = 0
 
-    # --------------------------------------------------------
-    # RESULT PATTERNS
-    # --------------------------------------------------------
+    # ========================================================
+    # RESULT STRUCTURE
+    # ========================================================
+
+    wins: int = 0
+    draws: int = 0
+    losses: int = 0
+
+    points: int = 0
+
+    win_rate: Number = None
+    draw_rate: Number = None
+    loss_rate: Number = None
+
+    # ========================================================
+    # RECENCY
+    # ========================================================
+
+    recent_wins: int = 0
+    recent_draws: int = 0
+    recent_losses: int = 0
+
+    recent_points: int = 0
+
+    # ========================================================
+    # SEQUENCES
+    # ========================================================
 
     consecutive_wins: int = 0
 
-    home_unbeaten_count: int = 0
+    consecutive_losses: int = 0
 
-    away_wins_recent: int = 0
+    consecutive_draws: int = 0
 
     consecutive_away_matches: int = 0
 
-    # --------------------------------------------------------
-    # DIFFICULTY PATTERNS
-    # --------------------------------------------------------
+    # ========================================================
+    # HOME STABILITY
+    # ========================================================
+
+    home_matches: int = 0
+
+    home_wins: int = 0
+    home_draws: int = 0
+    home_losses: int = 0
+
+    home_unbeaten_count: int = 0
+
+    home_unbeaten_rate: Number = None
+
+    # ========================================================
+    # AWAY PERFORMANCE
+    # ========================================================
+
+    away_matches: int = 0
+
+    away_wins: int = 0
+    away_draws: int = 0
+    away_losses: int = 0
+
+    away_win_rate: Number = None
+
+    # ========================================================
+    # DIFFICULTY × RESULT
+    # ========================================================
+
+    hard_matches: int = 0
 
     hard_wins: int = 0
-
     hard_draws: int = 0
-
     hard_losses: int = 0
 
+    medium_matches: int = 0
+
     medium_wins: int = 0
-
     medium_draws: int = 0
-
     medium_losses: int = 0
 
+    easy_matches: int = 0
+
     easy_wins: int = 0
-
     easy_draws: int = 0
-
     easy_losses: int = 0
 
+    # ========================================================
+    # DIFFICULTY × PERFORMANCE
+    # ========================================================
+
+    hard_points: int = 0
+    medium_points: int = 0
+    easy_points: int = 0
+
+    hard_points_rate: Number = None
+    medium_points_rate: Number = None
+    easy_points_rate: Number = None
+
+    # ========================================================
+    # DIFFICULTY PROFILE
+    # ========================================================
+
+    hard_match_ratio: Number = None
+
+    medium_match_ratio: Number = None
+
+    easy_match_ratio: Number = None
+
+    # ========================================================
+    # GOAL PATTERNS
+    # ========================================================
+
+    goals_for_avg: Number = None
+    goals_against_avg: Number = None
+
+    goal_difference_avg: Number = None
+
+    # ========================================================
+    # xG PATTERNS
+    # ========================================================
+
+    xg_avg: Number = None
+    xga_avg: Number = None
+
+    xg_difference_avg: Number = None
+
     # --------------------------------------------------------
-    # SPECIAL EFFECT SIGNALS
+    # REALISATION
     # --------------------------------------------------------
+
+    goals_minus_xg: Number = None
+
+    goals_to_xg_ratio: Number = None
+
+    # --------------------------------------------------------
+    # DEFENSIVE CONVERSION
+    # --------------------------------------------------------
+
+    goals_against_minus_xga: Number = None
+
+    # ========================================================
+    # STATISTICAL SIGNALS
+    # ========================================================
+
+    attack_signal: Number = None
+
+    defense_signal: Number = None
+
+    xg_signal: Number = None
+
+    realization_signal: Number = None
+
+    consistency_signal: Number = None
+
+    trend_signal: Number = None
+
+    # ========================================================
+    # POSSESSION / CONTROL
+    # ========================================================
+
+    possession_avg: Number = None
+
+    possession_trend: Number = None
+
+    # ========================================================
+    # CORNERS
+    # ========================================================
+
+    corners_for_avg: Number = None
+
+    corners_against_avg: Number = None
+
+    # ========================================================
+    # AGGRESSION
+    # ========================================================
+
+    cards_avg: Number = None
+
+    fouls_avg: Number = None
+
+    aggression_signal: Number = None
+
+    # ========================================================
+    # SPECIAL EFFECT DETECTION SIGNALS
+    # ========================================================
 
     dark_horse_signal: Number = None
 
@@ -515,21 +682,21 @@ class PatternState:
 @dataclass(frozen=True)
 class FormModelResult:
     """
-    Математическая интерпретация формы.
+    Математическая интерпретация FormContext + PatternState.
 
-    Именно здесь будут находиться будущие формулы FAJ.
+    Здесь FormModel превращает историю в:
 
-    Например:
+        силу формы
+        силу атаки
+        силу обороны
+        домашнюю силу
+        гостевую силу
+        тренд
+        стабильность
 
-        форма
-        сила атаки
-        сила обороны
-        домашний фактор
-        гостевой фактор
-        сложность соперников
-        специальные эффекты
+    А также определяет величину влияния специальных эффектов.
 
-    Веса и формулы пока НЕ фиксируются контрактом.
+    Конкретные формулы будут разрабатываться отдельно.
     """
 
     form_score: Number = None
@@ -545,6 +712,30 @@ class FormModelResult:
     trend: Optional[str] = None
 
     consistency: Number = None
+
+    # --------------------------------------------------------
+    # DIFFICULTY INTERPRETATION
+    # --------------------------------------------------------
+
+    hard_match_strength: Number = None
+
+    medium_match_strength: Number = None
+
+    easy_match_strength: Number = None
+
+    difficulty_adjustment: Number = None
+
+    # --------------------------------------------------------
+    # GOAL / xG INTERPRETATION
+    # --------------------------------------------------------
+
+    goal_strength: Number = None
+
+    xg_strength: Number = None
+
+    realization_strength: Number = None
+
+    defensive_xg_strength: Number = None
 
     # --------------------------------------------------------
     # SPECIAL EFFECTS
@@ -574,22 +765,21 @@ class FormModelResult:
 @dataclass(frozen=True)
 class GoalModelResult:
     """
-    Ожидаемые голы.
+    Ожидаемые голы будущего матча.
 
-    Это математическое ожидание результата,
-    а не точный счёт.
+    Это уже прогнозный слой.
 
-    В будущем здесь будут объединяться:
+    GoalModel получает:
 
-        форма
-        голы
-        xG
-        xGA
-        реализация
-        владение
-        моменты
+        FormModelResult
+        PatternState
+        исторические xG
+        исторические голы
+        старые рейтинги FAJ
         домашний фактор
         специальные эффекты
+
+    и рассчитывает ожидаемые голы.
     """
 
     home_xg: Number = None
@@ -635,7 +825,7 @@ class ScoreModelResult:
 @dataclass(frozen=True)
 class ProbabilityModelResult:
     """
-    Вероятности основных исходов.
+    Вероятности исходов и тоталов.
     """
 
     home_win: Number = None
@@ -668,9 +858,8 @@ class CornersModelResult:
     """
     Прогноз угловых.
 
-    Модель может быть подключена позже.
-
-    Контракт заранее готов.
+    Пока модель может оставаться неподключённой.
+    Контракт заранее поддерживает её.
     """
 
     home_expected: Number = None
@@ -718,7 +907,7 @@ class CardsModelResult:
 @dataclass(frozen=True)
 class AnalysisResult:
     """
-    Человеческая интерпретация математического результата.
+    Человеческая интерпретация результата Brain.
     """
 
     conclusion: str = ""
@@ -748,8 +937,11 @@ class BrainInput:
         home_matches = 6
         away_matches = 6
 
-    Старый FAJ может передавать дополнительные данные,
-    но новые модели не должны слепо зависеть от них.
+        home_form = FormContext
+        away_form = FormContext
+
+        home_patterns = PatternState
+        away_patterns = PatternState
     """
 
     home_team: str
@@ -760,9 +952,17 @@ class BrainInput:
 
     away_matches: Tuple[MatchRecord, ...]
 
+    # --------------------------------------------------------
+    # HISTORICAL CONTEXT
+    # --------------------------------------------------------
+
     home_form: Optional[FormContext] = None
 
     away_form: Optional[FormContext] = None
+
+    # --------------------------------------------------------
+    # PATTERN STATE
+    # --------------------------------------------------------
 
     home_patterns: Optional[PatternState] = None
 
@@ -842,7 +1042,7 @@ class BrainOutput:
     cards: Optional[CardsModelResult] = None
 
     # --------------------------------------------------------
-    # HUMAN ANALYSIS
+    # ANALYSIS
     # --------------------------------------------------------
 
     analysis: Optional[AnalysisResult] = None
@@ -864,9 +1064,7 @@ class BrainOutput:
 # HELPERS
 # ============================================================
 
-def result_to_points(
-    result: str,
-) -> int:
+def result_to_points(result: str) -> int:
     """
     В → 3
     Н → 1
@@ -896,15 +1094,11 @@ def _validate_range(
     field_name: str,
 ) -> None:
     """
-    Проверка числового диапазона.
+    Проверка диапазона.
 
-    None разрешён:
+    None = данные отсутствуют.
 
-        None = данных нет
-
-    Это принципиально важно.
-
-    Отсутствующие данные НЕ превращаются в 0.
+    None никогда не превращается в 0.
     """
 
     if value is None:
@@ -926,9 +1120,7 @@ def validate_match_record(
     record: MatchRecord,
 ) -> None:
     """
-    Строгая валидация одного MatchRecord.
-
-    Ничего не исправляет.
+    Строгая проверка MatchRecord.
     """
 
     if not record.home_team:
@@ -1111,12 +1303,7 @@ def validate_history(
     matches: Tuple[MatchRecord, ...],
 ) -> None:
     """
-    Проверяет рабочее историческое окно Brain.
-
-    Brain работает только с 6 матчами.
-
-    Если передано другое количество —
-    это архитектурная ошибка входа.
+    Brain работает с ровно 6 последними матчами.
     """
 
     count = len(matches)
@@ -1147,7 +1334,7 @@ def validate_form_context(
     context: FormContext,
 ) -> None:
     """
-    Проверяет исторический FormContext.
+    Проверка FormContext.
     """
 
     if not context.team:
@@ -1247,6 +1434,202 @@ def validate_form_context(
 
 
 # ============================================================
+# PATTERN STATE VALIDATION
+# ============================================================
+
+def validate_pattern_state(
+    pattern: PatternState,
+) -> None:
+    """
+    Проверка PatternState.
+
+    PatternState не должен содержать
+    значения за пределами математического контракта.
+    """
+
+    if pattern.matches_count < 0:
+        raise ValueError(
+            "PatternState: matches_count < 0"
+        )
+
+    if pattern.matches_count > HISTORY_MATCHES:
+        raise ValueError(
+            "PatternState: matches_count "
+            f"({pattern.matches_count}) "
+            f"> {HISTORY_MATCHES}"
+        )
+
+    # --------------------------------------------------------
+    # Counts
+    # --------------------------------------------------------
+
+    count_fields = (
+        "wins",
+        "draws",
+        "losses",
+        "recent_wins",
+        "recent_draws",
+        "recent_losses",
+        "consecutive_wins",
+        "consecutive_losses",
+        "consecutive_draws",
+        "consecutive_away_matches",
+        "home_matches",
+        "home_wins",
+        "home_draws",
+        "home_losses",
+        "home_unbeaten_count",
+        "away_matches",
+        "away_wins",
+        "away_draws",
+        "away_losses",
+        "hard_matches",
+        "hard_wins",
+        "hard_draws",
+        "hard_losses",
+        "medium_matches",
+        "medium_wins",
+        "medium_draws",
+        "medium_losses",
+        "easy_matches",
+        "easy_wins",
+        "easy_draws",
+        "easy_losses",
+    )
+
+    for field_name in count_fields:
+        value = getattr(pattern, field_name)
+
+        if value < 0:
+            raise ValueError(
+                f"PatternState: {field_name} < 0"
+            )
+
+    # --------------------------------------------------------
+    # Rates
+    # --------------------------------------------------------
+
+    rate_fields = (
+        "win_rate",
+        "draw_rate",
+        "loss_rate",
+        "home_unbeaten_rate",
+        "away_win_rate",
+        "hard_points_rate",
+        "medium_points_rate",
+        "easy_points_rate",
+        "hard_match_ratio",
+        "medium_match_ratio",
+        "easy_match_ratio",
+    )
+
+    for field_name in rate_fields:
+        _validate_range(
+            getattr(pattern, field_name),
+            MIN_PROBABILITY,
+            MAX_PROBABILITY,
+            field_name,
+        )
+
+    # --------------------------------------------------------
+    # Statistical signals
+    # --------------------------------------------------------
+
+    signal_fields = (
+        "attack_signal",
+        "defense_signal",
+        "xg_signal",
+        "realization_signal",
+        "consistency_signal",
+        "trend_signal",
+        "aggression_signal",
+        "dark_horse_signal",
+        "lukaku_signal",
+        "gladiator_signal",
+        "fortress_signal",
+        "leicester_signal",
+        "kepa_signal",
+        "haaland_signal",
+        "god_kiss_signal",
+    )
+
+    for field_name in signal_fields:
+        _validate_range(
+            getattr(pattern, field_name),
+            MIN_SIGNAL,
+            MAX_SIGNAL,
+            field_name,
+        )
+
+    # --------------------------------------------------------
+    # Statistical averages
+    # --------------------------------------------------------
+
+    _validate_range(
+        pattern.goals_for_avg,
+        MIN_GOALS,
+        MAX_GOALS,
+        "pattern.goals_for_avg",
+    )
+
+    _validate_range(
+        pattern.goals_against_avg,
+        MIN_GOALS,
+        MAX_GOALS,
+        "pattern.goals_against_avg",
+    )
+
+    _validate_range(
+        pattern.xg_avg,
+        MIN_XG,
+        MAX_XG,
+        "pattern.xg_avg",
+    )
+
+    _validate_range(
+        pattern.xga_avg,
+        MIN_XG,
+        MAX_XG,
+        "pattern.xga_avg",
+    )
+
+    _validate_range(
+        pattern.possession_avg,
+        MIN_POSSESSION,
+        MAX_POSSESSION,
+        "pattern.possession_avg",
+    )
+
+    _validate_range(
+        pattern.corners_for_avg,
+        MIN_CORNERS,
+        MAX_CORNERS,
+        "pattern.corners_for_avg",
+    )
+
+    _validate_range(
+        pattern.corners_against_avg,
+        MIN_CORNERS,
+        MAX_CORNERS,
+        "pattern.corners_against_avg",
+    )
+
+    _validate_range(
+        pattern.cards_avg,
+        MIN_CARDS,
+        MAX_CARDS,
+        "pattern.cards_avg",
+    )
+
+    _validate_range(
+        pattern.fouls_avg,
+        MIN_FOULS,
+        MAX_FOULS,
+        "pattern.fouls_avg",
+    )
+
+
+# ============================================================
 # BRAIN INPUT VALIDATION
 # ============================================================
 
@@ -1255,8 +1638,6 @@ def validate_brain_input(
 ) -> None:
     """
     Полная проверка входа Brain.
-
-    Ничего не меняет.
     """
 
     if not data.home_team:
@@ -1301,6 +1682,20 @@ def validate_brain_input(
         )
 
     # --------------------------------------------------------
+    # PATTERNS
+    # --------------------------------------------------------
+
+    if data.home_patterns is not None:
+        validate_pattern_state(
+            data.home_patterns
+        )
+
+    if data.away_patterns is not None:
+        validate_pattern_state(
+            data.away_patterns
+        )
+
+    # --------------------------------------------------------
     # TEAM CONSISTENCY
     # --------------------------------------------------------
 
@@ -1328,31 +1723,60 @@ def validate_brain_input(
                 f"{record.home_team} — {record.away_team}"
             )
 
+    # --------------------------------------------------------
+    # FORM TEAM CONSISTENCY
+    # --------------------------------------------------------
+
+    if data.home_form is not None:
+        if data.home_form.team != data.home_team:
+            raise ValueError(
+                "BrainInput: home_form.team != home_team"
+            )
+
+    if data.away_form is not None:
+        if data.away_form.team != data.away_team:
+            raise ValueError(
+                "BrainInput: away_form.team != away_team"
+            )
+
 
 # ============================================================
 # EXPORTS
 # ============================================================
 
 __all__ = [
+
+    # --------------------------------------------------------
     # Version / history
+    # --------------------------------------------------------
+
     "CONTRACT_VERSION",
     "HISTORY_MATCHES",
     "MIN_HISTORY_MATCHES",
     "MAX_HISTORY_MATCHES",
 
+    # --------------------------------------------------------
     # Results
+    # --------------------------------------------------------
+
     "RESULT_WIN",
     "RESULT_DRAW",
     "RESULT_LOSS",
     "VALID_RESULTS",
 
+    # --------------------------------------------------------
     # Difficulty
+    # --------------------------------------------------------
+
     "DIFFICULTY_EASY",
     "DIFFICULTY_MEDIUM",
     "DIFFICULTY_HARD",
     "VALID_DIFFICULTIES",
 
+    # --------------------------------------------------------
     # Effects
+    # --------------------------------------------------------
+
     "EFFECT_DARK_HORSE",
     "EFFECT_LUKAKU",
     "EFFECT_GLADIATOR",
@@ -1363,12 +1787,18 @@ __all__ = [
     "EFFECT_GOD_KISS",
     "SPECIAL_EFFECTS",
 
+    # --------------------------------------------------------
     # Core structures
+    # --------------------------------------------------------
+
     "MatchRecord",
     "FormContext",
     "PatternState",
 
+    # --------------------------------------------------------
     # Model results
+    # --------------------------------------------------------
+
     "FormModelResult",
     "GoalModelResult",
     "ScoreModelResult",
@@ -1377,14 +1807,21 @@ __all__ = [
     "CardsModelResult",
     "AnalysisResult",
 
+    # --------------------------------------------------------
     # Brain
+    # --------------------------------------------------------
+
     "BrainInput",
     "BrainOutput",
 
+    # --------------------------------------------------------
     # Helpers
+    # --------------------------------------------------------
+
     "result_to_points",
     "validate_match_record",
     "validate_history",
     "validate_form_context",
+    "validate_pattern_state",
     "validate_brain_input",
 ]
