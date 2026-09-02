@@ -28,7 +28,7 @@ FAJ Personal Prediction Brain
           ↓
     normalize input
           ↓
-    FormContext (из faj_predictor)
+    FormContext (из faj_predictor или строится здесь)
           ↓
     FormModel (из form_model.py)
           ↓
@@ -498,8 +498,8 @@ def poisson_probability(
     expected: float,
 ) -> float:
 
-    if expected < 0:
-        expected = 0.0
+    if expected is None or expected < 0:
+        return 0.0
 
     return (
         math.exp(-expected)
@@ -643,10 +643,8 @@ class FAJBrain:
                 "away_team": match.opponent if match.is_home else match.team,
                 "home_goals": match.goals_for if match.is_home else match.goals_against,
                 "away_goals": match.goals_against if match.is_home else match.goals_for,
-                "xg": {
-                    "home": match.xg if match.is_home else None,
-                    "away": match.xg if not match.is_home else None,
-                },
+                # xg передаётся как плоский float
+                "xg": match.xg,
                 "match_date": match.match_date,
                 "is_home": match.is_home,
                 "opponent": match.opponent,
@@ -654,7 +652,6 @@ class FAJBrain:
             records.append(record)
 
         # Передаём records в правильном порядке (старый → новый)
-        # Так как мы уже получили их в правильном порядке от Predictor
         return build_form_context(
             team_name=team_name,
             records=records,
@@ -932,8 +929,8 @@ class FAJBrain:
 
     def _calculate_expected_goals(
         self,
-        home_form_result: Dict[str, Any],
-        away_form_result: Dict[str, Any],
+        home_form_result: Any,
+        away_form_result: Any,
     ) -> tuple[Optional[float], Optional[float]]:
         """
         Рассчитывает ожидаемые голы через GoalModel.
@@ -1348,6 +1345,8 @@ class FAJBrain:
         away_team: str,
         home_matches: Iterable[Any],
         away_matches: Iterable[Any],
+        home_form_context: Optional[Any] = None,
+        away_form_context: Optional[Any] = None,
     ) -> Dict[str, Any]:
 
         home_history = self._normalize_matches(
@@ -1374,73 +1373,34 @@ class FAJBrain:
 
         # ========================================================
         # 1. Строим FormContext для FormModel
+        #    Используем переданные контексты, если они есть
         # ========================================================
 
-        home_form_context = self._build_form_context_for_model(
-            home_team,
-            home_history,
-        )
+        if home_form_context is not None:
+            home_form_context_data = home_form_context
+        else:
+            home_form_context_data = self._build_form_context_for_model(
+                home_team,
+                home_history,
+            )
 
-        away_form_context = self._build_form_context_for_model(
-            away_team,
-            away_history,
-        )
+        if away_form_context is not None:
+            away_form_context_data = away_form_context
+        else:
+            away_form_context_data = self._build_form_context_for_model(
+                away_team,
+                away_history,
+            )
 
         # ========================================================
         # 2. Запускаем FormModel
         # ========================================================
 
-        home_form_result = self.form_model.analyze(home_form_context)
-        away_form_result = self.form_model.analyze(away_form_context)
+        home_form_result = self.form_model.analyze(home_form_context_data)
+        away_form_result = self.form_model.analyze(away_form_context_data)
 
         # ========================================================
-        # 3. Преобразуем FormModelResult в dict для GoalModel
-        # ========================================================
-
-        home_form_dict = {
-            "xg_avg": home_form_result.xg_avg,
-            "xga_avg": home_form_result.xga_avg,
-            "goals_for_avg": home_form_result.goals_for_avg,
-            "goals_against_avg": home_form_result.goals_against_avg,
-            "finishing_delta": home_form_result.finishing_delta,
-            "finishing_ratio": home_form_result.finishing_ratio,
-            "defensive_delta": home_form_result.defensive_delta,
-            "trend_score": home_form_result.trend_score,
-            "trend": home_form_result.trend,
-            "consistency": home_form_result.consistency,
-            "points_rate": home_form_result.points_rate,
-            "recent_points_rate": home_form_result.recent_points_rate,
-            "result_strength": home_form_result.result_strength,
-            "raw_points": home_form_result.raw_points,
-            "home_points_rate": home_form_result.home_points_rate,
-            "away_points_rate": home_form_result.away_points_rate,
-            "home_coverage": home_form_result.home_coverage,
-            "away_coverage": home_form_result.away_coverage,
-        }
-
-        away_form_dict = {
-            "xg_avg": away_form_result.xg_avg,
-            "xga_avg": away_form_result.xga_avg,
-            "goals_for_avg": away_form_result.goals_for_avg,
-            "goals_against_avg": away_form_result.goals_against_avg,
-            "finishing_delta": away_form_result.finishing_delta,
-            "finishing_ratio": away_form_result.finishing_ratio,
-            "defensive_delta": away_form_result.defensive_delta,
-            "trend_score": away_form_result.trend_score,
-            "trend": away_form_result.trend,
-            "consistency": away_form_result.consistency,
-            "points_rate": away_form_result.points_rate,
-            "recent_points_rate": away_form_result.recent_points_rate,
-            "result_strength": away_form_result.result_strength,
-            "raw_points": away_form_result.raw_points,
-            "home_points_rate": away_form_result.home_points_rate,
-            "away_points_rate": away_form_result.away_points_rate,
-            "home_coverage": away_form_result.home_coverage,
-            "away_coverage": away_form_result.away_coverage,
-        }
-
-        # ========================================================
-        # 4. Строим старые профили для совместимости (corners/cards)
+        # 3. Строим старые профили для совместимости (corners/cards)
         # ========================================================
 
         home_profile = self.build_profile(
@@ -1454,7 +1414,7 @@ class FAJBrain:
         )
 
         # ========================================================
-        # 5. ANALYSIS MODE
+        # 4. ANALYSIS MODE
         # ========================================================
 
         min_matches = min(
@@ -1472,13 +1432,24 @@ class FAJBrain:
             analysis_mode = "Экспресс"
 
         # ========================================================
-        # 6. XG — через GoalModel
+        # 5. XG — через GoalModel (передаём FormModelResult напрямую)
         # ========================================================
 
         home_xg, away_xg = self._calculate_expected_goals(
-            home_form_dict,
-            away_form_dict,
+            home_form_result,
+            away_form_result,
         )
+
+        # ========================================================
+        # 6. ЗАЩИТА ОТ NONE
+        # ========================================================
+
+        if home_xg is None or away_xg is None:
+            raise ValueError(
+                "GoalModel не смог рассчитать xG: "
+                "для одной или обеих команд отсутствует "
+                "необходимый xG/xGA компонент в FormModelResult."
+            )
 
         # ========================================================
         # 7. RESULT
@@ -1711,8 +1682,11 @@ class FAJBrain:
                 "away_profile":
                     away_profile.__dict__,
 
-                "home_form_result": home_form_dict,
-                "away_form_result": away_form_dict,
+                "home_form_result":
+                    home_form_result.__dict__,
+
+                "away_form_result":
+                    away_form_result.__dict__,
 
                 "method":
                     "FormModel v1.0 + "
@@ -1746,6 +1720,8 @@ def predict_match(
     away_team: str,
     home_matches: Iterable[Any],
     away_matches: Iterable[Any],
+    home_form_context: Optional[Any] = None,
+    away_form_context: Optional[Any] = None,
 ) -> Dict[str, Any]:
 
     brain = FAJBrain()
@@ -1755,6 +1731,8 @@ def predict_match(
         away_team=away_team,
         home_matches=home_matches,
         away_matches=away_matches,
+        home_form_context=home_form_context,
+        away_form_context=away_form_context,
     )
 
 
