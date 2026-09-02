@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ PLATFORM v12.1
-FORM CONTEXT v1.3
+FORM CONTEXT v1.4
 ============================================================
 
 НАЗНАЧЕНИЕ
@@ -101,20 +101,30 @@ VERSION 1.3
     - DEFAULT_MATCH_LIMIT увеличен с 5 до 6
     - Теперь form_context по умолчанию работает с 6 матчами
     - Синхронизировано с MAX_HISTORY_MATCHES в faj_predictor.py
+
+============================================================
+VERSION 1.4
+============================================================
+
+Изменения:
+
+    - Добавлена история xG/xGA по матчам в возвращаемый результат
+    - Поля recent_xg и recent_xga в том же порядке, что и results/difficulty
+    - Это позволяет FormModel анализировать xG в связке с результатом
 ============================================================
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 # ============================================================
 # VERSION
 # ============================================================
 
-FORM_CONTEXT_VERSION = "1.3"
+FORM_CONTEXT_VERSION = "1.4"
 
 DEFAULT_MATCH_LIMIT = 6
 
@@ -832,6 +842,9 @@ def build_form_context(
     xg_values: List[float] = []
     xga_values: List[float] = []
 
+    recent_xg: List[Optional[float]] = []
+    recent_xga: List[Optional[float]] = []
+
     for match in matches:
 
         if match.venue == "дома":
@@ -855,6 +868,10 @@ def build_form_context(
 
             elif match.result == "L":
                 away_losses += 1
+
+        # Собираем xG для истории
+        recent_xg.append(match.team_xg)
+        recent_xga.append(match.opponent_xg)
 
         if match.team_xg is not None:
 
@@ -965,6 +982,9 @@ def build_form_context(
         "xg": average_xg,
 
         "xga": average_xga,
+
+        "recent_xg": tuple(recent_xg),
+        "recent_xga": tuple(recent_xga),
 
         "matches": [
             asdict(match)
