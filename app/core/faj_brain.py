@@ -28,9 +28,11 @@ FAJ Personal Prediction Brain
           ↓
     normalize input
           ↓
-    team profiles
+    FormContext (из faj_predictor)
           ↓
-    attacking / defensive strength
+    FormModel (из form_model.py)
+          ↓
+    FormModelResult
           ↓
     expected goals
           ↓
@@ -79,12 +81,19 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional
 
+# ============================================================
+# FORM MODEL — новый математический слой
+# ============================================================
+
+from app.core.form_model import FormModel, FormModelResult
+from app.core.brain_contract import FormContext as ContractFormContext
+
 
 # ============================================================
 # VERSION
 # ============================================================
 
-BRAIN_VERSION = "FAJ-BRAIN-0.1"
+BRAIN_VERSION = "FAJ-BRAIN-0.2"
 
 MIN_MATCHES = 1
 EXTENDED_ANALYSIS_MATCHES = 3
@@ -561,6 +570,12 @@ class FAJBrain:
 
         self.version = BRAIN_VERSION
 
+        # ========================================================
+        # NEW: FormModel подключён как математический слой
+        # ========================================================
+
+        self.form_model = FormModel()
+
     # ========================================================
     # NORMALIZATION
     # ========================================================
@@ -591,7 +606,49 @@ class FAJBrain:
         return result
 
     # ========================================================
-    # PROFILE
+    # BUILD FORM CONTEXT (for FormModel)
+    # ========================================================
+
+    def _build_form_context_for_model(
+        self,
+        team_name: str,
+        matches: List[HistoricalMatch],
+    ) -> Dict[str, Any]:
+        """
+        Строит FormContext в формате, ожидаемом FormModel.
+        Использует уже существующий build_form_context из form_context.py
+        """
+
+        from app.core.form_context import build_form_context
+
+        # Преобразуем HistoricalMatch в dict, который понимает build_form_context
+        records = []
+        for match in matches:
+            record = {
+                "home_team": match.team if match.is_home else match.opponent,
+                "away_team": match.opponent if match.is_home else match.team,
+                "home_goals": match.goals_for if match.is_home else match.goals_against,
+                "away_goals": match.goals_against if match.is_home else match.goals_for,
+                "xg": {
+                    "home": match.xg if match.is_home else None,
+                    "away": match.xg if not match.is_home else None,
+                },
+                "match_date": match.match_date,
+                "is_home": match.is_home,
+                "opponent": match.opponent,
+            }
+            records.append(record)
+
+        # Передаём records в правильном порядке (старый → новый)
+        # Так как мы уже получили их в правильном порядке от Predictor
+        return build_form_context(
+            team_name=team_name,
+            records=records,
+            limit=PREFERRED_MATCHES,
+        )
+
+    # ========================================================
+    # OLD PROFILE — сохраняется для совместимости
     # ========================================================
 
     def build_profile(
@@ -856,29 +913,84 @@ class FAJBrain:
         )
 
     # ========================================================
-    # EXPECTED GOALS
+    # EXPECTED GOALS — НОВАЯ ВЕРСИЯ С ИСПОЛЬЗОВАНИЕМ FORMMODEL
     # ========================================================
 
     def _calculate_expected_goals(
         self,
-        home: TeamProfile,
-        away: TeamProfile,
+        home_profile: TeamProfile,
+        away_profile: TeamProfile,
+        home_form_result: Optional[Dict[str, Any]] = None,
+        away_form_result: Optional[Dict[str, Any]] = None,
     ) -> tuple[float, float]:
+        """
+        Рассчитывает ожидаемые голы.
+
+        Если FormModelResult доступен, использует его данные.
+        В противном случае использует старую логику (fallback).
+        """
+        # ========================================================
+        # Если есть FormModelResult — используем его
+        # ========================================================
+
+        if home_form_result is not None and away_form_result is not None:
+            # Используем xG из FormModel
+            home_xg_form = home_form_result.get("xg_avg")
+            away_xg_form = away_form_result.get("xg_avg")
+
+            # Используем данные о голах из FormModel
+            home_goals = home_form_result.get("goals_for_avg")
+            away_goals = away_form_result.get("goals_for_avg")
+
+            # Используем реализацию из FormModel
+            home_finishing = home_form_result.get("finishing_delta")
+            away_finishing = away_form_result.get("finishing_delta")
+
+            # Базовая xG из данных
+            if home_xg_form is not None:
+                home_xg = home_xg_form
+            else:
+                home_xg = home_profile.xg or 1.2
+
+            if away_xg_form is not None:
+                away_xg = away_xg_form
+            else:
+                away_xg = away_profile.xg or 1.2
+
+            # Корректировка на реализацию (только как сигнал, не как множитель)
+            # В v1 это diagnostic observation, а не корректировка xG
+            # Поэтому оставляем xG как есть
+
+            # Домашнее преимущество
+            home_advantage = 1.12
+
+            # Применяем домашнее преимущество к xG хозяев
+            home_xg = home_xg * home_advantage
+
+            # Ограничиваем экстремальные значения
+            home_xg = _clamp(home_xg, 0.20, 4.50)
+            away_xg = _clamp(away_xg, 0.20, 4.50)
+
+            return (
+                round(home_xg, 3),
+                round(away_xg, 3),
+            )
+
+        # ========================================================
+        # FALLBACK: старая логика
+        # ========================================================
 
         # Базовая модель.
+        home_attack = home_profile.attack
+        away_attack = away_profile.attack
 
-        home_attack = home.attack
-        away_attack = away.attack
-
-        home_defence = home.defence
-        away_defence = away.defence
+        home_defence = home_profile.defence
+        away_defence = away_profile.defence
 
         # Домашнее преимущество.
         home_advantage = 1.12
 
-        # Атакующая способность хозяев
-        # сталкивается с защитой гостей.
-
+        # Атакующая способность хозяев сталкивается с защитой гостей.
         home_xg = (
             home_attack
             * (0.65 + away_defence)
@@ -892,37 +1004,22 @@ class FAJBrain:
             / 2.0
         )
 
-        # Если есть реальные xG,
-        # используем их как дополнительный сигнал.
-
-        if home.xg is not None:
-
+        # Если есть реальные xG, используем их как дополнительный сигнал.
+        if home_profile.xg is not None:
             home_xg = (
                 0.60 * home_xg
-                + 0.40 * home.xg
+                + 0.40 * home_profile.xg
             )
 
-        if away.xg is not None:
-
+        if away_profile.xg is not None:
             away_xg = (
                 0.60 * away_xg
-                + 0.40 * away.xg
+                + 0.40 * away_profile.xg
             )
 
-        # Ограничиваем экстремальные значения,
-        # чтобы одна плохая выборка не ломала модель.
-
-        home_xg = _clamp(
-            home_xg,
-            0.20,
-            4.50,
-        )
-
-        away_xg = _clamp(
-            away_xg,
-            0.20,
-            4.50,
-        )
+        # Ограничиваем экстремальные значения.
+        home_xg = _clamp(home_xg, 0.20, 4.50)
+        away_xg = _clamp(away_xg, 0.20, 4.50)
 
         return (
             round(home_xg, 3),
@@ -1316,7 +1413,7 @@ class FAJBrain:
         return conclusion, factors
 
     # ========================================================
-    # PUBLIC PREDICTION
+    # PUBLIC PREDICTION — ОБНОВЛЁННАЯ ВЕРСИЯ
     # ========================================================
 
     def predict(
@@ -1349,6 +1446,31 @@ class FAJBrain:
                 f"{away_team}."
             )
 
+        # ========================================================
+        # 1. Строим FormContext для FormModel
+        # ========================================================
+
+        home_form_context = self._build_form_context_for_model(
+            home_team,
+            home_history,
+        )
+
+        away_form_context = self._build_form_context_for_model(
+            away_team,
+            away_history,
+        )
+
+        # ========================================================
+        # 2. Запускаем FormModel
+        # ========================================================
+
+        home_form_result = self.form_model.analyze(home_form_context)
+        away_form_result = self.form_model.analyze(away_form_context)
+
+        # ========================================================
+        # 3. Строим старые профили для совместимости (fallback)
+        # ========================================================
+
         home_profile = self.build_profile(
             home_team,
             home_history,
@@ -1359,9 +1481,55 @@ class FAJBrain:
             away_history,
         )
 
-        # ----------------------------------------------------
-        # ANALYSIS MODE
-        # ----------------------------------------------------
+        # ========================================================
+        # 4. Преобразуем FormModelResult в dict для передачи
+        # ========================================================
+
+        home_form_dict = {
+            "xg_avg": home_form_result.xg_avg,
+            "xga_avg": home_form_result.xga_avg,
+            "goals_for_avg": home_form_result.goals_for_avg,
+            "goals_against_avg": home_form_result.goals_against_avg,
+            "finishing_delta": home_form_result.finishing_delta,
+            "finishing_ratio": home_form_result.finishing_ratio,
+            "defensive_delta": home_form_result.defensive_delta,
+            "trend_score": home_form_result.trend_score,
+            "trend": home_form_result.trend,
+            "consistency": home_form_result.consistency,
+            "points_rate": home_form_result.points_rate,
+            "recent_points_rate": home_form_result.recent_points_rate,
+            "result_strength": home_form_result.result_strength,
+            "raw_points": home_form_result.raw_points,
+            "home_points_rate": home_form_result.home_points_rate,
+            "away_points_rate": home_form_result.away_points_rate,
+            "home_coverage": home_form_result.home_coverage,
+            "away_coverage": home_form_result.away_coverage,
+        }
+
+        away_form_dict = {
+            "xg_avg": away_form_result.xg_avg,
+            "xga_avg": away_form_result.xga_avg,
+            "goals_for_avg": away_form_result.goals_for_avg,
+            "goals_against_avg": away_form_result.goals_against_avg,
+            "finishing_delta": away_form_result.finishing_delta,
+            "finishing_ratio": away_form_result.finishing_ratio,
+            "defensive_delta": away_form_result.defensive_delta,
+            "trend_score": away_form_result.trend_score,
+            "trend": away_form_result.trend,
+            "consistency": away_form_result.consistency,
+            "points_rate": away_form_result.points_rate,
+            "recent_points_rate": away_form_result.recent_points_rate,
+            "result_strength": away_form_result.result_strength,
+            "raw_points": away_form_result.raw_points,
+            "home_points_rate": away_form_result.home_points_rate,
+            "away_points_rate": away_form_result.away_points_rate,
+            "home_coverage": away_form_result.home_coverage,
+            "away_coverage": away_form_result.away_coverage,
+        }
+
+        # ========================================================
+        # 5. ANALYSIS MODE
+        # ========================================================
 
         min_matches = min(
             len(home_history),
@@ -1369,35 +1537,30 @@ class FAJBrain:
         )
 
         if min_matches >= PREFERRED_MATCHES:
-
             analysis_mode = "Расширенный"
-
         elif min_matches >= EXTENDED_ANALYSIS_MATCHES:
-
             analysis_mode = "Базовый+"
-
         elif min_matches >= 2:
-
             analysis_mode = "Базовый"
-
         else:
-
             analysis_mode = "Экспресс"
 
-        # ----------------------------------------------------
-        # XG
-        # ----------------------------------------------------
+        # ========================================================
+        # 6. XG — с использованием FormModel
+        # ========================================================
 
         home_xg, away_xg = (
             self._calculate_expected_goals(
                 home_profile,
                 away_profile,
+                home_form_dict,
+                away_form_dict,
             )
         )
 
-        # ----------------------------------------------------
-        # RESULT
-        # ----------------------------------------------------
+        # ========================================================
+        # 7. RESULT
+        # ========================================================
 
         probabilities = (
             self._result_probabilities(
@@ -1411,9 +1574,9 @@ class FAJBrain:
             away_xg,
         )
 
-        # ----------------------------------------------------
-        # SCORE
-        # ----------------------------------------------------
+        # ========================================================
+        # 8. SCORE
+        # ========================================================
 
         scores = score_distribution(
             home_xg,
@@ -1430,9 +1593,9 @@ class FAJBrain:
         while len(score_strings) < 3:
             score_strings.append("-")
 
-        # ----------------------------------------------------
-        # CORNERS
-        # ----------------------------------------------------
+        # ========================================================
+        # 9. CORNERS
+        # ========================================================
 
         corners = self._corners(
             home_profile,
@@ -1441,9 +1604,9 @@ class FAJBrain:
 
         corner_total = corners["total"]
 
-        # ----------------------------------------------------
-        # CARDS
-        # ----------------------------------------------------
+        # ========================================================
+        # 10. CARDS
+        # ========================================================
 
         cards = self._cards(
             home_profile,
@@ -1452,9 +1615,9 @@ class FAJBrain:
 
         card_total = cards["total"]
 
-        # ----------------------------------------------------
-        # CONFIDENCE
-        # ----------------------------------------------------
+        # ========================================================
+        # 11. CONFIDENCE
+        # ========================================================
 
         confidence = self._confidence(
             home_profile,
@@ -1468,9 +1631,9 @@ class FAJBrain:
             away_profile,
         )
 
-        # ----------------------------------------------------
-        # CONCLUSION
-        # ----------------------------------------------------
+        # ========================================================
+        # 12. CONCLUSION
+        # ========================================================
 
         conclusion, factors = (
             self._conclusion(
@@ -1481,9 +1644,9 @@ class FAJBrain:
             )
         )
 
-        # ----------------------------------------------------
-        # OUTPUT
-        # ----------------------------------------------------
+        # ========================================================
+        # 13. OUTPUT
+        # ========================================================
 
         result = BrainPrediction(
 
@@ -1626,7 +1789,11 @@ class FAJBrain:
                 "away_profile":
                     away_profile.__dict__,
 
+                "home_form_result": home_form_dict,
+                "away_form_result": away_form_dict,
+
                 "method":
+                    "FormModel v1.0 + "
                     "weighted_recent_form + "
                     "attack_defence + "
                     "poisson_score_distribution",
@@ -1638,8 +1805,9 @@ class FAJBrain:
                     },
 
                 "note":
-                    "Версия 0.1. Математическое ядро "
-                    "будет расширяться после проверки "
+                    "Версия 0.2. FormModel подключён как "
+                    "математический слой. "
+                    "Формулы будут расширяться после проверки "
                     "на реальных данных.",
             },
         )
