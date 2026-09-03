@@ -508,7 +508,7 @@ class HistoricalMatch:
 
             xg=xg_value,
 
-            big_changes=big_chances_value,
+            big_chances=big_chances_value,
 
             competition=data.get("competition"),
 
