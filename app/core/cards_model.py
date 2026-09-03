@@ -15,7 +15,7 @@ CardsModel анализирует фактическую историю карт
 Модель НЕ:
 
     - изменяет xG;
-    - изменяет вероятность;
+    - изменявает вероятность;
     - изменяет счёт;
     - создаёт vulnerability multiplier;
     - превращает карточки напрямую в aggression;
@@ -49,7 +49,7 @@ from typing import Any, Dict, Iterable, List, Optional
 import math
 
 
-CARDS_MODEL_VERSION = "1.0"
+CARDS_MODEL_VERSION = "1.1"
 
 MAX_HISTORY_MATCHES = 6
 
@@ -117,29 +117,6 @@ def _average(
         return None
 
     return sum(numeric) / len(numeric)
-
-
-def _chronological_history(
-    values: Iterable[Any],
-) -> List[Optional[float]]:
-    """
-    FormContext:
-
-        newest → oldest
-
-    Model:
-
-        oldest → newest
-    """
-
-    result = [
-        _safe_float(value)
-        for value in values
-    ]
-
-    return list(
-        reversed(result)
-    )
 
 
 def _recent_mean(
@@ -498,26 +475,21 @@ class CardsModel:
         )
 
         # ----------------------------------------------------
-        # Context history:
+        # FormContext v1.7 уже отдаёт историю в правильном порядке:
+        # старый → новый (M1 → M6)
         #
-        # newest → oldest
-        #
-        # Internal model:
-        #
-        # oldest → newest
+        # Используем raw данные напрямую, без reverse.
         # ----------------------------------------------------
 
-        team_cards_chronological = (
-            _chronological_history(
-                team_cards_raw
-            )
-        )
+        team_cards_chronological = [
+            _safe_float(value)
+            for value in team_cards_raw
+        ]
 
-        opponent_cards_chronological = (
-            _chronological_history(
-                opponent_cards_raw
-            )
-        )
+        opponent_cards_chronological = [
+            _safe_float(value)
+            for value in opponent_cards_raw
+        ]
 
         results_raw = context.get(
             "results",
@@ -530,11 +502,12 @@ class CardsModel:
             : self.max_history
         ]
 
-        results_chronological = list(
-            reversed(
-                results_raw
-            )
-        )
+        # ----------------------------------------------------
+        # FormContext v1.7 уже отдаёт results в правильном порядке:
+        # старый → новый
+        # ----------------------------------------------------
+
+        results_chronological = results_raw
 
         # ----------------------------------------------------
         # Average
@@ -616,7 +589,7 @@ class CardsModel:
         diagnostics = {
 
             "history_order_input":
-                "newest_to_oldest",
+                "oldest_to_newest",
 
             "history_order_internal":
                 "oldest_to_newest",
