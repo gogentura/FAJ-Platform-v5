@@ -2,3935 +2,3101 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ PERSONAL PREDICTOR
-======================
+============================================================
+FAJ PREDICTOR — NEW ANALYTICAL INTERFACE
+============================================================
 
-Единая главная страница персональной аналитической платформы FAJ.
+Новая независимая страница прогнозирования FAJ.
 
-Поток:
+АРХИТЕКТУРА:
 
-    ТУРНИР
-       ↓
-    МАТЧИ
-       ↓
-    ИСТОРИЯ
-       ↓
-    SOCCER365
-       ↓
-    АНАЛИТИЧЕСКИЕ ДАННЫЕ
-       ↓
-    FAJ BRAIN
-       ↓
-    ПРОГНОЗ
-       ↓
-    КАРТОЧКА
+    Soccer365
+        ↓
+    FACT COLLECTION
+        ↓
+    FormContext
+        ↓
+    FormModel
+        ↓
+    FormWin
+        ↓
+    Defence
+        ↓
+    GoalModel
+        ↓
+    Poisson
+        ↓
+    1X2 / BTTS / TOTALS / SCORE
+        ↓
+    CornersModel
+        ↓
+    CardsModel
+        ↓
+    FINAL ANALYSIS
 
-ВАЖНО:
+НЕ ИСПОЛЬЗУЕТ:
 
-Страница НЕ содержит:
-    - Tour Manager
-    - Import Facts
-    - ETC
-    - Learning
-    - Rating Evolution
-    - старую систему туров
-    - bookmaker integration
+    ETC
+    Learning
+    LearningEngine
+    LearningMemory
+    PredictionErrorAnalyzer
+    old FAJ Core
+    bookmaker odds
+    predictions.save_prediction()
+    старые prediction-поля SQLite
 
-История может быть собрана из любых турниров.
+SQLite здесь вообще не нужен.
 
-Минимум для расширенного анализа:
-    3 матча.
-
-Допускается:
-    1-2 матча — ограниченный анализ.
-
-Максимум:
-    6 исторических матчей на команду
-    6 прогнозируемых матчей одновременно.
-
-Прогнозный мозг находится отдельно от UI.
-Текущий встроенный brain является временным baseline.
-Позже его можно заменить новой математической моделью
-без переделки страницы.
+============================================================
 """
 
 from __future__ import annotations
 
-import json
-import logging
 import math
 import re
-from datetime import date, datetime
-from statistics import mean
 from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
 
-from app.database import FAJDatabase
+# ============================================================
+# PARSER
+# ============================================================
+
 from app.parsers.soccer365_parser import Soccer365Parser
-from app.core.faj_brain import FAJBrain
-from app.faj_club_ratings import (
-    get_all_tournaments,
-    get_all_teams,
-    get_team_rating,
+
+# ============================================================
+# MATHEMATICAL ORGANS
+# ============================================================
+
+from app.core.form_model import FormModel
+from app.core.form_win import FormWin
+from app.core.defence import Defence
+from app.core.goal_model import GoalModel
+from app.core.corners_model import CornersModel
+from app.core.cards_model import CardsModel
+
+
+# ============================================================
+# VERSION
+# ============================================================
+
+PREDICTOR_VERSION = "FAJ-PREDICTOR-1.0"
+
+HISTORY_SIZE = 6
+
+
+# ============================================================
+# PAGE CONFIG
+# ============================================================
+
+st.set_page_config(
+    page_title="FAJ Predictor",
+    page_icon="⚽",
+    layout="wide",
+    initial_sidebar_state="collapsed",
 )
 
-# ============================================================
-# FORM CONTEXT
-# ============================================================
-
-from app.core.form_context import build_form_context
-
 
 # ============================================================
-# CONFIG
+# MOBILE CSS
 # ============================================================
 
-PAGE_TITLE = "FAJ — Персональный прогноз"
+st.markdown(
+    """
+<style>
 
-MODEL_VERSION = "FAJ-PERSONAL-BRAIN-0.1"
+    /* --------------------------------------------------------
+       GLOBAL
+    -------------------------------------------------------- */
 
-MIN_EXTENDED_MATCHES = 3
-# Максимальное количество исторических матчей,
-# которые пользователь может передать для одной команды.
-MAX_HISTORY_MATCHES = 6
-# Максимальное количество прогнозируемых матчей одновременно.
-MAX_ANALYSIS_MATCHES = 6
-# Сколько последних фактических матчей реально
-# передаём в FAJ Brain и Form Context.
-MAX_RECENT_HISTORY = MAX_HISTORY_MATCHES
+    .block-container {
+        max-width: 1100px;
+        padding-top: 1rem;
+        padding-left: 0.75rem;
+        padding-right: 0.75rem;
+        padding-bottom: 2rem;
+    }
 
-logger = logging.getLogger(__name__)
+    #MainMenu {
+        visibility: hidden;
+    }
+
+    footer {
+        visibility: hidden;
+    }
+
+    header {
+        visibility: hidden;
+    }
+
+
+    /* --------------------------------------------------------
+       HEADER
+    -------------------------------------------------------- */
+
+    .faj-header {
+        padding: 12px 14px;
+        margin-bottom: 10px;
+        border-radius: 18px;
+        border: 1px solid rgba(128,128,128,.18);
+        background: rgba(128,128,128,.06);
+    }
+
+    .faj-title {
+        font-size: 26px;
+        font-weight: 800;
+        line-height: 1.1;
+    }
+
+    .faj-subtitle {
+        font-size: 12px;
+        opacity: .60;
+        margin-top: 4px;
+    }
+
+
+    /* --------------------------------------------------------
+       TEAM CARD
+    -------------------------------------------------------- */
+
+    .team-card {
+        border-radius: 18px;
+        padding: 14px;
+        border: 1px solid rgba(128,128,128,.18);
+        background: rgba(128,128,128,.045);
+        margin-bottom: 8px;
+    }
+
+    .team-name {
+        font-size: 18px;
+        font-weight: 750;
+    }
+
+    .team-meta {
+        font-size: 11px;
+        opacity: .55;
+        margin-top: 3px;
+    }
+
+
+    /* --------------------------------------------------------
+       RESULT CARD
+    -------------------------------------------------------- */
+
+    .result-card {
+        border-radius: 20px;
+        padding: 14px;
+        border: 1px solid rgba(128,128,128,.20);
+        background: rgba(128,128,128,.055);
+        margin: 6px 0;
+    }
+
+    .result-main {
+        font-size: 30px;
+        font-weight: 850;
+        text-align: center;
+    }
+
+    .result-caption {
+        text-align: center;
+        font-size: 11px;
+        opacity: .55;
+        margin-top: 2px;
+    }
+
+
+    /* --------------------------------------------------------
+       COMPACT METRIC
+    -------------------------------------------------------- */
+
+    .metric {
+        border-radius: 14px;
+        padding: 10px 8px;
+        border: 1px solid rgba(128,128,128,.16);
+        background: rgba(128,128,128,.035);
+        text-align: center;
+        margin-bottom: 6px;
+    }
+
+    .metric-value {
+        font-size: 19px;
+        font-weight: 800;
+    }
+
+    .metric-label {
+        font-size: 10px;
+        opacity: .55;
+        margin-top: 2px;
+    }
+
+
+    /* --------------------------------------------------------
+       SCORE
+    -------------------------------------------------------- */
+
+    .score-card {
+        border-radius: 15px;
+        padding: 11px;
+        text-align: center;
+        border: 1px solid rgba(128,128,128,.16);
+        background: rgba(128,128,128,.04);
+    }
+
+    .score {
+        font-size: 22px;
+        font-weight: 800;
+    }
+
+    .score-label {
+        font-size: 9px;
+        opacity: .5;
+    }
+
+
+    /* --------------------------------------------------------
+       SECTION
+    -------------------------------------------------------- */
+
+    .section-title {
+        font-size: 16px;
+        font-weight: 800;
+        margin-top: 12px;
+        margin-bottom: 7px;
+    }
+
+
+    /* --------------------------------------------------------
+       CONCLUSION
+    -------------------------------------------------------- */
+
+    .conclusion {
+        border-radius: 18px;
+        padding: 14px;
+        border: 1px solid rgba(128,128,128,.18);
+        background: rgba(128,128,128,.06);
+        font-size: 14px;
+        line-height: 1.45;
+    }
+
+
+    /* --------------------------------------------------------
+       FACT ROW
+    -------------------------------------------------------- */
+
+    .fact-row {
+        display: flex;
+        justify-content: space-between;
+        padding: 5px 0;
+        border-bottom: 1px solid rgba(128,128,128,.10);
+        font-size: 12px;
+    }
+
+    .fact-name {
+        opacity: .60;
+    }
+
+    .fact-value {
+        font-weight: 700;
+    }
+
+
+    /* --------------------------------------------------------
+       MOBILE
+    -------------------------------------------------------- */
+
+    @media (max-width: 700px) {
+
+        .block-container {
+            padding-left: 0.45rem;
+            padding-right: 0.45rem;
+            padding-top: 0.4rem;
+        }
+
+        .faj-title {
+            font-size: 22px;
+        }
+
+        .team-name {
+            font-size: 16px;
+        }
+
+        .metric-value {
+            font-size: 17px;
+        }
+
+        .result-main {
+            font-size: 27px;
+        }
+
+        .section-title {
+            font-size: 14px;
+        }
+    }
+
+</style>
+""",
+    unsafe_allow_html=True,
+)
 
 
 # ============================================================
-# DATABASE / PARSER
-# ============================================================
-
-@st.cache_resource
-def get_database() -> FAJDatabase:
-    return FAJDatabase()
-
-
-@st.cache_resource
-def get_soccer365_parser() -> Soccer365Parser:
-    return Soccer365Parser()
-
-
-# ============================================================
-# BASIC HELPERS
+# HELPERS
 # ============================================================
 
 def safe_float(value: Any) -> Optional[float]:
+
     if value is None:
         return None
 
+    if isinstance(value, bool):
+        return None
+
     try:
-        return float(value)
+
+        value = float(value)
+
+        if math.isfinite(value):
+            return value
+
     except (TypeError, ValueError):
-        return None
-
-
-def safe_int(value: Any) -> Optional[int]:
-    if value is None:
-        return None
-
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def clamp(
-    value: float,
-    minimum: float,
-    maximum: float,
-) -> float:
-    return max(minimum, min(maximum, value))
-
-
-def pct(value: Optional[float]) -> str:
-    if value is None:
-        return "—"
-
-    return f"{value * 100:.1f}%"
-
-
-def num(
-    value: Optional[float],
-    digits: int = 2,
-) -> str:
-    if value is None:
-        return "—"
-
-    return f"{value:.{digits}f}"
-
-
-def normalize_name(value: Any) -> str:
-    if value is None:
-        return ""
-
-    return (
-        str(value)
-        .strip()
-        .lower()
-        .replace("ё", "е")
-    )
-
-
-def parse_score(
-    score: Any,
-) -> Tuple[Optional[int], Optional[int]]:
-
-    if not score:
-        return None, None
-
-    text = (
-        str(score)
-        .strip()
-        .replace("–", "-")
-        .replace(":", "-")
-    )
-
-    parts = text.split("-")
-
-    if len(parts) != 2:
-        return None, None
-
-    try:
-        return (
-            int(parts[0].strip()),
-            int(parts[1].strip()),
-        )
-    except ValueError:
-        return None, None
-
-
-def average(
-    values: List[float],
-) -> Optional[float]:
-
-    if not values:
-        return None
-
-    return mean(values)
-
-
-def weighted_average(
-    values: List[float],
-) -> Optional[float]:
-
-    if not values:
-        return None
-
-    if len(values) == 1:
-        return values[0]
-
-    weights = list(range(1, len(values) + 1))
-
-    return sum(
-        value * weight
-        for value, weight in zip(values, weights)
-    ) / sum(weights)
-
-
-# ============================================================
-# SESSION STATE
-# ============================================================
-
-def init_state() -> None:
-
-    defaults = {
-        "faj_session_id": None,
-        "faj_competition": None,
-        "faj_matches": [],
-        "faj_collected": {},
-        "faj_predictions": {},
-        "faj_team_cache": {},
-        "faj_form_context": {},
-    }
-
-    for key, value in defaults.items():
-
-        if key not in st.session_state:
-            st.session_state[key] = value
-
-
-def reset_workspace() -> None:
-
-    st.session_state.faj_session_id = None
-    st.session_state.faj_competition = None
-    st.session_state.faj_matches = []
-    st.session_state.faj_collected = {}
-    st.session_state.faj_predictions = {}
-    st.session_state.faj_team_cache = {}
-    st.session_state.faj_form_context = {}
-
-
-# ============================================================
-# TEAM DATA (UPDATED: источник — FAJ_CLUB_RATINGS)
-# ============================================================
-
-def load_teams(
-    db: FAJDatabase,
-    league: Optional[str] = None,
-) -> List[str]:
-    """
-    Источник команд для FAJ Predictor — единый реестр
-    FAJ Club Ratings.
-    database.py здесь НЕ используется для формирования
-    списка команд UI.
-    """
-    try:
-        teams = get_all_teams(league)
-        if not teams:
-            logger.warning(
-                "FAJ Predictor: для турнира '%s' "
-                "нет команд в FAJ_CLUB_RATINGS",
-                league,
-            )
-            return []
-        return list(teams)
-    except Exception:
-        logger.exception(
-            "FAJ Predictor: ошибка загрузки команд "
-            "из FAJ_CLUB_RATINGS для '%s'",
-            league,
-        )
-        return []
-
-
-def team_label(
-    team_name: str,
-    league: Optional[str] = None,
-) -> str:
-
-    if league:
-        return f"{team_name} · {league}"
-
-    return team_name
-
-
-def find_team_by_name(
-    team_names: List[str],
-    team_name: Optional[str],
-) -> Optional[str]:
-
-    if team_name is None:
-        return None
-
-    for name in team_names:
-
-        if name == team_name:
-            return name
+        pass
 
     return None
 
 
+def safe_int(value: Any) -> Optional[int]:
+
+    value = safe_float(value)
+
+    if value is None:
+        return None
+
+    return int(round(value))
+
+
+def probability(value: Optional[float]) -> Optional[float]:
+
+    if value is None:
+        return None
+
+    return round(
+        max(0.0, min(1.0, float(value))) * 100.0,
+        1,
+    )
+
+
+def value(obj: Any, *names: str) -> Any:
+
+    if obj is None:
+        return None
+
+    for name in names:
+
+        if isinstance(obj, dict):
+
+            if name in obj:
+                return obj[name]
+
+        try:
+
+            keys = obj.keys()
+
+            if name in keys:
+                return obj[name]
+
+        except (AttributeError, TypeError):
+            pass
+
+        try:
+            return getattr(obj, name)
+
+        except AttributeError:
+            pass
+
+    return None
+
+
+def nested(
+    obj: Any,
+    *names: str,
+) -> Any:
+
+    current = obj
+
+    for name in names:
+
+        current = value(
+            current,
+            name,
+        )
+
+        if current is None:
+            return None
+
+    return current
+
+
 # ============================================================
-# MATCH SLOTS (UPDATED: added match_date)
+# SCORE
 # ============================================================
 
-def create_match_slot() -> Dict[str, Any]:
+def poisson(
+    goals: int,
+    expected: float,
+) -> float:
+
+    if expected is None:
+        return 0.0
+
+    if expected < 0:
+        return 0.0
+
+    return (
+        math.exp(-expected)
+        * expected ** goals
+        / math.factorial(goals)
+    )
+
+
+def score_distribution(
+    home_xg: float,
+    away_xg: float,
+    max_goals: int = 7,
+) -> List[Dict[str, Any]]:
+
+    scores = []
+
+    for home in range(max_goals + 1):
+
+        hp = poisson(
+            home,
+            home_xg,
+        )
+
+        for away in range(max_goals + 1):
+
+            ap = poisson(
+                away,
+                away_xg,
+            )
+
+            scores.append(
+                {
+                    "home": home,
+                    "away": away,
+                    "probability": hp * ap,
+                }
+            )
+
+    scores.sort(
+        key=lambda x: x["probability"],
+        reverse=True,
+    )
+
+    return scores
+
+
+def result_probabilities(
+    home_xg: float,
+    away_xg: float,
+) -> Dict[str, float]:
+
+    scores = score_distribution(
+        home_xg,
+        away_xg,
+    )
+
+    home = 0.0
+    draw = 0.0
+    away = 0.0
+
+    for item in scores:
+
+        p = item["probability"]
+
+        if item["home"] > item["away"]:
+            home += p
+
+        elif item["home"] == item["away"]:
+            draw += p
+
+        else:
+            away += p
+
+    total = home + draw + away
+
+    if total <= 0:
+        return {
+            "home": 1 / 3,
+            "draw": 1 / 3,
+            "away": 1 / 3,
+        }
 
     return {
-        "home_name": None,
-        "away_name": None,
-        "match_date": None,  # ISO format: YYYY-MM-DD
-        "urls_home": [""] * MAX_HISTORY_MATCHES,
-        "urls_away": [""] * MAX_HISTORY_MATCHES,
+        "home": home / total,
+        "draw": draw / total,
+        "away": away / total,
     }
 
 
-def add_match() -> None:
+def total_probabilities(
+    home_xg: float,
+    away_xg: float,
+) -> Dict[str, float]:
 
-    matches = st.session_state.faj_matches
-
-    if len(matches) >= MAX_ANALYSIS_MATCHES:
-
-        st.warning(
-            f"Можно добавить максимум "
-            f"{MAX_ANALYSIS_MATCHES} матчей."
-        )
-
-        return
-
-    matches.append(
-        create_match_slot()
+    scores = score_distribution(
+        home_xg,
+        away_xg,
     )
 
+    btts = 0.0
+    over25 = 0.0
+    over35 = 0.0
 
-def remove_match(
-    index: int,
-) -> None:
+    for item in scores:
 
-    matches = st.session_state.faj_matches
+        p = item["probability"]
 
-    if not (
-        0 <= index < len(matches)
-    ):
-        return
-
-    matches.pop(index)
-
-    st.session_state.faj_collected.pop(
-        index,
-        None,
-    )
-
-    st.session_state.faj_predictions.pop(
-        index,
-        None,
-    )
-
-    st.session_state.faj_form_context.pop(
-        index,
-        None,
-    )
-
-
-# ============================================================
-# SESSION
-# ============================================================
-
-def ensure_session(
-    db: FAJDatabase,
-    competition_name: str,
-) -> Optional[int]:
-
-    current = (
-        st.session_state.faj_session_id
-    )
-
-    if current is not None:
-
-        return current
-
-    try:
-
-        competitions = (
-            db.get_competitions()
+        total = (
+            item["home"]
+            + item["away"]
         )
 
-        competition_id = None
+        if (
+            item["home"] >= 1
+            and item["away"] >= 1
+        ):
+            btts += p
 
-        for competition in competitions:
+        if total >= 3:
+            over25 += p
 
-            if normalize_name(
-                competition.get("name")
-            ) == normalize_name(
-                competition_name
-            ):
+        if total >= 4:
+            over35 += p
 
-                competition_id = (
-                    competition.get("id")
-                )
+    return {
+        "btts": btts,
+        "over25": over25,
+        "over35": over35,
+    }
 
-                break
 
-        session_id = (
-            db.create_analysis_session(
-                competition_id=competition_id,
-                title=(
-                    f"FAJ | "
-                    f"{competition_name}"
-                ),
-                notes=(
-                    "Персональная "
-                    "аналитическая сессия FAJ."
-                ),
-            )
-        )
+def over_probability(
+    expected: Optional[float],
+    line: float,
+) -> Optional[float]:
 
-        st.session_state.faj_session_id = (
-            session_id
-        )
-
-        return session_id
-
-    except Exception as exc:
-
-        logger.exception(
-            "Ошибка создания сессии: %s",
-            exc,
-        )
-
-        st.error(
-            f"Не удалось создать аналитическую сессию: {exc}"
-        )
-
+    if expected is None:
         return None
 
+    under = 0.0
+
+    for goals in range(0, 20):
+
+        if goals <= math.floor(line):
+
+            under += poisson(
+                goals,
+                expected,
+            )
+
+    return max(
+        0.0,
+        min(
+            1.0,
+            1.0 - under,
+        ),
+    )
+
 
 # ============================================================
-# PARSING
+# PARSER → MATCH FACT
 # ============================================================
 
-def parse_soccer365(
+def parse_match(
+    parser: Soccer365Parser,
     url: str,
 ) -> Dict[str, Any]:
 
-    parser = get_soccer365_parser()
+    url = (url or "").strip()
 
-    return parser.parse(
-        url.strip()
+    if not url:
+        raise ValueError("Пустой URL.")
+
+    result = parser.parse(url)
+
+    if result.get("error"):
+        raise ValueError(
+            str(result["error"])
+        )
+
+    stats = result.get(
+        "stats",
+        {},
     )
 
+    if not isinstance(stats, dict):
+        stats = {}
 
-def validate_parsed_match(
+    result["stats"] = stats
+
+    return result
+
+
+# ============================================================
+# BUILD TEAM MATCH RECORD
+# ============================================================
+
+def build_team_record(
     parsed: Dict[str, Any],
-    selected_team: str,
-) -> Tuple[bool, str]:
+    team_name: str,
+) -> Optional[Dict[str, Any]]:
 
-    home = parsed.get(
+    home_team = parsed.get(
         "home_team"
     )
 
-    away = parsed.get(
+    away_team = parsed.get(
         "away_team"
     )
 
-    if not home or not away:
+    if not home_team or not away_team:
+        return None
 
-        return (
-            False,
-            "Не удалось определить команды.",
+    team_name_low = team_name.strip().lower()
+
+    home_low = str(
+        home_team
+    ).strip().lower()
+
+    away_low = str(
+        away_team
+    ).strip().lower()
+
+    if team_name_low == home_low:
+
+        is_home = True
+
+        team = home_team
+        opponent = away_team
+
+        side = "home"
+
+        goals_for = None
+        goals_against = None
+
+        score = parsed.get(
+            "score"
         )
 
-    target = normalize_name(
-        selected_team
-    )
+        if score:
 
-    if (
-        target != normalize_name(home)
-        and
-        target != normalize_name(away)
-    ):
+            parts = re.split(
+                r"[:\-]",
+                score,
+            )
 
-        return (
-            False,
-            (
-                f"Матч {home} — {away} "
-                f"не содержит выбранную команду "
-                f"{selected_team}."
-            ),
+            if len(parts) >= 2:
+
+                goals_for = safe_int(
+                    parts[0]
+                )
+
+                goals_against = safe_int(
+                    parts[1]
+                )
+
+    elif team_name_low == away_low:
+
+        is_home = False
+
+        team = away_team
+        opponent = home_team
+
+        side = "away"
+
+        goals_for = None
+        goals_against = None
+
+        score = parsed.get(
+            "score"
         )
 
-    return (
-        True,
-        f"{home} — {away}",
-    )
+        if score:
 
+            parts = re.split(
+                r"[:\-]",
+                score,
+            )
 
-# ============================================================
-# NORMALIZATION OF SOCCER365 RECORD (UPDATED: flat corners/cards)
-# ============================================================
+            if len(parts) >= 2:
 
-def build_history_record(
-    parsed: Dict[str, Any],
-) -> Dict[str, Any]:
+                goals_for = safe_int(
+                    parts[1]
+                )
+
+                goals_against = safe_int(
+                    parts[0]
+                )
+
+    else:
+
+        return None
 
     stats = parsed.get(
         "stats",
         {},
     )
 
-    home = parsed.get(
-        "home_team"
+    def stat(name: str) -> Any:
+
+        home_key = (
+            f"home_{name}"
+        )
+
+        away_key = (
+            f"away_{name}"
+        )
+
+        if is_home:
+            return stats.get(home_key)
+
+        return stats.get(away_key)
+
+    def opponent_stat(name: str) -> Any:
+
+        home_key = (
+            f"home_{name}"
+        )
+
+        away_key = (
+            f"away_{name}"
+        )
+
+        if is_home:
+            return stats.get(away_key)
+
+        return stats.get(home_key)
+
+    result_code = None
+
+    if (
+        goals_for is not None
+        and goals_against is not None
+    ):
+
+        if goals_for > goals_against:
+            result_code = "W"
+
+        elif goals_for < goals_against:
+            result_code = "L"
+
+        else:
+            result_code = "D"
+
+    # --------------------------------------------------------
+    # xG
+    # --------------------------------------------------------
+
+    xg = safe_float(
+        stat("xg")
     )
 
-    away = parsed.get(
-        "away_team"
+    opponent_xg = safe_float(
+        opponent_stat("xg")
     )
 
-    score = parsed.get(
-        "score"
-    )
+    # --------------------------------------------------------
+    # Extra factual statistics
+    # --------------------------------------------------------
 
-    home_goals, away_goals = (
-        parse_score(score)
-    )
+    extra = {
+
+        "opponent_xg":
+            opponent_xg,
+
+        "shots":
+            safe_int(
+                stat("shots")
+            ),
+
+        "opponent_shots":
+            safe_int(
+                opponent_stat("shots")
+            ),
+
+        "shots_on_target":
+            safe_int(
+                stat("shots_on_target")
+            ),
+
+        "opponent_shots_on_target":
+            safe_int(
+                opponent_stat(
+                    "shots_on_target"
+                )
+            ),
+
+        "blocked_shots":
+            safe_int(
+                stat("blocked_shots")
+            ),
+
+        "opponent_blocked_shots":
+            safe_int(
+                opponent_stat(
+                    "blocked_shots"
+                )
+            ),
+
+        "big_chances":
+            safe_int(
+                stat("big_chances")
+            ),
+
+        "opponent_big_chances":
+            safe_int(
+                opponent_stat(
+                    "big_chances"
+                )
+            ),
+
+        "possession":
+            safe_float(
+                stat("possession")
+            ),
+
+        "opponent_possession":
+            safe_float(
+                opponent_stat(
+                    "possession"
+                )
+            ),
+
+        "corners":
+            safe_int(
+                stat("corners")
+            ),
+
+        "opponent_corners":
+            safe_int(
+                opponent_stat(
+                    "corners"
+                )
+            ),
+
+        "passes":
+            safe_int(
+                stat("total_passes")
+            ),
+
+        "opponent_passes":
+            safe_int(
+                opponent_stat(
+                    "total_passes"
+                )
+            ),
+
+        "pass_accuracy":
+            safe_float(
+                stat("pass_accuracy")
+            ),
+
+        "opponent_pass_accuracy":
+            safe_float(
+                opponent_stat(
+                    "pass_accuracy"
+                )
+            ),
+
+        "fouls":
+            safe_int(
+                stat("fouls")
+            ),
+
+        "offsides":
+            safe_int(
+                stat("offsides")
+            ),
+
+        "yellow_cards":
+            safe_int(
+                stat("yellow_cards")
+            ),
+
+        "opponent_yellow_cards":
+            safe_int(
+                opponent_stat(
+                    "yellow_cards"
+                )
+            ),
+
+        "red_cards":
+            safe_int(
+                stat("red_cards")
+            ),
+
+        "crosses":
+            safe_int(
+                stat("crosses")
+            ),
+
+        "opponent_crosses":
+            safe_int(
+                opponent_stat("crosses")
+            ),
+    }
 
     return {
 
-        "home_team": home,
-        "away_team": away,
+        "team":
+            team,
 
-        "match_date": parsed.get(
-            "match_date"
-        ),
+        "team_name":
+            team,
 
-        "score": score,
+        "opponent":
+            opponent,
 
-        "home_goals": home_goals,
-        "away_goals": away_goals,
+        "is_home":
+            is_home,
 
-        "xg": {
-            "home": stats.get(
-                "home_xg"
-            ),
-            "away": stats.get(
-                "away_xg"
-            ),
-        },
+        "venue":
+            "home"
+            if is_home
+            else "away",
 
-        "shots": {
-            "home": stats.get(
-                "home_shots"
-            ),
-            "away": stats.get(
-                "away_shots"
-            ),
-        },
+        "goals_for":
+            goals_for,
 
-        "shots_on_target": {
-            "home": stats.get(
-                "home_shots_on_target"
-            ),
-            "away": stats.get(
-                "away_shots_on_target"
-            ),
-        },
+        "goals_against":
+            goals_against,
 
-        "possession": {
-            "home": stats.get(
-                "home_possession"
-            ),
-            "away": stats.get(
-                "away_possession"
-            ),
-        },
+        "result":
+            result_code,
 
-        # ============================================================
-        # CORNERS / CARDS
-        # FormContext v1.7 ожидает плоские поля.
-        #
-        # None сохраняется как None.
-        # Отсутствующие данные НЕ превращаются в 0.
-        # ============================================================
+        "xg":
+            xg,
 
-        "home_corners": stats.get(
-            "home_corners"
-        ),
-        "away_corners": stats.get(
-            "away_corners"
-        ),
+        "xga":
+            opponent_xg,
 
-        "home_yellow_cards": stats.get(
-            "home_yellow_cards"
-        ),
-        "away_yellow_cards": stats.get(
-            "away_yellow_cards"
-        ),
+        "corners":
+            extra["corners"],
 
-        "fouls": {
-            "home": stats.get(
-                "home_fouls"
-            ),
-            "away": stats.get(
-                "away_fouls"
-            ),
-        },
+        "opponent_corners":
+            extra["opponent_corners"],
 
-        "big_chances": {
-            "home": stats.get(
-                "home_big_chances"
-            ),
-            "away": stats.get(
-                "away_big_chances"
-            ),
-        },
+        "yellow_cards":
+            extra["yellow_cards"],
 
-        "passes": {
-            "home": stats.get(
-                "home_total_passes"
-            ),
-            "away": stats.get(
-                "away_total_passes"
-            ),
-        },
+        "opponent_yellow_cards":
+            extra[
+                "opponent_yellow_cards"
+            ],
 
-        "pass_accuracy": {
-            "home": stats.get(
-                "home_pass_accuracy"
-            ),
-            "away": stats.get(
-                "away_pass_accuracy"
-            ),
-        },
-
-        "tackles": {
-            "home": stats.get(
-                "home_tackles"
-            ),
-            "away": stats.get(
-                "away_tackles"
-            ),
-        },
-
-        "quality": parsed.get(
-            "quality",
+        "match_date":
             parsed.get(
-                "data_quality",
-                0.0,
+                "match_date"
             ),
-        ),
 
-        "source": "Soccer365",
+        "competition":
+            parsed.get(
+                "competition"
+            ),
 
-        "source_url": parsed.get(
-            "source_url"
-        ),
-
-        "parser_version": parsed.get(
-            "parser_version"
-        ),
-
-        "error": parsed.get(
-            "error"
-        ),
+        "extra":
+            extra,
     }
 
 
 # ============================================================
-# TEAM-SPECIFIC DATA
+# BUILD FORM CONTEXT
 # ============================================================
 
-def team_side(
-    record: Dict[str, Any],
+def build_form_context(
     team_name: str,
-) -> Optional[str]:
-
-    target = normalize_name(
-        team_name
-    )
-
-    if target == normalize_name(
-        record.get("home_team")
-    ):
-        return "home"
-
-    if target == normalize_name(
-        record.get("away_team")
-    ):
-        return "away"
-
-    return None
-
-
-def team_metric_values(
     records: List[Dict[str, Any]],
-    team_name: str,
-    metric: str,
-) -> List[float]:
-    """
-    Извлекает значения метрики конкретной команды
-    из истории матчей.
-
-    Поддерживает два формата:
-
-    1. Вложенный:
-        "xg": {
-            "home": 1.5,
-            "away": 0.8,
-        }
-
-    2. Плоский:
-        "home_corners": 5,
-        "away_corners": 4,
-        "home_yellow_cards": 2,
-        "away_yellow_cards": 1
-
-    None не превращается в 0.
-    """
-    result: List[float] = []
-
-    for record in records:
-        side = team_side(
-            record,
-            team_name,
-        )
-        if side is None:
-            continue
-
-        value = None
-
-        # ====================================================
-        # 1. ВЛОЖЕННЫЙ ФОРМАТ
-        #
-        # xg:
-        # {
-        #     "home": ...,
-        #     "away": ...
-        # }
-        # ====================================================
-        nested_values = record.get(
-            metric
-        )
-        if isinstance(
-            nested_values,
-            dict,
-        ):
-            value = nested_values.get(
-                side
-            )
-
-        # ====================================================
-        # 2. ПЛОСКИЙ ФОРМАТ
-        #
-        # corners:
-        #     home_corners / away_corners
-        #
-        # cards:
-        #     home_yellow_cards / away_yellow_cards
-        # ====================================================
-        if value is None:
-            flat_key_map = {
-                "corners": {
-                    "home": "home_corners",
-                    "away": "away_corners",
-                },
-                "cards": {
-                    "home": "home_yellow_cards",
-                    "away": "away_yellow_cards",
-                },
-                "xg": {
-                    "home": "home_xg",
-                    "away": "away_xg",
-                },
-            }
-            metric_keys = flat_key_map.get(
-                metric
-            )
-            if metric_keys:
-                flat_key = metric_keys.get(
-                    side
-                )
-                if flat_key:
-                    value = record.get(
-                        flat_key
-                    )
-
-        # ====================================================
-        # 3. ЧИСЛОВОЕ ЗНАЧЕНИЕ
-        # ====================================================
-        numeric_value = safe_float(
-            value
-        )
-        if numeric_value is not None:
-            result.append(
-                numeric_value
-            )
-
-    return result
-
-
-def team_goals(
-    records: List[Dict[str, Any]],
-    team_name: str,
-) -> Tuple[
-    List[int],
-    List[int],
-]:
-
-    scored = []
-    conceded = []
-
-    for record in records:
-
-        side = team_side(
-            record,
-            team_name,
-        )
-
-        if side == "home":
-
-            gf = record.get(
-                "home_goals"
-            )
-
-            ga = record.get(
-                "away_goals"
-            )
-
-        elif side == "away":
-
-            gf = record.get(
-                "away_goals"
-            )
-
-            ga = record.get(
-                "home_goals"
-            )
-
-        else:
-            continue
-
-        if gf is not None:
-            scored.append(gf)
-
-        if ga is not None:
-            conceded.append(ga)
-
-    return (
-        scored,
-        conceded,
-    )
-
-
-# ============================================================
-# HISTORY SUMMARY
-# ============================================================
-
-def build_team_summary(
-    records: List[Dict[str, Any]],
-    team_name: str,
 ) -> Dict[str, Any]:
+    """
+    Canonical adapter from collected factual matches
+    to FormModel / FormWin / Defence.
 
-    scored, conceded = team_goals(
-        records,
-        team_name,
-    )
+    История:
+        oldest → newest
 
-    wins = 0
-    draws = 0
-    losses = 0
+    Последний матч находится последним.
+    """
 
-    for gf, ga in zip(
-        scored,
-        conceded,
-    ):
+    records = list(records)[-HISTORY_SIZE:]
 
-        if gf > ga:
-            wins += 1
+    context: Dict[str, Any] = {
 
-        elif gf == ga:
-            draws += 1
+        "team":
+            team_name,
 
-        else:
-            losses += 1
+        "team_name":
+            team_name,
 
-    corners = team_metric_values(
-        records,
-        team_name,
-        "corners",
-    )
+        "matches_count":
+            len(records),
 
-    cards = team_metric_values(
-        records,
-        team_name,
-        "cards",
-    )
+        "goals_for_history": [],
+        "goals_against_history": [],
 
-    xg = team_metric_values(
-        records,
-        team_name,
-        "xg",
-    )
+        "recent_xg": [],
+        "recent_xga": [],
 
-    shots = team_metric_values(
-        records,
-        team_name,
-        "shots",
-    )
+        "team_xg_history": [],
+        "opponent_xg_history": [],
 
-    shots_on_target = team_metric_values(
-        records,
-        team_name,
-        "shots_on_target",
-    )
+        "shots_history": [],
+        "shots_conceded_history": [],
 
-    possession = team_metric_values(
-        records,
-        team_name,
-        "possession",
-    )
+        "shots_on_target_history": [],
+        "sot_conceded_history": [],
 
-    big_chances = team_metric_values(
-        records,
-        team_name,
-        "big_chances",
-    )
+        "blocked_shots_history": [],
+        "blocked_shots_conceded_history": [],
 
-    return {
+        "big_chances_history": [],
+        "big_chances_against_history": [],
 
-        "matches": len(records),
+        "possession_history": [],
+        "opponent_possession_history": [],
 
-        "wins": wins,
-        "draws": draws,
-        "losses": losses,
+        "corners_for_history": [],
+        "corners_against_history": [],
 
-        "goals_for_avg": average(
-            scored
-        ),
+        "passes_history": [],
+        "opponent_passes_history": [],
 
-        "goals_against_avg": average(
-            conceded
-        ),
+        "pass_accuracy_history": [],
+        "opponent_pass_accuracy_history": [],
 
-        "goals_for_recent": weighted_average(
-            scored
-        ),
+        "fouls_history": [],
+        "offsides_history": [],
 
-        "goals_against_recent": weighted_average(
-            conceded
-        ),
+        "team_cards_history": [],
+        "opponent_cards_history": [],
 
-        "xg_avg": average(xg),
-
-        "corners_avg": average(
-            corners
-        ),
-
-        "cards_avg": average(
-            cards
-        ),
-
-        "shots_avg": average(
-            shots
-        ),
-
-        "shots_on_target_avg": average(
-            shots_on_target
-        ),
-
-        "possession_avg": average(
-            possession
-        ),
-
-        "big_chances_avg": average(
-            big_chances
-        ),
+        "venue_history": [],
+        "results_history": [],
     }
 
+    for record in records:
 
-# ============================================================
-# FAJ REVOLUTION BRAIN
-# ============================================================
-
-@st.cache_resource
-def get_faj_brain() -> FAJBrain:
-    return FAJBrain()
-
-
-def _percent_to_fraction(
-    value: Optional[float],
-) -> Optional[float]:
-    if value is None:
-        return None
-    try:
-        return float(value) / 100.0
-    except (TypeError, ValueError):
-        return None
-
-
-def build_prediction(
-    home_team: str,
-    away_team: str,
-    history_home: List[Dict[str, Any]],
-    history_away: List[Dict[str, Any]],
-    home_form_context: Optional[Dict[str, Any]] = None,
-    away_form_context: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    """
-    Единая точка подключения нового FAJ Brain к UI.
-    UI получает старый стабильный формат данных,
-    а расчёт полностью выполняет новый faj_brain.py.
-    """
-    brain = get_faj_brain()
-    result = brain.predict(
-        home_team=home_team,
-        away_team=away_team,
-        home_matches=history_home,
-        away_matches=history_away,
-        home_form_context=home_form_context,
-        away_form_context=away_form_context,
-    )
-
-    return {
-        # ----------------------------------------------------
-        # META
-        # ----------------------------------------------------
-        "model_version": result.get(
-            "calculation_meta",
+        extra = record.get(
+            "extra",
             {},
-        ).get(
-            "brain_version",
-            "FAJ-BRAIN",
-        ),
-        "home_team": result.get(
-            "home_team",
-            home_team,
-        ),
-        "away_team": result.get(
-            "away_team",
-            away_team,
-        ),
+        )
 
-        # ----------------------------------------------------
-        # MAIN OUTCOME
-        # UI expects probabilities 0..1
-        # Brain returns probabilities 0..100
-        # ----------------------------------------------------
-        "home_win_probability":
-            _percent_to_fraction(
-                result.get(
-                    "home_win_probability"
-                )
-            ),
-        "draw_probability":
-            _percent_to_fraction(
-                result.get(
-                    "draw_probability"
-                )
-            ),
-        "away_win_probability":
-            _percent_to_fraction(
-                result.get(
-                    "away_win_probability"
-                )
-            ),
-        "confidence":
-            _percent_to_fraction(
-                result.get(
-                    "confidence"
-                )
-            ),
-        "risk": result.get(
-            "risk",
-            "—",
-        ),
-
-        # ----------------------------------------------------
-        # GOALS
-        # ----------------------------------------------------
-        "btts": (
-            "ДА"
-            if (
-                result.get(
-                    "btts_probability"
-                ) is not None
-                and result.get(
-                    "btts_probability"
-                ) >= 50
-            )
-            else "НЕТ"
-        ),
-        "btts_probability":
-            _percent_to_fraction(
-                result.get(
-                    "btts_probability"
-                )
-            ),
-        "over25": (
-            "ДА"
-            if (
-                result.get(
-                    "over25_probability"
-                ) is not None
-                and result.get(
-                    "over25_probability"
-                ) >= 50
-            )
-            else "НЕТ"
-        ),
-        "over25_probability":
-            _percent_to_fraction(
-                result.get(
-                    "over25_probability"
-                )
-            ),
-        "over35": (
-            "ДА"
-            if (
-                result.get(
-                    "over35_probability"
-                ) is not None
-                and result.get(
-                    "over35_probability"
-                ) >= 50
-            )
-            else "НЕТ"
-        ),
-        "over35_probability":
-            _percent_to_fraction(
-                result.get(
-                    "over35_probability"
-                )
-            ),
-
-        # xG сохраняем для внутренней аналитики.
-        # В основной карточке пока не показываем.
-        "home_xg_internal":
-            result.get(
-                "home_xg"
-            ),
-        "away_xg_internal":
-            result.get(
-                "away_xg"
-            ),
-
-        # ----------------------------------------------------
-        # TOP 3 SCORES
-        # ----------------------------------------------------
-        "scores": [
-            {
-                "score": result.get(
-                    "most_likely_score",
-                    "—",
-                ),
-                "probability": None,
-            },
-            {
-                "score": result.get(
-                    "second_likely_score",
-                    "—",
-                ),
-                "probability": None,
-            },
-            {
-                "score": result.get(
-                    "third_likely_score",
-                    "—",
-                ),
-                "probability": None,
-            },
-        ],
-
-        # ----------------------------------------------------
-        # CORNERS
-        # ----------------------------------------------------
-        "corners_expected":
-            result.get(
-                "corners_expected"
-            ),
-        "home_corners_expected":
-            result.get(
-                "home_corners_expected"
-            ),
-        "away_corners_expected":
-            result.get(
-                "away_corners_expected"
-            ),
-        "corners_lines": {
-            "7.5":
-                _percent_to_fraction(
-                    result.get(
-                        "over75_corners_probability"
-                    )
-                ),
-            "8.5":
-                _percent_to_fraction(
-                    result.get(
-                        "over85_corners_probability"
-                    )
-                ),
-            "9.5":
-                _percent_to_fraction(
-                    result.get(
-                        "over95_corners_probability"
-                    )
-                ),
-            "10.5":
-                _percent_to_fraction(
-                    result.get(
-                        "over105_corners_probability"
-                    )
-                ),
-        },
-        "corners_range": _get_corners_range(
-            result.get(
-                "corners_expected"
-            )
-        ),
-
-        # ----------------------------------------------------
-        # CARDS
-        # ----------------------------------------------------
-        "cards_expected":
-            result.get(
-                "cards_expected"
-            ),
-        "home_cards_expected":
-            result.get(
-                "home_cards_expected"
-            ),
-        "away_cards_expected":
-            result.get(
-                "away_cards_expected"
-            ),
-        "cards_lines": {
-            "2.5":
-                _percent_to_fraction(
-                    result.get(
-                        "over25_cards_probability"
-                    )
-                ),
-            "3.5":
-                _percent_to_fraction(
-                    result.get(
-                        "over35_cards_probability"
-                    )
-                ),
-            "4.5":
-                _percent_to_fraction(
-                    result.get(
-                        "over45_cards_probability"
-                    )
-                ),
-        },
-        "cards_range": _get_cards_range(
-            result.get(
-                "cards_expected"
-            )
-        ),
-
-        # ----------------------------------------------------
-        # ANALYSIS
-        # ----------------------------------------------------
-        "analysis":
-            result.get(
-                "conclusion",
-                "Аналитический вывод FAJ пока недоступен.",
-            ),
-
-        # ----------------------------------------------------
-        # DATA STATUS
-        # ----------------------------------------------------
-        "data": {
-            "home_summary": None,
-            "away_summary": None,
-            "home_matches":
-                len(history_home),
-            "away_matches":
-                len(history_away),
-        },
-
-        # ----------------------------------------------------
-        # FORM CONTEXT
-        # ----------------------------------------------------
-        "home_form_context": home_form_context,
-        "away_form_context": away_form_context,
-
-        # ----------------------------------------------------
-        # INTERNAL CALCULATION DATA
-        # ----------------------------------------------------
-        "brain_result": result,
-    }
-
-
-def _get_corners_range(
-    expected: Optional[float],
-) -> str:
-    if expected is None:
-        return "—"
-    if expected < 8:
-        return "7–9"
-    if expected < 10:
-        return "8–10"
-    if expected < 12:
-        return "9–11"
-    return "10–12+"
-
-
-def _get_cards_range(
-    expected: Optional[float],
-) -> str:
-    if expected is None:
-        return "—"
-    if expected < 3:
-        return "2–3"
-    if expected < 4:
-        return "3–4"
-    if expected < 5:
-        return "4–5"
-    return "5+"
-
-
-# ============================================================
-# FORM CONTEXT CARD
-# ============================================================
-
-def _form_result_string(
-    context: Optional[Dict[str, Any]],
-) -> str:
-    """
-    Короткая форма команды:
-        В-Н-В-П-В
-    Ничего не рассчитывает.
-    Только отображает уже подготовленный form_context.
-    """
-    if not context:
-        return "—"
-
-    # Основной вариант
-    form = context.get("form")
-    if isinstance(form, list):
-        values = []
-        for item in form[:MAX_HISTORY_MATCHES]:
-            value = str(item).strip().upper()
-            if value in {"W", "WIN"}:
-                values.append("В")
-            elif value in {"D", "DRAW"}:
-                values.append("Н")
-            elif value in {"L", "LOSS"}:
-                values.append("П")
-            else:
-                values.append(value)
-        if values:
-            return "-".join(values)
-
-    # Запасной вариант — если form_context хранит строку
-    if isinstance(form, str) and form.strip():
-        return form.strip()
-
-    return "—"
-
-
-def _home_away_string(
-    context: Optional[Dict[str, Any]],
-) -> Tuple[str, str]:
-    """
-    Возвращает:
-        Дома: 2-0-1
-        Гости: 1-1-0
-    Формат:
-        победы-ничьи-поражения
-    """
-    if not context:
-        return "—", "—"
-
-    home = context.get("home", {})
-    away = context.get("away", {})
-
-    if not isinstance(home, dict):
-        home = {}
-    if not isinstance(away, dict):
-        away = {}
-
-    home_text = (
-        f"{home.get('wins', 0)}-"
-        f"{home.get('draws', 0)}-"
-        f"{home.get('losses', 0)}"
-    )
-
-    away_text = (
-        f"{away.get('wins', 0)}-"
-        f"{away.get('draws', 0)}-"
-        f"{away.get('losses', 0)}"
-    )
-
-    return home_text, away_text
-
-
-def format_match_types(values: Any) -> str:
-    """Форматирует список сложности матчей для отображения."""
-    if not isinstance(values, list):
-        return "—"
-
-    labels = []
-    for value in values[:MAX_HISTORY_MATCHES]:
-        text = str(value).strip().lower()
-        mapping = {
-            "easy": "лёгкий",
-            "medium": "средний",
-            "hard": "тяжёлый",
-            "very_hard": "очень тяжёлый",
-            "light": "лёгкий",
-        }
-        labels.append(
-            mapping.get(
-                text,
-                text,
+        context[
+            "goals_for_history"
+        ].append(
+            record.get(
+                "goals_for"
             )
         )
 
-    return " · ".join(labels) if labels else "—"
-
-
-def fmt_history(values: Any) -> str:
-    """
-    Форматирует историю угловых/карточек для отображения.
-    None остаётся None.
-    """
-    if not isinstance(values, list):
-        return "—"
-    
-    formatted = []
-    for value in values[:MAX_HISTORY_MATCHES]:
-        if value is None:
-            formatted.append("—")
-            continue
-        try:
-            number = float(value)
-            if number.is_integer():
-                formatted.append(str(int(number)))
-            else:
-                formatted.append(f"{number:.1f}")
-        except (TypeError, ValueError):
-            formatted.append("—")
-    
-    return " · ".join(formatted) if formatted else "—"
-
-
-def render_form_context_card(
-    home_team: str,
-    away_team: str,
-    home_context: Optional[Dict[str, Any]],
-    away_context: Optional[Dict[str, Any]],
-) -> None:
-    """
-    Компактная визуальная карточка текущей формы.
-    ВАЖНО:
-    Эта функция ничего не считает.
-    Она только показывает уже рассчитанный
-    form_context.
-    Поэтому она безопасна для текущего
-    prediction pipeline.
-    """
-    home_context = home_context or {}
-    away_context = away_context or {}
-
-    home_form = _form_result_string(home_context)
-    away_form = _form_result_string(away_context)
-
-    home_home, home_away = _home_away_string(home_context)
-    away_home, away_away = _home_away_string(away_context)
-
-    home_xg = home_context.get("xg")
-    if home_xg is None:
-        home_xg = home_context.get("xg_avg")
-
-    home_xga = home_context.get("xga")
-    if home_xga is None:
-        home_xga = home_context.get("xga_avg")
-
-    away_xg = away_context.get("xg")
-    if away_xg is None:
-        away_xg = away_context.get("xg_avg")
-
-    away_xga = away_context.get("xga")
-    if away_xga is None:
-        away_xga = away_context.get("xga_avg")
-
-    def fmt(value: Any) -> str:
-        if value is None:
-            return "—"
-        try:
-            return f"{float(value):.2f}"
-        except (TypeError, ValueError):
-            return "—"
-
-    # ========================================================
-    # CORNERS / CARDS
-    # Только отображение уже собранных данных.
-    # Никаких расчётов здесь нет.
-    # None остаётся None.
-    # ========================================================
-    home_corners_for = home_context.get(
-        "corners_for_history",
-        [],
-    )
-    home_corners_against = home_context.get(
-        "corners_against_history",
-        [],
-    )
-    away_corners_for = away_context.get(
-        "corners_for_history",
-        [],
-    )
-    away_corners_against = away_context.get(
-        "corners_against_history",
-        [],
-    )
-    home_cards_for = home_context.get(
-        "team_cards_history",
-        [],
-    )
-    home_cards_against = home_context.get(
-        "opponent_cards_history",
-        [],
-    )
-    away_cards_for = away_context.get(
-        "team_cards_history",
-        [],
-    )
-    away_cards_against = away_context.get(
-        "opponent_cards_history",
-        [],
-    )
-
-    # ========================================================
-    # FIX: match_types → difficulty
-    # ========================================================
-    home_match_types = home_context.get(
-        "difficulty",
-        [],
-    )
-    away_match_types = away_context.get(
-        "difficulty",
-        [],
-    )
-
-    with st.container(
-        border=True,
-        key="faj_form_context_card",
-    ):
-        st.markdown(
-            "### 📊 Форма перед матчем"
+        context[
+            "goals_against_history"
+        ].append(
+            record.get(
+                "goals_against"
+            )
         )
 
-        col_home, col_away = st.columns(
-            2,
-            gap="medium",
+        context[
+            "recent_xg"
+        ].append(
+            record.get("xg")
         )
 
-        # ====================================================
-        # HOME TEAM
-        # ====================================================
-        with col_home:
-            st.markdown(
-                f"**🏠 {home_team}**"
-            )
-            st.markdown(
-                f"**Последние {MAX_HISTORY_MATCHES}:** "
-                f"`{home_form}`"
-            )
-            st.caption(
-                f"Дома: {home_home}  ·  "
-                f"В гостях: {home_away}"
-            )
+        context[
+            "recent_xga"
+        ].append(
+            record.get("xga")
+        )
 
-            metric1, metric2 = st.columns(2)
-            metric1.metric(
-                "xG",
-                fmt(home_xg),
-            )
-            metric2.metric(
-                "xGA",
-                fmt(home_xga),
-            )
+        context[
+            "team_xg_history"
+        ].append(
+            record.get("xg")
+        )
 
-            st.caption(
-                "Угловые: "
-                f"{fmt_history(home_corners_for)} "
-                "за · "
-                f"{fmt_history(home_corners_against)} "
-                "против"
-            )
-            st.caption(
-                "Карточки: "
-                f"{fmt_history(home_cards_for)} "
-                "своих · "
-                f"{fmt_history(home_cards_against)} "
-                "соперника"
-            )
+        context[
+            "opponent_xg_history"
+        ].append(
+            record.get("xga")
+        )
 
-            st.caption(
-                "Матчи: "
-                + format_match_types(
-                    home_match_types
-                )
-            )
+        context[
+            "shots_history"
+        ].append(
+            extra.get("shots")
+        )
 
-        # ====================================================
-        # AWAY TEAM
-        # ====================================================
-        with col_away:
-            st.markdown(
-                f"**✈️ {away_team}**"
+        context[
+            "shots_conceded_history"
+        ].append(
+            extra.get(
+                "opponent_shots"
             )
-            st.markdown(
-                f"**Последние {MAX_HISTORY_MATCHES}:** "
-                f"`{away_form}`"
-            )
-            st.caption(
-                f"Дома: {away_home}  ·  "
-                f"В гостях: {away_away}"
-            )
+        )
 
-            metric1, metric2 = st.columns(2)
-            metric1.metric(
-                "xG",
-                fmt(away_xg),
+        context[
+            "shots_on_target_history"
+        ].append(
+            extra.get(
+                "shots_on_target"
             )
-            metric2.metric(
-                "xGA",
-                fmt(away_xga),
+        )
+
+        context[
+            "sot_conceded_history"
+        ].append(
+            extra.get(
+                "opponent_shots_on_target"
             )
+        )
 
-            st.caption(
-                "Угловые: "
-                f"{fmt_history(away_corners_for)} "
-                "за · "
-                f"{fmt_history(away_corners_against)} "
-                "против"
+        context[
+            "blocked_shots_history"
+        ].append(
+            extra.get(
+                "blocked_shots"
             )
-            st.caption(
-                "Карточки: "
-                f"{fmt_history(away_cards_for)} "
-                "своих · "
-                f"{fmt_history(away_cards_against)} "
-                "соперника"
+        )
+
+        context[
+            "blocked_shots_conceded_history"
+        ].append(
+            extra.get(
+                "opponent_blocked_shots"
             )
+        )
 
-            st.caption(
-                "Матчи: "
-                + format_match_types(
-                    away_match_types
-                )
+        context[
+            "big_chances_history"
+        ].append(
+            extra.get(
+                "big_chances"
             )
+        )
 
+        context[
+            "big_chances_against_history"
+        ].append(
+            extra.get(
+                "opponent_big_chances"
+            )
+        )
 
-# ============================================================
-# DATE PARSER
-# ============================================================
+        context[
+            "possession_history"
+        ].append(
+            extra.get(
+                "possession"
+            )
+        )
 
-def _parse_date(
-    value: Any,
-) -> Optional[date]:
-    """
-    Приводит дату к datetime.date.
-    Поддерживает:
-        YYYY-MM-DD
-        YYYY-MM-DD HH:MM:SS
-        YYYY-MM-DDTHH:MM:SS
-        YYYY-MM-DDTHH:MM:SS+03:00
-        DD.MM.YYYY
-    Используется только для сравнения дат.
-    Исходное значение match_date не изменяет.
-    """
-    if value is None:
-        return None
+        context[
+            "opponent_possession_history"
+        ].append(
+            extra.get(
+                "opponent_possession"
+            )
+        )
 
-    text = str(value).strip()
-    if not text:
-        return None
+        context[
+            "corners_for_history"
+        ].append(
+            extra.get(
+                "corners"
+            )
+        )
+
+        context[
+            "corners_against_history"
+        ].append(
+            extra.get(
+                "opponent_corners"
+            )
+        )
+
+        context[
+            "passes_history"
+        ].append(
+            extra.get(
+                "passes"
+            )
+        )
+
+        context[
+            "opponent_passes_history"
+        ].append(
+            extra.get(
+                "opponent_passes"
+            )
+        )
+
+        context[
+            "pass_accuracy_history"
+        ].append(
+            extra.get(
+                "pass_accuracy"
+            )
+        )
+
+        context[
+            "opponent_pass_accuracy_history"
+        ].append(
+            extra.get(
+                "opponent_pass_accuracy"
+            )
+        )
+
+        context[
+            "fouls_history"
+        ].append(
+            extra.get(
+                "fouls"
+            )
+        )
+
+        context[
+            "offsides_history"
+        ].append(
+            extra.get(
+                "offsides"
+            )
+        )
+
+        context[
+            "team_cards_history"
+        ].append(
+            extra.get(
+                "yellow_cards"
+            )
+        )
+
+        context[
+            "opponent_cards_history"
+        ].append(
+            extra.get(
+                "opponent_yellow_cards"
+            )
+        )
+
+        context[
+            "venue_history"
+        ].append(
+            record.get(
+                "venue"
+            )
+        )
+
+        context[
+            "results_history"
+        ].append(
+            record.get(
+                "result"
+            )
+        )
 
     # --------------------------------------------------------
-    # ISO: YYYY-MM-DD...
+    # Legacy-compatible aliases
     # --------------------------------------------------------
-    match = re.search(
-        r"(\d{4})-(\d{2})-(\d{2})",
-        text,
+
+    context[
+        "xg_history"
+    ] = list(
+        context["recent_xg"]
     )
-    if match:
-        year, month, day = match.groups()
-        try:
-            return date(
-                int(year),
-                int(month),
-                int(day),
-            )
-        except ValueError:
-            return None
 
-    # --------------------------------------------------------
-    # DD.MM.YYYY
-    # --------------------------------------------------------
-    match = re.search(
-        r"(\d{2})\.(\d{2})\.(\d{4})",
-        text,
+    context[
+        "xga_history"
+    ] = list(
+        context["recent_xga"]
     )
-    if match:
-        day, month, year = match.groups()
-        try:
-            return date(
-                int(year),
-                int(month),
-                int(day),
-            )
-        except ValueError:
-            return None
 
-    return None
+    context[
+        "goals_for"
+    ] = list(
+        context[
+            "goals_for_history"
+        ]
+    )
+
+    context[
+        "goals_against"
+    ] = list(
+        context[
+            "goals_against_history"
+        ]
+    )
+
+    return context
 
 
 # ============================================================
-# COLLECTION (UPDATED: старый → новый порядок)
+# COLLECT HISTORY
 # ============================================================
 
-def collect_team_history(
+def collect_history(
+    parser: Soccer365Parser,
     team_name: str,
     urls: List[str],
-    forecast_date: Optional[str] = None,
 ) -> Tuple[
     List[Dict[str, Any]],
     List[str],
 ]:
-    """
-    Собирает историю команды из Soccer365.
 
-    ============================================================
-    ВАЖНО: ПОРЯДОК ИСТОРИИ
-    ============================================================
+    records = []
 
-    URLs должны передаваться в хронологическом порядке:
+    errors = []
 
-        M1 → M2 → M3 → M4 → M5 → M6
-
-    где:
-        M1 = самый старый матч в окне
-        M6 = самый свежий матч перед прогнозом
-
-    Этот порядок СОХРАНЯЕТСЯ и передаётся в FormContext и FormModel.
-
-    FormModel использует этот порядок для:
-        - temporal weights (M6 получает максимальный вес 6)
-        - OLS trend (временная последовательность)
-
-    НЕ сортируем по match_date — доверяем порядку пользователя.
-
-    ============================================================
-
-    Логика:
-        Soccer365 URLs (старый → новый)
-              ↓        parse_soccer365()
-              ↓
-        validate
-              ↓
-        build_history_record()
-              ↓
-        только матчи ДО даты прогноза (если указана)
-              ↓
-        последние MAX_RECENT_HISTORY (сохраняя порядок URL)
-    """
-    clean_urls = [
-        url.strip()
-        for url in urls
-        if url and url.strip()
-    ]
-
-    # --------------------------------------------------------
-    # УБИРАЕМ ДУБЛИКАТЫ, СОХРАНЯЯ ПОРЯДОК
-    # --------------------------------------------------------
-    clean_urls = list(
-        dict.fromkeys(
-            clean_urls
-        )
-    )
-
-    records: List[Dict[str, Any]] = []
-    errors: List[str] = []
-
-    # --------------------------------------------------------
-    # НОРМАЛИЗУЕМ ДАТУ ПРОГНОЗА ОДИН РАЗ (если есть)
-    # --------------------------------------------------------
-    forecast_date_obj = _parse_date(
-        forecast_date
-    )
-
-    if forecast_date and not forecast_date_obj:
-        errors.append(
-            "Некорректная дата прогноза: "
-            f"{forecast_date}"
-        )
-        return (
-            records,
-            errors,
-        )
-
-    # --------------------------------------------------------
-    # PARSE ALL PROVIDED MATCHES (в порядке URL)
-    # --------------------------------------------------------
-    for position, url in enumerate(
-        clean_urls,
+    for index, url in enumerate(
+        urls,
         start=1,
     ):
+
+        url = (
+            url or ""
+        ).strip()
+
+        if not url:
+            continue
+
         try:
-            parsed = parse_soccer365(
-                url
-            )
-        except Exception as exc:
-            errors.append(
-                f"{position}. {exc}"
-            )
-            continue
 
-        # ----------------------------------------------------
-        # PARSER ERROR
-        # ----------------------------------------------------
-        if parsed.get("error"):
-            errors.append(
-                f"{position}. "
-                f"{parsed.get('error')}"
+            parsed = parse_match(
+                parser,
+                url,
             )
-            continue
 
-        # ----------------------------------------------------
-        # VALIDATION
-        # ----------------------------------------------------
-        valid, message = (
-            validate_parsed_match(
+            record = build_team_record(
                 parsed,
                 team_name,
             )
-        )
-        if not valid:
-            errors.append(
-                f"{position}. {message}"
-            )
-            continue
 
-        # ----------------------------------------------------
-        # BUILD RECORD
-        # ----------------------------------------------------
-        record = build_history_record(
-            parsed
-        )
+            if record is None:
 
-        # ----------------------------------------------------
-        # DATE REQUIRED ДЛЯ ФИЛЬТРАЦИИ
-        # ----------------------------------------------------
-        match_date = record.get(
-            "match_date"
-        )
-        if not match_date:
-            errors.append(
-                f"{position}. "
-                f"Не удалось определить дату "
-                f"матча."
-            )
-            continue
-
-        # ----------------------------------------------------
-        # НОРМАЛЬНАЯ ДАТА ДЛЯ ФИЛЬТРАЦИИ
-        # ----------------------------------------------------
-        match_date_obj = _parse_date(
-            match_date
-        )
-        if not match_date_obj:
-            errors.append(
-                f"{position}. "
-                f"Некорректная дата матча: "
-                f"{match_date}"
-            )
-            continue
-
-        # ----------------------------------------------------
-        # FUTURE MATCH PROTECTION (если дата прогноза указана)
-        #
-        # Только матчи строго ДО даты прогноза.
-        #
-        # Например:
-        #
-        # прогноз: 2026-08-30
-        #
-        # 2026-08-29 → берём
-        # 2026-08-30 → НЕ берём
-        # 2026-08-31 → НЕ берём
-        # ----------------------------------------------------
-        if forecast_date_obj:
-            if match_date_obj >= forecast_date_obj:
                 errors.append(
-                    f"{position}. "
-                    f"Матч от {match_date} "
-                    f"не является прошлым "
-                    f"относительно "
-                    f"{forecast_date}."
+                    f"Матч {index}: "
+                    f"{team_name} не найден "
+                    f"на странице."
                 )
+
                 continue
 
-        # ----------------------------------------------------
-        # СОХРАНЯЕМ (в порядке URL)
-        # ----------------------------------------------------
-        records.append(
-            record
-        )
+            records.append(
+                record
+            )
+
+        except Exception as exc:
+
+            errors.append(
+                f"Матч {index}: {exc}"
+            )
 
     # --------------------------------------------------------
-    # ONLY LAST MAX_RECENT_HISTORY (сохраняя порядок URL)
+    # Сортировка по дате.
     #
-    # URL передаются в хронологическом порядке:
-    # старый → новый (M1 → M6)
-    #
-    # НЕ сортируем по match_date.
+    # Старый → новый.
     # --------------------------------------------------------
-    records = records[:MAX_RECENT_HISTORY]
+
+    records.sort(
+        key=lambda item: (
+            item.get(
+                "match_date"
+            )
+            or ""
+        )
+    )
 
     return (
-        records,
+        records[-HISTORY_SIZE:],
         errors,
     )
 
 
 # ============================================================
-# DATABASE SAVE
+# MATHEMATICAL ENGINE
 # ============================================================
 
-def save_prediction_to_database(
-    db: FAJDatabase,
-    session_id: int,
-    match_id: int,
-    prediction: Dict[str, Any],
-) -> Optional[int]:
-
-    try:
-
-        scores = prediction.get(
-            "scores",
-            [],
-        )
-
-        first = (
-            scores[0]["score"]
-            if len(scores) > 0
-            else None
-        )
-
-        second = (
-            scores[1]["score"]
-            if len(scores) > 1
-            else None
-        )
-
-        third = (
-            scores[2]["score"]
-            if len(scores) > 2
-            else None
-        )
-
-        db_prediction = {
-
-            "home_xg": prediction.get(
-                "home_xg_internal"
-            ),
-
-            "away_xg": prediction.get(
-                "away_xg_internal"
-            ),
-
-            "home_goals_expected": prediction.get(
-                "home_xg_internal"
-            ),
-
-            "away_goals_expected": prediction.get(
-                "away_xg_internal"
-            ),
-
-            "home_win_probability": prediction.get(
-                "home_win_probability"
-            ),
-
-            "draw_probability": prediction.get(
-                "draw_probability"
-            ),
-
-            "away_win_probability": prediction.get(
-                "away_win_probability"
-            ),
-
-            "btts_probability": prediction.get(
-                "btts_probability"
-            ),
-
-            "over25_probability": prediction.get(
-                "over25_probability"
-            ),
-
-            "over35_probability": prediction.get(
-                "over35_probability"
-            ),
-
-            "most_likely_score": first,
-
-            "second_likely_score": second,
-
-            "third_likely_score": third,
-
-            "corners_expected": prediction.get(
-                "corners_expected"
-            ),
-
-            "home_corners_expected": prediction.get(
-                "home_corners_expected"
-            ),
-
-            "away_corners_expected": prediction.get(
-                "away_corners_expected"
-            ),
-
-            "cards_expected": prediction.get(
-                "cards_expected"
-            ),
-
-            "home_cards_expected": prediction.get(
-                "home_cards_expected"
-            ),
-
-            "away_cards_expected": prediction.get(
-                "away_cards_expected"
-            ),
-
-            "confidence": prediction.get(
-                "confidence"
-            ),
-
-            "risk": prediction.get(
-                "risk"
-            ),
-
-            "summary": prediction.get(
-                "analysis"
-            ),
-
-            "analysis_json": prediction,
-        }
-
-        return db.save_prediction(
-            analysis_match_id=match_id,
-            prediction=db_prediction,
-            model_version=MODEL_VERSION,
-        )
-
-    except Exception as exc:
-
-        logger.exception(
-            "Ошибка сохранения прогноза: %s",
-            exc,
-        )
-
-        return None
-
-
-# ============================================================
-# SAVE HISTORY (UPDATED: сохраняем match_date)
-# ============================================================
-
-def save_history(
-    db: FAJDatabase,
-    analysis_match_id: int,
-    selected_team_id: int,
-    opponent_team_id: int,
-    records: List[Dict[str, Any]],
-) -> None:
-
-    for record in records:
-
-        source_id = db.add_source(
-
-            analysis_match_id=(
-                analysis_match_id
-            ),
-
-            team_id=selected_team_id,
-
-            source_type="soccer365",
-
-            source_name="Soccer365",
-
-            source_url=record.get(
-                "source_url"
-            ),
-
-            parser_version=record.get(
-                "parser_version"
-            ),
-        )
-
-        home_name = record.get(
-            "home_team"
-        )
-
-        away_name = record.get(
-            "away_team"
-        )
-
-        home_goals = record.get(
-            "home_goals"
-        )
-
-        away_goals = record.get(
-            "away_goals"
-        )
-
-        if (
-            home_goals is not None
-            and
-            away_goals is not None
-        ):
-
-            if home_goals > away_goals:
-                home_result = "win"
-                away_result = "loss"
-
-            elif home_goals < away_goals:
-                home_result = "loss"
-                away_result = "win"
-
-            else:
-                home_result = "draw"
-                away_result = "draw"
-
-        else:
-
-            home_result = None
-            away_result = None
-
-        # ----------------------------------------------------
-        # HOME SIDE
-        # ----------------------------------------------------
-
-        if home_name and away_name:
-
-            home_id = selected_team_id
-            away_id = opponent_team_id
-
-            if normalize_name(
-                home_name
-            ) != normalize_name(
-                st.session_state.get(
-                    "_current_home_name",
-                    home_name,
-                )
-            ):
-
-                home_id = opponent_team_id
-                away_id = selected_team_id
-
-            historical_id = (
-                db.save_historical_match(
-                    analysis_match_id=(
-                        analysis_match_id
-                    ),
-
-                    team_id=home_id,
-
-                    opponent_team_id=away_id,
-
-                    source_id=source_id,
-
-                    match_date=record.get(
-                        "match_date"
-                    ),
-
-                    is_home=True,
-
-                    goals_for=home_goals,
-
-                    goals_against=away_goals,
-
-                    result=home_result,
-
-                    external_match_id=None,
-
-                    raw_metadata={
-                        "source": "Soccer365",
-                        "source_url": record.get(
-                            "source_url"
-                        ),
-                    },
-                )
-            )
-
-            save_stats_for_side(
-                db,
-                historical_id,
-                record,
-                "home",
-            )
-
-        # ----------------------------------------------------
-        # AWAY SIDE
-        # ----------------------------------------------------
-
-        historical_id = (
-            db.save_historical_match(
-                analysis_match_id=(
-                    analysis_match_id
-                ),
-
-                team_id=away_id,
-
-                opponent_team_id=home_id,
-
-                source_id=source_id,
-
-                match_date=record.get(
-                    "match_date"
-                ),
-
-                is_home=False,
-
-                goals_for=away_goals,
-
-                goals_against=home_goals,
-
-                result=away_result,
-
-                external_match_id=None,
-
-                raw_metadata={
-                    "source": "Soccer365",
-                    "source_url": record.get(
-                        "source_url"
-                    ),
-                },
-            )
-        )
-
-        save_stats_for_side(
-            db,
-            historical_id,
-            record,
-            "away",
-        )
-
-
-def save_stats_for_side(
-    db: FAJDatabase,
-    historical_id: int,
-    record: Dict[str, Any],
-    side: str,
-) -> None:
-
-    def get(
-        group: str,
-        key: str,
-    ) -> Any:
-
-        return (
-            record.get(
-                group,
-                {},
-            ).get(
-                key
-            )
-        )
-
-    db.save_historical_stats(
-
-        historical_id,
-
-        {
-
-            "possession": get(
-                "possession",
-                side,
-            ),
-
-            "shots": get(
-                "shots",
-                side,
-            ),
-
-            "shots_on_target": get(
-                "shots_on_target",
-                side,
-            ),
-
-            "corners": get(
-                "corners",
-                side,
-            ),
-
-            "fouls": get(
-                "fouls",
-                side,
-            ),
-
-            "yellow_cards": get(
-                "cards",
-                side,
-            ),
-
-            "xg": get(
-                "xg",
-                side,
-            ),
-
-            "big_chances": get(
-                "big_chances",
-                side,
-            ),
-
-            "passes": get(
-                "passes",
-                side,
-            ),
-
-            "pass_accuracy": get(
-                "pass_accuracy",
-                side,
-            ),
-
-            "tackles": get(
-                "tackles",
-                side,
-            ),
-
-            "raw_metadata": {
-                "source": "Soccer365",
-                "source_url": record.get(
-                    "source_url"
-                ),
-            },
-        },
+def calculate_prediction(
+    home_team: str,
+    away_team: str,
+    home_records: List[Dict[str, Any]],
+    away_records: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+
+    home_context = build_form_context(
+        home_team,
+        home_records,
     )
 
+    away_context = build_form_context(
+        away_team,
+        away_records,
+    )
 
-# ============================================================
-# DATA QUALITY
-# ============================================================
+    # ========================================================
+    # FORM MODEL
+    # ========================================================
 
-def calculate_collection_quality(
-    records: List[Dict[str, Any]],
-) -> float:
+    form_model = FormModel()
 
-    if not records:
-        return 0.0
+    home_form = form_model.analyze(
+        home_context,
+        next_venue="home",
+    )
 
-    qualities = []
+    away_form = form_model.analyze(
+        away_context,
+        next_venue="away",
+    )
 
-    for record in records:
+    # ========================================================
+    # FORM WIN
+    # ========================================================
 
-        quality = safe_float(
-            record.get(
-                "quality"
-            )
+    form_win = FormWin()
+
+    home_form_win = form_win.analyze(
+        home_context,
+        next_venue="home",
+    )
+
+    away_form_win = form_win.analyze(
+        away_context,
+        next_venue="away",
+    )
+
+    form_win_comparison = form_win.compare(
+        home_context,
+        away_context,
+    )
+
+    # ========================================================
+    # DEFENCE
+    # ========================================================
+
+    defence = Defence()
+
+    home_defence = defence.calculate(
+        home_context,
+        team_name=home_team,
+    )
+
+    away_defence = defence.calculate(
+        away_context,
+        team_name=away_team,
+    )
+
+    # ========================================================
+    # GOAL MODEL
+    # ========================================================
+
+    goal_model = GoalModel()
+
+    goal_result = goal_model.analyze(
+        home_form,
+        away_form,
+        home_team=home_team,
+        away_team=away_team,
+        venue="HOME",
+        home_form_win=home_form_win,
+        away_form_win=away_form_win,
+        home_defence=home_defence,
+        away_defence=away_defence,
+    )
+
+    home_xg = safe_float(
+        value(
+            goal_result,
+            "home_xg",
+        )
+    )
+
+    away_xg = safe_float(
+        value(
+            goal_result,
+            "away_xg",
+        )
+    )
+
+    if home_xg is None:
+        raise ValueError(
+            "GoalModel не рассчитал home xG. "
+            "Проверь наличие xG/xGA."
         )
 
-        if quality is not None:
-            qualities.append(
-                quality
-            )
-
-    if not qualities:
-        return 0.0
-
-    return average(
-        qualities
-    ) or 0.0
-
-
-# ============================================================
-# UI — HEADER
-# ============================================================
-
-def render_header() -> None:
-
-    st.set_page_config(
-        page_title=PAGE_TITLE,
-        page_icon="⚽",
-        layout="wide",
-    )
-
-    st.markdown(
-        """
-        <style>
-
-        .faj-title {
-            font-size: 42px;
-            font-weight: 800;
-            margin-bottom: 0;
-        }
-
-        .faj-subtitle {
-            color: #777;
-            font-size: 17px;
-            margin-top: 0;
-            margin-bottom: 25px;
-        }
-
-        .faj-card {
-            border: 1px solid rgba(128,128,128,.25);
-            border-radius: 18px;
-            padding: 20px;
-            margin: 10px 0;
-        }
-
-        .faj-score {
-            font-size: 28px;
-            font-weight: 800;
-        }
-
-        .faj-big {
-            font-size: 32px;
-            font-weight: 800;
-        }
-
-        .faj-muted {
-            color: #777;
-        }
-
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        '<div class="faj-title">⚽ FAJ</div>',
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        """
-        <div class="faj-subtitle">
-        Персональная футбольная аналитическая платформа
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-# ============================================================
-# UI — MATCH CARD
-# ============================================================
-
-def render_prediction_card(
-    prediction: Dict[str, Any],
-) -> None:
-
-    home = prediction.get(
-        "home_team",
-        "Хозяева",
-    )
-
-    away = prediction.get(
-        "away_team",
-        "Гости",
-    )
-
-    st.markdown(
-        f"""
-        <div class="faj-card">
-
-        <div style="text-align:center">
-        <div class="faj-muted">
-        FAJ ПРОГНОЗ
-        </div>
-
-        <div class="faj-big">
-        {home} — {away}
-        </div>
-        </div>
-
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # --------------------------------------------------------
-    # MAIN OUTCOME
-    # --------------------------------------------------------
-
-    st.subheader(
-        "1. Главный исход"
-    )
-
-    c1, c2, c3 = st.columns(3)
-
-    with c1:
-        st.metric(
-            f"🏠 {home}",
-            pct(
-                prediction.get(
-                    "home_win_probability"
-                )
-            ),
+    if away_xg is None:
+        raise ValueError(
+            "GoalModel не рассчитал away xG. "
+            "Проверь наличие xG/xGA."
         )
 
-    with c2:
-        st.metric(
-            "🤝 Ничья",
-            pct(
-                prediction.get(
-                    "draw_probability"
-                )
-            ),
-        )
+    # ========================================================
+    # 1X2
+    # ========================================================
 
-    with c3:
-        st.metric(
-            f"✈️ {away}",
-            pct(
-                prediction.get(
-                    "away_win_probability"
-                )
-            ),
-        )
-
-    c1, c2 = st.columns(2)
-
-    with c1:
-
-        st.metric(
-            "Уверенность FAJ",
-            pct(
-                prediction.get(
-                    "confidence"
-                )
-            ),
-        )
-
-    with c2:
-
-        st.metric(
-            "Риск",
-            prediction.get(
-                "risk",
-                "—",
-            ),
-        )
-
-    # --------------------------------------------------------
-    # GOALS
-    # --------------------------------------------------------
-
-    st.subheader(
-        "2. Голы"
+    probabilities = result_probabilities(
+        home_xg,
+        away_xg,
     )
 
-    c1, c2, c3 = st.columns(3)
+    # ========================================================
+    # TOTALS
+    # ========================================================
 
-    btts = prediction.get(
-        "btts_probability"
+    totals = total_probabilities(
+        home_xg,
+        away_xg,
     )
 
-    over25 = prediction.get(
-        "over25_probability"
+    # ========================================================
+    # SCORE
+    # ========================================================
+
+    scores = score_distribution(
+        home_xg,
+        away_xg,
     )
 
-    over35 = prediction.get(
-        "over35_probability"
-    )
+    top_scores = scores[:3]
 
-    with c1:
-
-        st.metric(
-            "Обе забьют",
-            "ДА"
-            if btts is not None
-            and btts >= 0.5
-            else "НЕТ",
-        )
-
-        st.caption(
-            f"Вероятность: {pct(btts)}"
-        )
-
-    with c2:
-
-        st.metric(
-            "ТБ 2.5",
-            "ДА"
-            if over25 is not None
-            and over25 >= 0.5
-            else "НЕТ",
-        )
-
-        st.caption(
-            f"Вероятность: {pct(over25)}"
-        )
-
-    with c3:
-
-        st.metric(
-            "ТБ 3.5",
-            "ДА"
-            if over35 is not None
-            and over35 >= 0.5
-            else "НЕТ",
-        )
-
-        st.caption(
-            f"Вероятность: {pct(over35)}"
-        )
-
-    # --------------------------------------------------------
-    # SCORES
-    # --------------------------------------------------------
-
-    st.subheader(
-        "3. Наиболее вероятные точные счета"
-    )
-
-    scores = prediction.get(
-        "scores",
-        [],
-    )
-
-    cols = st.columns(
-        max(1, len(scores))
-    )
-
-    for index, item in enumerate(
-        scores
-    ):
-
-        with cols[index]:
-
-            st.markdown(
-                f"""
-                <div class="faj-card"
-                     style="text-align:center">
-
-                <div class="faj-score">
-                {item.get("score")}
-                </div>
-
-                <div class="faj-muted">
-                {pct(item.get("probability")) if item.get("probability") is not None else "—"}
-                </div>
-
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-    # --------------------------------------------------------
+    # ========================================================
     # CORNERS
-    # --------------------------------------------------------
+    # ========================================================
 
-    st.subheader(
-        "4. Угловые"
+    corners_model = CornersModel()
+
+    corners_result = (
+        corners_model.synthesize_match(
+            home_context,
+            away_context,
+        )
     )
 
-    c1, c2, c3 = st.columns(3)
-
-    with c1:
-
-        st.metric(
-            "Всего",
-            num(
-                prediction.get(
-                    "corners_expected"
-                )
-            ),
+    home_corners = safe_float(
+        nested(
+            corners_result,
+            "home",
+            "home_corners_expected",
         )
-
-    with c2:
-
-        st.metric(
-            f"{home}",
-            num(
-                prediction.get(
-                    "home_corners_expected"
-                )
-            ),
-        )
-
-    with c3:
-
-        st.metric(
-            f"{away}",
-            num(
-                prediction.get(
-                    "away_corners_expected"
-                )
-            ),
-        )
-
-    st.write(
-        "Наиболее вероятный диапазон: "
-        f"**{prediction.get('corners_range', '—')}**"
     )
 
-    corner_lines = prediction.get(
-        "corners_lines",
-        {},
+    away_corners = safe_float(
+        nested(
+            corners_result,
+            "away",
+            "away_corners_expected",
+        )
     )
 
-    c1, c2, c3, c4 = st.columns(4)
+    total_corners = safe_float(
+        corners_result.get(
+            "total_expected_corners"
+        )
+        if isinstance(
+            corners_result,
+            dict,
+        )
+        else None
+    )
 
-    for column, line in zip(
-        (c1, c2, c3, c4),
-        (
-            "7.5",
-            "8.5",
-            "9.5",
-            "10.5",
-        ),
-    ):
-
-        with column:
-
-            st.metric(
-                f"ТБ {line}",
-                pct(
-                    corner_lines.get(
-                        line
-                    )
-                ),
-            )
-
-    # --------------------------------------------------------
+    # ========================================================
     # CARDS
-    # --------------------------------------------------------
+    # ========================================================
 
-    st.subheader(
-        "5. Карточки"
-    )
+    cards_model = CardsModel()
 
-    c1, c2, c3 = st.columns(3)
-
-    with c1:
-
-        st.metric(
-            "Всего",
-            num(
-                prediction.get(
-                    "cards_expected"
-                )
-            ),
-        )
-
-    with c2:
-
-        st.metric(
-            f"{home}",
-            num(
-                prediction.get(
-                    "home_cards_expected"
-                )
-            ),
-        )
-
-    with c3:
-
-        st.metric(
-            f"{away}",
-            num(
-                prediction.get(
-                    "away_cards_expected"
-                )
-            ),
-        )
-
-    st.write(
-        "Наиболее вероятный диапазон: "
-        f"**{prediction.get('cards_range', '—')}**"
-    )
-
-    card_lines = prediction.get(
-        "cards_lines",
-        {},
-    )
-
-    c1, c2, c3 = st.columns(3)
-
-    for column, line in zip(
-        (c1, c2, c3),
-        (
-            "2.5",
-            "3.5",
-            "4.5",
-        ),
-    ):
-
-        with column:
-
-            st.metric(
-                f"ТБ {line}",
-                pct(
-                    card_lines.get(
-                        line
-                    )
-                ),
-            )
-
-    # --------------------------------------------------------
-    # ANALYTICAL CONCLUSION
-    # --------------------------------------------------------
-
-    st.subheader(
-        "6. Аналитический вывод FAJ"
-    )
-
-    st.info(
-        prediction.get(
-            "analysis",
-            "Аналитический вывод пока недоступен.",
+    cards_result = (
+        cards_model.synthesize_match(
+            home_context,
+            away_context,
         )
     )
 
-
-# ============================================================
-# UI — DATA CARD
-# ============================================================
-
-def render_data_summary(
-    team_name: str,
-    records: List[Dict[str, Any]],
-) -> None:
-
-    summary = build_team_summary(
-        records,
-        team_name,
+    home_cards = safe_float(
+        nested(
+            cards_result,
+            "home",
+            "home_cards_expected",
+        )
     )
 
-    quality = calculate_collection_quality(
-        records
+    away_cards = safe_float(
+        nested(
+            cards_result,
+            "away",
+            "away_cards_expected",
+        )
     )
 
-    st.markdown(
-        f"### {team_name}"
+    total_cards = safe_float(
+        cards_result.get(
+            "total_expected_cards"
+        )
+        if isinstance(
+            cards_result,
+            dict,
+        )
+        else None
     )
 
-    c1, c2, c3, c4 = st.columns(4)
+    # ========================================================
+    # DATA QUALITY
+    # ========================================================
 
-    with c1:
+    def history_quality(
+        records: List[Dict[str, Any]],
+    ) -> float:
 
-        st.metric(
-            "Матчей",
-            summary["matches"],
-        )
+        if not records:
+            return 0.0
 
-    with c2:
+        fields = [
 
-        st.metric(
-            "Голы за матч",
-            num(
-                summary[
-                    "goals_for_avg"
-                ]
-            ),
-        )
+            "goals_for",
+            "goals_against",
+            "xg",
+            "xga",
 
-    with c3:
-
-        st.metric(
-            "Угловые",
-            num(
-                summary[
-                    "corners_avg"
-                ]
-            ),
-        )
-
-    with c4:
-
-        st.metric(
-            "Карточки",
-            num(
-                summary[
-                    "cards_avg"
-                ]
-            ),
-        )
-
-    st.caption(
-        f"Качество собранных данных: "
-        f"{quality * 100:.0f}%"
-    )
-
-
-# ============================================================
-# UI — MATCH SETUP (UPDATED: added date picker)
-# ============================================================
-
-def render_match_setup(
-    index: int,
-    match: Dict[str, Any],
-    team_names: List[str],
-) -> None:
-
-    st.markdown(
-        f"## Матч {index + 1}"
-    )
-
-    home_current = match.get("home_name")
-    away_current = match.get("away_name")
-
-    # Если нет выбранной команды — берём первую из списка
-    if home_current not in team_names:
-        home_current = team_names[0] if team_names else ""
-
-    # Исключаем домашнюю команду из списка гостей
-    away_options = [
-        name
-        for name in team_names
-        if name != home_current
-    ]
-
-    if not away_options:
-
-        st.warning(
-            "Для выбора соперника "
-            "нужно минимум две команды."
-        )
-
-        return
-
-    if away_current not in away_options:
-        away_current = away_options[0] if away_options else ""
-
-    c1, c2 = st.columns(2)
-
-    with c1:
-
-        selected_home = st.selectbox(
-            "🏠 Хозяева",
-            team_names,
-            index=(
-                team_names.index(home_current)
-                if home_current in team_names
-                else 0
-            ),
-            key=f"home_{index}",
-        )
-
-    with c2:
-
-        available_away = [
-            name
-            for name in team_names
-            if name != selected_home
         ]
 
-        if not available_away:
-            return
-
-        selected_away = st.selectbox(
-            "✈️ Гости",
-            available_away,
-            index=(
-                available_away.index(away_current)
-                if away_current in available_away
-                else 0
-            ),
-            key=f"away_{index}",
+        available = 0
+        total = (
+            len(records)
+            * len(fields)
         )
 
-    match["home_name"] = selected_home
-    match["away_name"] = selected_away
+        for record in records:
 
-    # --------------------------------------------------------
-    # FORECAST MATCH DATE
-    # --------------------------------------------------------
-    current_match_date = match.get("match_date")
+            for field in fields:
 
-    if current_match_date:
-        try:
-            default_match_date = date.fromisoformat(
-                current_match_date
+                if record.get(
+                    field
+                ) is not None:
+
+                    available += 1
+
+        completeness = (
+            available / total
+            if total
+            else 0.0
+        )
+
+        count_factor = min(
+            len(records)
+            / HISTORY_SIZE,
+            1.0,
+        )
+
+        return round(
+            (
+                0.65 * count_factor
+                + 0.35 * completeness
             )
-        except (TypeError, ValueError):
-            default_match_date = date.today()
+            * 100.0,
+            1,
+        )
+
+    home_quality = history_quality(
+        home_records
+    )
+
+    away_quality = history_quality(
+        away_records
+    )
+
+    data_quality = round(
+        (
+            home_quality
+            + away_quality
+        ) / 2.0,
+        1,
+    )
+
+    # ========================================================
+    # CONFIDENCE
+    # ========================================================
+
+    ordered = sorted(
+        probabilities.values(),
+        reverse=True,
+    )
+
+    separation = (
+        ordered[0]
+        - ordered[1]
+    )
+
+    separation_score = min(
+        100.0,
+        max(
+            0.0,
+            separation / 0.45 * 100.0,
+        ),
+    )
+
+    confidence = round(
+        (
+            0.55 * data_quality
+            + 0.45 * separation_score
+        ),
+        1,
+    )
+
+    if data_quality < 35:
+        risk = "Высокий"
+
+    elif confidence < 45:
+        risk = "Высокий"
+
+    elif confidence < 65:
+        risk = "Средний"
+
     else:
-        default_match_date = date.today()
-
-    forecast_date = st.date_input(
-        "📅 Дата прогнозируемого матча",
-        value=default_match_date,
-        key=f"match_date_{index}",
-    )
-
-    match["match_date"] = forecast_date.isoformat()
-
-    st.markdown(
-        "#### История хозяев"
-    )
-
-    home_url_cols = st.columns(3)
-
-    for i in range(3):
-
-        with home_url_cols[i]:
-
-            match[
-                "urls_home"
-            ][i] = st.text_input(
-                f"Soccer365 #{i + 1}",
-                value=match[
-                    "urls_home"
-                ][i],
-                key=f"home_url_{index}_{i}",
-                placeholder=(
-                    "https://soccer365.ru/..."
-                ),
-            )
-
-    with st.expander(
-        "Ещё матчи хозяев"
-    ):
-
-        extra_cols = st.columns(3)
-
-        for position, i in enumerate(
-            range(3, 6),
-            start=4,
-        ):
-
-            with extra_cols[position - 4]:
-
-                match[
-                    "urls_home"
-                ][i] = st.text_input(
-                    f"Soccer365 #{position}",
-                    value=match[
-                        "urls_home"
-                    ][i],
-                    key=f"home_url_{index}_{i}",
-                )
-
-    st.markdown(
-        "#### История гостей"
-    )
-
-    away_url_cols = st.columns(3)
-
-    for i in range(3):
-
-        with away_url_cols[i]:
-
-            match[
-                "urls_away"
-            ][i] = st.text_input(
-                f"Soccer365 #{i + 1}",
-                value=match[
-                    "urls_away"
-                ][i],
-                key=f"away_url_{index}_{i}",
-                placeholder=(
-                    "https://soccer365.ru/..."
-                ),
-            )
-
-    with st.expander(
-        "Ещё матчи гостей"
-    ):
-
-        extra_cols = st.columns(3)
-
-        for position, i in enumerate(
-            range(3, 6),
-            start=4,
-        ):
-
-            with extra_cols[position - 4]:
-
-                match[
-                    "urls_away"
-                ][i] = st.text_input(
-                    f"Soccer365 #{position}",
-                    value=match[
-                        "urls_away"
-                    ][i],
-                    key=f"away_url_{index}_{i}",
-                )
-
-    c1, c2 = st.columns(2)
-
-    with c1:
-
-        if st.button(
-            "📥 Собрать статистику",
-            key=f"collect_{index}",
-            use_container_width=True,
-        ):
-
-            collect_and_store_match(
-                index=index,
-                match=match,
-                db=get_database(),
-            )
-
-    with c2:
-
-        if st.button(
-            "🧠 Получить прогноз",
-            key=f"predict_{index}",
-            use_container_width=True,
-        ):
-
-            generate_prediction(
-                index=index,
-                match=match,
-                db=get_database(),
-            )
-
-    # --------------------------------------------------------
-    # DATA STATUS
-    # --------------------------------------------------------
-
-    collected = (
-        st.session_state
-        .faj_collected
-        .get(index)
-    )
-
-    if collected:
-
-        st.success(
-            "Статистика собрана."
-        )
-
-        home_records = (
-            collected.get(
-                "home_records",
-                [],
-            )
-        )
-
-        away_records = (
-            collected.get(
-                "away_records",
-                [],
-            )
-        )
-
-        c1, c2 = st.columns(2)
-
-        with c1:
-
-            render_data_summary(
-                selected_home,
-                home_records,
-            )
-
-        with c2:
-
-            render_data_summary(
-                selected_away,
-                away_records,
-            )
-
-        errors = collected.get(
-            "errors",
-            [],
-        )
-
-        if errors:
-
-            with st.expander(
-                "Показать сообщения сбора"
-            ):
-
-                for error in errors:
-
-                    st.warning(
-                        error
-                    )
+        risk = "Низкий"
 
     # ========================================================
-    # FORM CONTEXT CARD
+    # ANALYSIS MODE
     # ========================================================
 
-    form_context_data = (
-        st.session_state
-        .faj_form_context
-        .get(index)
-    )
-
-    if form_context_data:
-
-        home_context = (
-            form_context_data.get(
-                "home"
-            )
-        )
-
-        away_context = (
-            form_context_data.get(
-                "away"
-            )
-        )
-
-        render_form_context_card(
-            home_team=selected_home,
-            away_team=selected_away,
-            home_context=home_context,
-            away_context=away_context,
-        )
-
-    # ========================================================
-    # PREDICTION CARD
-    # ========================================================
-
-    prediction = (
-        st.session_state
-        .faj_predictions
-        .get(index)
-    )
-
-    if prediction:
-
-        st.divider()
-
-        render_prediction_card(
-            prediction
-        )
-
-
-# ============================================================
-# COLLECTION + DATABASE (UPDATED: с датой прогноза)
-# ============================================================
-
-def collect_and_store_match(
-    index: int,
-    match: Dict[str, Any],
-    db: FAJDatabase,
-) -> None:
-
-    home_name = match.get("home_name")
-    away_name = match.get("away_name")
-    tournament = st.session_state.faj_competition
-    forecast_date = match.get("match_date")
-
-    if not home_name or not away_name:
-        st.error(
-            "Сначала выберите обе команды."
-        )
-        return
-
-    if not tournament:
-        st.error("Не выбран турнир.")
-        return
-
-    if not forecast_date:
-        st.error("Укажите дату прогнозируемого матча.")
-        return
-
-    # --------------------------------------------------------
-    # ПОЛУЧАЕМ ID КОМАНД ИЗ БД (создаём если нет)
-    # --------------------------------------------------------
-
-    home_id = get_or_create_team(db, home_name, tournament)
-    away_id = get_or_create_team(db, away_name, tournament)
-
-    if home_id is None or away_id is None:
-        st.error(
-            "Не удалось загрузить выбранные команды."
-        )
-        return
-
-    session_id = ensure_session(
-        db,
-        tournament,
-    )
-
-    if session_id is None:
-        return
-
-    # ========================================================
-    # СОЗДАЁМ ANALYSIS MATCH С ДАТОЙ ПРОГНОЗА
-    # ========================================================
-    try:
-        analysis_match_id = db.add_analysis_match(
-            session_id=session_id,
-            home_team_id=home_id,
-            away_team_id=away_id,
-            match_date=forecast_date,
-        )
-    except Exception as exc:
-        logger.exception(
-            "Ошибка создания analysis match: %s",
-            exc,
-        )
-        st.error(
-            f"Не удалось создать матч: {exc}"
-        )
-        return
-
-    all_errors = []
-
-    with st.status(
-        "Собираю данные Soccer365...",
-        expanded=True,
-    ):
-
-        st.write(
-            f"🏠 {home_name}"
-        )
-
-        home_records, home_errors = (
-            collect_team_history(
-                home_name,
-                match.get(
-                    "urls_home",
-                    [],
-                ),
-                forecast_date=forecast_date,
-            )
-        )
-
-        all_errors.extend(
-            [
-                f"{home_name}: {error}"
-                for error in home_errors
-            ]
-        )
-
-        st.write(
-            f"Получено матчей: "
-            f"{len(home_records)}"
-        )
-
-        st.write(
-            f"✈️ {away_name}"
-        )
-
-        away_records, away_errors = (
-            collect_team_history(
-                away_name,
-                match.get(
-                    "urls_away",
-                    [],
-                ),
-                forecast_date=forecast_date,
-            )
-        )
-
-        all_errors.extend(
-            [
-                f"{away_name}: {error}"
-                for error in away_errors
-            ]
-        )
-
-        st.write(
-            f"Получено матчей: "
-            f"{len(away_records)}"
-        )
-
-    # --------------------------------------------------------
-    # SAVE HOME HISTORY
-    # --------------------------------------------------------
-
-    if home_records:
-
-        st.session_state[
-            "_current_home_name"
-        ] = home_name
-
-        try:
-
-            save_history(
-                db=db,
-                analysis_match_id=(
-                    analysis_match_id
-                ),
-                selected_team_id=home_id,
-                opponent_team_id=away_id,
-                records=home_records,
-            )
-
-        except Exception as exc:
-
-            logger.exception(
-                "Ошибка сохранения истории хозяев: %s",
-                exc,
-            )
-
-            all_errors.append(
-                f"Ошибка БД хозяев: {exc}"
-            )
-
-    # --------------------------------------------------------
-    # SAVE AWAY HISTORY
-    # --------------------------------------------------------
-
-    if away_records:
-
-        st.session_state[
-            "_current_home_name"
-        ] = away_name
-
-        try:
-
-            save_history(
-                db=db,
-                analysis_match_id=(
-                    analysis_match_id
-                ),
-                selected_team_id=away_id,
-                opponent_team_id=home_id,
-                records=away_records,
-            )
-
-        except Exception as exc:
-
-            logger.exception(
-                "Ошибка сохранения истории гостей: %s",
-                exc,
-            )
-
-            all_errors.append(
-                f"Ошибка БД гостей: {exc}"
-            )
-
-    # --------------------------------------------------------
-    # STATE
-    # --------------------------------------------------------
-
-    st.session_state.faj_collected[
-        index
-    ] = {
-        "tournament": tournament,
-        "home_team_id": home_id,
-        "away_team_id": away_id,
-        "analysis_match_id": analysis_match_id,
-        "home_records": home_records,
-        "away_records": away_records,
-        "errors": all_errors,
-    }
-
-    st.success(
-        f"Сбор завершён: "
-        f"{len(home_records)} матчей "
-        f"для {home_name}, "
-        f"{len(away_records)} матчей "
-        f"для {away_name}."
-    )
-
-
-# ============================================================
-# TEAM MANAGEMENT
-# ============================================================
-
-def get_or_create_team(
-    db: FAJDatabase,
-    team_name: str,
-    league: str,
-) -> Optional[int]:
-
-    try:
-        # Проверяем, есть ли команда в БД
-        teams = db.get_teams(league=league)
-        for team in teams:
-            if team.get("name") == team_name:
-                return team.get("id")
-
-        # Если нет — создаём
-        from app.faj_club_ratings import get_team_rating
-        rating = get_team_rating(team_name, league)
-
-        # Добавляем команду в БД
-        with db.get_connection() as conn:
-            cursor = conn.execute("""
-                INSERT INTO teams (name, league)
-                VALUES (?, ?)
-                ON CONFLICT(name, league) DO UPDATE SET
-                    active = 1
-                RETURNING id
-            """, (team_name, league))
-            row = cursor.fetchone()
-            if row:
-                return row["id"]
-
-        return None
-
-    except Exception as exc:
-        logger.exception(
-            "Ошибка получения/создания команды: %s",
-            exc,
-        )
-        return None
-
-
-# ============================================================
-# PREDICTION (UPDATED: добавляем form_context + DEBUG, limit = MAX_HISTORY_MATCHES)
-# ============================================================
-
-def generate_prediction(
-    index: int,
-    match: Dict[str, Any],
-    db: FAJDatabase,
-) -> None:
-
-    collected = (
-        st.session_state
-        .faj_collected
-        .get(index)
-    )
-
-    if not collected:
-
-        st.warning(
-            "Сначала соберите статистику."
-        )
-
-        return
-
-    home_name = match.get("home_name")
-    away_name = match.get("away_name")
-
-    if not home_name or not away_name:
-
-        st.error(
-            "Не выбраны команды."
-        )
-
-        return
-
-    home_records = collected.get(
-        "home_records",
-        [],
-    )
-
-    away_records = collected.get(
-        "away_records",
-        [],
-    )
-
-    total_samples = min(
+    sample = min(
         len(home_records),
         len(away_records),
     )
 
-    if total_samples < 3:
+    if sample >= 6:
+        analysis_mode = "Расширенный"
 
-        st.warning(
-            f"Сейчас доступно "
-            f"{total_samples} полных наблюдений. "
-            f"Для расширенного анализа FAJ "
-            f"рекомендует минимум 3 матча."
-        )
+    elif sample >= 3:
+        analysis_mode = "Базовый+"
 
-    # ========================================================
-    # FORM DEBUG — показывает, какие матчи реально попали
-    # ========================================================
-    logger.warning(
-        "FAJ FORM DEBUG HOME %s: %s",
-        home_name,
-        [
-            {
-                "home": r.get("home_team"),
-                "away": r.get("away_team"),
-                "score": r.get("score"),
-                "date": r.get("match_date"),
-                "url": r.get("source_url"),
-            }
-            for r in home_records
-        ],
-    )
-    logger.warning(
-        "FAJ FORM DEBUG AWAY %s: %s",
-        away_name,
-        [
-            {
-                "home": r.get("home_team"),
-                "away": r.get("away_team"),
-                "score": r.get("score"),
-                "date": r.get("match_date"),
-                "url": r.get("source_url"),
-            }
-            for r in away_records
-        ],
-    )
+    elif sample >= 2:
+        analysis_mode = "Базовый"
+
+    else:
+        analysis_mode = "Экспресс"
 
     # ========================================================
-    # FORM CONTEXT (limit = MAX_HISTORY_MATCHES)
+    # FAVORITE
     # ========================================================
-
-    home_form_context = build_form_context(
-        team_name=home_name,
-        records=home_records,
-        limit=MAX_HISTORY_MATCHES,
-    )
-
-    away_form_context = build_form_context(
-        team_name=away_name,
-        records=away_records,
-        limit=MAX_HISTORY_MATCHES,
-    )
-
-    # Сохраняем в session_state для отображения
-    st.session_state.faj_form_context[index] = {
-        "home": home_form_context,
-        "away": away_form_context,
-    }
-
-    prediction = build_prediction(
-        home_team=home_name,
-        away_team=away_name,
-        history_home=home_records,
-        history_away=away_records,
-        home_form_context=home_form_context,
-        away_form_context=away_form_context,
-    )
-
-    # --------------------------------------------------------
-    # DATABASE
-    # --------------------------------------------------------
-
-    analysis_match_id = (
-        collected.get(
-            "analysis_match_id"
-        )
-    )
-
-    if analysis_match_id:
-
-        prediction_id = (
-            save_prediction_to_database(
-                db=db,
-                session_id=(
-                    st.session_state
-                    .faj_session_id
-                ),
-                match_id=(
-                    analysis_match_id
-                ),
-                prediction=prediction,
-            )
-        )
-
-        prediction[
-            "prediction_id"
-        ] = prediction_id
-
-    st.session_state.faj_predictions[
-        index
-    ] = prediction
-
-    st.success(
-        "FAJ сформировал прогноз."
-    )
-
-
-# ============================================================
-# DATA SOURCE INFO
-# ============================================================
-
-def render_source_info() -> None:
-
-    st.divider()
-
-    st.caption(
-        "Источники данных"
-    )
-
-    c1, c2, c3 = st.columns(3)
-
-    with c1:
-
-        st.markdown(
-            "**Soccer365**"
-        )
-
-        st.caption(
-            "Основной источник статистики "
-            "исторических матчей."
-        )
-
-    with c2:
-
-        st.markdown(
-            "**FAJ Database**"
-        )
-
-        st.caption(
-            "Локальное хранение истории "
-            "анализа и прогнозов."
-        )
-
-    with c3:
-
-        st.markdown(
-            "**FAJ Brain**"
-        )
-
-        st.caption(
-            "Отдельный слой математической "
-            "модели прогноза."
-        )
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-def main() -> None:
-
-    init_state()
-
-    render_header()
-
-    db = get_database()
-
-    # --------------------------------------------------------
-    # TOURNAMENT (из FAJ_CLUB_RATINGS)
-    # --------------------------------------------------------
-
-    st.subheader(
-        "1. Турнир"
-    )
-
-    tournaments = get_all_tournaments()
-
-    tournament = st.selectbox(
-        "Выберите турнир",
-        tournaments,
-        index=(
-            tournaments.index(
-                st.session_state.faj_competition
-            )
-            if st.session_state.faj_competition
-            in tournaments
-            else 0
-        ),
-    )
 
     if (
-        st.session_state.faj_competition
-        != tournament
+        probabilities["home"]
+        >= probabilities["away"]
+        and probabilities["home"]
+        >= probabilities["draw"]
     ):
 
-        st.session_state.faj_competition = (
-            tournament
-        )
+        favorite = home_team
 
-        st.session_state.faj_session_id = None
-
-    st.caption(
-        "Турнир определяет список команд. "
-        "Исторические матчи можно брать "
-        "из любых соревнований."
-    )
-
-    # --------------------------------------------------------
-    # TEAMS (из FAJ_CLUB_RATINGS, НЕ из БД)
-    # --------------------------------------------------------
-
-    team_names = load_teams(db, tournament)
-
-    if not team_names:
-
-        st.warning(
-            f"В реестре FAJ пока нет команд "
-            f"для турнира «{tournament}»."
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # MATCHES
-    # --------------------------------------------------------
-
-    st.subheader(
-        "2. Матчи для анализа"
-    )
-
-    st.caption(
-        "Можно одновременно подготовить "
-        f"до {MAX_ANALYSIS_MATCHES} матчей."
-    )
-
-    if not st.session_state.faj_matches:
-
-        add_match()
-
-    for index, match in enumerate(
-        st.session_state.faj_matches
+    elif (
+        probabilities["away"]
+        >= probabilities["home"]
+        and probabilities["away"]
+        >= probabilities["draw"]
     ):
 
-        with st.container(
-            border=True
-        ):
+        favorite = away_team
 
-            render_match_setup(
-                index=index,
-                match=match,
-                team_names=team_names,
+    else:
+
+        favorite = "Равновесие"
+
+    # ========================================================
+    # CONCLUSION
+    # ========================================================
+
+    factors = []
+
+    if favorite == home_team:
+
+        factors.append(
+            f"Преимущество {home_team}."
+        )
+
+    elif favorite == away_team:
+
+        factors.append(
+            f"Преимущество {away_team}."
+        )
+
+    else:
+
+        factors.append(
+            "Явного фаворита нет."
+        )
+
+    if totals["btts"] >= 0.60:
+
+        factors.append(
+            "Повышенная вероятность BTTS."
+        )
+
+    elif totals["btts"] <= 0.40:
+
+        factors.append(
+            "BTTS выглядит менее вероятным."
+        )
+
+    if totals["over25"] >= 0.60:
+
+        factors.append(
+            "Сценарий 3+ голов имеет "
+            "повышенную вероятность."
+        )
+
+    elif totals["over25"] <= 0.40:
+
+        factors.append(
+            "Модель склоняется к умеренной "
+            "результативности."
+        )
+
+    conclusion = " ".join(
+        factors
+    )
+
+    return {
+
+        "version":
+            PREDICTOR_VERSION,
+
+        "home_team":
+            home_team,
+
+        "away_team":
+            away_team,
+
+        "home_matches":
+            len(home_records),
+
+        "away_matches":
+            len(away_records),
+
+        "home_xg":
+            home_xg,
+
+        "away_xg":
+            away_xg,
+
+        "home_win":
+            probabilities["home"],
+
+        "draw":
+            probabilities["draw"],
+
+        "away_win":
+            probabilities["away"],
+
+        "btts":
+            totals["btts"],
+
+        "over25":
+            totals["over25"],
+
+        "over35":
+            totals["over35"],
+
+        "scores":
+            top_scores,
+
+        "home_corners":
+            home_corners,
+
+        "away_corners":
+            away_corners,
+
+        "total_corners":
+            total_corners,
+
+        "over75_corners":
+            over_probability(
+                total_corners,
+                7.5,
+            ),
+
+        "over85_corners":
+            over_probability(
+                total_corners,
+                8.5,
+            ),
+
+        "over95_corners":
+            over_probability(
+                total_corners,
+                9.5,
+            ),
+
+        "over105_corners":
+            over_probability(
+                total_corners,
+                10.5,
+            ),
+
+        "home_cards":
+            home_cards,
+
+        "away_cards":
+            away_cards,
+
+        "total_cards":
+            total_cards,
+
+        "over25_cards":
+            over_probability(
+                total_cards,
+                2.5,
+            ),
+
+        "over35_cards":
+            over_probability(
+                total_cards,
+                3.5,
+            ),
+
+        "over45_cards":
+            over_probability(
+                total_cards,
+                4.5,
+            ),
+
+        "confidence":
+            confidence,
+
+        "risk":
+            risk,
+
+        "analysis_mode":
+            analysis_mode,
+
+        "data_quality":
+            data_quality,
+
+        "favorite":
+            favorite,
+
+        "conclusion":
+            conclusion,
+
+        "factors":
+            factors,
+
+        "home_form":
+            home_form,
+
+        "away_form":
+            away_form,
+
+        "home_form_win":
+            home_form_win,
+
+        "away_form_win":
+            away_form_win,
+
+        "form_win_comparison":
+            form_win_comparison,
+
+        "home_defence":
+            home_defence,
+
+        "away_defence":
+            away_defence,
+
+        "goal_result":
+            goal_result,
+
+        "corners_result":
+            corners_result,
+
+        "cards_result":
+            cards_result,
+
+        "home_context":
+            home_context,
+
+        "away_context":
+            away_context,
+    }
+
+
+# ============================================================
+# SESSION STATE
+# ============================================================
+
+if "faj_prediction" not in st.session_state:
+    st.session_state.faj_prediction = None
+
+if "faj_home_records" not in st.session_state:
+    st.session_state.faj_home_records = []
+
+if "faj_away_records" not in st.session_state:
+    st.session_state.faj_away_records = []
+
+if "faj_collection_errors" not in st.session_state:
+    st.session_state.faj_collection_errors = []
+
+
+# ============================================================
+# HEADER
+# ============================================================
+
+st.markdown(
+    """
+<div class="faj-header">
+    <div class="faj-title">⚽ FAJ Predictor</div>
+    <div class="faj-subtitle">
+        Independent analytical brain · Form · Defence · xG · Score · Corners · Cards
+    </div>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+
+
+# ============================================================
+# MATCH INPUT
+# ============================================================
+
+left, right = st.columns(
+    2,
+    gap="small",
+)
+
+with left:
+
+    home_team = st.text_input(
+        "Хозяева",
+        placeholder="Динамо Махачкала",
+        key="faj_home_team",
+    )
+
+with right:
+
+    away_team = st.text_input(
+        "Гости",
+        placeholder="Краснодар",
+        key="faj_away_team",
+    )
+
+
+st.markdown(
+    '<div class="section-title">История хозяев — последние 6 матчей</div>',
+    unsafe_allow_html=True,
+)
+
+home_url_text = st.text_area(
+    "Soccer365 URL",
+    placeholder=(
+        "Вставь 6 URL, по одному на строку.\n"
+        "Старые сверху, новые снизу."
+    ),
+    height=125,
+    key="faj_home_urls",
+    label_visibility="collapsed",
+)
+
+
+st.markdown(
+    '<div class="section-title">История гостей — последние 6 матчей</div>',
+    unsafe_allow_html=True,
+)
+
+away_url_text = st.text_area(
+    "Soccer365 URL",
+    placeholder=(
+        "Вставь 6 URL, по одному на строку.\n"
+        "Старые сверху, новые снизу."
+    ),
+    height=125,
+    key="faj_away_urls",
+    label_visibility="collapsed",
+)
+
+
+# ============================================================
+# ACTION
+# ============================================================
+
+predict_clicked = st.button(
+    "🔮 СОБРАТЬ ДАННЫЕ И РАССЧИТАТЬ",
+    type="primary",
+    use_container_width=True,
+)
+
+
+# ============================================================
+# PREDICT
+# ============================================================
+
+if predict_clicked:
+
+    if not home_team.strip():
+        st.error(
+            "Укажи команду хозяев."
+        )
+        st.stop()
+
+    if not away_team.strip():
+        st.error(
+            "Укажи команду гостей."
+        )
+        st.stop()
+
+    home_urls = [
+        item.strip()
+        for item in home_url_text.splitlines()
+        if item.strip()
+    ]
+
+    away_urls = [
+        item.strip()
+        for item in away_url_text.splitlines()
+        if item.strip()
+    ]
+
+    if not home_urls:
+        st.error(
+            "Нет URL истории хозяев."
+        )
+        st.stop()
+
+    if not away_urls:
+        st.error(
+            "Нет URL истории гостей."
+        )
+        st.stop()
+
+    parser = Soccer365Parser()
+
+    progress = st.progress(
+        0,
+        text="Собираю факты Soccer365…",
+    )
+
+    # --------------------------------------------------------
+    # HOME
+    # --------------------------------------------------------
+
+    home_records, home_errors = (
+        collect_history(
+            parser,
+            home_team.strip(),
+            home_urls,
+        )
+    )
+
+    progress.progress(
+        45,
+        text="История хозяев собрана…",
+    )
+
+    # --------------------------------------------------------
+    # AWAY
+    # --------------------------------------------------------
+
+    away_records, away_errors = (
+        collect_history(
+            parser,
+            away_team.strip(),
+            away_urls,
+        )
+    )
+
+    progress.progress(
+        75,
+        text="История гостей собрана…",
+    )
+
+    all_errors = (
+        home_errors
+        + away_errors
+    )
+
+    if not home_records:
+
+        progress.empty()
+
+        st.error(
+            "Не удалось собрать историю хозяев."
+        )
+
+        if all_errors:
+
+            for error in all_errors:
+                st.warning(error)
+
+        st.stop()
+
+    if not away_records:
+
+        progress.empty()
+
+        st.error(
+            "Не удалось собрать историю гостей."
+        )
+
+        if all_errors:
+
+            for error in all_errors:
+                st.warning(error)
+
+        st.stop()
+
+    # --------------------------------------------------------
+    # CALCULATION
+    # --------------------------------------------------------
+
+    try:
+
+        prediction = calculate_prediction(
+            home_team.strip(),
+            away_team.strip(),
+            home_records,
+            away_records,
+        )
+
+    except Exception as exc:
+
+        progress.empty()
+
+        st.error(
+            f"Ошибка математического расчёта: {exc}"
+        )
+
+        st.exception(exc)
+
+        st.stop()
+
+    progress.progress(
+        100,
+        text="FAJ расчёт завершён.",
+    )
+
+    progress.empty()
+
+    st.session_state.faj_prediction = (
+        prediction
+    )
+
+    st.session_state.faj_home_records = (
+        home_records
+    )
+
+    st.session_state.faj_away_records = (
+        away_records
+    )
+
+    st.session_state.faj_collection_errors = (
+        all_errors
+    )
+
+
+# ============================================================
+# RESULT
+# ============================================================
+
+prediction = (
+    st.session_state.faj_prediction
+)
+
+
+if prediction is None:
+
+    st.info(
+        "Введи команды и URL последних матчей, "
+        "затем запусти расчёт."
+    )
+
+    st.stop()
+
+
+# ============================================================
+# ERRORS / WARNINGS
+# ============================================================
+
+collection_errors = (
+    st.session_state.faj_collection_errors
+)
+
+if collection_errors:
+
+    with st.expander(
+        "⚠️ Замечания при сборе данных",
+        expanded=False,
+    ):
+
+        for error in collection_errors:
+            st.write(
+                f"• {error}"
             )
 
-            if len(
-                st.session_state.faj_matches
-            ) > 1:
 
-                if st.button(
-                    "Удалить этот матч",
-                    key=f"remove_{index}",
-                ):
+# ============================================================
+# TOP MATCH CARD
+# ============================================================
 
-                    remove_match(
-                        index
-                    )
+st.markdown(
+    f"""
+<div class="result-card">
 
-                    st.rerun()
+    <div class="result-main">
+        {prediction["home_team"]}
+        &nbsp; — &nbsp;
+        {prediction["away_team"]}
+    </div>
 
-    # --------------------------------------------------------
-    # ADD MATCH
-    # --------------------------------------------------------
+    <div class="result-caption">
+        {prediction["analysis_mode"]}
+        · история {prediction["home_matches"]} / {prediction["away_matches"]}
+    </div>
 
-    if len(
-        st.session_state.faj_matches
-    ) < MAX_ANALYSIS_MATCHES:
+</div>
+""",
+    unsafe_allow_html=True,
+)
 
-        if st.button(
-            "＋ Добавить матч",
-            use_container_width=True,
-        ):
 
-            add_match()
+# ============================================================
+# 1X2
+# ============================================================
 
-            st.rerun()
+st.markdown(
+    '<div class="section-title">Результат</div>',
+    unsafe_allow_html=True,
+)
 
-    # --------------------------------------------------------
-    # WORKFLOW
-    # --------------------------------------------------------
+c1, c2, c3 = st.columns(
+    3,
+    gap="small",
+)
 
-    st.divider()
+with c1:
 
-    st.subheader(
-        "Как работает FAJ"
+    st.markdown(
+        f"""
+        <div class="metric">
+            <div class="metric-value">
+                {probability(prediction["home_win"]):.1f}%
+            </div>
+            <div class="metric-label">
+                {prediction["home_team"]}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-    c1, c2, c3, c4 = st.columns(4)
+with c2:
 
-    with c1:
+    st.markdown(
+        f"""
+        <div class="metric">
+            <div class="metric-value">
+                {probability(prediction["draw"]):.1f}%
+            </div>
+            <div class="metric-label">
+                НИЧЬЯ
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-        st.markdown(
-            "**① Выбор**"
-        )
+with c3:
 
-        st.caption(
-            "Выбираете турнир и пары команд."
-        )
-
-    with c2:
-
-        st.markdown(
-            "**② Данные**"
-        )
-
-        st.caption(
-            "Даете FAJ историю матчей."
-        )
-
-    with c3:
-
-        st.markdown(
-            "**③ Анализ**"
-        )
-
-        st.caption(
-            "FAJ обрабатывает факты."
-        )
-
-    with c4:
-
-        st.markdown(
-            "**④ Прогноз**"
-        )
-
-        st.caption(
-            "Получаете готовую карточку."
-        )
-
-    render_source_info()
-
-    # --------------------------------------------------------
-    # RESET
-    # --------------------------------------------------------
-
-    st.divider()
-
-    if st.button(
-        "♻️ Начать новый анализ",
-        use_container_width=True,
-    ):
-
-        reset_workspace()
-
-        st.rerun()
+    st.markdown(
+        f"""
+        <div class="metric">
+            <div class="metric-value">
+                {probability(prediction["away_win"]):.1f}%
+            </div>
+            <div class="metric-label">
+                {prediction["away_team"]}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # ============================================================
-# ENTRY POINT
+# XG
 # ============================================================
 
-if __name__ == "__main__":
-    main()
+st.markdown(
+    '<div class="section-title">xG</div>',
+    unsafe_allow_html=True,
+)
+
+x1, x2, x3 = st.columns(
+    3,
+    gap="small",
+)
+
+with x1:
+
+    st.markdown(
+        f"""
+        <div class="metric">
+            <div class="metric-value">
+                {prediction["home_xg"]:.2f}
+            </div>
+            <div class="metric-label">
+                {prediction["home_team"]}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+with x2:
+
+    st.markdown(
+        f"""
+        <div class="metric">
+            <div class="metric-value">
+                {prediction["home_xg"] + prediction["away_xg"]:.2f}
+            </div>
+            <div class="metric-label">
+                TOTAL xG
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+with x3:
+
+    st.markdown(
+        f"""
+        <div class="metric">
+            <div class="metric-value">
+                {prediction["away_xg"]:.2f}
+            </div>
+            <div class="metric-label">
+                {prediction["away_team"]}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ============================================================
+# SCORES
+# ============================================================
+
+st.markdown(
+    '<div class="section-title">Наиболее вероятные счета</div>',
+    unsafe_allow_html=True,
+)
+
+score_cols = st.columns(
+    3,
+    gap="small",
+)
+
+for column, item, index in zip(
+    score_cols,
+    prediction["scores"],
+    range(1, 4),
+):
+
+    with column:
+
+        score = (
+            f'{item["home"]}:{item["away"]}'
+        )
+
+        p = (
+            item["probability"]
+            * 100.0
+        )
+
+        st.markdown(
+            f"""
+            <div class="score-card">
+                <div class="score">
+                    {score}
+                </div>
+                <div class="score-label">
+                    #{index} · {p:.1f}%
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+# ============================================================
+# GOALS
+# ============================================================
+
+st.markdown(
+    '<div class="section-title">Голы</div>',
+    unsafe_allow_html=True,
+)
+
+g1, g2, g3 = st.columns(
+    3,
+    gap="small",
+)
+
+with g1:
+
+    st.markdown(
+        f"""
+        <div class="metric">
+            <div class="metric-value">
+                {probability(prediction["btts"]):.1f}%
+            </div>
+            <div class="metric-label">
+                BTTS
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+with g2:
+
+    st.markdown(
+        f"""
+        <div class="metric">
+            <div class="metric-value">
+                {probability(prediction["over25"]):.1f}%
+            </div>
+            <div class="metric-label">
+                ТБ 2.5
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+with g3:
+
+    st.markdown(
+        f"""
+        <div class="metric">
+            <div class="metric-value">
+                {probability(prediction["over35"]):.1f}%
+            </div>
+            <div class="metric-label">
+                ТБ 3.5
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ============================================================
+# CORNERS
+# ============================================================
+
+st.markdown(
+    '<div class="section-title">Угловые</div>',
+    unsafe_allow_html=True,
+)
+
+c1, c2, c3 = st.columns(
+    3,
+    gap="small",
+)
+
+with c1:
+
+    st.markdown(
+        f"""
+        <div class="metric">
+            <div class="metric-value">
+                {prediction["home_corners"]:.2f}
+            </div>
+            <div class="metric-label">
+                {prediction["home_team"]}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+with c2:
+
+    st.markdown(
+        f"""
+        <div class="metric">
+            <div class="metric-value">
+                {prediction["total_corners"]:.2f}
+            </div>
+            <div class="metric-label">
+                TOTAL
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+with c3:
+
+    st.markdown(
+        f"""
+        <div class="metric">
+            <div class="metric-value">
+                {prediction["away_corners"]:.2f}
+            </div>
+            <div class="metric-label">
+                {prediction["away_team"]}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+corner_cols = st.columns(
+    4,
+    gap="small",
+)
+
+corner_lines = [
+    (
+        "ТБ 7.5",
+        prediction["over75_corners"],
+    ),
+    (
+        "ТБ 8.5",
+        prediction["over85_corners"],
+    ),
+    (
+        "ТБ 9.5",
+        prediction["over95_corners"],
+    ),
+    (
+        "ТБ 10.5",
+        prediction["over105_corners"],
+    ),
+]
+
+for column, (
+    label,
+    p,
+) in zip(
+    corner_cols,
+    corner_lines,
+):
+
+    with column:
+
+        st.markdown(
+            f"""
+            <div class="metric">
+                <div class="metric-value">
+                    {probability(p):.1f}%
+                </div>
+                <div class="metric-label">
+                    {label}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+# ============================================================
+# CARDS
+# ============================================================
+
+st.markdown(
+    '<div class="section-title">Карточки</div>',
+    unsafe_allow_html=True,
+)
+
+card_cols = st.columns(
+    3,
+    gap="small",
+)
+
+with card_cols[0]:
+
+    st.markdown(
+        f"""
+        <div class="metric">
+            <div class="metric-value">
+                {prediction["home_cards"]:.2f}
+            </div>
+            <div class="metric-label">
+                {prediction["home_team"]}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+with card_cols[1]:
+
+    st.markdown(
+        f"""
+        <div class="metric">
+            <div class="metric-value">
+                {prediction["total_cards"]:.2f}
+            </div>
+            <div class="metric-label">
+                TOTAL
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+with card_cols[2]:
+
+    st.markdown(
+        f"""
+        <div class="metric">
+            <div class="metric-value">
+                {prediction["away_cards"]:.2f}
+            </div>
+            <div class="metric-label">
+                {prediction["away_team"]}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+card_lines = [
+    (
+        "ТБ 2.5",
+        prediction["over25_cards"],
+    ),
+    (
+        "ТБ 3.5",
+        prediction["over35_cards"],
+    ),
+    (
+        "ТБ 4.5",
+        prediction["over45_cards"],
+    ),
+]
+
+card_probability_cols = st.columns(
+    3,
+    gap="small",
+)
+
+for column, (
+    label,
+    p,
+) in zip(
+    card_probability_cols,
+    card_lines,
+):
+
+    with column:
+
+        st.markdown(
+            f"""
+            <div class="metric">
+                <div class="metric-value">
+                    {probability(p):.1f}%
+                </div>
+                <div class="metric-label">
+                    {label}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+# ============================================================
+# CONFIDENCE
+# ============================================================
+
+st.markdown(
+    '<div class="section-title">Надёжность анализа</div>',
+    unsafe_allow_html=True,
+)
+
+q1, q2, q3 = st.columns(
+    3,
+    gap="small",
+)
+
+with q1:
+
+    st.markdown(
+        f"""
+        <div class="metric">
+            <div class="metric-value">
+                {prediction["confidence"]:.1f}%
+            </div>
+            <div class="metric-label">
+                CONFIDENCE
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+with q2:
+
+    st.markdown(
+        f"""
+        <div class="metric">
+            <div class="metric-value">
+                {prediction["data_quality"]:.1f}%
+            </div>
+            <div class="metric-label">
+                DATA QUALITY
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+with q3:
+
+    st.markdown(
+        f"""
+        <div class="metric">
+            <div class="metric-value">
+                {prediction["risk"]}
+            </div>
+            <div class="metric-label">
+                RISK
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ============================================================
+# CONCLUSION
+# ============================================================
+
+st.markdown(
+    '<div class="section-title">Вывод FAJ</div>',
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    f"""
+<div class="conclusion">
+
+<b>{prediction["favorite"]}</b><br><br>
+
+{prediction["conclusion"]}
+
+</div>
+""",
+    unsafe_allow_html=True,
+)
+
+
+# ============================================================
+# FACT HISTORY
+# ============================================================
+
+st.markdown(
+    '<div class="section-title">Использованная история</div>',
+    unsafe_allow_html=True,
+)
+
+with st.expander(
+    "Показать факты матчей",
+    expanded=False,
+):
+
+    home_records = (
+        st.session_state.faj_home_records
+    )
+
+    away_records = (
+        st.session_state.faj_away_records
+    )
+
+    st.markdown(
+        f"### {prediction['home_team']}"
+    )
+
+    for record in home_records:
+
+        score_text = (
+            f"{record.get('goals_for')}:"
+            f"{record.get('goals_against')}"
+            if (
+                record.get("goals_for")
+                is not None
+                and record.get("goals_against")
+                is not None
+            )
+            else "—"
+        )
+
+        xg_text = (
+            f"{record.get('xg'):.2f}"
+            if record.get("xg") is not None
+            else "—"
+        )
+
+        st.markdown(
+            f"""
+            <div class="fact-row">
+                <span class="fact-name">
+                    {record.get("match_date") or "—"}
+                    ·
+                    {record.get("opponent") or "—"}
+                </span>
+
+                <span class="fact-value">
+                    {score_text}
+                    · xG {xg_text}
+                </span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown(
+        f"### {prediction['away_team']}"
+    )
+
+    for record in away_records:
+
+        score_text = (
+            f"{record.get('goals_for')}:"
+            f"{record.get('goals_against')}"
+            if (
+                record.get("goals_for")
+                is not None
+                and record.get("goals_against")
+                is not None
+            )
+            else "—"
+        )
+
+        xg_text = (
+            f"{record.get('xg'):.2f}"
+            if record.get("xg") is not None
+            else "—"
+        )
+
+        st.markdown(
+            f"""
+            <div class="fact-row">
+                <span class="fact-name">
+                    {record.get("match_date") or "—"}
+                    ·
+                    {record.get("opponent") or "—"}
+                </span>
+
+                <span class="fact-value">
+                    {score_text}
+                    · xG {xg_text}
+                </span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+# ============================================================
+# DIAGNOSTICS
+# ============================================================
+
+with st.expander(
+    "Математическая диагностика",
+    expanded=False,
+):
+
+    st.write(
+        {
+            "predictor_version":
+                PREDICTOR_VERSION,
+
+            "goal_model":
+                value(
+                    prediction["goal_result"],
+                    "version",
+                ),
+
+            "home_xg":
+                prediction["home_xg"],
+
+            "away_xg":
+                prediction["away_xg"],
+
+            "home_base_xg":
+                value(
+                    prediction["goal_result"],
+                    "home_base_xg",
+                ),
+
+            "away_base_xg":
+                value(
+                    prediction["goal_result"],
+                    "away_base_xg",
+                ),
+
+            "home_attack_signal":
+                nested(
+                    prediction["goal_result"],
+                    "diagnostics",
+                    "home_attack_signal",
+                ),
+
+            "away_attack_signal":
+                nested(
+                    prediction["goal_result"],
+                    "diagnostics",
+                    "away_attack_signal",
+                ),
+
+            "home_defence_signal":
+                nested(
+                    prediction["goal_result"],
+                    "diagnostics",
+                    "home_defence_signal",
+                ),
+
+            "away_defence_signal":
+                nested(
+                    prediction["goal_result"],
+                    "diagnostics",
+                    "away_defence_signal",
+                ),
+        }
+    )
+
+
+# ============================================================
+# FOOTER
+# ============================================================
+
+st.markdown(
+    """
+<div style="
+    text-align:center;
+    opacity:.35;
+    font-size:10px;
+    padding-top:15px;
+">
+    FAJ Predictor 1.0 · No ETC · No Learning · No bookmaker odds
+</div>
+""",
+    unsafe_allow_html=True,
+)
