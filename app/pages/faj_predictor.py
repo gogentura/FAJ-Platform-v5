@@ -723,30 +723,104 @@ def team_metric_values(
     team_name: str,
     metric: str,
 ) -> List[float]:
+    """
+    Извлекает значения метрики конкретной команды
+    из истории матчей.
 
-    result = []
+    Поддерживает два формата:
+
+    1. Вложенный:
+        "xg": {
+            "home": 1.5,
+            "away": 0.8,
+        }
+
+    2. Плоский:
+        "home_corners": 5,
+        "away_corners": 4,
+        "home_yellow_cards": 2,
+        "away_yellow_cards": 1
+
+    None не превращается в 0.
+    """
+    result: List[float] = []
 
     for record in records:
-
         side = team_side(
             record,
             team_name,
         )
-
         if side is None:
             continue
 
-        values = record.get(
-            metric,
-            {},
-        )
+        value = None
 
-        value = safe_float(
-            values.get(side)
+        # ====================================================
+        # 1. ВЛОЖЕННЫЙ ФОРМАТ
+        #
+        # xg:
+        # {
+        #     "home": ...,
+        #     "away": ...
+        # }
+        # ====================================================
+        nested_values = record.get(
+            metric
         )
+        if isinstance(
+            nested_values,
+            dict,
+        ):
+            value = nested_values.get(
+                side
+            )
 
-        if value is not None:
-            result.append(value)
+        # ====================================================
+        # 2. ПЛОСКИЙ ФОРМАТ
+        #
+        # corners:
+        #     home_corners / away_corners
+        #
+        # cards:
+        #     home_yellow_cards / away_yellow_cards
+        # ====================================================
+        if value is None:
+            flat_key_map = {
+                "corners": {
+                    "home": "home_corners",
+                    "away": "away_corners",
+                },
+                "cards": {
+                    "home": "home_yellow_cards",
+                    "away": "away_yellow_cards",
+                },
+                "xg": {
+                    "home": "home_xg",
+                    "away": "away_xg",
+                },
+            }
+            metric_keys = flat_key_map.get(
+                metric
+            )
+            if metric_keys:
+                flat_key = metric_keys.get(
+                    side
+                )
+                if flat_key:
+                    value = record.get(
+                        flat_key
+                    )
+
+        # ====================================================
+        # 3. ЧИСЛОВОЕ ЗНАЧЕНИЕ
+        # ====================================================
+        numeric_value = safe_float(
+            value
+        )
+        if numeric_value is not None:
+            result.append(
+                numeric_value
+            )
 
     return result
 
