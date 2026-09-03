@@ -3,818 +3,763 @@
 
 """
 ============================================================
-FAJ Platform v12.1
-SOCCER365 DIAGNOSTIC
+FAJ — Soccer365 Diagnostic
 ============================================================
 
-Изолированная диагностическая страница для проверки Soccer365 Parser.
+Диагностическая страница для проверки фактического
+результата работы Soccer365Parser.
 
-Цели:
-1. Собрать статистику двух тестовых матчей.
-2. Показать полный набор фактов, который возвращает parser.
-3. Проверить:
-   - Удары
-   - Удары в створ
-   - Заблокированные удары
-   - Удары в каркас
-   - Угловые
-   - Карточки
-   - Владение
-   - Фолы
-   - Передачи
-   - Точность передач
-   - Большие моменты
-   - Атаки
-   - Опасные атаки
-   - и остальные доступные показатели.
-4. Не изменять основную страницу прогнозирования.
-5. Не писать результаты в БД.
-6. Не выполнять никакую модель или прогноз.
+НАЗНАЧЕНИЕ:
 
-ВАЖНО:
-Эта страница является диагностикой RAW DATA FLOW:
+    URL
+     ↓
+    Soccer365Parser
+     ↓
+    raw parsed result
+     ↓
+    визуальная проверка
 
-Soccer365
-    ↓
-Soccer365Parser
-    ↓
-RAW PARSED DATA
-    ↓
-DIAGNOSTIC UI
+СТРАНИЦА НЕ:
 
-Она НЕ должна превращаться в часть FAJ Brain.
+    - изменяет SQLite
+    - создаёт Prediction
+    - запускает FAJ Brain
+    - запускает FormModel
+    - запускает GoalModel
+    - запускает Learning
+    - изменяет Team Passport
+
+Главная задача:
+
+    проверить, что parser действительно правильно
+    извлекает ВСЕ статистические показатели.
+
+Особенно:
+
+    Удары
+    Удары в створ
+
+чтобы вручную исключить проблему label collision.
 ============================================================
 """
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any
+from typing import Any, Dict, List
 
-import pandas as pd
 import streamlit as st
 
 
 # ============================================================
-# LOGGER
+# LOGGING
 # ============================================================
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("FAJ.SOCCER365.DIAGNOSTIC")
 
 
 # ============================================================
 # PAGE CONFIG
+#
+# ВАЖНО:
+# При запуске через st.navigation / streamlit_app.py
+# set_page_config обычно уже выполняется в главном файле.
+# Поэтому здесь НЕ вызываем st.set_page_config().
 # ============================================================
-
-st.set_page_config(
-    page_title="FAJ — Soccer365 Diagnostic",
-    page_icon="🔬",
-    layout="wide",
-)
 
 
 # ============================================================
 # IMPORT PARSER
 # ============================================================
 
-try:
-    from app.parsers.soccer365_parser import Soccer365Parser
-except Exception as exc:
-    st.error("❌ Не удалось импортировать Soccer365Parser")
-    st.exception(exc)
-    st.stop()
+def load_parser():
+
+    try:
+
+        from app.parsers.soccer365_parser import (
+            Soccer365Parser,
+        )
+
+        return Soccer365Parser
+
+    except Exception as exc:
+
+        st.error(
+            "❌ Не удалось загрузить Soccer365Parser."
+        )
+
+        with st.expander(
+            "Техническая информация",
+            expanded=True,
+        ):
+
+            st.exception(exc)
+
+        logger.exception(
+            "Soccer365Parser import failed"
+        )
+
+        return None
 
 
 # ============================================================
 # HELPERS
 # ============================================================
 
-def safe_value(value: Any) -> Any:
-    """
-    Безопасное отображение значения.
+def value_or_dash(
+    value: Any,
+) -> Any:
 
-    None остаётся None / "—".
-    Никаких преобразований отсутствующих данных в 0.
-    """
     if value is None:
         return "—"
-
-    if isinstance(value, float):
-        return round(value, 3)
 
     return value
 
 
-def flatten_dict(
-    data: Any,
-    prefix: str = "",
-) -> dict[str, Any]:
-    """
-    Рекурсивно разворачивает вложенный dict.
+def format_quality(
+    value: Any,
+) -> str:
 
-    Пример:
+    if value is None:
+        return "—"
 
-    {
-        "home": {
-            "shots": 10
-        }
-    }
+    try:
 
-    превращается в:
+        return f"{float(value) * 100:.1f}%"
 
-    home.shots = 10
-    """
-
-    result: dict[str, Any] = {}
-
-    if not isinstance(data, dict):
-        return result
-
-    for key, value in data.items():
-        full_key = f"{prefix}.{key}" if prefix else str(key)
-
-        if isinstance(value, dict):
-            result.update(
-                flatten_dict(
-                    value,
-                    prefix=full_key,
-                )
-            )
-        else:
-            result[full_key] = value
-
-    return result
-
-
-def normalize_result(result: Any) -> dict[str, Any]:
-    """
-    Унификация результата parser независимо от того,
-    dict это или объект с __dict__.
-    """
-
-    if result is None:
-        return {}
-
-    if isinstance(result, dict):
-        return result
-
-    if hasattr(result, "model_dump"):
-        try:
-            return result.model_dump()
-        except Exception:
-            pass
-
-    if hasattr(result, "dict"):
-        try:
-            return result.dict()
-        except Exception:
-            pass
-
-    if hasattr(result, "__dict__"):
-        return dict(result.__dict__)
-
-    return {"result": result}
-
-
-def find_first(
-    data: dict[str, Any],
-    candidates: list[str],
-) -> Any:
-    """
-    Ищет значение по нескольким возможным ключам.
-
-    Используется ТОЛЬКО для диагностики отображения.
-    Никакой математической обработки здесь нет.
-    """
-
-    for candidate in candidates:
-        if candidate in data:
-            return data[candidate]
-
-    return None
-
-
-def extract_team_stats(
-    parsed: dict[str, Any],
-    side: str,
-) -> dict[str, Any]:
-    """
-    Пытается извлечь показатели конкретной команды.
-
-    Поддерживает несколько возможных структур parser.
-
-    Ничего не вычисляет.
-    """
-
-    stats: dict[str, Any] = {}
-
-    side_prefixes = [
-        f"{side}.",
-        f"{side}_",
-    ]
-
-    flat = flatten_dict(parsed)
-
-    for key, value in flat.items():
-        lower_key = key.lower()
-
-        if any(
-            lower_key.startswith(prefix.lower())
-            for prefix in side_prefixes
-        ):
-            clean_key = key
-
-            for prefix in side_prefixes:
-                if lower_key.startswith(prefix.lower()):
-                    clean_key = key[len(prefix):]
-                    break
-
-            stats[clean_key] = value
-
-    return stats
-
-
-# ============================================================
-# DIAGNOSTIC FIELD DEFINITIONS
-# ============================================================
-
-DIAGNOSTIC_FIELDS = [
-    ("goals", "Голы"),
-    ("xg", "xG"),
-    ("shots", "Удары"),
-    ("shots_on_target", "Удары в створ"),
-    ("blocked_shots", "Заблокированные удары"),
-    ("shots_woodwork", "Удары в каркас"),
-    ("saves", "Сейвы"),
-    ("possession", "Владение"),
-    ("corners", "Угловые"),
-    ("free_kicks", "Штрафные"),
-    ("throw_ins", "Вбрасывания"),
-    ("crosses", "Навесы"),
-    ("fouls", "Фолы"),
-    ("offsides", "Офсайды"),
-    ("yellow_cards", "Жёлтые карточки"),
-    ("red_cards", "Красные карточки"),
-    ("passes", "Передачи"),
-    ("pass_accuracy", "Точность передач"),
-    ("tackles", "Отборы"),
-    ("clearances", "Выносы"),
-    ("big_chances", "Большие моменты"),
-    ("attacks", "Атаки"),
-    ("dangerous_attacks", "Опасные атаки"),
-]
-
-
-# Возможные варианты названий.
-# Нужны именно для диагностики существующей структуры parser.
-FIELD_ALIASES = {
-    "goals": [
-        "goals",
-        "score",
-    ],
-    "xg": [
-        "xg",
-        "expected_goals",
-        "expected_goals_xg",
-    ],
-    "shots": [
-        "shots",
-        "home_shots",
-        "away_shots",
-    ],
-    "shots_on_target": [
-        "shots_on_target",
-        "sot",
-        "shots_on_goal",
-        "shots_on_target_total",
-    ],
-    "blocked_shots": [
-        "blocked_shots",
-        "shots_blocked",
-    ],
-    "shots_woodwork": [
-        "shots_woodwork",
-        "woodwork",
-        "shots_off_post",
-    ],
-    "saves": [
-        "saves",
-        "goalkeeper_saves",
-    ],
-    "possession": [
-        "possession",
-    ],
-    "corners": [
-        "corners",
-        "corner_kicks",
-    ],
-    "free_kicks": [
-        "free_kicks",
-    ],
-    "throw_ins": [
-        "throw_ins",
-        "throwins",
-    ],
-    "crosses": [
-        "crosses",
-    ],
-    "fouls": [
-        "fouls",
-    ],
-    "offsides": [
-        "offsides",
-        "offside",
-    ],
-    "yellow_cards": [
-        "yellow_cards",
-        "cards_yellow",
-    ],
-    "red_cards": [
-        "red_cards",
-        "cards_red",
-    ],
-    "passes": [
-        "passes",
-    ],
-    "pass_accuracy": [
-        "pass_accuracy",
-        "passes_accuracy",
-    ],
-    "tackles": [
-        "tackles",
-    ],
-    "clearances": [
-        "clearances",
-    ],
-    "big_chances": [
-        "big_chances",
-        "big_chances_created",
-    ],
-    "attacks": [
-        "attacks",
-    ],
-    "dangerous_attacks": [
-        "dangerous_attacks",
-    ],
-}
-
-
-# ============================================================
-# PARSER EXECUTION
-# ============================================================
-
-def run_parser(url: str) -> dict[str, Any]:
-    """
-    Запускает существующий Soccer365Parser.
-
-    Важно:
-    здесь не реализуется собственный парсер.
-
-    Используется только тот parser, который уже существует
-    в проекте.
-    """
-
-    parser = Soccer365Parser()
-
-    # --------------------------------------------------------
-    # Попытка наиболее вероятных API parser.
-    # --------------------------------------------------------
-
-    methods = [
-        "parse_match",
-        "parse_game",
-        "parse",
-        "get_match",
-        "fetch_match",
-    ]
-
-    last_error: Exception | None = None
-
-    for method_name in methods:
-        method = getattr(parser, method_name, None)
-
-        if method is None:
-            continue
-
-        try:
-            result = method(url)
-            return normalize_result(result)
-
-        except TypeError as exc:
-            last_error = exc
-            continue
-
-        except Exception as exc:
-            last_error = exc
-            logger.exception(
-                "Ошибка Soccer365Parser.%s",
-                method_name,
-            )
-            break
-
-    if last_error:
-        raise last_error
-
-    raise AttributeError(
-        "В Soccer365Parser не найден подходящий метод "
-        "parse_match / parse_game / parse / get_match / fetch_match"
-    )
-
-
-# ============================================================
-# RAW DATA TABLE
-# ============================================================
-
-def build_raw_table(
-    parsed: dict[str, Any],
-) -> pd.DataFrame:
-
-    flat = flatten_dict(parsed)
-
-    rows = []
-
-    for key, value in sorted(flat.items()):
-        rows.append(
-            {
-                "Поле parser": key,
-                "Значение": safe_value(value),
-                "Тип": type(value).__name__,
-            }
-        )
-
-    return pd.DataFrame(rows)
-
-
-# ============================================================
-# TEAM STAT TABLE
-# ============================================================
-
-def build_team_table(
-    parsed: dict[str, Any],
-    side: str,
-) -> pd.DataFrame:
-
-    team_stats = extract_team_stats(
-        parsed,
-        side,
-    )
-
-    rows = []
-
-    for field_key, label in DIAGNOSTIC_FIELDS:
-
-        aliases = FIELD_ALIASES.get(
-            field_key,
-            [field_key],
-        )
-
-        value = find_first(
-            team_stats,
-            aliases,
-        )
-
-        rows.append(
-            {
-                "Показатель": label,
-                "Значение": safe_value(value),
-                "Найдено": "✅" if value is not None else "❌",
-            }
-        )
-
-    return pd.DataFrame(rows)
-
-
-# ============================================================
-# SHOTS / SOT SPECIAL TEST
-# ============================================================
-
-def render_shots_diagnostic(
-    parsed: dict[str, Any],
-) -> None:
-
-    st.subheader("🎯 Специальная проверка: Удары / Удары в створ")
-
-    st.info(
-        """
-        Здесь ничего не рассчитывается.
-
-        Мы просто показываем те значения, которые вернул
-        Soccer365 Parser.
-
-        Нужно вручную сравнить их с Soccer365.
-
-        Особенно проверить:
-
-        • Удары
-        • Удары в створ
-        • Заблокированные удары
-        • Удары в каркас
-        """
-    )
-
-    col1, col2 = st.columns(2)
-
-    for col, side, title in [
-        (col1, "home", "🏠 Хозяева"),
-        (col2, "away", "✈️ Гости"),
-    ]:
-
-        with col:
-
-            st.markdown(f"### {title}")
-
-            stats = extract_team_stats(
-                parsed,
-                side,
-            )
-
-            checks = [
-                ("shots", "Удары"),
-                ("shots_on_target", "Удары в створ"),
-                ("blocked_shots", "Заблокированные удары"),
-                ("shots_woodwork", "Удары в каркас"),
-            ]
-
-            rows = []
-
-            for key, label in checks:
-
-                value = find_first(
-                    stats,
-                    FIELD_ALIASES[key],
-                )
-
-                rows.append(
-                    {
-                        "Показатель": label,
-                        "Parser": safe_value(value),
-                    }
-                )
-
-            st.dataframe(
-                pd.DataFrame(rows),
-                use_container_width=True,
-                hide_index=True,
-            )
-
-
-# ============================================================
-# SINGLE MATCH UI
-# ============================================================
-
-def render_match_result(
-    index: int,
-    url: str,
-) -> None:
-
-    st.markdown("---")
-
-    st.header(
-        f"Матч #{index}"
-    )
-
-    st.code(
-        url,
-        language="text",
-    )
-
-    if not st.button(
-        f"🔬 Собрать матч #{index}",
-        key=f"parse_{index}",
-        width="stretch",
+    except (
+        TypeError,
+        ValueError,
     ):
-        return
 
-    with st.spinner("Soccer365 Parser собирает данные..."):
+        return str(value)
 
-        try:
-            parsed = run_parser(url)
 
-        except Exception as exc:
+def stat_rows(
+    stats: Dict[str, Any],
+) -> List[Dict[str, Any]]:
 
-            st.error(
-                "❌ Ошибка при работе Soccer365 Parser"
+    rows = []
+
+    for key, value in stats.items():
+
+        if key.startswith("home_"):
+
+            away_key = key.replace(
+                "home_",
+                "away_",
+                1,
             )
 
-            st.exception(exc)
+            rows.append(
+                {
+                    "key": key,
+                    "home": value,
+                    "away": stats.get(
+                        away_key
+                    ),
+                }
+            )
 
-            return
+    return rows
 
-    st.success(
-        "✅ Parser успешно вернул данные"
+
+# ============================================================
+# SHOTS CHECK
+# ============================================================
+
+def render_shots_check(
+    stats: Dict[str, Any],
+) -> None:
+
+    st.subheader(
+        "🎯 Проверка «Удары» / «Удары в створ»"
     )
 
-    # --------------------------------------------------------
-    # RAW DATA
-    # --------------------------------------------------------
-
-    st.subheader("📦 RAW DATA PARSER")
-
-    raw_df = build_raw_table(
-        parsed
+    home_shots = stats.get(
+        "home_shots"
     )
 
-    st.caption(
-        f"Найдено полей: {len(raw_df)}"
+    away_shots = stats.get(
+        "away_shots"
     )
 
-    st.dataframe(
-        raw_df,
-        width="stretch",
-        hide_index=True,
+    home_sot = stats.get(
+        "home_shots_on_target"
     )
 
-    # --------------------------------------------------------
-    # SHOTS TEST
-    # --------------------------------------------------------
-
-    render_shots_diagnostic(
-        parsed
+    away_sot = stats.get(
+        "away_shots_on_target"
     )
-
-    # --------------------------------------------------------
-    # HOME / AWAY
-    # --------------------------------------------------------
 
     col1, col2 = st.columns(2)
 
     with col1:
 
-        st.subheader("🏠 Хозяева")
-
-        home_df = build_team_table(
-            parsed,
-            "home",
+        st.markdown(
+            "**🏠 Хозяева**"
         )
 
-        st.dataframe(
-            home_df,
-            width="stretch",
-            hide_index=True,
+        st.metric(
+            "Удары",
+            value_or_dash(
+                home_shots
+            ),
+        )
+
+        st.metric(
+            "Удары в створ",
+            value_or_dash(
+                home_sot
+            ),
         )
 
     with col2:
 
-        st.subheader("✈️ Гости")
-
-        away_df = build_team_table(
-            parsed,
-            "away",
+        st.markdown(
+            "**✈️ Гости**"
         )
 
-        st.dataframe(
-            away_df,
-            width="stretch",
-            hide_index=True,
+        st.metric(
+            "Удары",
+            value_or_dash(
+                away_shots
+            ),
+        )
+
+        st.metric(
+            "Удары в створ",
+            value_or_dash(
+                away_sot
+            ),
         )
 
     # --------------------------------------------------------
-    # FULL STRUCTURE
+    # ЛОГИЧЕСКАЯ ПРОВЕРКА
+    # --------------------------------------------------------
+
+    problems = []
+
+    if (
+        home_shots is not None
+        and home_sot is not None
+        and home_sot > home_shots
+    ):
+
+        problems.append(
+            "У хозяев SOT больше общего количества ударов."
+        )
+
+    if (
+        away_shots is not None
+        and away_sot is not None
+        and away_sot > away_shots
+    ):
+
+        problems.append(
+            "У гостей SOT больше общего количества ударов."
+        )
+
+    if problems:
+
+        for problem in problems:
+
+            st.error(
+                f"❌ {problem}"
+            )
+
+    elif (
+        home_shots is not None
+        and away_shots is not None
+        and home_sot is not None
+        and away_sot is not None
+    ):
+
+        st.success(
+            "✅ Базовая логическая проверка пройдена: "
+            "удары в створ не превышают общее количество ударов."
+        )
+
+    else:
+
+        st.warning(
+            "⚠️ Одно или несколько значений Shots/SOT "
+            "не были найдены parser'ом."
+        )
+
+
+# ============================================================
+# RENDER RESULT
+# ============================================================
+
+def render_result(
+    result: Dict[str, Any],
+    match_number: int,
+) -> None:
+
+    st.markdown(
+        f"## 🧪 Результат теста — матч №{match_number}"
+    )
+
+    # --------------------------------------------------------
+    # ERROR
+    # --------------------------------------------------------
+
+    if result.get("error"):
+
+        st.error(
+            f"❌ Parser error: {result['error']}"
+        )
+
+    # --------------------------------------------------------
+    # BASIC INFO
+    # --------------------------------------------------------
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+
+        st.metric(
+            "🏠 Хозяева",
+            value_or_dash(
+                result.get(
+                    "home_team"
+                )
+            ),
+        )
+
+    with col2:
+
+        st.metric(
+            "✈️ Гости",
+            value_or_dash(
+                result.get(
+                    "away_team"
+                )
+            ),
+        )
+
+    with col3:
+
+        st.metric(
+            "⚽ Счёт",
+            value_or_dash(
+                result.get(
+                    "score"
+                )
+            ),
+        )
+
+    with col4:
+
+        st.metric(
+            "📊 Качество",
+            format_quality(
+                result.get(
+                    "quality"
+                )
+            ),
+        )
+
+    st.caption(
+        f"Дата: "
+        f"{value_or_dash(result.get('match_date'))}"
+        f"  |  "
+        f"Parser: "
+        f"{value_or_dash(result.get('parser_version'))}"
+    )
+
+    # --------------------------------------------------------
+    # SOURCE
     # --------------------------------------------------------
 
     with st.expander(
-        "🔎 Показать полный объект parser"
+        "🔗 Источник",
+        expanded=False,
+    ):
+
+        st.code(
+            value_or_dash(
+                result.get(
+                    "source_url"
+                )
+            )
+        )
+
+    # --------------------------------------------------------
+    # SHOTS CHECK
+    # --------------------------------------------------------
+
+    render_shots_check(
+        result.get(
+            "stats",
+            {},
+        )
+    )
+
+    # --------------------------------------------------------
+    # ALL STATS
+    # --------------------------------------------------------
+
+    st.subheader(
+        "📊 Все собранные статистические показатели"
+    )
+
+    stats = result.get(
+        "stats",
+        {},
+    )
+
+    if not stats:
+
+        st.warning(
+            "⚠️ Parser не вернул статистику."
+        )
+
+    else:
+
+        rows = stat_rows(
+            stats
+        )
+
+        if rows:
+
+            table_data = []
+
+            for row in rows:
+
+                table_data.append(
+                    {
+                        "Parser field": row["key"],
+                        "🏠 Home": row["home"],
+                        "✈️ Away": row["away"],
+                    }
+                )
+
+            st.dataframe(
+                table_data,
+                width="stretch",
+                hide_index=True,
+            )
+
+        # ----------------------------------------------------
+        # RAW DICTIONARY
+        # ----------------------------------------------------
+
+        with st.expander(
+            f"🔎 Raw stats dictionary ({len(stats)} fields)",
+            expanded=False,
+        ):
+
+            st.json(
+                stats
+            )
+
+    # --------------------------------------------------------
+    # FULL RAW RESULT
+    # --------------------------------------------------------
+
+    with st.expander(
+        "🧬 Полный raw result parser",
+        expanded=False,
     ):
 
         st.json(
-            parsed
+            result
+        )
+
+    # --------------------------------------------------------
+    # RAW JSON
+    # --------------------------------------------------------
+
+    with st.expander(
+        "📦 JSON для передачи разработчику",
+        expanded=False,
+    ):
+
+        st.code(
+            json.dumps(
+                result,
+                ensure_ascii=False,
+                indent=2,
+            ),
+            language="json",
         )
 
 
 # ============================================================
-# HEADER
+# MAIN
 # ============================================================
 
-st.title(
-    "🔬 FAJ — Soccer365 Parser Diagnostic"
-)
+def main() -> None:
 
-st.caption(
-    "Изолированная проверка фактических данных Soccer365. "
-    "Не участвует в прогнозировании и не изменяет БД."
-)
+    st.markdown(
+        """
+        <div class="faj-header">
 
+        <div class="faj-title">
+            🧪 Soccer365 Diagnostic
+        </div>
 
-st.warning(
-    """
-    ⚠️ Диагностическая страница.
+        <div class="faj-subtitle">
+            Проверка полного набора фактической статистики
+            Soccer365 перед подключением новых показателей
+            к математической модели FAJ.
+        </div>
 
-    Здесь мы проверяем только качество и полноту данных,
-    которые возвращает Soccer365 Parser.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    Никаких формул FAJ здесь нет.
-    Никакого обучения здесь нет.
-    Никакого изменения параметров здесь нет.
-    Никакой записи в database.py здесь нет.
-    """
-)
+    st.info(
+        """
+        **Цель теста:** проверить сам parser.
 
+        Здесь мы пока ничего не прогнозируем.
+        Просто смотрим, что Soccer365 действительно
+        передаёт FAJ и как parser раскладывает эти данные.
+        """
+    )
 
-# ============================================================
-# URL INPUT
-# ============================================================
+    # ========================================================
+    # PARSER
+    # ========================================================
 
-st.subheader(
-    "🔗 Тестовые матчи"
-)
+    ParserClass = load_parser()
 
-st.markdown(
-    """
-    Вставь две ссылки Soccer365.
+    if ParserClass is None:
+        return
 
-    Это могут быть наши текущие тестовые матчи.
-    """
-)
+    parser = ParserClass()
 
-url1 = st.text_input(
-    "Матч №1",
-    placeholder="https://soccer365.ru/games/...",
-)
+    # ========================================================
+    # URL INPUTS
+    # ========================================================
 
-url2 = st.text_input(
-    "Матч №2",
-    placeholder="https://soccer365.ru/games/...",
-)
+    st.markdown(
+        "## 🔗 Испытательные матчи"
+    )
 
+    st.caption(
+        "Можно вставить ссылку на любой уже сыгранный матч "
+        "ЦСКА, Зенита или другой команды."
+    )
 
-# ============================================================
-# QUICK BUTTON
-# ============================================================
+    url1 = st.text_input(
+        "Матч №1",
+        placeholder=(
+            "https://soccer365.ru/games/2465994/"
+        ),
+        key="soccer365_diag_url_1",
+    )
 
-col1, col2 = st.columns(2)
+    url2 = st.text_input(
+        "Матч №2",
+        placeholder=(
+            "https://soccer365.ru/games/2478604/"
+        ),
+        key="soccer365_diag_url_2",
+    )
 
-with col1:
+    # ========================================================
+    # RUN
+    # ========================================================
 
-    if st.button(
-        "🔬 Собрать оба матча",
-        width="stretch",
-        type="primary",
-    ):
+    st.divider()
 
-        if not url1 or not url2:
+    run_col1, run_col2 = st.columns(2)
 
-            st.error(
-                "Нужно указать обе ссылки."
+    with run_col1:
+
+        test_one = st.button(
+            "▶️ Проверить матч №1",
+            width="stretch",
+            type="primary",
+        )
+
+    with run_col2:
+
+        test_both = st.button(
+            "▶️ Проверить оба матча",
+            width="stretch",
+        )
+
+    # ========================================================
+    # MATCH 1
+    # ========================================================
+
+    if test_one:
+
+        if not url1.strip():
+
+            st.warning(
+                "Введите ссылку на матч №1."
             )
 
         else:
 
-            st.session_state[
-                "diagnostic_run_all"
-            ] = True
+            with st.spinner(
+                "Парсим Soccer365..."
+            ):
 
+                result = parser.parse(
+                    url1.strip()
+                )
 
-with col2:
+            render_result(
+                result,
+                1,
+            )
 
-    if st.button(
-        "🧹 Очистить",
-        width="stretch",
+    # ========================================================
+    # BOTH
+    # ========================================================
+
+    if test_both:
+
+        urls = []
+
+        if url1.strip():
+            urls.append(
+                (
+                    1,
+                    url1.strip()
+                )
+            )
+
+        if url2.strip():
+            urls.append(
+                (
+                    2,
+                    url2.strip()
+                )
+            )
+
+        if not urls:
+
+            st.warning(
+                "Введите хотя бы одну ссылку."
+            )
+
+        else:
+
+            for match_number, url in urls:
+
+                with st.spinner(
+                    f"Парсим матч №{match_number}..."
+                ):
+
+                    result = parser.parse(
+                        url
+                    )
+
+                render_result(
+                    result,
+                    match_number,
+                )
+
+                if match_number != urls[-1][0]:
+
+                    st.divider()
+
+    # ========================================================
+    # INSTRUCTIONS
+    # ========================================================
+
+    st.divider()
+
+    with st.expander(
+        "📋 Что именно проверяем",
+        expanded=False,
     ):
 
-        st.session_state.pop(
-            "diagnostic_run_all",
-            None,
+        st.markdown(
+            """
+            ### 1. Удары
+
+            Смотрим:
+
+            - `home_shots`
+            - `away_shots`
+
+            ### 2. Удары в створ
+
+            Смотрим:
+
+            - `home_shots_on_target`
+            - `away_shots_on_target`
+
+            Они должны быть отдельными полями.
+
+            Например:
+
+            ```text
+            Удары            12
+            Удары в створ      5
+            ```
+
+            должно превратиться в:
+
+            ```text
+            home_shots = 12
+            home_shots_on_target = 5
+            ```
+
+            а не:
+
+            ```text
+            home_shots = 5
+            ```
+
+            ### 3. Проверяем остальные показатели
+
+            Parser должен показать все поля, которые
+            реально присутствуют в `stats`.
+
+            В частности:
+
+            - xG
+            - Shots
+            - Shots on Target
+            - Blocked Shots
+            - Woodwork
+            - Saves
+            - Possession
+            - Corners
+            - Free Kicks
+            - Throw-ins
+            - Crosses
+            - Fouls
+            - Offsides
+            - Yellow Cards
+            - Red Cards
+            - Passes
+            - Pass Accuracy
+            - Tackles
+            - Clearances
+            - Big Chances
+            - Attacks
+            - Dangerous Attacks
+
+            ### 4. Ничего не меняем
+
+            Диагностическая страница только вызывает:
+
+            `Soccer365Parser.parse(url)`
+
+            и показывает результат.
+
+            База данных и основная модель не затрагиваются.
+            """
         )
 
-        st.rerun()
-
 
 # ============================================================
-# RUN
+# ENTRY POINT
 # ============================================================
 
-if st.session_state.get(
-    "diagnostic_run_all",
-    False,
-):
+if __name__ == "__main__":
 
-    if url1:
-
-        render_match_result(
-            1,
-            url1,
-        )
-
-    if url2:
-
-        render_match_result(
-            2,
-            url2,
-        )
-
-
-# ============================================================
-# FOOTER
-# ============================================================
-
-st.markdown("---")
-
-st.caption(
-    """
-FAJ Diagnostic Layer
-Soccer365 Parser → RAW FACTS → Manual Verification
-
-Следующий этап после проверки:
-DATA MAP → FORM FEATURES → математические модели.
-"""
-)
+    main()
