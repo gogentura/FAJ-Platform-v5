@@ -523,7 +523,7 @@ def validate_parsed_match(
 
 
 # ============================================================
-# NORMALIZATION OF SOCCER365 RECORD (UPDATED: added match_date)
+# NORMALIZATION OF SOCCER365 RECORD (UPDATED: flat corners/cards)
 # ============================================================
 
 def build_history_record(
@@ -601,23 +601,27 @@ def build_history_record(
             ),
         },
 
-        "corners": {
-            "home": stats.get(
-                "home_corners"
-            ),
-            "away": stats.get(
-                "away_corners"
-            ),
-        },
+        # ============================================================
+        # CORNERS / CARDS
+        # FormContext v1.7 ожидает плоские поля.
+        #
+        # None сохраняется как None.
+        # Отсутствующие данные НЕ превращаются в 0.
+        # ============================================================
 
-        "cards": {
-            "home": stats.get(
-                "home_yellow_cards"
-            ),
-            "away": stats.get(
-                "away_yellow_cards"
-            ),
-        },
+        "home_corners": stats.get(
+            "home_corners"
+        ),
+        "away_corners": stats.get(
+            "away_corners"
+        ),
+
+        "home_yellow_cards": stats.get(
+            "home_yellow_cards"
+        ),
+        "away_yellow_cards": stats.get(
+            "away_yellow_cards"
+        ),
 
         "fouls": {
             "home": stats.get(
