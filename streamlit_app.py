@@ -10,13 +10,18 @@ FAJ — Personal Football Analytics Platform
 
     Streamlit
         ↓
-    FAJ Predictor
-        ↓
-    Data Collection
-        ↓
-    FAJ Brain
-        ↓
-    Prediction Card
+    Navigation
+        ├── FAJ Predictor
+        │       ↓
+        │   Data Collection
+        │       ↓
+        │   FAJ Brain
+        │       ↓
+        │   Prediction Card
+        │
+        └── Soccer365 Diagnostic
+                ↓
+            Parser testing
 
 Старая архитектура Round / ETC / Learning / Tour Manager
 не используется.
@@ -141,10 +146,49 @@ st.markdown(
 
 
 # ============================================================
+# NAVIGATION
+# ============================================================
+
+def render_navigation() -> str:
+    """
+    Внутренняя навигация FAJ.
+
+    Важно:
+    - Predictor и Diagnostic запускаются независимо.
+    - Диагностическая страница не вмешивается
+      в основной Predictor.
+    """
+
+    st.sidebar.markdown("## ⚽ FAJ")
+
+    page = st.sidebar.radio(
+        "Раздел",
+        [
+            "⚽ FAJ Predictor",
+            "🔬 Soccer365 Diagnostic",
+        ],
+        index=0,
+    )
+
+    st.sidebar.markdown("---")
+
+    if page == "🔬 Soccer365 Diagnostic":
+        st.sidebar.caption(
+            "Тестовый инструмент.\n"
+            "Не изменяет основной прогнозный интерфейс."
+        )
+
+    return page
+
+
+# ============================================================
 # MAIN PAGE
 # ============================================================
 
-def main() -> None:
+def run_predictor() -> None:
+    """
+    Запуск основной страницы FAJ Predictor.
+    """
 
     try:
 
@@ -187,6 +231,79 @@ def main() -> None:
         logger.exception(
             "FAJ Predictor runtime error"
         )
+
+
+# ============================================================
+# SOCCER365 DIAGNOSTIC
+# ============================================================
+
+def run_soccer365_diagnostic() -> None:
+    """
+    Запуск диагностической страницы Soccer365.
+
+    Диагностика полностью отделена от Predictor.
+    """
+
+    try:
+
+        from app.pages.soccer365_diagnostic import (
+            main as diagnostic_main
+        )
+
+    except Exception as exc:
+
+        st.error(
+            "❌ Не удалось загрузить Soccer365 Diagnostic."
+        )
+
+        with st.expander(
+            "Техническая информация",
+            expanded=True,
+        ):
+            st.exception(exc)
+
+        logger.exception(
+            "Soccer365 Diagnostic import failed"
+        )
+
+        return
+
+    try:
+
+        diagnostic_main()
+
+    except Exception as exc:
+
+        st.error(
+            "❌ Ошибка работы Soccer365 Diagnostic."
+        )
+
+        with st.expander(
+            "Техническая информация",
+            expanded=True,
+        ):
+            st.exception(exc)
+
+        logger.exception(
+            "Soccer365 Diagnostic runtime error"
+        )
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main() -> None:
+
+    page = render_navigation()
+
+    if page == "⚽ FAJ Predictor":
+
+        run_predictor()
+
+    elif page == "🔬 Soccer365 Diagnostic":
+
+        run_soccer365_diagnostic()
 
 
 # ============================================================
