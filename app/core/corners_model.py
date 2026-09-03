@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ PLATFORM v12.1
-CORNERS MODEL v1.0
+CORNERS MODEL v1.1
 ============================================================
 
 Назначение
@@ -51,7 +51,7 @@ from typing import Any, Dict, Iterable, List, Optional
 import math
 
 
-CORNERS_MODEL_VERSION = "1.0"
+CORNERS_MODEL_VERSION = "1.1"
 
 MAX_HISTORY_MATCHES = 6
 
@@ -157,37 +157,6 @@ def _average(
         return None
 
     return sum(numeric) / len(numeric)
-
-
-def _chronological_history(
-    values: Iterable[Any],
-) -> List[Optional[float]]:
-    """
-    Приводит историю к единому порядку:
-
-        старый → новый
-
-    FormContext текущей версии может хранить
-    recent history как:
-
-        новый → старый
-
-    Поэтому для моделей входная последовательность
-    нормализуется здесь.
-
-    Если история уже задана старый → новый,
-    этот helper предполагает, что вызывающая сторона
-    передала chronological=True через отдельную функцию.
-
-    Для FormContext по умолчанию используется reverse.
-    """
-
-    result = [
-        _safe_float(value)
-        for value in values
-    ]
-
-    return list(reversed(result))
 
 
 def _recent_mean(
@@ -518,23 +487,21 @@ class CornersModel:
         )
 
         # ----------------------------------------------------
-        # FormContext history is newest → oldest.
+        # FormContext v1.7 уже отдаёт историю в правильном порядке:
+        # старый → новый (M1 → M6)
         #
-        # Models work internally:
-        # oldest → newest
+        # Используем raw данные напрямую, без reverse.
         # ----------------------------------------------------
 
-        corners_for_chronological = (
-            _chronological_history(
-                corners_for_raw
-            )
-        )
+        corners_for_chronological = [
+            _safe_float(value)
+            for value in corners_for_raw
+        ]
 
-        corners_against_chronological = (
-            _chronological_history(
-                corners_against_raw
-            )
-        )
+        corners_against_chronological = [
+            _safe_float(value)
+            for value in corners_against_raw
+        ]
 
         results_raw = context.get(
             "results",
@@ -547,9 +514,12 @@ class CornersModel:
             : self.max_history
         ]
 
-        results_chronological = list(
-            reversed(results_raw)
-        )
+        # ----------------------------------------------------
+        # FormContext v1.7 уже отдаёт results в правильном порядке:
+        # старый → новый
+        # ----------------------------------------------------
+
+        results_chronological = results_raw
 
         # ----------------------------------------------------
         # Average
@@ -630,7 +600,7 @@ class CornersModel:
 
         diagnostics = {
             "history_order_input": (
-                "newest_to_oldest"
+                "oldest_to_newest"
             ),
             "history_order_internal": (
                 "oldest_to_newest"
