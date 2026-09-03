@@ -1,5 +1,5 @@
 """
-FAJ Platform — Goal Model v1.0
+FAJ Platform — Goal Model v1.1
 
 Purpose
 -------
@@ -10,7 +10,7 @@ Architectural role
 ------------------
 FormContext
     ↓
-FormModel
+FormModel + FormWin + Defence
     ↓
 GoalModel
     ↓
@@ -18,7 +18,7 @@ home_xg / away_xg
     ↓
 Poisson / Score Distribution
 
-GoalModel v1.0 does NOT:
+GoalModel v1.1 does NOT:
 - calculate Poisson probabilities;
 - calculate exact scores;
 - calculate 1X2 probabilities;
@@ -35,10 +35,13 @@ GoalModel v1.0 does NOT:
 - apply a hard-coded home advantage multiplier;
 - invent values when xG/xGA is missing.
 
-The model is deliberately transparent and research-oriented.
+What's new in v1.1:
+- RESEARCH COUPLING from FormWin + Defence
+- Small structural priors for first backtest
+- Full audit trail in diagnostics
 
-Formula v1.0
-------------
+Formula v1.0 (base)
+-------------------
 Home xG =
     (Home team's historical xG average
      + Away team's historical xGA average) / 2
@@ -47,22 +50,77 @@ Away xG =
     (Away team's historical xG average
      + Home team's historical xGA average) / 2
 
+Research Coupling v1.1
+----------------------
+xG_final =
+    xG_base *
+    exp(
+        ATTACK_COUPLING * attack_signal
+        -
+        DEFENCE_COUPLING * opponent_defence_signal
+    )
+
+Where:
+    attack_signal = FormWin.attack_signal
+    opponent_defence_signal = Defence.process_signal
+
+    ATTACK_COUPLING = 0.10
+    DEFENCE_COUPLING = 0.10
+
+    signal = 0 → multiplier = 1 (no change)
+    signal = +1 → multiplier = 1.105
+    signal = -1 → multiplier = 0.905
+
 Status
 ------
-RESEARCH_FORMULA
+RESEARCH_FORMULA with RESEARCH_COUPLING
 
-The arithmetic mean is a research baseline, not a claimed optimum.
-Alternative synthesis methods can be evaluated later through backtesting.
+The arithmetic mean is a research baseline.
+Coupling coefficients are RESEARCH PARAMETERS,
+not calibrated coefficients.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, asdict
 from typing import Any, Optional
 
 
-GOAL_MODEL_VERSION = "1.0"
+GOAL_MODEL_VERSION = "1.1"
+GOAL_MODEL_COUPLING_VERSION = "1.1"
 FORMULA_STATUS = "RESEARCH_FORMULA"
+
+
+# ============================================================
+# RESEARCH COUPLING — FORM WIN + DEFENCE
+# ============================================================
+#
+# Это НЕ обученные коэффициенты.
+# Это стартовые structural priors для первого backtest.
+#
+# FormWin.attack_signal:
+#   положительный → атакующее состояние лучше собственной истории
+#
+# Defence.process_signal:
+#   положительный → оборона лучше собственной истории
+#
+# Используется экспоненциальная связка:
+#
+# xG_final =
+#     xG_base *
+#     exp(
+#         ATTACK_COUPLING * attack_signal
+#         -
+#         DEFENCE_COUPLING * opponent_defence_signal
+#     )
+#
+# При signal = 0:
+#     множитель = 1
+#
+# Следовательно старая формула остаётся базовой.
+ATTACK_COUPLING = 0.10
+DEFENCE_COUPLING = 0.10
 
 
 @dataclass(frozen=True)
@@ -118,11 +176,15 @@ class GoalModelResult:
 
 class GoalModel:
     """
-    GoalModel v1.0.
+    GoalModel v1.1.
 
     Input:
         home_form: FormModelResult-like object
         away_form: FormModelResult-like object
+        home_form_win: FormWinResult-like object (optional)
+        away_form_win: FormWinResult-like object (optional)
+        home_defence: DefenceResult-like object (optional)
+        away_defence: DefenceResult-like object (optional)
 
     Required values:
         home_form.xg_avg
@@ -157,6 +219,10 @@ class GoalModel:
         home_team: Optional[str] = None,
         away_team: Optional[str] = None,
         venue: str = "HOME",
+        home_form_win: Any = None,
+        away_form_win: Any = None,
+        home_defence: Any = None,
+        away_defence: Any = None,
     ) -> GoalModelResult:
         """
         Calculate expected goals for the upcoming match.
@@ -178,6 +244,22 @@ class GoalModel:
         venue:
             Match venue/context. v1.0 records it but does not use it
             as a numerical multiplier.
+
+        home_form_win:
+            FormWinResult from FormWin.analyze().
+            Optional. Used for research coupling.
+
+        away_form_win:
+            FormWinResult from FormWin.analyze().
+            Optional. Used for research coupling.
+
+        home_defence:
+            DefenceResult from Defence.calculate().
+            Optional. Used for research coupling.
+
+        away_defence:
+            DefenceResult from Defence.calculate().
+            Optional. Used for research coupling.
 
         Returns
         -------
@@ -204,7 +286,7 @@ class GoalModel:
         #     (home_xG + away_xGA) / 2
         # --------------------------------------------------------------
 
-        home_xg = self._calculate_expected_goals(
+        home_xg_base = self._calculate_expected_goals(
             attack_xg=home_xg_avg,
             opponent_xga=away_xga_avg,
         )
@@ -222,9 +304,56 @@ class GoalModel:
         #     (away_xG + home_xGA) / 2
         # --------------------------------------------------------------
 
-        away_xg = self._calculate_expected_goals(
+        away_xg_base = self._calculate_expected_goals(
             attack_xg=away_xg_avg,
             opponent_xga=home_xga_avg,
+        )
+
+        # --------------------------------------------------------------
+        # RESEARCH COUPLING
+        # --------------------------------------------------------------
+        #
+        # FormWin отвечает за текущее атакующее состояние.
+        #
+        # Defence отвечает за текущее оборонительное состояние
+        # соперника.
+        #
+        # Эти органы НЕ заменяют базовый xG.
+        # Они только слегка корректируют его.
+        #
+        # При отсутствии сигналов:
+        #
+        #     final_xg = base_xg
+        #
+        # --------------------------------------------------------------
+
+        home_attack_signal = self._get_nested_signal(
+            home_form_win,
+            "attack_signal",
+        )
+        away_attack_signal = self._get_nested_signal(
+            away_form_win,
+            "attack_signal",
+        )
+        home_defence_signal = self._get_nested_signal(
+            home_defence,
+            "process_signal",
+        )
+        away_defence_signal = self._get_nested_signal(
+            away_defence,
+            "process_signal",
+        )
+
+        home_xg = self._apply_research_coupling(
+            base_xg=home_xg_base,
+            attack_signal=home_attack_signal,
+            opponent_defence_signal=away_defence_signal,
+        )
+
+        away_xg = self._apply_research_coupling(
+            base_xg=away_xg_base,
+            attack_signal=away_attack_signal,
+            opponent_defence_signal=home_defence_signal,
         )
 
         diagnostics = self._build_diagnostics(
@@ -232,8 +361,14 @@ class GoalModel:
             away_xg_avg=away_xg_avg,
             home_xga_avg=home_xga_avg,
             away_xga_avg=away_xga_avg,
+            home_xg_base=home_xg_base,
+            away_xg_base=away_xg_base,
             home_xg=home_xg,
             away_xg=away_xg,
+            home_attack_signal=home_attack_signal,
+            away_attack_signal=away_attack_signal,
+            home_defence_signal=home_defence_signal,
+            away_defence_signal=away_defence_signal,
         )
 
         return GoalModelResult(
@@ -253,8 +388,8 @@ class GoalModel:
             home_xg=home_xg,
             away_xg=away_xg,
 
-            home_base_xg=home_xg,
-            away_base_xg=away_xg,
+            home_base_xg=home_xg_base,
+            away_base_xg=away_xg_base,
 
             # Home attacking component
             home_attack_component=home_xg_avg,
@@ -319,6 +454,99 @@ class GoalModel:
         return (attack_xg + opponent_xga) / 2.0
 
     # ------------------------------------------------------------------
+    # RESEARCH COUPLING
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _get_nested_signal(
+        source: Any,
+        field: str,
+    ) -> Optional[float]:
+        """
+        Получает signal из dataclass/object/dict.
+        Missing -> None.
+        """
+        if source is None:
+            return None
+
+        if isinstance(source, dict):
+            value = source.get(field)
+        else:
+            value = getattr(
+                source,
+                field,
+                None,
+            )
+
+        if value is None:
+            return None
+
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return None
+
+        if not -1.0 <= value <= 1.0:
+            return None
+
+        return value
+
+    @staticmethod
+    def _apply_research_coupling(
+        *,
+        base_xg: Optional[float],
+        attack_signal: Optional[float],
+        opponent_defence_signal: Optional[float],
+    ) -> Optional[float]:
+        """
+        Apply small structural coupling from FormWin + Defence.
+
+        Formula:
+            xG_final =
+                xG_base *
+                exp(
+                    0.10 * attack_signal
+                    -
+                    0.10 * opponent_defence_signal
+                )
+
+        Missing signals are treated as zero EFFECT,
+        not as zero FACT.
+
+        This distinction is important:
+            missing signal → no correction
+        while:
+            observed signal = 0 → neutral correction.
+        """
+        if base_xg is None:
+            return None
+
+        attack = (
+            attack_signal
+            if attack_signal is not None
+            else 0.0
+        )
+        defence = (
+            opponent_defence_signal
+            if opponent_defence_signal is not None
+            else 0.0
+        )
+
+        multiplier = math.exp(
+            ATTACK_COUPLING * attack
+            -
+            DEFENCE_COUPLING * defence
+        )
+
+        result = float(base_xg) * multiplier
+
+        # Safety boundary.
+        return max(
+            0.0,
+            min(10.0, result),
+        )
+
+    # ------------------------------------------------------------------
     # DATA ACCESS
     # ------------------------------------------------------------------
 
@@ -378,8 +606,14 @@ class GoalModel:
         away_xg_avg: Optional[float],
         home_xga_avg: Optional[float],
         away_xga_avg: Optional[float],
+        home_xg_base: Optional[float],
+        away_xg_base: Optional[float],
         home_xg: Optional[float],
         away_xg: Optional[float],
+        home_attack_signal: Optional[float],
+        away_attack_signal: Optional[float],
+        home_defence_signal: Optional[float],
+        away_defence_signal: Optional[float],
     ) -> dict[str, Any]:
         """
         Build an explicit audit trail for the calculation.
@@ -413,6 +647,25 @@ class GoalModel:
 
             "home_xg_result": home_xg,
             "away_xg_result": away_xg,
+
+            # ==========================================================
+            # RESEARCH COUPLING
+            # ==========================================================
+            "coupling": {
+                "version": GOAL_MODEL_COUPLING_VERSION,
+                "attack_coupling": ATTACK_COUPLING,
+                "defence_coupling": DEFENCE_COUPLING,
+                "home_attack_signal": home_attack_signal,
+                "away_attack_signal": away_attack_signal,
+                "home_defence_signal": home_defence_signal,
+                "away_defence_signal": away_defence_signal,
+                "home_xg_before_coupling": home_xg_base,
+                "away_xg_before_coupling": away_xg_base,
+                "home_xg_after_coupling": home_xg,
+                "away_xg_after_coupling": away_xg,
+                "status": "RESEARCH_COUPLING",
+                "formula": "base_xg * exp(0.10*attack - 0.10*defence)",
+            },
 
             # Explicit architectural boundaries
             "baseline_available": False,
@@ -454,6 +707,10 @@ def calculate_expected_goals(
     home_team: Optional[str] = None,
     away_team: Optional[str] = None,
     venue: str = "HOME",
+    home_form_win: Any = None,
+    away_form_win: Any = None,
+    home_defence: Any = None,
+    away_defence: Any = None,
 ) -> GoalModelResult:
     """
     Convenience wrapper around GoalModel.analyze().
@@ -465,6 +722,8 @@ def calculate_expected_goals(
         cska_form,
         home_team="Zenit",
         away_team="CSKA",
+        home_form_win=zenit_win,
+        away_form_win=cska_win,
     )
 
     result.home_xg
@@ -479,12 +738,19 @@ def calculate_expected_goals(
         home_team=home_team,
         away_team=away_team,
         venue=venue,
+        home_form_win=home_form_win,
+        away_form_win=away_form_win,
+        home_defence=home_defence,
+        away_defence=away_defence,
     )
 
 
 __all__ = [
     "GOAL_MODEL_VERSION",
+    "GOAL_MODEL_COUPLING_VERSION",
     "FORMULA_STATUS",
+    "ATTACK_COUPLING",
+    "DEFENCE_COUPLING",
     "GoalModel",
     "GoalModelResult",
     "calculate_expected_goals",
