@@ -1374,6 +1374,31 @@ def format_match_types(values: Any) -> str:
     return " · ".join(labels) if labels else "—"
 
 
+def fmt_history(values: Any) -> str:
+    """
+    Форматирует историю угловых/карточек для отображения.
+    None остаётся None.
+    """
+    if not isinstance(values, list):
+        return "—"
+    
+    formatted = []
+    for value in values[:MAX_HISTORY_MATCHES]:
+        if value is None:
+            formatted.append("—")
+            continue
+        try:
+            number = float(value)
+            if number.is_integer():
+                formatted.append(str(int(number)))
+            else:
+                formatted.append(f"{number:.1f}")
+        except (TypeError, ValueError):
+            formatted.append("—")
+    
+    return " · ".join(formatted) if formatted else "—"
+
+
 def render_form_context_card(
     home_team: str,
     away_team: str,
@@ -1421,6 +1446,45 @@ def render_form_context_card(
             return f"{float(value):.2f}"
         except (TypeError, ValueError):
             return "—"
+
+    # ========================================================
+    # CORNERS / CARDS
+    # Только отображение уже собранных данных.
+    # Никаких расчётов здесь нет.
+    # None остаётся None.
+    # ========================================================
+    home_corners_for = home_context.get(
+        "corners_for_history",
+        [],
+    )
+    home_corners_against = home_context.get(
+        "corners_against_history",
+        [],
+    )
+    away_corners_for = away_context.get(
+        "corners_for_history",
+        [],
+    )
+    away_corners_against = away_context.get(
+        "corners_against_history",
+        [],
+    )
+    home_cards_for = home_context.get(
+        "team_cards_history",
+        [],
+    )
+    home_cards_against = home_context.get(
+        "opponent_cards_history",
+        [],
+    )
+    away_cards_for = away_context.get(
+        "team_cards_history",
+        [],
+    )
+    away_cards_against = away_context.get(
+        "opponent_cards_history",
+        [],
+    )
 
     # ========================================================
     # FIX: match_types → difficulty
@@ -1474,6 +1538,21 @@ def render_form_context_card(
             )
 
             st.caption(
+                "Угловые: "
+                f"{fmt_history(home_corners_for)} "
+                "за · "
+                f"{fmt_history(home_corners_against)} "
+                "против"
+            )
+            st.caption(
+                "Карточки: "
+                f"{fmt_history(home_cards_for)} "
+                "своих · "
+                f"{fmt_history(home_cards_against)} "
+                "соперника"
+            )
+
+            st.caption(
                 "Матчи: "
                 + format_match_types(
                     home_match_types
@@ -1504,6 +1583,21 @@ def render_form_context_card(
             metric2.metric(
                 "xGA",
                 fmt(away_xga),
+            )
+
+            st.caption(
+                "Угловые: "
+                f"{fmt_history(away_corners_for)} "
+                "за · "
+                f"{fmt_history(away_corners_against)} "
+                "против"
+            )
+            st.caption(
+                "Карточки: "
+                f"{fmt_history(away_cards_for)} "
+                "своих · "
+                f"{fmt_history(away_cards_against)} "
+                "соперника"
             )
 
             st.caption(
