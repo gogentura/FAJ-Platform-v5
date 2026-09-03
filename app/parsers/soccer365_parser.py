@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-SOCCER365 PARSER v1.2.3
+SOCCER365 PARSER v1.2.4
 ============================================================
 
 НАЗНАЧЕНИЕ:
@@ -31,58 +31,131 @@ SOCCER365 PARSER v1.2.3
              ↓
         import_facts.py
 
+
 ============================================================
+ВАЖНО
+============================================================
+
+Soccer365 показывает:
+
+    Весь матч (#stat-tp0)
+    1-й тайм (#stat-tp1)
+    2-й тайм (#stat-tp2)
+
+FAJ использует ТОЛЬКО:
+
+    ВЕСЬ МАТЧ (#stat-tp0)
+
+
+============================================================
+ИЗМЕНЕНИЯ V1.2
+============================================================
+
+    - Переход на DOM-парсинг вместо текстового поиска
+    - Использование id="clubs_stats" и id="stat-tp0"
+    - Прямой парсинг .stats_item
+    - Улучшенное извлечение команд
+    - Логирование пропущенных полей
+
+
+============================================================
+ИЗМЕНЕНИЯ V1.2.1
+============================================================
+
+    - Интеграция с FAJ Team Identity
+    - canonicalize_parsed_team()
+    - Двойная защита в parse()
+
+
+============================================================
+ИЗМЕНЕНИЯ V1.2.2
+============================================================
+
+    - Добавлено извлечение даты матча
+    - extract_match_date()
+    - match_date сохраняется в результате
+
+
+============================================================
+ИЗМЕНЕНИЯ V1.2.3
+============================================================
+
+    - Исправлено извлечение счёта
+    - Используется:
+          .live_game_goals .live_game_goal span
+    - Не используются .score1 / .score2
+
+
+============================================================
+ИЗМЕНЕНИЯ V1.2.4
+============================================================
+
+КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ STATISTICS:
+
+    Старый алгоритм позволял частичное совпадение:
+
+        "удары" in "штрафные удары"
+
+    В результате поле:
+
+        home_shots
+
+    могло получить значение:
+
+        штрафные удары
+
+    вместо:
+
+        удары
+
+
+Исправлено:
+
+    1. Приоритет точного совпадения label.
+    2. Удалено опасное частичное совпадение для
+       коротких/общих названий.
+    3. Добавлен специальный позиционный fallback
+       для блока после xG.
+
+На Soccer365:
+
+    Ожидаемые голы (xG)
+            ↓
+    Удары
+            ↓
+    Удары в створ
+            ↓
+    Заблокированные удары
+
+Если стандартный label-парсинг не определяет
+эти три поля корректно, используется именно
+эта DOM-последовательность.
 
 ВАЖНО:
 
-    Soccer365 показывает:
-
-        Весь матч (#stat-tp0)
-        1-й тайм (#stat-tp1)
-        2-й тайм (#stat-tp2)
-
-    FAJ использует ТОЛЬКО:
-
-        ВЕСЬ МАТЧ (#stat-tp0)
-
-============================================================
-
-ИЗМЕНЕНИЯ V1.2:
-    - Переход на DOM-парсинг вместо текстового поиска
-    - Использование id="clubs_stats" и id="stat-tp0"
-    - Прямой парсинг .stats_item → .stats_inf + .stats_title
-    - Улучшенное извлечение команд через .live_game_ht / .live_game_at
-    - Логирование пропущенных полей
-    - Устойчивость к изменениям структуры
-
-ИЗМЕНЕНИЯ V1.2.1:
-    - Интеграция с FAJ Team Identity
-    - canonicalize_parsed_team() для приведения названий
-    - Двойная защита в parse()
-
-ИЗМЕНЕНИЯ V1.2.2:
-    - Добавлено извлечение даты матча (match_date)
-    - Функция extract_match_date()
-    - Дата сохраняется в результате парсинга
-    - Используется для фильтрации истории в FAJ Predictor
-
-ИЗМЕНЕНИЯ V1.2.3:
-    - Исправлено извлечение счёта
-    - extract_score() теперь использует .live_game_goals .live_game_goal span
-    - Больше не использует .score1 / .score2 (они содержат не финальный счёт)
-    - Это исправляет ошибки с неправильными результатами в form_context
-============================================================
+    Парсится ТОЛЬКО #stat-tp0.
 """
+
 
 from __future__ import annotations
 
 import logging
 import re
+
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+
+from typing import (
+    Any,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+)
 
 import requests
+
 from bs4 import BeautifulSoup
+
 
 # ============================================================
 # FAJ TEAM IDENTITY
@@ -98,10 +171,12 @@ logger = logging.getLogger(__name__)
 # CONFIG
 # ============================================================
 
-PARSER_VERSION = "1.2.3"
+PARSER_VERSION = "1.2.4"
+
 SOURCE_NAME = "soccer365"
 
 DEFAULT_TIMEOUT = 20
+
 
 USER_AGENT = (
     "Mozilla/5.0 "
@@ -114,19 +189,6 @@ USER_AGENT = (
 
 # ============================================================
 # STATISTIC MAP
-#
-# Soccer365 structure:
-#
-#     HOME
-#     LABEL
-#     AWAY
-#
-# Example:
-#
-#     2.25
-#     Ожидаемые голы (xG)
-#     1.52
-#
 # ============================================================
 
 STAT_LABELS: Dict[str, List[str]] = {
@@ -282,7 +344,9 @@ def empty_result() -> Dict[str, Any]:
 # TEXT
 # ============================================================
 
-def normalize_text(value: Any) -> str:
+def normalize_text(
+    value: Any,
+) -> str:
 
     if value is None:
         return ""
@@ -305,7 +369,9 @@ def normalize_text(value: Any) -> str:
     return text.strip()
 
 
-def normalize_label(value: Any) -> str:
+def normalize_label(
+    value: Any,
+) -> str:
 
     text = normalize_text(
         value
@@ -320,39 +386,47 @@ def normalize_label(value: Any) -> str:
 
 
 # ============================================================
-# FAJ TEAM IDENTITY WRAPPER
+# FAJ TEAM IDENTITY
 # ============================================================
 
-def canonicalize_parsed_team(value: Any) -> Optional[str]:
+def canonicalize_parsed_team(
+    value: Any,
+) -> Optional[str]:
     """
     Приводит название команды из внешнего источника
     к canonical FAJ identity.
 
-    Пример:
-        ЦСКА Москва
-            ↓
-        ЦСКА
-
     Если команда неизвестна FAJ Identity Registry,
-    сохраняем исходное название, чтобы не потерять факт.
+    сохраняется исходное название.
     """
-    text = normalize_text(value)
+
+    text = normalize_text(
+        value
+    )
+
     if not text:
         return None
 
-    canonical = resolve_team_name(text)
+    canonical = resolve_team_name(
+        text
+    )
+
     if canonical:
+
         logger.debug(
             "Soccer365 team identity: %r -> %r",
             text,
             canonical,
         )
+
         return canonical
 
     logger.warning(
-        "Soccer365: команда не найдена в FAJ Identity Registry: %r",
+        "Soccer365: команда не найдена "
+        "в FAJ Identity Registry: %r",
         text,
     )
+
     return text
 
 
@@ -440,6 +514,7 @@ def convert_value(
     if key.endswith(
         "_xg"
     ):
+
         return safe_float(
             value
         )
@@ -459,6 +534,7 @@ def fetch_html(
 ) -> Tuple[str, str]:
 
     if not url:
+
         raise ValueError(
             "Soccer365 URL не указан."
         )
@@ -469,19 +545,24 @@ def fetch_html(
         url,
         headers={
             "User-Agent": USER_AGENT,
+
             "Accept": (
                 "text/html,"
                 "application/xhtml+xml,"
                 "application/xml;q=0.9,"
                 "*/*;q=0.8"
             ),
+
             "Accept-Language": (
                 "ru-RU,ru;q=0.9,"
                 "en-US;q=0.8,en;q=0.5"
             ),
+
             "Cache-Control": "no-cache",
         },
+
         timeout=timeout,
+
         allow_redirects=True,
     )
 
@@ -491,7 +572,7 @@ def fetch_html(
         response.headers
         .get(
             "Content-Type",
-            ""
+            "",
         )
         .lower()
     )
@@ -525,7 +606,7 @@ def make_soup(
 
 
 # ============================================================
-# TEAMS — DOM-based (UPDATED: canonicalize names)
+# TEAMS
 # ============================================================
 
 def extract_teams(
@@ -536,7 +617,7 @@ def extract_teams(
 ]:
 
     # --------------------------------------------------------
-    # STRATEGY 1: DOM-структура live_game
+    # STRATEGY 1
     # --------------------------------------------------------
 
     home_elem = soup.select_one(
@@ -566,12 +647,17 @@ def extract_teams(
         if home and away:
 
             return (
-                canonicalize_parsed_team(home),
-                canonicalize_parsed_team(away),
+                canonicalize_parsed_team(
+                    home
+                ),
+
+                canonicalize_parsed_team(
+                    away
+                ),
             )
 
     # --------------------------------------------------------
-    # STRATEGY 2: META DESCRIPTION
+    # STRATEGY 2 — META DESCRIPTION
     # --------------------------------------------------------
 
     meta = soup.find(
@@ -612,12 +698,17 @@ def extract_teams(
                 if home and away:
 
                     return (
-                        canonicalize_parsed_team(home),
-                        canonicalize_parsed_team(away),
+                        canonicalize_parsed_team(
+                            home
+                        ),
+
+                        canonicalize_parsed_team(
+                            away
+                        ),
                     )
 
     # --------------------------------------------------------
-    # STRATEGY 3: TITLE
+    # STRATEGY 3 — TITLE
     # --------------------------------------------------------
 
     title = soup.find(
@@ -651,12 +742,17 @@ def extract_teams(
             if home and away:
 
                 return (
-                    canonicalize_parsed_team(home),
-                    canonicalize_parsed_team(away),
+                    canonicalize_parsed_team(
+                        home
+                    ),
+
+                    canonicalize_parsed_team(
+                        away
+                    ),
                 )
 
     # --------------------------------------------------------
-    # STRATEGY 4: SCORE HEADER FALLBACK
+    # STRATEGY 4 — SCORE HEADER FALLBACK
     # --------------------------------------------------------
 
     score1 = soup.select_one(
@@ -669,9 +765,7 @@ def extract_teams(
 
     if score1 and score2:
 
-        parent = (
-            score1.parent
-        )
+        parent = score1.parent
 
         if parent:
 
@@ -699,8 +793,13 @@ def extract_teams(
             if len(team_names) >= 2:
 
                 return (
-                    canonicalize_parsed_team(team_names[0]),
-                    canonicalize_parsed_team(team_names[-1]),
+                    canonicalize_parsed_team(
+                        team_names[0]
+                    ),
+
+                    canonicalize_parsed_team(
+                        team_names[-1]
+                    ),
                 )
 
     return (
@@ -710,32 +809,32 @@ def extract_teams(
 
 
 # ============================================================
-# SCORE (UPDATED v1.2.3 — используем .live_game_goals)
+# SCORE
 # ============================================================
 
 def extract_score(
     soup: BeautifulSoup,
 ) -> Optional[str]:
     """
-    Извлекает финальный счёт матча Soccer365.
+    Извлекает финальный счёт.
 
     Основной источник:
-        .live_game_goals .live_game_goal span
 
-    ВАЖНО:
-        .score1 / .score2 НЕ используем.
-        На странице Soccer365 они могут содержать
-        не финальный счёт матча.
+        .live_game_goals
+        .live_game_goal span
     """
+
     goals = soup.select(
         ".live_game_goals .live_game_goal span"
     )
 
     if len(goals) < 2:
+
         logger.warning(
             "Soccer365: не найден финальный счёт "
             "в .live_game_goals"
         )
+
         return None
 
     home = safe_int(
@@ -753,226 +852,495 @@ def extract_score(
     )
 
     if home is None or away is None:
+
         logger.warning(
             "Soccer365: не удалось преобразовать "
             "счёт в числа"
         )
+
         return None
 
     if home < 0 or away < 0:
+
         return None
 
     if home > 20 or away > 20:
+
         logger.warning(
             "Soccer365: подозрительный счёт "
             "%s:%s",
             home,
             away,
         )
+
         return None
 
     return f"{home}:{away}"
 
 
 # ============================================================
-# MATCH DATE (NEW)
+# MATCH DATE
 # ============================================================
 
 def extract_match_date(
     soup: BeautifulSoup,
 ) -> Optional[str]:
     """
-    Извлекает дату матча из страницы Soccer365.
-
-    Стратегии:
-        1. Мета-тег article:published_time
-        2. Элемент .live_game_date или .live_game_datetime
-        3. Мета-тег description
-        4. fallback: URL
+    Извлекает дату матча.
     """
+
     # --------------------------------------------------------
-    # STRATEGY 1: META article:published_time
+    # STRATEGY 1
     # --------------------------------------------------------
+
     meta_date = soup.find(
         "meta",
         attrs={
             "property": "article:published_time"
-        }
+        },
     )
 
     if meta_date:
-        content = meta_date.get("content")
+
+        content = meta_date.get(
+            "content"
+        )
+
         if content:
-            # Пробуем парсить ISO дату
+
             try:
-                # Формат: 2026-08-29T18:30:00+03:00
+
                 dt = datetime.fromisoformat(
-                    content.replace('Z', '+00:00')
+                    content.replace(
+                        "Z",
+                        "+00:00",
+                    )
                 )
+
                 return dt.date().isoformat()
-            except (ValueError, TypeError):
-                # Пробуем просто взять первые 10 символов
+
+            except (
+                ValueError,
+                TypeError,
+            ):
+
                 if len(content) >= 10:
+
                     date_str = content[:10]
-                    if re.match(r"\d{4}-\d{2}-\d{2}", date_str):
+
+                    if re.match(
+                        r"\d{4}-\d{2}-\d{2}",
+                        date_str,
+                    ):
+
                         return date_str
 
     # --------------------------------------------------------
-    # STRATEGY 2: .live_game_date or .live_game_datetime
+    # MONTHS
     # --------------------------------------------------------
+
+    months = {
+
+        "января": "01",
+        "февраля": "02",
+        "марта": "03",
+        "апреля": "04",
+        "мая": "05",
+        "июня": "06",
+        "июля": "07",
+        "августа": "08",
+        "сентября": "09",
+        "октября": "10",
+        "ноября": "11",
+        "декабря": "12",
+    }
+
+    # --------------------------------------------------------
+    # STRATEGY 2
+    # --------------------------------------------------------
+
     date_elem = soup.select_one(
         ".live_game_date"
     )
 
     if not date_elem:
+
         date_elem = soup.select_one(
             ".live_game_datetime"
         )
 
     if date_elem:
+
         text = normalize_text(
             date_elem.get_text(
                 " ",
                 strip=True,
             )
         )
+
         if text:
-            # Пробуем парсить дату в формате: 29.08.2026
+
             match = re.search(
                 r"(\d{2})\.(\d{2})\.(\d{4})",
-                text
+                text,
             )
+
             if match:
-                day, month, year = match.groups()
-                return f"{year}-{month}-{day}"
 
-            # Формат: 29 августа 2026
-            months = {
-                "января": "01",
-                "февраля": "02",
-                "марта": "03",
-                "апреля": "04",
-                "мая": "05",
-                "июня": "06",
-                "июля": "07",
-                "августа": "08",
-                "сентября": "09",
-                "октября": "10",
-                "ноября": "11",
-                "декабря": "12",
-            }
-            for month_name, month_num in months.items():
+                day, month, year = (
+                    match.groups()
+                )
+
+                return (
+                    f"{year}-{month}-{day}"
+                )
+
+            for (
+                month_name,
+                month_num,
+            ) in months.items():
+
                 if month_name in text.lower():
+
                     match = re.search(
-                        rf"(\d{{1,2}})\s+{month_name}\s+(\d{{4}})",
+                        rf"(\d{{1,2}})\s+"
+                        rf"{month_name}\s+"
+                        rf"(\d{{4}})",
                         text,
-                        re.IGNORECASE
+                        re.IGNORECASE,
                     )
+
                     if match:
-                        day, year = match.groups()
-                        return f"{year}-{month_num}-{int(day):02d}"
+
+                        day, year = (
+                            match.groups()
+                        )
+
+                        return (
+                            f"{year}-"
+                            f"{month_num}-"
+                            f"{int(day):02d}"
+                        )
 
     # --------------------------------------------------------
-    # STRATEGY 3: META DESCRIPTION
+    # STRATEGY 3 — META DESCRIPTION
     # --------------------------------------------------------
+
     meta_desc = soup.find(
         "meta",
         attrs={
             "name": "description"
-        }
+        },
     )
 
     if meta_desc:
-        content = meta_desc.get("content")
-        if content:
-            # Ищем дату в описании: 29 августа 2026
-            text = normalize_text(content)
-            months = {
-                "января": "01",
-                "февраля": "02",
-                "марта": "03",
-                "апреля": "04",
-                "мая": "05",
-                "июня": "06",
-                "июля": "07",
-                "августа": "08",
-                "сентября": "09",
-                "октября": "10",
-                "ноября": "11",
-                "декабря": "12",
-            }
-            for month_name, month_num in months.items():
-                if month_name in text.lower():
-                    match = re.search(
-                        rf"(\d{{1,2}})\s+{month_name}\s+(\d{{4}})",
-                        text,
-                        re.IGNORECASE
-                    )
-                    if match:
-                        day, year = match.groups()
-                        return f"{year}-{month_num}-{int(day):02d}"
 
-            # Или формат: 29.08.2026
+        content = meta_desc.get(
+            "content"
+        )
+
+        if content:
+
+            text = normalize_text(
+                content
+            )
+
+            for (
+                month_name,
+                month_num,
+            ) in months.items():
+
+                if month_name in text.lower():
+
+                    match = re.search(
+                        rf"(\d{{1,2}})\s+"
+                        rf"{month_name}\s+"
+                        rf"(\d{{4}})",
+                        text,
+                        re.IGNORECASE,
+                    )
+
+                    if match:
+
+                        day, year = (
+                            match.groups()
+                        )
+
+                        return (
+                            f"{year}-"
+                            f"{month_num}-"
+                            f"{int(day):02d}"
+                        )
+
             match = re.search(
                 r"(\d{2})\.(\d{2})\.(\d{4})",
-                text
+                text,
             )
-            if match:
-                day, month, year = match.groups()
-                return f"{year}-{month}-{day}"
 
-    # --------------------------------------------------------
-    # STRATEGY 4: URL
-    # --------------------------------------------------------
-    # Из URL можно извлечь ID матча, но не дату.
-    # Возвращаем None, если ничего не нашли.
-    # --------------------------------------------------------
+            if match:
+
+                day, month, year = (
+                    match.groups()
+                )
+
+                return (
+                    f"{year}-{month}-{day}"
+                )
 
     logger.debug(
         "Soccer365: не удалось извлечь дату матча"
     )
+
     return None
 
 
 # ============================================================
-# STATISTICS — DOM-based (v1.2)
+# SPECIAL SHOTS POSITIONAL PARSER
+# ============================================================
+
+def parse_shots_by_position(
+    items: List[Any],
+) -> Dict[str, Any]:
+    """
+    Специальный parser для последовательности:
+
+        xG
+        ↓
+        Удары
+        ↓
+        Удары в створ
+        ↓
+        Заблокированные удары
+
+    Используется как дополнительная защита.
+
+    ВАЖНО:
+
+        Эта функция НЕ ищет данные во всем HTML.
+
+        Она работает только с items,
+        которые уже находятся внутри #stat-tp0.
+    """
+
+    stats: Dict[str, Any] = {}
+
+    xg_index: Optional[int] = None
+
+    # --------------------------------------------------------
+    # Ищем xG
+    # --------------------------------------------------------
+
+    for index, item in enumerate(items):
+
+        title = item.find(
+            "div",
+            class_="stats_title",
+        )
+
+        if not title:
+            continue
+
+        label = normalize_label(
+            title.get_text(
+                " ",
+                strip=True,
+            )
+        )
+
+        if label in (
+            "ожидаемые голы (xg)",
+            "ожидаемые голы",
+            "expected goals",
+        ):
+
+            xg_index = index
+
+            break
+
+    if xg_index is None:
+
+        logger.warning(
+            "Soccer365: xG item не найден "
+            "для позиционного shots parser"
+        )
+
+        return stats
+
+    # --------------------------------------------------------
+    # Берём следующие три stats_item
+    # --------------------------------------------------------
+
+    target_positions = [
+        (
+            xg_index + 1,
+            "home_shots",
+            "away_shots",
+        ),
+
+        (
+            xg_index + 2,
+            "home_shots_on_target",
+            "away_shots_on_target",
+        ),
+
+        (
+            xg_index + 3,
+            "home_blocked_shots",
+            "away_blocked_shots",
+        ),
+    ]
+
+    for (
+        index,
+        home_key,
+        away_key,
+    ) in target_positions:
+
+        if index >= len(items):
+
+            continue
+
+        item = items[index]
+
+        infs = item.find_all(
+            "div",
+            class_="stats_inf",
+        )
+
+        title = item.find(
+            "div",
+            class_="stats_title",
+        )
+
+        if len(infs) < 2 or not title:
+
+            continue
+
+        label = normalize_label(
+            title.get_text(
+                " ",
+                strip=True,
+            )
+        )
+
+        home_value = normalize_text(
+            infs[0].get_text(
+                " ",
+                strip=True,
+            )
+        )
+
+        away_value = normalize_text(
+            infs[1].get_text(
+                " ",
+                strip=True,
+            )
+        )
+
+        # ----------------------------------------------------
+        # Проверяем, что позиционный item действительно
+        # относится к ожидаемому полю.
+        #
+        # Это не жёсткая проверка:
+        # она нужна для диагностики и защиты.
+        # ----------------------------------------------------
+
+        expected_labels = {
+
+            "home_shots": {
+                "удары",
+                "shots",
+            },
+
+            "home_shots_on_target": {
+                "удары в створ",
+                "shots on target",
+            },
+
+            "home_blocked_shots": {
+                "заблокированные удары",
+                "blocked shots",
+            },
+        }
+
+        expected = expected_labels.get(
+            home_key,
+            set(),
+        )
+
+        if expected and label not in expected:
+
+            logger.warning(
+                "Soccer365 positional parser: "
+                "ожидалось поле %s, "
+                "но получен label=%r",
+                home_key,
+                label,
+            )
+
+            # Не подставляем чужую статистику.
+            continue
+
+        stats[home_key] = safe_int(
+            home_value
+        )
+
+        stats[away_key] = safe_int(
+            away_value
+        )
+
+        logger.debug(
+            "Soccer365 positional stats: "
+            "%s/%s = %s/%s",
+            home_key,
+            away_key,
+            stats[home_key],
+            stats[away_key],
+        )
+
+    return stats
+
+
+# ============================================================
+# STATISTICS — FULL MATCH
 # ============================================================
 
 def parse_full_match_statistics(
     soup: BeautifulSoup,
 ) -> Dict[str, Any]:
     """
-    Парсит статистику "Весь матч" (#stat-tp0)
-    через DOM-структуру.
+    Парсит ТОЛЬКО:
 
-    Структура:
+        #clubs_stats
+            └── #stat-tp0
 
-        <div id="clubs_stats">
-            <div class="sort stats_ftp">...</div>
-            <div id="stat-tp0" class="stats_tp_body">
-                <div class="stats_items">
-                    <div class="stats_item">
-                        <div class="stats_head">
-                            <div class="stats_inf">2.25</div>
-                            <div class="stats_title">Ожидаемые голы (xG)</div>
-                            <div class="stats_inf">1.52</div>
-                        </div>
-                    </div>
-                    ...
-                </div>
-            </div>
-        </div>
+    Используется DOM.
+
+    Важное изменение v1.2.4:
+
+        Сначала используется точное совпадение
+        label.
+
+        Опасное частичное совпадение:
+
+            "удары" in "штрафные удары"
+
+        больше НЕ используется.
+
+        Для shots / shots_on_target /
+        blocked_shots дополнительно используется
+        позиционная проверка после xG.
     """
 
     stats: Dict[str, Any] = {}
 
     # --------------------------------------------------------
-    # 1. Ищем блок статистики
+    # 1. clubs_stats
     # --------------------------------------------------------
 
     stats_block = soup.find(
         "div",
-        id="clubs_stats"
+        id="clubs_stats",
     )
 
     if not stats_block:
@@ -984,55 +1352,69 @@ def parse_full_match_statistics(
         return stats
 
     # --------------------------------------------------------
-    # 2. Ищем "Весь матч" — id="stat-tp0"
+    # 2. stat-tp0
     # --------------------------------------------------------
 
     full_match = stats_block.find(
         "div",
-        id="stat-tp0"
+        id="stat-tp0",
     )
 
     if not full_match:
 
         logger.warning(
-            "Soccer365: блок stat-tp0 (Весь матч) не найден"
+            "Soccer365: блок stat-tp0 "
+            "(Весь матч) не найден"
         )
 
         return stats
 
     # --------------------------------------------------------
-    # 3. Парсим каждый stats_item
+    # 3. stats_item
     # --------------------------------------------------------
 
     items = full_match.find_all(
         "div",
-        class_="stats_item"
+        class_="stats_item",
     )
 
     if not items:
 
         logger.warning(
-            "Soccer365: .stats_item не найдены в stat-tp0"
+            "Soccer365: .stats_item "
+            "не найдены в stat-tp0"
         )
 
         return stats
 
     found_count = 0
 
-    for item in items:
+    # ========================================================
+    # PASS 1
+    #
+    # ТОЛЬКО ТОЧНОЕ СОПОСТАВЛЕНИЕ LABEL
+    # ========================================================
 
-        # ------------------------------------------------
-        # Извлекаем home, label, away
-        # ------------------------------------------------
+    exact_label_map: Dict[str, str] = {}
+
+    for key, aliases in STAT_LABELS.items():
+
+        for alias in aliases:
+
+            exact_label_map[
+                normalize_label(alias)
+            ] = key
+
+    for item in items:
 
         infs = item.find_all(
             "div",
-            class_="stats_inf"
+            class_="stats_inf",
         )
 
         title = item.find(
             "div",
-            class_="stats_title"
+            class_="stats_title",
         )
 
         if len(infs) < 2 or not title:
@@ -1060,72 +1442,173 @@ def parse_full_match_statistics(
             )
         )
 
-        # ------------------------------------------------
-        # Ищем ключ по label
-        # ------------------------------------------------
+        key = exact_label_map.get(
+            label
+        )
 
-        matched = False
-
-        for key, aliases in STAT_LABELS.items():
-
-            for alias in aliases:
-
-                alias_normalized = normalize_label(
-                    alias
-                )
-
-                # Точное совпадение или частичное
-                if (
-                    label == alias_normalized
-                    or alias_normalized in label
-                    or label in alias_normalized
-                ):
-
-                    away_key = key.replace(
-                        "home_",
-                        "away_",
-                        1,
-                    )
-
-                    stats[key] = convert_value(
-                        key,
-                        home_value,
-                    )
-
-                    stats[away_key] = convert_value(
-                        away_key,
-                        away_value,
-                    )
-
-                    found_count += 1
-
-                    matched = True
-
-                    break
-
-            if matched:
-
-                break
-
-        if not matched:
+        if key is None:
 
             logger.debug(
-                "Soccer365: не найден ключ для label: %s",
+                "Soccer365: label не найден "
+                "точным сопоставлением: %r",
                 label,
             )
+
+            continue
+
+        away_key = key.replace(
+            "home_",
+            "away_",
+            1,
+        )
+
+        stats[key] = convert_value(
+            key,
+            home_value,
+        )
+
+        stats[away_key] = convert_value(
+            away_key,
+            away_value,
+        )
+
+        found_count += 1
+
+        logger.debug(
+            "Soccer365 exact stat: "
+            "%s=%s / %s=%s",
+            key,
+            stats[key],
+            away_key,
+            stats[away_key],
+        )
+
+    # ========================================================
+    # PASS 2
+    #
+    # СПЕЦИАЛЬНЫЙ SHOTS PARSER
+    #
+    # Он нужен именно для структуры Soccer365:
+    #
+    # xG
+    # shots
+    # shots_on_target
+    # blocked_shots
+    #
+    # Если exact parser уже получил правильные значения,
+    # позиционный parser их НЕ перезаписывает.
+    # ========================================================
+
+    positional_stats = parse_shots_by_position(
+        items
+    )
+
+    for key, value in positional_stats.items():
+
+        if value is None:
+            continue
+
+        # ----------------------------------------------------
+        # Не перезаписываем уже корректно найденные значения.
+        # ----------------------------------------------------
+
+        if stats.get(key) is None:
+
+            stats[key] = value
+
+            found_count += 1
+
+            logger.info(
+                "Soccer365: %s восстановлено "
+                "позиционным parser",
+                key,
+            )
+
+    # ========================================================
+    # DIAGNOSTIC VALIDATION
+    # ========================================================
+
+    home_shots = stats.get(
+        "home_shots"
+    )
+
+    away_shots = stats.get(
+        "away_shots"
+    )
+
+    home_sot = stats.get(
+        "home_shots_on_target"
+    )
+
+    away_sot = stats.get(
+        "away_shots_on_target"
+    )
+
+    # --------------------------------------------------------
+    # shots >= shots_on_target
+    # --------------------------------------------------------
+
+    if (
+        home_shots is not None
+        and home_sot is not None
+        and home_sot > home_shots
+    ):
+
+        logger.warning(
+            "Soccer365: некорректные данные: "
+            "home_shots=%s < home_shots_on_target=%s",
+            home_shots,
+            home_sot,
+        )
+
+    if (
+        away_shots is not None
+        and away_sot is not None
+        and away_sot > away_shots
+    ):
+
+        logger.warning(
+            "Soccer365: некорректные данные: "
+            "away_shots=%s < away_shots_on_target=%s",
+            away_shots,
+            away_sot,
+        )
+
+    # ========================================================
+    # LOGGING
+    # ========================================================
 
     if found_count == 0:
 
         logger.warning(
-            "Soccer365: не найдено ни одного показателя в stat-tp0"
+            "Soccer365: не найдено ни одного "
+            "показателя в stat-tp0"
         )
 
     else:
 
         logger.info(
-            "Soccer365: найдено %s показателей в stat-tp0",
+            "Soccer365: найдено %s показателей "
+            "в stat-tp0",
             found_count,
         )
+
+    # --------------------------------------------------------
+    # Специальный итог для диагностики shots
+    # --------------------------------------------------------
+
+    logger.info(
+        "Soccer365 shots result: "
+        "shots=%s/%s | "
+        "shots_on_target=%s/%s | "
+        "blocked_shots=%s/%s",
+        stats.get("home_shots"),
+        stats.get("away_shots"),
+        stats.get("home_shots_on_target"),
+        stats.get("away_shots_on_target"),
+        stats.get("home_blocked_shots"),
+        stats.get("away_blocked_shots"),
+    )
 
     return stats
 
@@ -1183,7 +1666,10 @@ def calculate_quality(
 
     available = 0
 
-    for home_key, away_key in groups:
+    for (
+        home_key,
+        away_key,
+    ) in groups:
 
         if (
             stats.get(home_key) is not None
@@ -1209,7 +1695,7 @@ def calculate_quality(
 class Soccer365Parser:
 
     """
-    Production parser Soccer365 v1.2.3.
+    Production parser Soccer365 v1.2.4.
 
     Совместимость:
 
@@ -1268,7 +1754,7 @@ class Soccer365Parser:
             )
 
             # ------------------------------------------------
-            # TEAMS — с дополнительной защитой identity
+            # TEAMS
             # ------------------------------------------------
 
             (
@@ -1278,10 +1764,10 @@ class Soccer365Parser:
                 soup
             )
 
-            # Двойная защита: приводим к canonical
             home_team = canonicalize_parsed_team(
                 home_team
             )
+
             away_team = canonicalize_parsed_team(
                 away_team
             )
@@ -1295,7 +1781,7 @@ class Soccer365Parser:
             ] = away_team
 
             # ------------------------------------------------
-            # SCORE (UPDATED v1.2.3)
+            # SCORE
             # ------------------------------------------------
 
             result[
@@ -1315,7 +1801,7 @@ class Soccer365Parser:
             )
 
             # ------------------------------------------------
-            # STATISTICS — DOM-based
+            # STATISTICS
             # ------------------------------------------------
 
             stats = parse_full_match_statistics(
@@ -1384,6 +1870,7 @@ class Soccer365Parser:
         )
 
         return {
+
             "stats": parsed.get(
                 "stats",
                 {},
@@ -1477,7 +1964,7 @@ if __name__ == "__main__":
             "python "
             "app/parsers/"
             "soccer365_parser.py "
-            "https://soccer365.ru/games/2478604/"
+            "https://soccer365.ru/games/2478638/"
         )
 
         raise SystemExit(1)
