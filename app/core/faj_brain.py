@@ -44,9 +44,9 @@ FAJ Personal Prediction Brain
           ↓
     BTTS / totals
           ↓
-    corners
+    corners (из CornersModel)
           ↓
-    cards
+    cards (из CardsModel)
           ↓
     confidence / risk
           ↓
@@ -80,7 +80,7 @@ FAJ анализирует предоставленную выборку, а н�
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, Iterable, List, Optional
 
 # ============================================================
@@ -96,12 +96,24 @@ from app.core.brain_contract import FormContext as ContractFormContext
 
 from app.core.goal_model import GoalModel
 
+# ============================================================
+# CORNERS MODEL — угловые
+# ============================================================
+
+from app.core.corners_model import CornersModel
+
+# ============================================================
+# CARDS MODEL — карточки
+# ============================================================
+
+from app.core.cards_model import CardsModel
+
 
 # ============================================================
 # VERSION
 # ============================================================
 
-BRAIN_VERSION = "FAJ-BRAIN-0.3"
+BRAIN_VERSION = "FAJ-BRAIN-0.4"
 
 MIN_MATCHES = 1
 EXTENDED_ANALYSIS_MATCHES = 3
@@ -250,6 +262,62 @@ class HistoricalMatch:
         team: Optional[str] = None,
     ) -> "HistoricalMatch":
 
+        # ----------------------------------------------------
+        # Извлекаем xG из вложенной структуры
+        # ----------------------------------------------------
+        xg_value = _float(data.get("xg"))
+        if xg_value is None:
+            xg_dict = data.get("xg", {})
+            if isinstance(xg_dict, dict):
+                if team:
+                    # Определяем сторону команды
+                    home_team = data.get("home_team")
+                    if home_team and team == home_team:
+                        xg_value = _float(xg_dict.get("home"))
+                    else:
+                        xg_value = _float(xg_dict.get("away"))
+
+        # ----------------------------------------------------
+        # Извлекаем corners из вложенной структуры
+        # ----------------------------------------------------
+        corners_value = _float(data.get("corners"))
+        opponent_corners_value = None
+
+        if corners_value is None:
+            corners_dict = data.get("corners", {})
+            if isinstance(corners_dict, dict):
+                home_team = data.get("home_team")
+                if home_team and team == home_team:
+                    corners_value = _float(corners_dict.get("home"))
+                    opponent_corners_value = _float(corners_dict.get("away"))
+                else:
+                    corners_value = _float(corners_dict.get("away"))
+                    opponent_corners_value = _float(corners_dict.get("home"))
+
+        # ----------------------------------------------------
+        # Извлекаем cards из вложенной структуры
+        # ----------------------------------------------------
+        yellow_cards_value = _float(data.get("yellow_cards"))
+        opponent_yellow_cards_value = None
+
+        if yellow_cards_value is None:
+            cards_dict = data.get("cards", {})
+            if isinstance(cards_dict, dict):
+                home_team = data.get("home_team")
+                if home_team and team == home_team:
+                    yellow_cards_value = _float(cards_dict.get("home"))
+                    opponent_yellow_cards_value = _float(cards_dict.get("away"))
+                else:
+                    yellow_cards_value = _float(cards_dict.get("away"))
+                    opponent_yellow_cards_value = _float(cards_dict.get("home"))
+
+        # Собираем extra с opponent значениями
+        extra = data.get("extra", {})
+        if opponent_corners_value is not None:
+            extra["opponent_corners"] = opponent_corners_value
+        if opponent_yellow_cards_value is not None:
+            extra["opponent_yellow_cards"] = opponent_yellow_cards_value
+
         return cls(
 
             team=(
@@ -284,22 +352,13 @@ class HistoricalMatch:
                 data.get("possession")
             ),
 
-            corners=_float(
-                data.get("corners")
-            ),
+            corners=corners_value,
 
-            yellow_cards=_float(
-                data.get(
-                    "yellow_cards",
-                    data.get("cards"),
-                )
-            ),
+            yellow_cards=yellow_cards_value,
 
-            red_cards=_float(
-                data.get("red_cards")
-            ),
+            red_cards=_float(data.get("red_cards")),
 
-            xg=_float(data.get("xg")),
+            xg=xg_value,
 
             big_chances=_float(
                 data.get("big_chances")
@@ -309,7 +368,7 @@ class HistoricalMatch:
 
             match_date=data.get("match_date"),
 
-            extra=data.get("extra", {}),
+            extra=extra,
         )
 
 
@@ -579,16 +638,28 @@ class FAJBrain:
         self.version = BRAIN_VERSION
 
         # ========================================================
-        # NEW: FormModel подключён как математический слой
+        # FormModel — математический слой формы
         # ========================================================
 
         self.form_model = FormModel()
 
         # ========================================================
-        # NEW: GoalModel подключён для синтеза ожидаемых голов
+        # GoalModel — синтез ожидаемых голов
         # ========================================================
 
         self.goal_model = GoalModel()
+
+        # ========================================================
+        # CornersModel — угловые
+        # ========================================================
+
+        self.corners_model = CornersModel()
+
+        # ========================================================
+        # CardsModel — карточки
+        # ========================================================
+
+        self.cards_model = CardsModel()
 
     # ========================================================
     # NORMALIZATION
@@ -638,13 +709,39 @@ class FAJBrain:
         # Преобразуем HistoricalMatch в dict, который понимает build_form_context
         records = []
         for match in matches:
+            # Определяем домашнюю и гостевую команду
+            if match.is_home:
+                home_team = match.team
+                away_team = match.opponent or ""
+                home_goals = match.goals_for
+                away_goals = match.goals_against
+                home_corners = match.corners
+                away_corners = match.extra.get("opponent_corners")
+                home_cards = match.yellow_cards
+                away_cards = match.extra.get("opponent_yellow_cards")
+            else:
+                home_team = match.opponent or ""
+                away_team = match.team
+                home_goals = match.goals_against
+                away_goals = match.goals_for
+                home_corners = match.extra.get("opponent_corners")
+                away_corners = match.corners
+                home_cards = match.extra.get("opponent_yellow_cards")
+                away_cards = match.yellow_cards
+
             record = {
-                "home_team": match.team if match.is_home else match.opponent,
-                "away_team": match.opponent if match.is_home else match.team,
-                "home_goals": match.goals_for if match.is_home else match.goals_against,
-                "away_goals": match.goals_against if match.is_home else match.goals_for,
-                # xg передаётся как плоский float
-                "xg": match.xg,
+                "home_team": home_team,
+                "away_team": away_team,
+                "home_goals": home_goals,
+                "away_goals": away_goals,
+                "xg": {
+                    "home": match.xg if match.is_home else None,
+                    "away": match.xg if not match.is_home else None,
+                },
+                "home_corners": home_corners,
+                "away_corners": away_corners,
+                "home_yellow_cards": home_cards,
+                "away_yellow_cards": away_cards,
                 "match_date": match.match_date,
                 "is_home": match.is_home,
                 "opponent": match.opponent,
@@ -1045,107 +1142,12 @@ class FAJBrain:
         }
 
     # ========================================================
-    # CORNERS
+    # CORNERS — УДАЛЕНО (используем CornersModel)
     # ========================================================
 
-    def _corners(
-        self,
-        home: TeamProfile,
-        away: TeamProfile,
-    ) -> Dict[str, Optional[float]]:
-
-        home_corners = home.corners
-        away_corners = away.corners
-
-        if (
-            home_corners is None
-            and away_corners is None
-        ):
-
-            return {
-                "home": None,
-                "away": None,
-                "total": None,
-            }
-
-        if home_corners is None:
-            home_corners = 0.0
-
-        if away_corners is None:
-            away_corners = 0.0
-
-        expected_home = (
-            home_corners * 0.58
-            + away_corners * 0.42
-        )
-
-        expected_away = (
-            away_corners * 0.58
-            + home_corners * 0.42
-        )
-
-        return {
-            "home": round(expected_home, 2),
-            "away": round(expected_away, 2),
-            "total": round(
-                expected_home
-                + expected_away,
-                2,
-            ),
-        }
-
     # ========================================================
-    # CARDS
+    # CARDS — УДАЛЕНО (используем CardsModel)
     # ========================================================
-
-    def _cards(
-        self,
-        home: TeamProfile,
-        away: TeamProfile,
-    ) -> Dict[str, Optional[float]]:
-
-        if (
-            home.cards is None
-            and away.cards is None
-        ):
-
-            return {
-                "home": None,
-                "away": None,
-                "total": None,
-            }
-
-        home_cards = (
-            home.cards
-            if home.cards is not None
-            else 0.0
-        )
-
-        away_cards = (
-            away.cards
-            if away.cards is not None
-            else 0.0
-        )
-
-        expected_home = (
-            home_cards * 0.55
-            + away_cards * 0.45
-        )
-
-        expected_away = (
-            away_cards * 0.55
-            + home_cards * 0.45
-        )
-
-        return {
-            "home": round(expected_home, 2),
-            "away": round(expected_away, 2),
-            "total": round(
-                expected_home
-                + expected_away,
-                2,
-            ),
-        }
 
     # ========================================================
     # SIMPLE POISSON TOTAL
@@ -1336,7 +1338,44 @@ class FAJBrain:
         return conclusion, factors
 
     # ========================================================
-    # PUBLIC PREDICTION — ОБНОВЛЁННАЯ ВЕРСИЯ С GOALMODEL
+    # JSON SAFE HELPER
+    # ========================================================
+
+    def _json_safe(self, value: Any) -> Any:
+        """
+        Рекурсивно преобразует объекты в JSON-безопасный вид.
+        """
+        if value is None:
+            return None
+
+        if hasattr(value, "to_dict"):
+            return self._json_safe(value.to_dict())
+
+        if hasattr(value, "__dataclass_fields__"):
+            return {
+                key: self._json_safe(item)
+                for key, item in asdict(value).items()
+            }
+
+        if isinstance(value, dict):
+            return {
+                key: self._json_safe(item)
+                for key, item in value.items()
+            }
+
+        if isinstance(value, (list, tuple)):
+            return [
+                self._json_safe(item)
+                for item in value
+            ]
+
+        if isinstance(value, (str, int, float, bool)):
+            return value
+
+        return str(value)
+
+    # ========================================================
+    # PUBLIC PREDICTION — ОБНОВЛЁННАЯ ВЕРСИЯ
     # ========================================================
 
     def predict(
@@ -1400,7 +1439,7 @@ class FAJBrain:
         away_form_result = self.form_model.analyze(away_form_context_data)
 
         # ========================================================
-        # 3. Строим старые профили для совместимости (corners/cards)
+        # 3. Строим старые профили для совместимости (только для confidence)
         # ========================================================
 
         home_profile = self.build_profile(
@@ -1432,7 +1471,7 @@ class FAJBrain:
             analysis_mode = "Экспресс"
 
         # ========================================================
-        # 5. XG — через GoalModel (передаём FormModelResult напрямую)
+        # 5. XG — через GoalModel
         # ========================================================
 
         home_xg, away_xg = self._calculate_expected_goals(
@@ -1487,26 +1526,30 @@ class FAJBrain:
             score_strings.append("-")
 
         # ========================================================
-        # 9. CORNERS
+        # 9. CORNERS — через CornersModel
         # ========================================================
 
-        corners = self._corners(
-            home_profile,
-            away_profile,
+        corners_result = self.corners_model.synthesize_match(
+            home_form_context_data,
+            away_form_context_data,
         )
 
-        corner_total = corners["total"]
+        corner_total = corners_result.get("total_expected_corners")
+        home_corners_expected = corners_result.get("home", {}).get("home_corners_expected")
+        away_corners_expected = corners_result.get("away", {}).get("away_corners_expected")
 
         # ========================================================
-        # 10. CARDS
+        # 10. CARDS — через CardsModel
         # ========================================================
 
-        cards = self._cards(
-            home_profile,
-            away_profile,
+        cards_result = self.cards_model.synthesize_match(
+            home_form_context_data,
+            away_form_context_data,
         )
 
-        card_total = cards["total"]
+        card_total = cards_result.get("total_expected_cards")
+        home_cards_expected = cards_result.get("home", {}).get("home_cards_expected")
+        away_cards_expected = cards_result.get("away", {}).get("away_cards_expected")
 
         # ========================================================
         # 11. CONFIDENCE
@@ -1575,9 +1618,9 @@ class FAJBrain:
 
             corners_expected=corner_total,
 
-            home_corners_expected=corners["home"],
+            home_corners_expected=home_corners_expected,
 
-            away_corners_expected=corners["away"],
+            away_corners_expected=away_corners_expected,
 
             over75_corners_probability=(
                 self._over_probability(
@@ -1617,9 +1660,9 @@ class FAJBrain:
 
             cards_expected=card_total,
 
-            home_cards_expected=cards["home"],
+            home_cards_expected=home_cards_expected,
 
-            away_cards_expected=cards["away"],
+            away_cards_expected=away_cards_expected,
 
             over25_cards_probability=(
                 self._over_probability(
@@ -1683,14 +1726,22 @@ class FAJBrain:
                     away_profile.__dict__,
 
                 "home_form_result":
-                    home_form_result.__dict__,
+                    self._json_safe(home_form_result),
 
                 "away_form_result":
-                    away_form_result.__dict__,
+                    self._json_safe(away_form_result),
+
+                "corners_result":
+                    self._json_safe(corners_result),
+
+                "cards_result":
+                    self._json_safe(cards_result),
 
                 "method":
                     "FormModel v1.0 + "
                     "GoalModel v1.0 + "
+                    "CornersModel v1.0 + "
+                    "CardsModel v1.0 + "
                     "poisson_score_distribution",
 
                 "xg_internal":
@@ -1700,11 +1751,9 @@ class FAJBrain:
                     },
 
                 "note":
-                    "Версия 0.3. GoalModel подключён. "
-                    "xG рассчитывается как: "
-                    "(home_xg_avg + away_xga_avg) / 2 и "
-                    "(away_xg_avg + home_xga_avg) / 2. "
-                    "Без домашнего преимущества и прочих корректировок.",
+                    "Версия 0.4. CornersModel и CardsModel подключены. "
+                    "Угловые и карточки рассчитываются через отдельные модели. "
+                    "Никакого влияния на xG.",
             },
         )
 
