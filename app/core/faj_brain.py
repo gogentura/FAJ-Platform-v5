@@ -34,7 +34,11 @@ FAJ Personal Prediction Brain
           ↓
     FormModelResult
           ↓
-    GoalModel (из goal_model.py)
+    FormWin (из form_win.py) ← НОВОЕ
+          ↓
+    Defence (из defence.py) ← НОВОЕ
+          ↓
+    GoalModel (из goal_model.py) ← ОБНОВЛЁН
           ↓
     home_xg / away_xg
           ↓
@@ -91,6 +95,18 @@ from app.core.form_model import FormModel, FormModelResult
 from app.core.brain_contract import FormContext as ContractFormContext
 
 # ============================================================
+# FORM WIN — состояние предпосылок к победе
+# ============================================================
+
+from app.core.form_win import FormWin
+
+# ============================================================
+# DEFENCE — текущее оборонительное состояние
+# ============================================================
+
+from app.core.defence import Defence
+
+# ============================================================
 # GOAL MODEL — синтез ожидаемых голов
 # ============================================================
 
@@ -113,7 +129,7 @@ from app.core.cards_model import CardsModel
 # VERSION
 # ============================================================
 
-BRAIN_VERSION = "FAJ-BRAIN-0.4"
+BRAIN_VERSION = "FAJ-BRAIN-0.5"
 
 MIN_MATCHES = 1
 EXTENDED_ANALYSIS_MATCHES = 3
@@ -311,12 +327,148 @@ class HistoricalMatch:
                     yellow_cards_value = _float(cards_dict.get("away"))
                     opponent_yellow_cards_value = _float(cards_dict.get("home"))
 
-        # Собираем extra с opponent значениями
+        # ----------------------------------------------------
+        # Извлекаем shots из вложенной структуры
+        # ----------------------------------------------------
+        shots_value = _float(data.get("shots"))
+        opponent_shots_value = None
+
+        if shots_value is None:
+            shots_dict = data.get("shots", {})
+            if isinstance(shots_dict, dict):
+                home_team = data.get("home_team")
+                if home_team and team == home_team:
+                    shots_value = _float(shots_dict.get("home"))
+                    opponent_shots_value = _float(shots_dict.get("away"))
+                else:
+                    shots_value = _float(shots_dict.get("away"))
+                    opponent_shots_value = _float(shots_dict.get("home"))
+
+        # ----------------------------------------------------
+        # Извлекаем shots_on_target из вложенной структуры
+        # ----------------------------------------------------
+        sot_value = _float(data.get("shots_on_target"))
+        opponent_sot_value = None
+
+        if sot_value is None:
+            sot_dict = data.get("shots_on_target", {})
+            if isinstance(sot_dict, dict):
+                home_team = data.get("home_team")
+                if home_team and team == home_team:
+                    sot_value = _float(sot_dict.get("home"))
+                    opponent_sot_value = _float(sot_dict.get("away"))
+                else:
+                    sot_value = _float(sot_dict.get("away"))
+                    opponent_sot_value = _float(sot_dict.get("home"))
+
+        # ----------------------------------------------------
+        # Извлекаем big_chances из вложенной структуры
+        # ----------------------------------------------------
+        big_chances_value = _float(data.get("big_chances"))
+        opponent_big_chances_value = None
+
+        if big_chances_value is None:
+            big_chances_dict = data.get("big_chances", {})
+            if isinstance(big_chances_dict, dict):
+                home_team = data.get("home_team")
+                if home_team and team == home_team:
+                    big_chances_value = _float(big_chances_dict.get("home"))
+                    opponent_big_chances_value = _float(big_chances_dict.get("away"))
+                else:
+                    big_chances_value = _float(big_chances_dict.get("away"))
+                    opponent_big_chances_value = _float(big_chances_dict.get("home"))
+
+        # ----------------------------------------------------
+        # Извлекаем possession из вложенной структуры
+        # ----------------------------------------------------
+        possession_value = _float(data.get("possession"))
+        opponent_possession_value = None
+
+        if possession_value is None:
+            possession_dict = data.get("possession", {})
+            if isinstance(possession_dict, dict):
+                home_team = data.get("home_team")
+                if home_team and team == home_team:
+                    possession_value = _float(possession_dict.get("home"))
+                    opponent_possession_value = _float(possession_dict.get("away"))
+                else:
+                    possession_value = _float(possession_dict.get("away"))
+                    opponent_possession_value = _float(possession_dict.get("home"))
+
+        # ----------------------------------------------------
+        # Извлекаем passes из вложенной структуры
+        # ----------------------------------------------------
+        passes_value = _float(data.get("passes"))
+        opponent_passes_value = None
+
+        if passes_value is None:
+            passes_dict = data.get("passes", {})
+            if isinstance(passes_dict, dict):
+                home_team = data.get("home_team")
+                if home_team and team == home_team:
+                    passes_value = _float(passes_dict.get("home"))
+                    opponent_passes_value = _float(passes_dict.get("away"))
+                else:
+                    passes_value = _float(passes_dict.get("away"))
+                    opponent_passes_value = _float(passes_dict.get("home"))
+
+        # ----------------------------------------------------
+        # Извлекаем pass_accuracy из вложенной структуры
+        # ----------------------------------------------------
+        pass_accuracy_value = _float(data.get("pass_accuracy"))
+        opponent_pass_accuracy_value = None
+
+        if pass_accuracy_value is None:
+            pass_accuracy_dict = data.get("pass_accuracy", {})
+            if isinstance(pass_accuracy_dict, dict):
+                home_team = data.get("home_team")
+                if home_team and team == home_team:
+                    pass_accuracy_value = _float(pass_accuracy_dict.get("home"))
+                    opponent_pass_accuracy_value = _float(pass_accuracy_dict.get("away"))
+                else:
+                    pass_accuracy_value = _float(pass_accuracy_dict.get("away"))
+                    opponent_pass_accuracy_value = _float(pass_accuracy_dict.get("home"))
+
+        # ----------------------------------------------------
+        # Извлекаем blocked_shots из вложенной структуры
+        # ----------------------------------------------------
+        blocked_shots_value = _float(data.get("blocked_shots"))
+        opponent_blocked_shots_value = None
+
+        if blocked_shots_value is None:
+            blocked_shots_dict = data.get("blocked_shots", {})
+            if isinstance(blocked_shots_dict, dict):
+                home_team = data.get("home_team")
+                if home_team and team == home_team:
+                    blocked_shots_value = _float(blocked_shots_dict.get("home"))
+                    opponent_blocked_shots_value = _float(blocked_shots_dict.get("away"))
+                else:
+                    blocked_shots_value = _float(blocked_shots_dict.get("away"))
+                    opponent_blocked_shots_value = _float(blocked_shots_dict.get("home"))
+
+        # ----------------------------------------------------
+        # Собираем extra со всеми opponent значениями
+        # ----------------------------------------------------
         extra = data.get("extra", {})
+
         if opponent_corners_value is not None:
             extra["opponent_corners"] = opponent_corners_value
         if opponent_yellow_cards_value is not None:
             extra["opponent_yellow_cards"] = opponent_yellow_cards_value
+        if opponent_shots_value is not None:
+            extra["opponent_shots"] = opponent_shots_value
+        if opponent_sot_value is not None:
+            extra["opponent_shots_on_target"] = opponent_sot_value
+        if opponent_big_chances_value is not None:
+            extra["opponent_big_chances"] = opponent_big_chances_value
+        if opponent_possession_value is not None:
+            extra["opponent_possession"] = opponent_possession_value
+        if opponent_passes_value is not None:
+            extra["opponent_passes"] = opponent_passes_value
+        if opponent_pass_accuracy_value is not None:
+            extra["opponent_pass_accuracy"] = opponent_pass_accuracy_value
+        if opponent_blocked_shots_value is not None:
+            extra["opponent_blocked_shots"] = opponent_blocked_shots_value
 
         return cls(
 
@@ -342,15 +494,11 @@ class HistoricalMatch:
                 data.get("goals_against")
             ),
 
-            shots=_float(data.get("shots")),
+            shots=shots_value,
 
-            shots_on_target=_float(
-                data.get("shots_on_target")
-            ),
+            shots_on_target=sot_value,
 
-            possession=_float(
-                data.get("possession")
-            ),
+            possession=possession_value,
 
             corners=corners_value,
 
@@ -360,9 +508,7 @@ class HistoricalMatch:
 
             xg=xg_value,
 
-            big_chances=_float(
-                data.get("big_chances")
-            ),
+            big_changes=big_chances_value,
 
             competition=data.get("competition"),
 
@@ -644,7 +790,19 @@ class FAJBrain:
         self.form_model = FormModel()
 
         # ========================================================
-        # GoalModel — синтез ожидаемых голов
+        # FormWin — состояние предпосылок к победе
+        # ========================================================
+
+        self.form_win = FormWin()
+
+        # ========================================================
+        # Defence — текущее оборонительное состояние
+        # ========================================================
+
+        self.defence = Defence()
+
+        # ========================================================
+        # GoalModel — синтез ожидаемых голов (с Research Coupling)
         # ========================================================
 
         self.goal_model = GoalModel()
@@ -754,6 +912,221 @@ class FAJBrain:
             records=records,
             limit=PREFERRED_MATCHES,
         )
+
+    # ========================================================
+    # ENRICH FORM CONTEXT FOR MATHEMATICAL ORGANS
+    # ========================================================
+
+    def _enrich_form_context(
+        self,
+        form_context: Any,
+        matches: List[HistoricalMatch],
+    ) -> Dict[str, Any]:
+        """
+        Дополняет canonical FormContext raw histories,
+        необходимые FormWin и Defence.
+
+        FormContext остаётся владельцем исторического
+        контекста.
+
+        Brain только передаёт данные downstream-органам.
+
+        None сохраняется как None.
+        """
+        if isinstance(form_context, dict):
+            context = dict(form_context)
+        else:
+            context = {}
+            if hasattr(
+                form_context,
+                "__dataclass_fields__",
+            ):
+                context.update(
+                    asdict(form_context)
+                )
+            elif hasattr(
+                form_context,
+                "__dict__",
+            ):
+                context.update(
+                    vars(form_context)
+                )
+
+        # ----------------------------------------------------
+        # Canonical order:
+        #
+        # M1 → M6
+        #
+        # НЕ сортируем здесь.
+        # Полученный порядок является контрактом.
+        # ----------------------------------------------------
+
+        # XG
+        context["team_xg_history"] = [
+            match.xg
+            for match in matches
+        ]
+        context["opponent_xg_history"] = [
+            match.extra.get("opponent_xg")
+            for match in matches
+        ]
+        context["recent_xg"] = [
+            match.xg
+            for match in matches
+        ]
+        context["recent_xga"] = [
+            match.extra.get("opponent_xg")
+            for match in matches
+        ]
+
+        # Shots
+        context["shots_history"] = [
+            match.shots
+            for match in matches
+        ]
+        context["shots_conceded_history"] = [
+            match.extra.get("opponent_shots")
+            for match in matches
+        ]
+        context["shots_on_target_history"] = [
+            match.shots_on_target
+            for match in matches
+        ]
+        context["sot_conceded_history"] = [
+            match.extra.get("opponent_shots_on_target")
+            for match in matches
+        ]
+        context["blocked_shots_history"] = [
+            match.extra.get("blocked_shots")
+            for match in matches
+        ]
+        context["blocked_shots_conceded_history"] = [
+            match.extra.get("opponent_blocked_shots")
+            for match in matches
+        ]
+
+        # Big chances
+        context["big_chances_history"] = [
+            match.big_chances
+            for match in matches
+        ]
+        context["big_chances_against_history"] = [
+            match.extra.get("opponent_big_chances")
+            for match in matches
+        ]
+
+        # Possession
+        context["possession_history"] = [
+            match.possession
+            for match in matches
+        ]
+        context["opponent_possession_history"] = [
+            match.extra.get("opponent_possession")
+            for match in matches
+        ]
+
+        # Corners
+        context["corners_for_history"] = [
+            match.corners
+            for match in matches
+        ]
+        context["corners_against_history"] = [
+            match.extra.get("opponent_corners")
+            for match in matches
+        ]
+
+        # Goals
+        context["goals_for_history"] = [
+            match.goals_for
+            for match in matches
+        ]
+        context["goals_against_history"] = [
+            match.goals_against
+            for match in matches
+        ]
+
+        # Venue
+        context["venue_history"] = [
+            "home"
+            if match.is_home is True
+            else "away"
+            if match.is_home is False
+            else None
+            for match in matches
+        ]
+
+        # Results
+        context["results_history"] = [
+            self._historical_result(match)
+            for match in matches
+        ]
+
+        # Passes
+        context["passes_history"] = [
+            match.extra.get("passes")
+            for match in matches
+        ]
+        context["opponent_passes_history"] = [
+            match.extra.get("opponent_passes")
+            for match in matches
+        ]
+
+        # Pass accuracy
+        context["pass_accuracy_history"] = [
+            match.extra.get("pass_accuracy")
+            for match in matches
+        ]
+        context["opponent_pass_accuracy_history"] = [
+            match.extra.get("opponent_pass_accuracy")
+            for match in matches
+        ]
+
+        # Fouls
+        context["fouls_history"] = [
+            match.extra.get("fouls")
+            for match in matches
+        ]
+
+        # Offsides
+        context["offsides_history"] = [
+            match.extra.get("offsides")
+            for match in matches
+        ]
+
+        # Yellow cards
+        context["team_cards_history"] = [
+            match.yellow_cards
+            for match in matches
+        ]
+        context["opponent_cards_history"] = [
+            match.extra.get("opponent_yellow_cards")
+            for match in matches
+        ]
+
+        return context
+
+    # ========================================================
+    # HISTORICAL RESULT
+    # ========================================================
+
+    @staticmethod
+    def _historical_result(
+        match: HistoricalMatch,
+    ) -> Optional[str]:
+        """
+        W / D / L из фактического счёта.
+        """
+        if (
+            match.goals_for is None
+            or match.goals_against is None
+        ):
+            return None
+
+        if match.goals_for > match.goals_against:
+            return "W"
+        if match.goals_for < match.goals_against:
+            return "L"
+        return "D"
 
     # ========================================================
     # OLD PROFILE — сохраняется для совместимости
@@ -1021,30 +1394,47 @@ class FAJBrain:
         )
 
     # ========================================================
-    # EXPECTED GOALS — ИСПОЛЬЗУЕТ GOALMODEL
+    # EXPECTED GOALS — ИСПОЛЬЗУЕТ GOALMODEL С RESEARCH COUPLING
     # ========================================================
 
     def _calculate_expected_goals(
         self,
         home_form_result: Any,
         away_form_result: Any,
-    ) -> tuple[Optional[float], Optional[float]]:
+        home_form_win: Any,
+        away_form_win: Any,
+        home_defence: Any,
+        away_defence: Any,
+        home_team: str,
+        away_team: str,
+    ) -> tuple[Optional[float], Optional[float], Any]:
         """
-        Рассчитывает ожидаемые голы через GoalModel.
-
-        GoalModel синтезирует:
-            Home xG = (home_xg_avg + away_xga_avg) / 2
-            Away xG = (away_xg_avg + home_xga_avg) / 2
-
-        Если xG или xGA отсутствует — результат None.
+        Full mathematical chain:
+            FormModel
+                +
+            FormWin
+                +
+            Defence
+                ↓
+            GoalModel (v1.1 with Research Coupling)
         """
-        # Вызываем GoalModel с FormModelResult
         goal_result = self.goal_model.analyze(
             home_form=home_form_result,
             away_form=away_form_result,
+            home_team=home_team,
+            away_team=away_team,
+            venue="HOME",
+            home_form_win=home_form_win,
+            away_form_win=away_form_win,
+            home_defence=home_defence,
+            away_defence=away_defence,
         )
 
-        return goal_result.home_xg, goal_result.away_xg
+        return (
+            goal_result.home_xg,
+            goal_result.away_xg,
+            goal_result,
+        )
 
     # ========================================================
     # RESULT PROBABILITIES
@@ -1375,7 +1765,7 @@ class FAJBrain:
         return str(value)
 
     # ========================================================
-    # PUBLIC PREDICTION — ОБНОВЛЁННАЯ ВЕРСИЯ
+    # PUBLIC PREDICTION — ОБНОВЛЁННАЯ ВЕРСИЯ С FORM WIN + DEFENCE
     # ========================================================
 
     def predict(
@@ -1432,14 +1822,58 @@ class FAJBrain:
             )
 
         # ========================================================
-        # 2. Запускаем FormModel
+        # 2. Enrich FormContext для FormWin и Defence
+        # ========================================================
+
+        home_enriched_context = self._enrich_form_context(
+            home_form_context_data,
+            home_history,
+        )
+
+        away_enriched_context = self._enrich_form_context(
+            away_form_context_data,
+            away_history,
+        )
+
+        # ========================================================
+        # 3. Запускаем FormModel
         # ========================================================
 
         home_form_result = self.form_model.analyze(home_form_context_data)
         away_form_result = self.form_model.analyze(away_form_context_data)
 
         # ========================================================
-        # 3. Строим старые профили для совместимости (только для confidence)
+        # 4. Запускаем FormWin
+        # ========================================================
+
+        home_form_win = self.form_win.analyze(
+            home_enriched_context,
+            next_venue="home",
+        )
+        away_form_win = self.form_win.analyze(
+            away_enriched_context,
+            next_venue="away",
+        )
+        form_win_comparison = self.form_win.compare(
+            home_enriched_context,
+            away_enriched_context,
+        )
+
+        # ========================================================
+        # 5. Запускаем Defence
+        # ========================================================
+
+        home_defence = self.defence.calculate(
+            home_enriched_context,
+            team_name=home_team,
+        )
+        away_defence = self.defence.calculate(
+            away_enriched_context,
+            team_name=away_team,
+        )
+
+        # ========================================================
+        # 6. Строим старые профили для совместимости (только для confidence)
         # ========================================================
 
         home_profile = self.build_profile(
@@ -1453,7 +1887,7 @@ class FAJBrain:
         )
 
         # ========================================================
-        # 4. ANALYSIS MODE
+        # 7. ANALYSIS MODE
         # ========================================================
 
         min_matches = min(
@@ -1471,16 +1905,26 @@ class FAJBrain:
             analysis_mode = "Экспресс"
 
         # ========================================================
-        # 5. XG — через GoalModel
+        # 8. XG — через GoalModel с Research Coupling
         # ========================================================
 
-        home_xg, away_xg = self._calculate_expected_goals(
+        (
+            home_xg,
+            away_xg,
+            goal_result,
+        ) = self._calculate_expected_goals(
             home_form_result,
             away_form_result,
+            home_form_win,
+            away_form_win,
+            home_defence,
+            away_defence,
+            home_team,
+            away_team,
         )
 
         # ========================================================
-        # 6. ЗАЩИТА ОТ NONE
+        # 9. ЗАЩИТА ОТ NONE
         # ========================================================
 
         if home_xg is None or away_xg is None:
@@ -1491,7 +1935,7 @@ class FAJBrain:
             )
 
         # ========================================================
-        # 7. RESULT
+        # 10. RESULT
         # ========================================================
 
         probabilities = (
@@ -1507,7 +1951,7 @@ class FAJBrain:
         )
 
         # ========================================================
-        # 8. SCORE
+        # 11. SCORE
         # ========================================================
 
         scores = score_distribution(
@@ -1526,7 +1970,7 @@ class FAJBrain:
             score_strings.append("-")
 
         # ========================================================
-        # 9. CORNERS — через CornersModel
+        # 12. CORNERS — через CornersModel
         # ========================================================
 
         corners_result = self.corners_model.synthesize_match(
@@ -1539,7 +1983,7 @@ class FAJBrain:
         away_corners_expected = corners_result.get("away", {}).get("away_corners_expected")
 
         # ========================================================
-        # 10. CARDS — через CardsModel
+        # 13. CARDS — через CardsModel
         # ========================================================
 
         cards_result = self.cards_model.synthesize_match(
@@ -1552,7 +1996,7 @@ class FAJBrain:
         away_cards_expected = cards_result.get("away", {}).get("away_cards_expected")
 
         # ========================================================
-        # 11. CONFIDENCE
+        # 14. CONFIDENCE
         # ========================================================
 
         confidence = self._confidence(
@@ -1568,7 +2012,7 @@ class FAJBrain:
         )
 
         # ========================================================
-        # 12. CONCLUSION
+        # 15. CONCLUSION
         # ========================================================
 
         conclusion, factors = (
@@ -1581,7 +2025,7 @@ class FAJBrain:
         )
 
         # ========================================================
-        # 13. OUTPUT
+        # 16. OUTPUT
         # ========================================================
 
         result = BrainPrediction(
@@ -1731,6 +2175,24 @@ class FAJBrain:
                 "away_form_result":
                     self._json_safe(away_form_result),
 
+                "home_form_win":
+                    self._json_safe(home_form_win),
+
+                "away_form_win":
+                    self._json_safe(away_form_win),
+
+                "form_win_comparison":
+                    self._json_safe(form_win_comparison),
+
+                "home_defence":
+                    self._json_safe(home_defence),
+
+                "away_defence":
+                    self._json_safe(away_defence),
+
+                "goal_model":
+                    self._json_safe(goal_result),
+
                 "corners_result":
                     self._json_safe(corners_result),
 
@@ -1739,7 +2201,9 @@ class FAJBrain:
 
                 "method":
                     "FormModel v1.0 + "
-                    "GoalModel v1.0 + "
+                    "FormWin v1.1 + "
+                    "Defence v1.0 + "
+                    "GoalModel v1.1 + "
                     "CornersModel v1.0 + "
                     "CardsModel v1.0 + "
                     "poisson_score_distribution",
@@ -1751,9 +2215,9 @@ class FAJBrain:
                     },
 
                 "note":
-                    "Версия 0.4. CornersModel и CardsModel подключены. "
-                    "Угловые и карточки рассчитываются через отдельные модели. "
-                    "Никакого влияния на xG.",
+                    "Версия 0.5. FormWin и Defence подключены к GoalModel. "
+                    "Research Coupling: xG * exp(0.10*attack - 0.10*defence). "
+                    "Влияние небольшое и исследовательское.",
             },
         )
 
