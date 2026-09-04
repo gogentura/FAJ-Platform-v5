@@ -7,17 +7,15 @@ FAJ PLATFORM
 MAIN STREAMLIT ENTRYPOINT
 ============================================================
 
-Новая архитектура FAJ.
+FAJ Predictor — единственный пользовательский интерфейс.
 
-Единственный пользовательский поток:
+Архитектура:
 
     Streamlit
         ↓
     FAJ Predictor
         ↓
-    сбор исторических матчей
-        ↓
-    нормализация
+    Historical Data
         ↓
     FormContext
         ↓
@@ -37,47 +35,34 @@ MAIN STREAMLIT ENTRYPOINT
         ↓
     CardsModel
         ↓
-    итоговый прогноз
-        ↓
-    аналитическая карточка
+    Final Prediction
 
-ВАЖНО
-============================================================
+ВАЖНО:
 
 Этот файл НЕ содержит:
 
-    ❌ ETC
-    ❌ Learning
-    ❌ Learning Engine
-    ❌ Learning Memory
-    ❌ Batch Controller
-    ❌ Tour Manager
-    ❌ Round Manager
-    ❌ старый FAJ Core
-    ❌ старую систему обучения
-    ❌ старую систему прогноза
-    ❌ букмекерские коэффициенты
+    ETC
+    Learning
+    Learning Engine
+    Learning Memory
+    Batch Controller
+    Tour Manager
+    Round Manager
+    Legacy FAJ Core
+    Legacy Predictor
+    Bookmaker Odds
 
-Этот файл является только ENTRYPOINT.
+Этот файл отвечает только за:
 
-Вся математическая работа находится в:
+    • запуск приложения
+    • внешний интерфейс
+    • глобальный CSS
+    • загрузку FAJ Predictor
+    • обработку ошибок
+
+Вся аналитика находится в:
 
     app/pages/faj_predictor.py
-
-и подключаемых математических модулях:
-
-    app/core/form_context.py
-    app/core/form_model.py
-    app/core/form_win.py
-    app/core/defence.py
-    app/core/goal_model.py
-    app/core/corners_model.py
-    app/core/cards_model.py
-
-Database не является частью математического мозга.
-
-SQLite может использоваться только инфраструктурными
-компонентами, если это необходимо для хранения данных.
 
 ============================================================
 """
@@ -93,7 +78,7 @@ import streamlit as st
 
 
 # ============================================================
-# APPLICATION PATH
+# PATH
 # ============================================================
 
 ROOT_DIR = os.path.dirname(
@@ -122,11 +107,11 @@ logger = logging.getLogger("FAJ")
 
 
 # ============================================================
-# PAGE CONFIGURATION
+# PAGE CONFIG
 # ============================================================
 
 st.set_page_config(
-    page_title="FAJ Predictor",
+    page_title="FAJ",
     page_icon="⚽",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -139,361 +124,647 @@ st.set_page_config(
 
 st.markdown(
     """
-    <style>
+<style>
 
-    /* ======================================================
-       GLOBAL
-    ====================================================== */
+/* ==========================================================
+   RESET / APP
+   ========================================================== */
 
-    #MainMenu {
-        visibility: hidden;
-    }
+#MainMenu {
+    visibility: hidden;
+}
 
-    footer {
-        visibility: hidden;
-    }
+header {
+    visibility: hidden;
+}
 
-    header {
-        visibility: hidden;
-    }
+footer {
+    visibility: hidden;
+}
+
+[data-testid="stToolbar"] {
+    visibility: hidden;
+}
+
+[data-testid="stDecoration"] {
+    display: none;
+}
+
+.block-container {
+    max-width: 1160px;
+    padding-top: 0.55rem;
+    padding-bottom: 1.5rem;
+    padding-left: 0.8rem;
+    padding-right: 0.8rem;
+}
+
+
+/* ==========================================================
+   GLOBAL TYPOGRAPHY
+   ========================================================== */
+
+html,
+body,
+[class*="css"] {
+    font-family:
+        -apple-system,
+        BlinkMacSystemFont,
+        "SF Pro Display",
+        "SF Pro Text",
+        Inter,
+        system-ui,
+        sans-serif;
+}
+
+
+/* ==========================================================
+   FAJ TOP BAR
+   ========================================================== */
+
+.faj-topbar {
+    width: 100%;
+
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    margin-bottom: 0.8rem;
+
+    padding: 0.25rem 0.1rem;
+}
+
+.faj-brand {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+}
+
+.faj-brand-icon {
+    width: 40px;
+    height: 40px;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    border-radius: 12px;
+
+    background:
+        linear-gradient(
+            145deg,
+            rgba(255,255,255,0.13),
+            rgba(255,255,255,0.035)
+        );
+
+    border: 1px solid rgba(255,255,255,0.11);
+
+    box-shadow:
+        0 6px 24px rgba(0,0,0,0.18);
+
+    font-size: 1.25rem;
+}
+
+.faj-brand-name {
+    font-size: 1.35rem;
+    font-weight: 850;
+
+    letter-spacing: -0.055em;
+
+    line-height: 1;
+}
+
+.faj-brand-sub {
+    margin-top: 0.18rem;
+
+    font-size: 0.66rem;
+
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+
+    opacity: 0.42;
+}
+
+.faj-live {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+
+    padding: 0.32rem 0.58rem;
+
+    border-radius: 999px;
+
+    border: 1px solid rgba(255,255,255,0.09);
+
+    background:
+        rgba(255,255,255,0.035);
+
+    font-size: 0.65rem;
+    font-weight: 700;
+
+    letter-spacing: 0.04em;
+
+    text-transform: uppercase;
+
+    opacity: 0.72;
+}
+
+.faj-live-dot {
+    width: 6px;
+    height: 6px;
+
+    border-radius: 50%;
+
+    background: currentColor;
+
+    box-shadow:
+        0 0 8px currentColor;
+}
+
+
+/* ==========================================================
+   HERO
+   ========================================================== */
+
+.faj-hero {
+    position: relative;
+
+    overflow: hidden;
+
+    border-radius: 22px;
+
+    padding: 1.05rem 1.1rem;
+
+    margin-bottom: 0.75rem;
+
+    border: 1px solid rgba(255,255,255,0.10);
+
+    background:
+        linear-gradient(
+            135deg,
+            rgba(255,255,255,0.075),
+            rgba(255,255,255,0.025)
+        );
+
+    box-shadow:
+        0 14px 45px rgba(0,0,0,0.13);
+}
+
+.faj-hero::after {
+    content: "";
+
+    position: absolute;
+
+    width: 170px;
+    height: 170px;
+
+    right: -80px;
+    top: -90px;
+
+    border-radius: 50%;
+
+    border: 1px solid rgba(255,255,255,0.07);
+}
+
+.faj-hero-kicker {
+    font-size: 0.65rem;
+
+    text-transform: uppercase;
+
+    letter-spacing: 0.12em;
+
+    opacity: 0.42;
+
+    margin-bottom: 0.3rem;
+}
+
+.faj-hero-title {
+    font-size: clamp(
+        1.35rem,
+        4vw,
+        2.15rem
+    );
+
+    line-height: 1.03;
+
+    font-weight: 850;
+
+    letter-spacing: -0.055em;
+}
+
+.faj-hero-text {
+    margin-top: 0.42rem;
+
+    font-size: 0.78rem;
+
+    line-height: 1.4;
+
+    opacity: 0.52;
+
+    max-width: 620px;
+}
+
+
+/* ==========================================================
+   UNIVERSAL CARDS
+   ========================================================== */
+
+.faj-card {
+    border-radius: 18px;
+
+    border: 1px solid rgba(255,255,255,0.09);
+
+    background:
+        rgba(255,255,255,0.028);
+
+    padding: 0.85rem;
+
+    margin-bottom: 0.65rem;
+
+    box-shadow:
+        0 7px 28px rgba(0,0,0,0.08);
+}
+
+
+/* ==========================================================
+   RESULT CARD
+   ========================================================== */
+
+.faj-result-card {
+    border-radius: 19px;
+
+    border: 1px solid rgba(255,255,255,0.11);
+
+    background:
+        linear-gradient(
+            145deg,
+            rgba(255,255,255,0.075),
+            rgba(255,255,255,0.025)
+        );
+
+    padding: 0.82rem;
+
+    box-shadow:
+        0 9px 32px rgba(0,0,0,0.12);
+}
+
+.faj-result-label {
+    font-size: 0.61rem;
+
+    text-transform: uppercase;
+
+    letter-spacing: 0.095em;
+
+    opacity: 0.43;
+}
+
+.faj-result-value {
+    margin-top: 0.22rem;
+
+    font-size: 1.35rem;
+
+    line-height: 1.05;
+
+    font-weight: 850;
+
+    letter-spacing: -0.04em;
+}
+
+
+/* ==========================================================
+   SCORE
+   ========================================================== */
+
+.faj-score-card {
+    text-align: center;
+
+    border-radius: 20px;
+
+    padding: 0.9rem;
+
+    border: 1px solid rgba(255,255,255,0.10);
+
+    background:
+        linear-gradient(
+            145deg,
+            rgba(255,255,255,0.085),
+            rgba(255,255,255,0.025)
+        );
+}
+
+.faj-score-caption {
+    font-size: 0.61rem;
+
+    text-transform: uppercase;
+
+    letter-spacing: 0.10em;
+
+    opacity: 0.42;
+}
+
+.faj-score {
+    margin-top: 0.22rem;
+
+    font-size: clamp(
+        1.75rem,
+        6vw,
+        2.55rem
+    );
+
+    font-weight: 900;
+
+    letter-spacing: -0.065em;
+
+    line-height: 1;
+}
+
+
+/* ==========================================================
+   METRIC
+   ========================================================== */
+
+.faj-metric {
+    min-height: 64px;
+
+    padding: 0.65rem 0.7rem;
+
+    border-radius: 15px;
+
+    border: 1px solid rgba(255,255,255,0.075);
+
+    background:
+        rgba(255,255,255,0.025);
+}
+
+.faj-metric-title {
+    font-size: 0.59rem;
+
+    text-transform: uppercase;
+
+    letter-spacing: 0.075em;
+
+    opacity: 0.4;
+}
+
+.faj-metric-value {
+    margin-top: 0.2rem;
+
+    font-size: 1rem;
+
+    font-weight: 800;
+
+    letter-spacing: -0.025em;
+}
+
+
+/* ==========================================================
+   SECTION
+   ========================================================== */
+
+.faj-section {
+    margin-top: 0.75rem;
+    margin-bottom: 0.38rem;
+
+    font-size: 0.72rem;
+
+    font-weight: 800;
+
+    text-transform: uppercase;
+
+    letter-spacing: 0.075em;
+
+    opacity: 0.52;
+}
+
+
+/* ==========================================================
+   INPUTS
+   ========================================================== */
+
+div[data-baseweb="select"] > div {
+    border-radius: 13px !important;
+
+    min-height: 42px;
+}
+
+input {
+    border-radius: 13px !important;
+}
+
+textarea {
+    border-radius: 13px !important;
+}
+
+
+/* ==========================================================
+   BUTTONS
+   ========================================================== */
+
+.stButton > button {
+    width: 100%;
+
+    min-height: 43px;
+
+    border-radius: 13px;
+
+    font-weight: 750;
+
+    border: 1px solid rgba(255,255,255,0.10);
+
+    transition:
+        transform 0.12s ease,
+        box-shadow 0.12s ease;
+}
+
+.stButton > button:hover {
+    transform: translateY(-1px);
+
+    box-shadow:
+        0 7px 20px rgba(0,0,0,0.12);
+}
+
+
+/* ==========================================================
+   EXPANDERS
+   ========================================================== */
+
+[data-testid="stExpander"] {
+    border-radius: 15px !important;
+
+    border: 1px solid rgba(255,255,255,0.075) !important;
+}
+
+
+/* ==========================================================
+   DIVIDERS
+   ========================================================== */
+
+hr {
+    margin-top: 0.65rem !important;
+    margin-bottom: 0.65rem !important;
+
+    border-color:
+        rgba(255,255,255,0.07) !important;
+}
+
+
+/* ==========================================================
+   DATAFRAME
+   ========================================================== */
+
+[data-testid="stDataFrame"] {
+    border-radius: 15px;
+    overflow: hidden;
+}
+
+
+/* ==========================================================
+   ALERTS
+   ========================================================== */
+
+[data-testid="stAlert"] {
+    border-radius: 15px;
+}
+
+
+/* ==========================================================
+   MOBILE
+   ========================================================== */
+
+@media (max-width: 768px) {
 
     .block-container {
-        max-width: 1180px;
-        padding-top: 1rem;
-        padding-bottom: 2rem;
-        padding-left: 1rem;
-        padding-right: 1rem;
+        max-width: 100%;
+
+        padding-top: 0.35rem;
+        padding-left: 0.55rem;
+        padding-right: 0.55rem;
+        padding-bottom: 1rem;
     }
 
-
-    /* ======================================================
-       FAJ HEADER
-    ====================================================== */
-
-    .faj-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-
-        margin-bottom: 1rem;
-        padding: 0.2rem 0;
+    .faj-topbar {
+        margin-bottom: 0.55rem;
     }
 
-    .faj-brand {
-        display: flex;
-        align-items: center;
-        gap: 0.65rem;
+    .faj-brand-icon {
+        width: 36px;
+        height: 36px;
+
+        border-radius: 11px;
     }
 
-    .faj-logo {
-        width: 42px;
-        height: 42px;
-
-        display: flex;
-        align-items: center;
-        justify-content: center;
-
-        border-radius: 13px;
-
-        background:
-            linear-gradient(
-                145deg,
-                rgba(255,255,255,0.12),
-                rgba(255,255,255,0.03)
-            );
-
-        border: 1px solid rgba(128,128,128,0.22);
-
-        font-size: 1.45rem;
+    .faj-brand-name {
+        font-size: 1.2rem;
     }
 
-    .faj-name {
-        font-size: 1.55rem;
-        font-weight: 800;
-        line-height: 1;
-        letter-spacing: -0.04em;
+    .faj-brand-sub {
+        font-size: 0.58rem;
     }
 
-    .faj-caption {
-        margin-top: 0.2rem;
-        font-size: 0.78rem;
-        opacity: 0.55;
+    .faj-live {
+        font-size: 0.58rem;
+        padding: 0.28rem 0.45rem;
     }
 
-    .faj-status {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.35rem;
-
-        padding: 0.35rem 0.65rem;
-
-        border-radius: 999px;
-
-        font-size: 0.72rem;
-        font-weight: 600;
-
-        border: 1px solid rgba(128,128,128,0.2);
-
-        opacity: 0.75;
-    }
-
-
-    /* ======================================================
-       MAIN CARDS
-    ====================================================== */
-
-    .faj-card {
-        border: 1px solid rgba(128,128,128,0.20);
+    .faj-hero {
         border-radius: 18px;
 
-        padding: 1rem;
+        padding: 0.82rem;
 
-        margin-bottom: 0.75rem;
-
-        background:
-            rgba(128,128,128,0.025);
-
-        box-shadow:
-            0 4px 18px rgba(0,0,0,0.025);
+        margin-bottom: 0.55rem;
     }
 
+    .faj-hero-text {
+        font-size: 0.7rem;
+    }
 
-    /* ======================================================
-       COMPACT RESULT CARD
-    ====================================================== */
+    .faj-card {
+        padding: 0.7rem;
+
+        border-radius: 16px;
+    }
 
     .faj-result-card {
-        border: 1px solid rgba(128,128,128,0.22);
-        border-radius: 20px;
+        padding: 0.7rem;
 
-        padding: 1rem;
-
-        margin: 0.6rem 0;
-
-        background:
-            linear-gradient(
-                145deg,
-                rgba(128,128,128,0.055),
-                rgba(128,128,128,0.018)
-            );
-    }
-
-    .faj-result-label {
-        font-size: 0.72rem;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        opacity: 0.55;
-        margin-bottom: 0.25rem;
+        border-radius: 16px;
     }
 
     .faj-result-value {
-        font-size: 1.55rem;
-        font-weight: 800;
-        line-height: 1.05;
+        font-size: 1.15rem;
     }
 
+    .faj-score-card {
+        padding: 0.75rem;
 
-    /* ======================================================
-       SCORE
-    ====================================================== */
+        border-radius: 17px;
+    }
 
     .faj-score {
-        text-align: center;
-        font-size: 2rem;
-        font-weight: 900;
-        letter-spacing: -0.05em;
+        font-size: 1.75rem;
     }
 
-
-    /* ======================================================
-       SMALL METRICS
-    ====================================================== */
-
     .faj-metric {
-        border: 1px solid rgba(128,128,128,0.18);
-        border-radius: 15px;
+        min-height: 58px;
 
-        padding: 0.7rem 0.75rem;
-
-        min-height: 70px;
+        padding: 0.52rem;
     }
 
     .faj-metric-title {
-        font-size: 0.68rem;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        opacity: 0.5;
+        font-size: 0.54rem;
     }
 
     .faj-metric-value {
-        font-size: 1.15rem;
-        font-weight: 750;
-        margin-top: 0.2rem;
+        font-size: 0.9rem;
     }
-
-
-    /* ======================================================
-       SECTION TITLES
-    ====================================================== */
 
     .faj-section {
-        margin-top: 0.85rem;
-        margin-bottom: 0.45rem;
+        margin-top: 0.55rem;
 
-        font-size: 0.85rem;
-        font-weight: 750;
-
-        letter-spacing: -0.01em;
+        font-size: 0.64rem;
     }
 
-
-    /* ======================================================
-       STREAMLIT BUTTONS
-    ====================================================== */
+    [data-testid="column"] {
+        padding-left: 0.14rem !important;
+        padding-right: 0.14rem !important;
+    }
 
     .stButton > button {
-        border-radius: 13px;
-        min-height: 42px;
+        min-height: 39px;
 
-        font-weight: 650;
+        font-size: 0.82rem;
+    }
+}
 
-        transition:
-            transform 0.12s ease,
-            box-shadow 0.12s ease;
+
+/* ==========================================================
+   VERY SMALL PHONE
+   ========================================================== */
+
+@media (max-width: 420px) {
+
+    .faj-live {
+        display: none;
     }
 
-    .stButton > button:hover {
-        transform: translateY(-1px);
+    .faj-brand-sub {
+        display: none;
     }
 
-
-    /* ======================================================
-       INPUTS
-    ====================================================== */
-
-    div[data-baseweb="select"] > div {
-        border-radius: 13px;
+    .faj-hero-title {
+        font-size: 1.3rem;
     }
 
-    input {
-        border-radius: 13px !important;
+    .faj-result-value {
+        font-size: 1.05rem;
     }
 
-
-    /* ======================================================
-       EXPANDERS
-    ====================================================== */
-
-    .streamlit-expanderHeader {
-        border-radius: 13px;
+    .faj-score {
+        font-size: 1.6rem;
     }
+}
 
-
-    /* ======================================================
-       MOBILE
-    ====================================================== */
-
-    @media (max-width: 768px) {
-
-        .block-container {
-            padding-top: 0.65rem;
-            padding-left: 0.65rem;
-            padding-right: 0.65rem;
-            padding-bottom: 1rem;
-        }
-
-        .faj-header {
-            margin-bottom: 0.65rem;
-        }
-
-        .faj-logo {
-            width: 38px;
-            height: 38px;
-            border-radius: 11px;
-        }
-
-        .faj-name {
-            font-size: 1.35rem;
-        }
-
-        .faj-caption {
-            font-size: 0.7rem;
-        }
-
-        .faj-status {
-            font-size: 0.65rem;
-            padding: 0.3rem 0.5rem;
-        }
-
-        .faj-card,
-        .faj-result-card {
-            border-radius: 16px;
-            padding: 0.8rem;
-        }
-
-        .faj-result-value {
-            font-size: 1.3rem;
-        }
-
-        .faj-score {
-            font-size: 1.7rem;
-        }
-
-        .faj-metric {
-            min-height: 62px;
-            padding: 0.55rem;
-        }
-
-        .faj-metric-value {
-            font-size: 1rem;
-        }
-
-        /* Убираем лишние боковые отступы
-           Streamlit на маленьком экране */
-
-        [data-testid="column"] {
-            padding-left: 0.18rem !important;
-            padding-right: 0.18rem !important;
-        }
-
-        /* Компактные кнопки */
-
-        .stButton > button {
-            min-height: 40px;
-            font-size: 0.86rem;
-        }
-    }
-
-
-    /* ======================================================
-       VERY SMALL PHONES
-    ====================================================== */
-
-    @media (max-width: 420px) {
-
-        .faj-name {
-            font-size: 1.2rem;
-        }
-
-        .faj-caption {
-            display: none;
-        }
-
-        .faj-status {
-            display: none;
-        }
-
-        .faj-result-value {
-            font-size: 1.18rem;
-        }
-
-        .faj-score {
-            font-size: 1.55rem;
-        }
-    }
-
-    </style>
-    """,
+</style>
+""",
     unsafe_allow_html=True,
 )
 
@@ -504,36 +775,40 @@ st.markdown(
 
 def render_header() -> None:
     """
-    Минимальный мобильный header.
+    Новый минимальный FAJ header.
 
-    Никакой старой навигации.
-    Никаких ETC/Learning разделов.
+    Никаких:
+        ETC
+        Learning
+        Round Manager
+        старой навигации
     """
 
     st.markdown(
         """
-        <div class="faj-header">
+        <div class="faj-topbar">
 
             <div class="faj-brand">
 
-                <div class="faj-logo">
+                <div class="faj-brand-icon">
                     ⚽
                 </div>
 
                 <div>
-                    <div class="faj-name">
+                    <div class="faj-brand-name">
                         FAJ
                     </div>
 
-                    <div class="faj-caption">
-                        Personal Football Predictor
+                    <div class="faj-brand-sub">
+                        Football Analytical Predictor
                     </div>
                 </div>
 
             </div>
 
-            <div class="faj-status">
-                ● Predictor
+            <div class="faj-live">
+                <span class="faj-live-dot">●</span>
+                Predictor
             </div>
 
         </div>
@@ -543,14 +818,49 @@ def render_header() -> None:
 
 
 # ============================================================
-# PREDICTOR LOADER
+# HERO
+# ============================================================
+
+def render_hero() -> None:
+    """
+    Небольшой верхний блок.
+
+    Не перегружает экран телефона.
+    """
+
+    st.markdown(
+        """
+        <div class="faj-hero">
+
+            <div class="faj-hero-kicker">
+                FAJ ANALYTICAL ENGINE
+            </div>
+
+            <div class="faj-hero-title">
+                Match intelligence.
+            </div>
+
+            <div class="faj-hero-text">
+                История команд → форма → сила → голы →
+                вероятности → итоговый прогноз.
+            </div>
+
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ============================================================
+# PREDICTOR
 # ============================================================
 
 def load_predictor():
     """
-    Загружает только новый FAJ Predictor.
+    Загружает ТОЛЬКО новый Predictor.
 
-    Никаких fallback на старый FAJ Core.
+    ВАЖНО:
+    никаких fallback на legacy FAJ.
     """
 
     from app.pages.faj_predictor import main
@@ -559,7 +869,7 @@ def load_predictor():
 
 
 # ============================================================
-# ERROR SCREEN
+# ERROR
 # ============================================================
 
 def render_error(
@@ -573,6 +883,7 @@ def render_error(
         "Техническая информация",
         expanded=False,
     ):
+
         st.code(
             "".join(
                 traceback.format_exception(
@@ -591,7 +902,15 @@ def render_error(
 
 def main() -> None:
 
+    # --------------------------------------------------------
+    # HEADER
+    # --------------------------------------------------------
+
     render_header()
+
+    # --------------------------------------------------------
+    # PREDICTOR IMPORT
+    # --------------------------------------------------------
 
     try:
 
@@ -604,11 +923,15 @@ def main() -> None:
         )
 
         render_error(
-            "❌ FAJ Predictor не удалось загрузить.",
+            "FAJ Predictor не удалось загрузить.",
             exc,
         )
 
         st.stop()
+
+    # --------------------------------------------------------
+    # PREDICTOR EXECUTION
+    # --------------------------------------------------------
 
     try:
 
@@ -621,7 +944,7 @@ def main() -> None:
         )
 
         render_error(
-            "❌ Ошибка FAJ Predictor.",
+            "Ошибка FAJ Predictor.",
             exc,
         )
 
