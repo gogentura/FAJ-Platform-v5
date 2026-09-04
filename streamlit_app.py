@@ -4,67 +4,59 @@
 """
 ============================================================
 FAJ PLATFORM
-MAIN STREAMLIT ENTRYPOINT
+STREAMLIT ENTRYPOINT
 ============================================================
 
-FAJ Predictor — единственная основная пользовательская страница.
+Единственная задача этого файла:
 
-ARCHITECTURE
-------------------------------------------------------------
+    Streamlit
+        ↓
+    FAJ Predictor
 
-Streamlit
-    ↓
-FAJ Predictor
-    ↓
-historical matches
-    ↓
-FormContext
-    ↓
-FormModel
-    ↓
-FormWin
-    ↓
-Defence
-    ↓
-GoalModel
-    ↓
-Poisson
-    ↓
-Score Distribution
-    ↓
-CornersModel
-    ↓
-CardsModel
-    ↓
-FINAL PREDICTION
-
-
-ВАЖНО
-------------------------------------------------------------
-
-Этот файл НЕ занимается:
-
-    ❌ командами
-    ❌ матчами
-    ❌ Soccer365
-    ❌ сбором статистики
-    ❌ FormContext
-    ❌ FormModel
-    ❌ GoalModel
-    ❌ расчётом вероятностей
-    ❌ прогнозом
-    ❌ сохранением прогноза
-
-Всё это находится в:
+ВСЯ логика находится в:
 
     app/pages/faj_predictor.py
 
+Predictor самостоятельно отвечает за:
 
-Этот файл является ТОЛЬКО:
+    • выбор лиги
+    • выбор матча
+    • команды
+    • ссылки
+    • сбор исторических матчей
+    • Soccer365
+    • статистику
+    • FormContext
+    • FormModel
+    • FormWin
+    • Defence
+    • GoalModel
+    • Poisson
+    • Score Distribution
+    • CornersModel
+    • CardsModel
+    • итоговый прогноз
+    • интерфейс прогнозной страницы
 
-    Streamlit entrypoint
-    + глобальный внешний стиль
-    + запуск FAJ Predictor
+============================================================
+
+ЗАПРЕЩЕНО ЗДЕСЬ:
+
+    ❌ ETC
+    ❌ Learning
+    ❌ Learning Engine
+    ❌ Learning Memory
+    ❌ Batch Controller
+    ❌ Tour Manager
+    ❌ Round Manager
+    ❌ старый FAJ Core
+    ❌ старый Predictor
+    ❌ ручной ввод команд
+    ❌ отдельная навигация
+    ❌ собственные карточки
+    ❌ собственный header
+
+Этот файл НЕ должен конкурировать с Predictor за интерфейс.
 
 ============================================================
 """
@@ -76,11 +68,9 @@ import os
 import sys
 import traceback
 
-import streamlit as st
-
 
 # ============================================================
-# PATH
+# PROJECT ROOT
 # ============================================================
 
 ROOT_DIR = os.path.dirname(
@@ -109,270 +99,23 @@ logger = logging.getLogger("FAJ")
 
 
 # ============================================================
-# PAGE CONFIG
+# STREAMLIT
 # ============================================================
 
-st.set_page_config(
-    page_title="FAJ Predictor",
-    page_icon="⚽",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
+import streamlit as st
 
 
 # ============================================================
-# GLOBAL UI
-# ============================================================
-
-st.markdown(
-    """
-    <style>
-
-    /* =====================================================
-       STREAMLIT CLEANUP
-       ===================================================== */
-
-    #MainMenu {
-        visibility: hidden;
-    }
-
-    footer {
-        visibility: hidden;
-    }
-
-    header {
-        visibility: hidden;
-    }
-
-    [data-testid="stToolbar"] {
-        display: none;
-    }
-
-    [data-testid="stDecoration"] {
-        display: none;
-    }
-
-
-    /* =====================================================
-       MAIN CONTAINER
-       ===================================================== */
-
-    .block-container {
-        max-width: 1180px;
-
-        padding-top: 0.45rem;
-        padding-bottom: 1.5rem;
-
-        padding-left: 0.75rem;
-        padding-right: 0.75rem;
-    }
-
-
-    /* =====================================================
-       TYPOGRAPHY
-       ===================================================== */
-
-    html,
-    body,
-    [class*="css"] {
-
-        font-family:
-            -apple-system,
-            BlinkMacSystemFont,
-            "SF Pro Display",
-            "SF Pro Text",
-            Inter,
-            system-ui,
-            sans-serif;
-    }
-
-
-    /* =====================================================
-       STREAMLIT ELEMENT SPACING
-       ===================================================== */
-
-    [data-testid="stVerticalBlock"] {
-        gap: 0.45rem;
-    }
-
-    hr {
-        margin-top: 0.5rem !important;
-        margin-bottom: 0.5rem !important;
-
-        border-color:
-            rgba(128,128,128,0.16) !important;
-    }
-
-
-    /* =====================================================
-       INPUTS
-       ===================================================== */
-
-    div[data-baseweb="select"] > div {
-
-        border-radius: 12px !important;
-
-        min-height: 40px;
-    }
-
-    input {
-
-        border-radius: 12px !important;
-    }
-
-    textarea {
-
-        border-radius: 12px !important;
-    }
-
-
-    /* =====================================================
-       BUTTONS
-       ===================================================== */
-
-    .stButton > button {
-
-        min-height: 40px;
-
-        border-radius: 12px;
-
-        font-weight: 700;
-
-        transition:
-            transform 0.12s ease,
-            box-shadow 0.12s ease;
-    }
-
-    .stButton > button:hover {
-
-        transform: translateY(-1px);
-
-        box-shadow:
-            0 6px 18px rgba(0,0,0,0.10);
-    }
-
-
-    /* =====================================================
-       LINKS
-       ===================================================== */
-
-    a {
-
-        text-decoration: none;
-    }
-
-
-    /* =====================================================
-       EXPANDERS
-       ===================================================== */
-
-    [data-testid="stExpander"] {
-
-        border-radius: 14px !important;
-
-        border: 1px solid
-            rgba(128,128,128,0.16) !important;
-    }
-
-
-    /* =====================================================
-       ALERTS
-       ===================================================== */
-
-    [data-testid="stAlert"] {
-
-        border-radius: 14px;
-    }
-
-
-    /* =====================================================
-       DATAFRAME
-       ===================================================== */
-
-    [data-testid="stDataFrame"] {
-
-        border-radius: 14px;
-
-        overflow: hidden;
-    }
-
-
-    /* =====================================================
-       MOBILE
-       ===================================================== */
-
-    @media (max-width: 768px) {
-
-        .block-container {
-
-            max-width: 100%;
-
-            padding-top: 0.25rem;
-            padding-bottom: 0.8rem;
-
-            padding-left: 0.45rem;
-            padding-right: 0.45rem;
-        }
-
-
-        [data-testid="stVerticalBlock"] {
-
-            gap: 0.3rem;
-        }
-
-
-        [data-testid="column"] {
-
-            padding-left: 0.12rem !important;
-            padding-right: 0.12rem !important;
-        }
-
-
-        .stButton > button {
-
-            min-height: 38px;
-
-            font-size: 0.82rem;
-        }
-    }
-
-
-    /* =====================================================
-       SMALL IPHONE
-       ===================================================== */
-
-    @media (max-width: 420px) {
-
-        .block-container {
-
-            padding-left: 0.35rem;
-            padding-right: 0.35rem;
-        }
-
-        [data-testid="column"] {
-
-            padding-left: 0.08rem !important;
-            padding-right: 0.08rem !important;
-        }
-    }
-
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-
-# ============================================================
-# LOAD PREDICTOR
+# LOAD ONLY NEW PREDICTOR
 # ============================================================
 
 def load_predictor():
     """
-    Загружает ТОЛЬКО новый FAJ Predictor.
+    Загружает исключительно новый FAJ Predictor.
 
-    Никаких fallback.
-    Никаких старых страниц.
-    Никакого Legacy FAJ.
+    Никаких fallback-механизмов.
+    Никакого Legacy.
+    Никакого ETC/Learning.
     """
 
     from app.pages.faj_predictor import main
@@ -381,10 +124,17 @@ def load_predictor():
 
 
 # ============================================================
-# ERROR
+# ERROR SCREEN
 # ============================================================
 
-def render_error(exc: Exception) -> None:
+def show_error(exc: Exception) -> None:
+    """
+    Показывает техническую ошибку только если Predictor
+    действительно не смог запуститься.
+
+    В нормальном режиме никакого собственного UI
+    здесь нет.
+    """
 
     st.error(
         "FAJ Predictor не удалось запустить."
@@ -394,7 +144,6 @@ def render_error(exc: Exception) -> None:
         "Техническая информация",
         expanded=False,
     ):
-
         st.code(
             "".join(
                 traceback.format_exception(
@@ -412,6 +161,28 @@ def render_error(exc: Exception) -> None:
 # ============================================================
 
 def main() -> None:
+    """
+    Главный Streamlit entrypoint.
+
+    ВАЖНО:
+
+    Predictor сам владеет страницей.
+
+    Поэтому здесь НЕ вызываются:
+
+        st.set_page_config()
+        st.title()
+        st.header()
+        st.markdown()
+        st.columns()
+        st.selectbox()
+        st.button()
+
+    Это принципиально.
+
+    Иначе EntryPoint начинает вмешиваться
+    в интерфейс Predictor.
+    """
 
     try:
 
@@ -420,31 +191,15 @@ def main() -> None:
     except Exception as exc:
 
         logger.exception(
-            "Unable to import FAJ Predictor"
+            "FAJ Predictor import failed"
         )
 
-        render_error(exc)
-
+        show_error(exc)
         st.stop()
 
+        return
 
     try:
-
-        # ----------------------------------------------------
-        # ВАЖНО:
-        #
-        # Здесь НЕТ никакого дополнительного интерфейса.
-        #
-        # Predictor полностью контролирует страницу:
-        #
-        # команды
-        # матчи
-        # ссылки
-        # статистику
-        # уточнения
-        # расчёт
-        # прогноз
-        # ----------------------------------------------------
 
         predictor_main()
 
@@ -454,9 +209,10 @@ def main() -> None:
             "FAJ Predictor runtime error"
         )
 
-        render_error(exc)
-
+        show_error(exc)
         st.stop()
+
+        return
 
 
 # ============================================================
