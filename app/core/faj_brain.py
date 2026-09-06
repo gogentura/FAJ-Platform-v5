@@ -57,64 +57,38 @@ FAJ Personal Prediction Brain
     None НЕ превращается в 0.
 
 Версия:
-    FAJ-BRAIN-0.6
+    FAJ-BRAIN-0.7
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass, field
+from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List, Optional
 
 
 # ============================================================
-# FORM MODEL
+# IMPORTS
 # ============================================================
 
-from app.core.form_model import FormModel, FormModelResult
-from app.core.brain_contract import FormContext as ContractFormContext
-
-
-# ============================================================
-# FORM WIN
-# ============================================================
-
+from app.core.form_context import build_form_context
+from app.core.form_model import FormModel
 from app.core.form_win import FormWin
-
-
-# ============================================================
-# DEFENCE
-# ============================================================
-
 from app.core.defence import Defence
-
-
-# ============================================================
-# GOAL MODEL
-# ============================================================
-
+from app.core.form_control import FormControl
+from app.core.form_anomaly import FormAnomaly
+from app.core.special_form import SpecialForm
 from app.core.goal_model import GoalModel
-
-
-# ============================================================
-# CORNERS MODEL
-# ============================================================
-
-from app.core.corners_model import CornersModel
-
-
-# ============================================================
-# CARDS MODEL
-# ============================================================
-
-from app.core.cards_model import CardsModel
+from app.core.probability_model import ProbabilityModel
+from app.core.score_predictor import ScorePredictor
 
 
 # ============================================================
 # VERSION
 # ============================================================
 
-BRAIN_VERSION = "FAJ-BRAIN-0.6"
+BRAIN_VERSION = "FAJ-BRAIN-0.7"
 
 MIN_MATCHES = 1
 EXTENDED_ANALYSIS_MATCHES = 3
@@ -1045,7 +1019,7 @@ class BrainPrediction:
 
 
 # ============================================================
-# POISSON
+# POISSON (LEGACY - сохраняется для совместимости)
 # ============================================================
 
 def poisson_probability(
@@ -1133,45 +1107,13 @@ class FAJBrain:
     def __init__(self):
 
         # ====================================================
-        # FormModel
+        # ALL MODELS ARE INSTANTIATED ON DEMAND
         # ====================================================
-
-        self.form_model = FormModel()
-
-        # ====================================================
-        # FormWin
-        # ====================================================
-
-        self.form_win = FormWin()
-
-        # ====================================================
-        # Defence
-        # ====================================================
-
-        self.defence = Defence()
-
-        # ====================================================
-        # GoalModel
-        # ====================================================
-
-        self.goal_model = GoalModel()
-
-        # ====================================================
-        # CornersModel
-        # ====================================================
-
-        self.corners_model = CornersModel()
-
-        # ====================================================
-        # CardsModel
-        # ====================================================
-
-        self.cards_model = CardsModel()
 
         self.version = BRAIN_VERSION
 
     # ========================================================
-    # NORMALIZATION
+    # NORMALIZATION (LEGACY)
     # ========================================================
 
     def _normalize_matches(
@@ -1206,7 +1148,7 @@ class FAJBrain:
         return result
 
     # ========================================================
-    # BUILD FORM CONTEXT
+    # BUILD FORM CONTEXT (LEGACY)
     # ========================================================
 
     def _build_form_context_for_model(
@@ -1362,7 +1304,7 @@ class FAJBrain:
         )
 
     # ========================================================
-    # ENRICH FORM CONTEXT
+    # ENRICH FORM CONTEXT (LEGACY)
     # ========================================================
 
     def _enrich_form_context(
@@ -1715,7 +1657,7 @@ class FAJBrain:
         return context
 
     # ========================================================
-    # HISTORICAL RESULT
+    # HISTORICAL RESULT (LEGACY)
     # ========================================================
 
     @staticmethod
@@ -1747,7 +1689,7 @@ class FAJBrain:
         return "D"
 
     # ========================================================
-    # OLD PROFILE
+    # OLD PROFILE (LEGACY)
     # ========================================================
 
     def build_profile(
@@ -2067,7 +2009,7 @@ class FAJBrain:
         )
 
     # ========================================================
-    # DATA QUALITY
+    # DATA QUALITY (LEGACY)
     # ========================================================
 
     def _calculate_data_quality(
@@ -2142,7 +2084,7 @@ class FAJBrain:
         )
 
     # ========================================================
-    # EXPECTED GOALS
+    # EXPECTED GOALS (LEGACY)
     # ========================================================
 
     def _calculate_expected_goals(
@@ -2194,7 +2136,7 @@ class FAJBrain:
         )
 
     # ========================================================
-    # RESULT PROBABILITIES
+    # RESULT PROBABILITIES (LEGACY)
     # ========================================================
 
     def _result_probabilities(
@@ -2273,7 +2215,7 @@ class FAJBrain:
         }
 
     # ========================================================
-    # TOTALS
+    # TOTALS (LEGACY)
     # ========================================================
 
     def _totals(
@@ -2337,7 +2279,7 @@ class FAJBrain:
         }
 
     # ========================================================
-    # SIMPLE POISSON TOTAL
+    # SIMPLE POISSON TOTAL (LEGACY)
     # ========================================================
 
     def _over_probability(
@@ -2382,7 +2324,7 @@ class FAJBrain:
         )
 
     # ========================================================
-    # CONFIDENCE
+    # CONFIDENCE (LEGACY)
     # ========================================================
 
     def _confidence(
@@ -2436,7 +2378,7 @@ class FAJBrain:
         )
 
     # ========================================================
-    # RISK
+    # RISK (LEGACY)
     # ========================================================
 
     def _risk(
@@ -2468,7 +2410,7 @@ class FAJBrain:
         return "Низкий"
 
     # ========================================================
-    # CONCLUSION
+    # CONCLUSION (LEGACY)
     # ========================================================
 
     def _conclusion(
@@ -2582,7 +2524,7 @@ class FAJBrain:
         )
 
     # ========================================================
-    # JSON SAFE
+    # JSON SAFE (LEGACY)
     # ========================================================
 
     def _json_safe(
@@ -2666,6 +2608,392 @@ class FAJBrain:
         return str(value)
 
     # ========================================================
+    # ========================================================
+    # FAJ MATHEMATICAL BRAIN BRIDGE
+    # v1.0
+    #
+    # RAW HISTORY
+    #     ↓
+    # FormContext
+    #     ↓
+    # FormModel
+    #     ├── FormWin
+    #     ├── Defence
+    #     ├── FormControl
+    #     ├── FormAnomaly
+    #     └── SpecialForm
+    #     ↓
+    # GoalModel
+    #     ↓
+    # ProbabilityModel
+    #     ↓
+    # ScorePredictor
+    # ============================================================
+
+    def _build_math_context(
+        self,
+        team_name: str,
+        matches: list,
+        venue: str,
+    ) -> dict:
+        """
+        Создаёт единый FormContext для одной команды.
+
+        ВАЖНО:
+            FormContext является единственным источником
+            исторических фактов для математических органов.
+
+        Никакой орган не получает RAW history напрямую.
+        """
+        context = build_form_context(
+            team_name,
+            matches,
+            limit=6,
+        )
+
+        if not isinstance(context, dict):
+            try:
+                context = dict(context)
+            except Exception:
+                raise TypeError(
+                    "FAJ FormContext должен быть dict-compatible"
+                )
+
+        # --------------------------------------------------------
+        # Метаданные текущего матча
+        # --------------------------------------------------------
+        context["team_name"] = team_name
+        context["venue"] = venue
+
+        return context
+
+    def _run_form_pipeline(
+        self,
+        team_name: str,
+        opponent_name: str,
+        matches: list,
+        venue: str,
+    ) -> dict:
+        """
+        Полный математический pipeline одной команды.
+
+        FormContext
+            ↓
+        FormModel
+            ↓
+        FormWin
+            ↓
+        Defence
+            ↓
+        FormControl
+            ↓
+        FormAnomaly
+            ↓
+        SpecialForm
+        """
+        # ========================================================
+        # 1. FORM CONTEXT
+        # ========================================================
+        context = self._build_math_context(
+            team_name=team_name,
+            matches=matches,
+            venue=venue,
+        )
+
+        # ========================================================
+        # 2. FORM MODEL
+        # ========================================================
+        form_model = FormModel()
+        form_result = form_model.analyze(
+            context,
+            next_venue=venue,
+        )
+
+        # ========================================================
+        # 3. FORM WIN
+        # ========================================================
+        form_win = FormWin()
+        form_win_result = form_win.analyze(
+            context,
+            next_venue=venue,
+        )
+
+        # ========================================================
+        # 4. DEFENCE
+        # ========================================================
+        defence = Defence()
+        defence_result = defence.calculate(
+            context,
+            team_name=team_name,
+        )
+
+        # ========================================================
+        # 5. FORM CONTROL
+        # ========================================================
+        form_control = FormControl()
+        control_result = form_control.analyze(
+            context=context,
+            target_team=team_name,
+            opponent_team=opponent_name,
+            venue=venue,
+        )
+
+        # ========================================================
+        # 6. FORM ANOMALY
+        # ========================================================
+        anomaly = FormAnomaly()
+        anomaly_result = anomaly.analyze(
+            context
+        )
+
+        # ========================================================
+        # 7. SPECIAL FORM
+        # ========================================================
+        #
+        # ВАЖНО:
+        # SpecialForm v1.0 читает FormContext через attributes,
+        # тогда как остальные органы принимают dict.
+        #
+        # Поэтому создаём только адаптер-представление.
+        # Исходный context НЕ изменяется.
+        #
+        special_context = SimpleNamespace(
+            **context
+        )
+        special_form = SpecialForm()
+        special_result = special_form.analyze(
+            special_context,
+            team_name=team_name,
+        )
+
+        # ========================================================
+        # 8. RETURN
+        # ========================================================
+        return {
+            "team": team_name,
+            "opponent": opponent_name,
+            "venue": venue,
+            "context": context,
+            "form_model": form_result,
+            "form_win": form_win_result,
+            "defence": defence_result,
+            "form_control": control_result,
+            "form_anomaly": anomaly_result,
+            "special_form": special_result,
+        }
+
+    def _run_match_math_pipeline(
+        self,
+        home_team: str,
+        away_team: str,
+        home_matches: list,
+        away_matches: list,
+    ) -> dict:
+        """
+        Полный математический pipeline матча.
+
+        HOME и AWAY сначала рассчитываются независимо.
+        Только после этого:
+            GoalModel
+            ProbabilityModel
+            ScorePredictor
+        """
+        # ========================================================
+        # HOME
+        # ========================================================
+        home_state = self._run_form_pipeline(
+            team_name=home_team,
+            opponent_name=away_team,
+            matches=home_matches,
+            venue="home",
+        )
+
+        # ========================================================
+        # AWAY
+        # ========================================================
+        away_state = self._run_form_pipeline(
+            team_name=away_team,
+            opponent_name=home_team,
+            matches=away_matches,
+            venue="away",
+        )
+
+        # ========================================================
+        # 1. GOAL MODEL
+        # ========================================================
+        goal_model = GoalModel()
+        goal_result = goal_model.analyze(
+            home_form=home_state["form_model"],
+            away_form=away_state["form_model"],
+            home_team=home_team,
+            away_team=away_team,
+            venue="HOME",
+            home_form_win=home_state["form_win"],
+            away_form_win=away_state["form_win"],
+            home_defence=home_state["defence"],
+            away_defence=away_state["defence"],
+        )
+
+        # ========================================================
+        # 2. PROBABILITY MODEL
+        # ========================================================
+        probability_model = ProbabilityModel()
+        probability_result = probability_model.calculate(
+            home_xg=goal_result.home_xg,
+            away_xg=goal_result.away_xg,
+        )
+
+        # ========================================================
+        # 3. CONTROL ADVANTAGE
+        # ========================================================
+        home_control = getattr(
+            home_state["form_control"],
+            "control_signal",
+            None,
+        )
+        away_control = getattr(
+            away_state["form_control"],
+            "control_signal",
+            None,
+        )
+
+        control_advantage = None
+        control_strength = None
+
+        if (
+            home_control is not None
+            and away_control is not None
+        ):
+            control_difference = (
+                float(home_control)
+                - float(away_control)
+            )
+            if control_difference > 0.05:
+                control_advantage = "HOME"
+            elif control_difference < -0.05:
+                control_advantage = "AWAY"
+            else:
+                control_advantage = "EQUAL"
+            control_strength = min(
+                1.0,
+                abs(control_difference),
+            )
+
+        # ========================================================
+        # 4. ANOMALY ADVANTAGE
+        # ========================================================
+        home_anomaly = getattr(
+            home_state["form_anomaly"],
+            "anomaly_signal",
+            None,
+        )
+        away_anomaly = getattr(
+            away_state["form_anomaly"],
+            "anomaly_signal",
+            None,
+        )
+
+        anomaly_signal = None
+
+        if (
+            home_anomaly is not None
+            and away_anomaly is not None
+        ):
+            anomaly_signal = max(
+                -1.0,
+                min(
+                    1.0,
+                    float(home_anomaly)
+                    - float(away_anomaly),
+                ),
+            )
+
+        # ========================================================
+        # 5. SPECIAL FORM ADVANTAGE
+        # ========================================================
+        home_special = getattr(
+            home_state["special_form"],
+            "composite_signal",
+            None,
+        )
+        away_special = getattr(
+            away_state["special_form"],
+            "composite_signal",
+            None,
+        )
+
+        special_composite = None
+
+        if (
+            home_special is not None
+            and away_special is not None
+        ):
+            special_composite = max(
+                -0.30,
+                min(
+                    0.30,
+                    float(home_special)
+                    - float(away_special),
+                ),
+            )
+
+        # ========================================================
+        # 6. SCORE PREDICTOR
+        # ========================================================
+        score_predictor = ScorePredictor()
+        score_result = score_predictor.predict(
+            score_probabilities=(
+                probability_result.score_distribution
+            ),
+            home_xg=goal_result.home_xg,
+            away_xg=goal_result.away_xg,
+            probability_result=probability_result,
+            home_form_win=home_state["form_win"],
+            away_form_win=away_state["form_win"],
+            home_defence=home_state["defence"],
+            away_defence=away_state["defence"],
+            control_advantage=control_advantage,
+            control_strength=control_strength,
+            anomaly_signal=anomaly_signal,
+            special_composite=special_composite,
+        )
+
+        # ========================================================
+        # 7. FINAL MATH PACKAGE
+        # ========================================================
+        return {
+            "home": home_state,
+            "away": away_state,
+            "goal_model": goal_result,
+            "probability_model": probability_result,
+            "score_predictor": score_result,
+            "diagnostics": {
+                "home_team": home_team,
+                "away_team": away_team,
+                "home_matches": len(
+                    home_matches or []
+                ),
+                "away_matches": len(
+                    away_matches or []
+                ),
+                "home_xg": goal_result.home_xg,
+                "away_xg": goal_result.away_xg,
+                "control_advantage": (
+                    control_advantage
+                ),
+                "control_strength": (
+                    control_strength
+                ),
+                "anomaly_signal": (
+                    anomaly_signal
+                ),
+                "special_composite": (
+                    special_composite
+                ),
+            },
+        }
+
+    # ========================================================
     # PUBLIC PREDICTION
     # ========================================================
 
@@ -2680,7 +3008,7 @@ class FAJBrain:
     ) -> Dict[str, Any]:
 
         # ====================================================
-        # 1. NORMALIZE
+        # 1. NORMALIZE (LEGACY)
         # ====================================================
 
         home_history = (
@@ -2712,119 +3040,188 @@ class FAJBrain:
             )
 
         # ====================================================
-        # 2. FORM CONTEXT
+        # 2. NEW FAJ MATHEMATICAL BRAIN
         # ====================================================
 
-        if home_form_context is not None:
+        math_pipeline = self._run_match_math_pipeline(
+            home_team=home_team,
+            away_team=away_team,
+            home_matches=home_matches,
+            away_matches=away_matches,
+        )
 
-            home_form_context_data = (
-                home_form_context
-            )
+        home_math = math_pipeline["home"]
+        away_math = math_pipeline["away"]
+        goal_result = math_pipeline["goal_model"]
+        probability_result = math_pipeline["probability_model"]
+        score_result = math_pipeline["score_predictor"]
 
-        else:
+        # ====================================================
+        # 3. EXTRACT XG FROM GOAL MODEL
+        # ====================================================
 
-            home_form_context_data = (
-                self._build_form_context_for_model(
-                    home_team,
-                    home_history,
-                )
-            )
+        home_xg = goal_result.home_xg
+        away_xg = goal_result.away_xg
 
-        if away_form_context is not None:
+        # ====================================================
+        # 4. NONE PROTECTION
+        # ====================================================
 
-            away_form_context_data = (
-                away_form_context
-            )
+        if (
+            home_xg is None
+            or away_xg is None
+        ):
 
-        else:
+            raise ValueError(
 
-            away_form_context_data = (
-                self._build_form_context_for_model(
-                    away_team,
-                    away_history,
-                )
+                "GoalModel не смог "
+                "рассчитать xG: "
+                "для одной или обеих "
+                "команд отсутствует "
+                "необходимый xG/xGA "
+                "компонент в "
+                "FormModelResult."
             )
 
         # ====================================================
-        # 3. ENRICH
+        # 5. RESULT PROBABILITIES
         # ====================================================
 
-        home_enriched_context = (
-            self._enrich_form_context(
-                home_form_context_data,
-                home_history,
+        probabilities = {
+
+            "home":
+                probability_result.home_win,
+
+            "draw":
+                probability_result.draw,
+
+            "away":
+                probability_result.away_win,
+        }
+
+        # ====================================================
+        # 6. TOTALS
+        # ====================================================
+
+        btts = probability_result.btts
+        over25 = probability_result.over_25
+        over35 = probability_result.over_35
+
+        totals = {
+            "btts": _probability(btts)
+            if btts is not None else None,
+
+            "over25": _probability(over25)
+            if over25 is not None else None,
+
+            "over35": _probability(over35)
+            if over35 is not None else None,
+        }
+
+        # ====================================================
+        # 7. SCORE DISTRIBUTION
+        # ====================================================
+
+        top_scores = score_result.top_scores
+
+        score_strings = [
+
+            item["score_string"]
+
+            for item in top_scores[:3]
+        ]
+
+        while len(
+            score_strings
+        ) < 3:
+
+            score_strings.append(
+                "-"
+            )
+
+        # ====================================================
+        # 8. CORNERS
+        # ====================================================
+
+        # Используем существующие CornersModel через старый метод
+        # для сохранения совместимости с текущим UI.
+
+        corners_result = self.corners_model.synthesize_match(
+            home_math["context"],
+            away_math["context"],
+        )
+
+        corner_total = (
+            corners_result.get(
+                "total_expected_corners"
             )
         )
 
-        away_enriched_context = (
-            self._enrich_form_context(
-                away_form_context_data,
-                away_history,
+        home_corners_expected = (
+            corners_result
+            .get(
+                "home",
+                {}
+            )
+            .get(
+                "home_corners_expected"
+            )
+        )
+
+        away_corners_expected = (
+            corners_result
+            .get(
+                "away",
+                {}
+            )
+            .get(
+                "away_corners_expected"
             )
         )
 
         # ====================================================
-        # 4. FORM MODEL
+        # 9. CARDS
         # ====================================================
 
-        home_form_result = (
-            self.form_model.analyze(
-                home_form_context_data
+        cards_result = self.cards_model.synthesize_match(
+            home_math["context"],
+            away_math["context"],
+        )
+
+        card_total = (
+            cards_result.get(
+                "total_expected_cards"
             )
         )
 
-        away_form_result = (
-            self.form_model.analyze(
-                away_form_context_data
+        home_cards_expected = (
+            cards_result
+            .get(
+                "home",
+                {}
+            )
+            .get(
+                "home_cards_expected"
             )
         )
 
-        # ====================================================
-        # 5. FORM WIN
-        # ====================================================
-
-        home_form_win = (
-            self.form_win.analyze(
-                home_enriched_context,
-                next_venue="home",
+        away_cards_expected = (
+            cards_result
+            .get(
+                "away",
+                {}
             )
-        )
-
-        away_form_win = (
-            self.form_win.analyze(
-                away_enriched_context,
-                next_venue="away",
-            )
-        )
-
-        form_win_comparison = (
-            self.form_win.compare(
-                home_enriched_context,
-                away_enriched_context,
+            .get(
+                "away_cards_expected"
             )
         )
 
         # ====================================================
-        # 6. DEFENCE
+        # 10. CONFIDENCE (LEGACY - требует доработки)
         # ====================================================
 
-        home_defence = (
-            self.defence.calculate(
-                home_enriched_context,
-                team_name=home_team,
-            )
-        )
-
-        away_defence = (
-            self.defence.calculate(
-                away_enriched_context,
-                team_name=away_team,
-            )
-        )
-
-        # ====================================================
-        # 7. OLD PROFILES
-        # ====================================================
+        # Пока используем старый расчёт на основе TeamProfile
+        # Это будет заменено на новую метрику после калибровки
 
         home_profile = (
             self.build_profile(
@@ -2840,8 +3237,40 @@ class FAJBrain:
             )
         )
 
+        confidence = (
+            self._confidence(
+                home_profile,
+                away_profile,
+                probabilities,
+            )
+        )
+
+        risk = (
+            self._risk(
+                confidence,
+                home_profile,
+                away_profile,
+            )
+        )
+
         # ====================================================
-        # 8. ANALYSIS MODE
+        # 11. CONCLUSION (LEGACY)
+        # ====================================================
+
+        (
+            conclusion,
+            factors,
+        ) = (
+            self._conclusion(
+                home_profile,
+                away_profile,
+                probabilities,
+                totals,
+            )
+        )
+
+        # ====================================================
+        # 12. ANALYSIS MODE
         # ====================================================
 
         min_matches = min(
@@ -2882,224 +3311,7 @@ class FAJBrain:
             )
 
         # ====================================================
-        # 9. EXPECTED GOALS
-        # ====================================================
-
-        (
-            home_xg,
-            away_xg,
-            goal_result,
-        ) = (
-            self._calculate_expected_goals(
-
-                home_form_result,
-
-                away_form_result,
-
-                home_form_win,
-
-                away_form_win,
-
-                home_defence,
-
-                away_defence,
-
-                home_team,
-
-                away_team,
-            )
-        )
-
-        # ====================================================
-        # 10. NONE PROTECTION
-        # ====================================================
-
-        if (
-            home_xg is None
-            or away_xg is None
-        ):
-
-            raise ValueError(
-
-                "GoalModel не смог "
-                "рассчитать xG: "
-                "для одной или обеих "
-                "команд отсутствует "
-                "необходимый xG/xGA "
-                "компонент в "
-                "FormModelResult."
-            )
-
-        # ====================================================
-        # 11. RESULT PROBABILITIES
-        # ====================================================
-
-        probabilities = (
-            self._result_probabilities(
-                home_xg,
-                away_xg,
-            )
-        )
-
-        # ====================================================
-        # 12. TOTALS
-        # ====================================================
-
-        totals = (
-            self._totals(
-                home_xg,
-                away_xg,
-            )
-        )
-
-        # ====================================================
-        # 13. SCORE DISTRIBUTION
-        # ====================================================
-
-        scores = (
-            score_distribution(
-                home_xg,
-                away_xg,
-            )
-        )
-
-        top_scores = scores[:3]
-
-        score_strings = [
-
-            f"{item['home']}:{item['away']}"
-
-            for item in top_scores
-        ]
-
-        while len(
-            score_strings
-        ) < 3:
-
-            score_strings.append(
-                "-"
-            )
-
-        # ====================================================
-        # 14. CORNERS
-        # ====================================================
-
-        corners_result = (
-            self.corners_model.synthesize_match(
-                home_form_context_data,
-                away_form_context_data,
-            )
-        )
-
-        corner_total = (
-            corners_result.get(
-                "total_expected_corners"
-            )
-        )
-
-        home_corners_expected = (
-            corners_result
-            .get(
-                "home",
-                {}
-            )
-            .get(
-                "home_corners_expected"
-            )
-        )
-
-        away_corners_expected = (
-            corners_result
-            .get(
-                "away",
-                {}
-            )
-            .get(
-                "away_corners_expected"
-            )
-        )
-
-        # ====================================================
-        # 15. CARDS
-        # ====================================================
-
-        cards_result = (
-            self.cards_model.synthesize_match(
-                home_form_context_data,
-                away_form_context_data,
-            )
-        )
-
-        card_total = (
-            cards_result.get(
-                "total_expected_cards"
-            )
-        )
-
-        home_cards_expected = (
-            cards_result
-            .get(
-                "home",
-                {}
-            )
-            .get(
-                "home_cards_expected"
-            )
-        )
-
-        away_cards_expected = (
-            cards_result
-            .get(
-                "away",
-                {}
-            )
-            .get(
-                "away_cards_expected"
-            )
-        )
-
-        # ====================================================
-        # 16. CONFIDENCE
-        # ====================================================
-
-        confidence = (
-            self._confidence(
-                home_profile,
-                away_profile,
-                probabilities,
-            )
-        )
-
-        # ====================================================
-        # 17. RISK
-        # ====================================================
-
-        risk = (
-            self._risk(
-                confidence,
-                home_profile,
-                away_profile,
-            )
-        )
-
-        # ====================================================
-        # 18. CONCLUSION
-        # ====================================================
-
-        (
-            conclusion,
-            factors,
-        ) = (
-            self._conclusion(
-                home_profile,
-                away_profile,
-                probabilities,
-                totals,
-            )
-        )
-
-        # ====================================================
-        # 19. OUTPUT
+        # 13. OUTPUT
         # ====================================================
 
         result = BrainPrediction(
@@ -3112,30 +3324,42 @@ class FAJBrain:
                 _probability(
                     probabilities["home"]
                 )
+                if probabilities["home"] is not None
+                else 0.0
             ),
 
             draw_probability=(
                 _probability(
                     probabilities["draw"]
                 )
+                if probabilities["draw"] is not None
+                else 0.0
             ),
 
             away_win_probability=(
                 _probability(
                     probabilities["away"]
                 )
+                if probabilities["away"] is not None
+                else 0.0
             ),
 
             btts_probability=(
                 totals["btts"]
+                if totals["btts"] is not None
+                else 0.0
             ),
 
             over25_probability=(
                 totals["over25"]
+                if totals["over25"] is not None
+                else 0.0
             ),
 
             over35_probability=(
                 totals["over35"]
+                if totals["over35"] is not None
+                else 0.0
             ),
 
             home_xg=home_xg,
@@ -3143,15 +3367,21 @@ class FAJBrain:
             away_xg=away_xg,
 
             most_likely_score=(
-                score_strings[0]
+                score_result.predicted_score_string
+                if score_result.predicted_score_string is not None
+                else "-"
             ),
 
             second_likely_score=(
-                score_strings[1]
+                score_result.second_score_string
+                if score_result.second_score_string is not None
+                else "-"
             ),
 
             third_likely_score=(
-                score_strings[2]
+                score_result.third_score_string
+                if score_result.third_score_string is not None
+                else "-"
             ),
 
             corners_expected=(
@@ -3303,42 +3533,77 @@ class FAJBrain:
 
                 "home_form_result":
                     self._json_safe(
-                        home_form_result
+                        home_math["form_model"]
                     ),
 
                 "away_form_result":
                     self._json_safe(
-                        away_form_result
+                        away_math["form_model"]
                     ),
 
                 "home_form_win":
                     self._json_safe(
-                        home_form_win
+                        home_math["form_win"]
                     ),
 
                 "away_form_win":
                     self._json_safe(
-                        away_form_win
-                    ),
-
-                "form_win_comparison":
-                    self._json_safe(
-                        form_win_comparison
+                        away_math["form_win"]
                     ),
 
                 "home_defence":
                     self._json_safe(
-                        home_defence
+                        home_math["defence"]
                     ),
 
                 "away_defence":
                     self._json_safe(
-                        away_defence
+                        away_math["defence"]
+                    ),
+
+                "home_form_control":
+                    self._json_safe(
+                        home_math["form_control"]
+                    ),
+
+                "away_form_control":
+                    self._json_safe(
+                        away_math["form_control"]
+                    ),
+
+                "home_form_anomaly":
+                    self._json_safe(
+                        home_math["form_anomaly"]
+                    ),
+
+                "away_form_anomaly":
+                    self._json_safe(
+                        away_math["form_anomaly"]
+                    ),
+
+                "home_special_form":
+                    self._json_safe(
+                        home_math["special_form"]
+                    ),
+
+                "away_special_form":
+                    self._json_safe(
+                        away_math["special_form"]
                     ),
 
                 "goal_model":
                     self._json_safe(
                         goal_result
+                    ),
+
+                "probability_model":
+                    self._json_safe(
+                        probability_result
+                    ),
+
+                "score_predictor":
+                    self._json_safe(
+                        score_result
                     ),
 
                 "corners_result":
@@ -3351,316 +3616,18 @@ class FAJBrain:
                         cards_result
                     ),
 
-                # =================================================
-                # DATA FLOW AUDIT
-                #
-                # Показывает, какие факты реально дошли
-                # до математических органов.
-                # =================================================
-
-                "data_flow_audit": {
-
-                    "home": {
-                        key: {
-                            "count": sum(
-                                value is not None
-                                for value in values
-                            ),
-                            "total": len(values),
-                            "values": values,
-                        }
-
-                        for key, values in {
-
-                            "xg":
-                                home_enriched_context.get(
-                                    "team_xg_history",
-                                    [],
-                                ),
-
-                            "xga":
-                                home_enriched_context.get(
-                                    "opponent_xg_history",
-                                    [],
-                                ),
-
-                            "shots":
-                                home_enriched_context.get(
-                                    "shots_history",
-                                    [],
-                                ),
-
-                            "shots_against":
-                                home_enriched_context.get(
-                                    "shots_conceded_history",
-                                    [],
-                                ),
-
-                            "sot":
-                                home_enriched_context.get(
-                                    "shots_on_target_history",
-                                    [],
-                                ),
-
-                            "sot_against":
-                                home_enriched_context.get(
-                                    "sot_conceded_history",
-                                    [],
-                                ),
-
-                            "blocked_shots":
-                                home_enriched_context.get(
-                                    "blocked_shots_history",
-                                    [],
-                                ),
-
-                            "blocked_shots_against":
-                                home_enriched_context.get(
-                                    "blocked_shots_conceded_history",
-                                    [],
-                                ),
-
-                            "big_chances":
-                                home_enriched_context.get(
-                                    "big_chances_history",
-                                    [],
-                                ),
-
-                            "big_chances_against":
-                                home_enriched_context.get(
-                                    "big_chances_against_history",
-                                    [],
-                                ),
-
-                            "possession":
-                                home_enriched_context.get(
-                                    "possession_history",
-                                    [],
-                                ),
-
-                            "possession_against":
-                                home_enriched_context.get(
-                                    "opponent_possession_history",
-                                    [],
-                                ),
-
-                            "passes":
-                                home_enriched_context.get(
-                                    "passes_history",
-                                    [],
-                                ),
-
-                            "passes_against":
-                                home_enriched_context.get(
-                                    "opponent_passes_history",
-                                    [],
-                                ),
-
-                            "pass_accuracy":
-                                home_enriched_context.get(
-                                    "pass_accuracy_history",
-                                    [],
-                                ),
-
-                            "pass_accuracy_against":
-                                home_enriched_context.get(
-                                    "opponent_pass_accuracy_history",
-                                    [],
-                                ),
-
-                            "corners":
-                                home_enriched_context.get(
-                                    "corners_for_history",
-                                    [],
-                                ),
-
-                            "corners_against":
-                                home_enriched_context.get(
-                                    "corners_against_history",
-                                    [],
-                                ),
-
-                            "fouls":
-                                home_enriched_context.get(
-                                    "fouls_history",
-                                    [],
-                                ),
-
-                            "offsides":
-                                home_enriched_context.get(
-                                    "offsides_history",
-                                    [],
-                                ),
-
-                            "cards":
-                                home_enriched_context.get(
-                                    "team_cards_history",
-                                    [],
-                                ),
-
-                            "cards_against":
-                                home_enriched_context.get(
-                                    "opponent_cards_history",
-                                    [],
-                                ),
-                        }.items()
-                    },
-
-                    "away": {
-                        key: {
-                            "count": sum(
-                                value is not None
-                                for value in values
-                            ),
-                            "total": len(values),
-                            "values": values,
-                        }
-
-                        for key, values in {
-
-                            "xg":
-                                away_enriched_context.get(
-                                    "team_xg_history",
-                                    [],
-                                ),
-
-                            "xga":
-                                away_enriched_context.get(
-                                    "opponent_xg_history",
-                                    [],
-                                ),
-
-                            "shots":
-                                away_enriched_context.get(
-                                    "shots_history",
-                                    [],
-                                ),
-
-                            "shots_against":
-                                away_enriched_context.get(
-                                    "shots_conceded_history",
-                                    [],
-                                ),
-
-                            "sot":
-                                away_enriched_context.get(
-                                    "shots_on_target_history",
-                                    [],
-                                ),
-
-                            "sot_against":
-                                away_enriched_context.get(
-                                    "sot_conceded_history",
-                                    [],
-                                ),
-
-                            "blocked_shots":
-                                away_enriched_context.get(
-                                    "blocked_shots_history",
-                                    [],
-                                ),
-
-                            "blocked_shots_against":
-                                away_enriched_context.get(
-                                    "blocked_shots_conceded_history",
-                                    [],
-                                ),
-
-                            "big_chances":
-                                away_enriched_context.get(
-                                    "big_chances_history",
-                                    [],
-                                ),
-
-                            "big_chances_against":
-                                away_enriched_context.get(
-                                    "big_chances_against_history",
-                                    [],
-                                ),
-
-                            "possession":
-                                away_enriched_context.get(
-                                    "possession_history",
-                                    [],
-                                ),
-
-                            "possession_against":
-                                away_enriched_context.get(
-                                    "opponent_possession_history",
-                                    [],
-                                ),
-
-                            "passes":
-                                away_enriched_context.get(
-                                    "passes_history",
-                                    [],
-                                ),
-
-                            "passes_against":
-                                away_enriched_context.get(
-                                    "opponent_passes_history",
-                                    [],
-                                ),
-
-                            "pass_accuracy":
-                                away_enriched_context.get(
-                                    "pass_accuracy_history",
-                                    [],
-                                ),
-
-                            "pass_accuracy_against":
-                                away_enriched_context.get(
-                                    "opponent_pass_accuracy_history",
-                                    [],
-                                ),
-
-                            "corners":
-                                away_enriched_context.get(
-                                    "corners_for_history",
-                                    [],
-                                ),
-
-                            "corners_against":
-                                away_enriched_context.get(
-                                    "corners_against_history",
-                                    [],
-                                ),
-
-                            "fouls":
-                                away_enriched_context.get(
-                                    "fouls_history",
-                                    [],
-                                ),
-
-                            "offsides":
-                                away_enriched_context.get(
-                                    "offsides_history",
-                                    [],
-                                ),
-
-                            "cards":
-                                away_enriched_context.get(
-                                    "team_cards_history",
-                                    [],
-                                ),
-
-                            "cards_against":
-                                away_enriched_context.get(
-                                    "opponent_cards_history",
-                                    [],
-                                ),
-                        }.items()
-                    },
-                },
-
                 "method":
                     "FormModel v1.0 + "
                     "FormWin v1.1 + "
                     "Defence v1.0 + "
+                    "FormControl v1.1 + "
+                    "FormAnomaly v1.0 + "
+                    "SpecialForm v1.0 + "
                     "GoalModel v1.1 + "
+                    "ProbabilityModel v1.0 + "
+                    "ScorePredictor v2.0 + "
                     "CornersModel v1.0 + "
-                    "CardsModel v1.0 + "
-                    "poisson_score_distribution",
+                    "CardsModel v1.0",
 
                 "xg_internal": {
 
@@ -3672,16 +3639,12 @@ class FAJBrain:
                 },
 
                 "note":
-                    "FAJ-BRAIN-0.6. "
-                    "HistoricalMatch теперь сохраняет "
-                    "собственные и opponent факты "
-                    "в extra для downstream "
-                    "математических органов. "
-                    "Добавлен data_flow_audit "
-                    "для проверки фактической "
-                    "передачи данных. "
-                    "Математика FormWin, Defence "
-                    "и GoalModel не изменялась.",
+                    "FAJ-BRAIN-0.7. "
+                    "Новая математическая цепочка: "
+                    "FormContext -> FormModel -> FormWin/Defence "
+                    "-> GoalModel -> ProbabilityModel -> ScorePredictor. "
+                    "Старая математика пока сохранена для confidence/risk. "
+                    "После калибровки будет полностью заменена.",
             },
         )
 
