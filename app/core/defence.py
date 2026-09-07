@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ PLATFORM v12.1
-DEFENCE v1.0
+DEFENCE v1.1
 ============================================================
 
 МАТЕМАТИЧЕСКИЙ ОРГАН FAJ
@@ -62,17 +62,19 @@ Defence НЕ:
 в нулевые значения.
 
 ============================================================
-MATHEMATICAL VERSION
+CHANGES IN V1.1
 ============================================================
 
-DEFENCE v1.0
+- xGA полностью убран из process_signal
+- xGA полностью убран из momentum_signal
+- xGA полностью убран из venue_signal
+- xGA остаётся только в diagnostics
 
-Structural priors являются предварительной математической
-иерархией и НЕ являются обученными коэффициентами.
+Это устраняет архитектурное дублирование:
+    xGA → Defence → GoalModel
+    xGA → GoalModel (через FormModel)
 
-Окончательная калибровка допускается только после
-исторического backtesting.
-
+Теперь xGA влияет на GoalModel ТОЛЬКО через FormModel.
 ============================================================
 """
 
@@ -88,7 +90,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 # VERSION
 # ============================================================
 
-DEFENCE_VERSION = "1.0"
+DEFENCE_VERSION = "1.1"
 
 
 # ============================================================
@@ -108,13 +110,19 @@ TEMPORAL_WEIGHTS: Tuple[float, ...] = (
 # ------------------------------------------------------------
 # Process hierarchy
 # ------------------------------------------------------------
-
+#
+# V1.1: xGA убран из process_signal.
+# Оставшиеся веса пересчитаны пропорционально:
+# исходная сумма без xGA: 0.20 + 0.15 + 0.07 + 0.03 = 0.45
+# shots        0.20 / 0.45 = 0.444444
+# SOT          0.15 / 0.45 = 0.333333
+# big_chances  0.07 / 0.45 = 0.155556
+# corners      0.03 / 0.45 = 0.066667
 PROCESS_WEIGHTS = {
-    "xga": 0.55,
-    "shots": 0.20,
-    "sot": 0.15,
-    "big_chances": 0.07,
-    "corners": 0.03,
+    "shots": 4.0 / 9.0,
+    "sot": 1.0 / 3.0,
+    "big_chances": 7.0 / 45.0,
+    "corners": 1.0 / 15.0,
 }
 
 
@@ -141,12 +149,17 @@ FINAL_WEIGHTS = {
 # ------------------------------------------------------------
 # Momentum
 # ------------------------------------------------------------
-
+#
+# V1.1: xGA убран из momentum.
+# Оставшиеся веса пересчитаны пропорционально:
+# 0.25 + 0.15 + 0.10 = 0.50
+# shots  0.25 / 0.50 = 0.50
+# SOT    0.15 / 0.50 = 0.30
+# goals  0.10 / 0.50 = 0.20
 MOMENTUM_WEIGHTS = {
-    "xga": 0.50,
-    "shots": 0.25,
-    "sot": 0.15,
-    "goals": 0.10,
+    "shots": 0.50,
+    "sot": 0.30,
+    "goals": 0.20,
 }
 
 
@@ -1212,11 +1225,14 @@ class Defence:
     # ========================================================
     # PROCESS
     # ========================================================
+    #
+    # V1.1: xGA полностью убран из process_signal.
+    # Используются только: shots, SOT, big_chances, corners.
+    # ========================================================
 
     def _process_signal(
         self,
         *,
-        xga_signal: Optional[float],
         shots_signal: Optional[float],
         sot_signal: Optional[float],
         big_chances_signal: Optional[float],
@@ -1225,13 +1241,12 @@ class Defence:
         """
         Defensive process signal.
 
-        Structural hierarchy:
+        Structural hierarchy (v1.1, без xGA):
 
-            xGA       55%
-            shots     20%
-            SOT       15%
-            big       7%
-            corners   3%
+            shots       44.4%
+            SOT         33.3%
+            big         15.6%
+            corners     6.7%
 
         Missing components are excluded together with
         their weights.
@@ -1249,10 +1264,6 @@ class Defence:
 
         return _combine_optional(
             (
-                (
-                    xga_signal,
-                    PROCESS_WEIGHTS["xga"],
-                ),
                 (
                     shots_signal,
                     PROCESS_WEIGHTS["shots"],
@@ -1275,13 +1286,14 @@ class Defence:
     # ========================================================
     # MOMENTUM
     # ========================================================
+    #
+    # V1.1: xGA полностью убран из momentum.
+    # Используются только: shots, SOT, goals.
+    # ========================================================
 
     def _momentum(
         self,
         *,
-        xga: Sequence[
-            Optional[float]
-        ],
         shots: Sequence[
             Optional[float]
         ],
@@ -1295,16 +1307,12 @@ class Defence:
         """
         Defensive momentum.
 
-        Decreasing xGA / shots / SOT / goals means
+        Decreasing shots / SOT / goals means
         improving defensive state.
 
         Momentum is a state-change signal,
         not a second Defence score.
         """
-
-        xga_trend = _inverse_trend_signal(
-            xga
-        )
 
         shots_trend = _inverse_trend_signal(
             shots
@@ -1320,10 +1328,6 @@ class Defence:
 
         return _combine_optional(
             (
-                (
-                    xga_trend,
-                    MOMENTUM_WEIGHTS["xga"],
-                ),
                 (
                     shots_trend,
                     MOMENTUM_WEIGHTS["shots"],
@@ -1428,6 +1432,10 @@ class Defence:
     # ========================================================
     # VENUE
     # ========================================================
+    #
+    # V1.1: xGA полностью убран из venue_signal.
+    # Возвращается None (вместо использования xGA).
+    # ========================================================
 
     def _venue_signal(
         self,
@@ -1441,127 +1449,11 @@ class Defence:
         """
         Venue-specific defensive signal.
 
-        The venue subset is shrunk toward the general
-        defensive state.
-
-            alpha = n / (n + k)
-
-        where k = VENUE_SHRINKAGE_K.
+        V1.1: временно отключён.
+        Возвращается None до разработки новой venue-формулы.
         """
 
-        venue_history = _extract_venues(
-            context
-        )
-
-        xga_history = histories.get(
-            "xga",
-            [],
-        )
-
-        if not venue_history:
-            return None
-
-        target_venue = _get_value(
-            context,
-            "current_venue",
-            "venue",
-            "match_venue",
-        )
-
-        if target_venue is None:
-            return None
-
-        target = (
-            str(target_venue)
-            .strip()
-            .lower()
-        )
-
-        if target not in {
-            "home",
-            "away",
-            "дома",
-            "гости",
-            "h",
-            "a",
-        }:
-            return None
-
-        if target in {
-            "home",
-            "дома",
-            "h",
-        }:
-            aliases = {
-                "home",
-                "дома",
-                "h",
-            }
-        else:
-            aliases = {
-                "away",
-                "гости",
-                "a",
-            }
-
-        venue_values: List[
-            Optional[float]
-        ] = []
-
-        for venue, value in zip(
-            venue_history,
-            xga_history,
-        ):
-
-            if (
-                venue in aliases
-                and value is not None
-            ):
-
-                venue_values.append(
-                    value
-                )
-
-        if len(venue_values) < 1:
-            return None
-
-        general_signal = (
-            _inverse_state_signal(
-                xga_history
-            )
-        )
-
-        venue_signal_raw = (
-            _inverse_state_signal(
-                venue_values
-            )
-        )
-
-        if venue_signal_raw is None:
-            return None
-
-        n = len(venue_values)
-
-        alpha = (
-            n
-            / (
-                n
-                + VENUE_SHRINKAGE_K
-            )
-        )
-
-        if general_signal is None:
-            return _clamp(
-                venue_signal_raw
-                * alpha
-            )
-
-        return _clamp(
-            alpha * venue_signal_raw
-            + (
-                1.0 - alpha
-            ) * general_signal
-        )
+        return None
 
     # ========================================================
     # EVIDENCE QUALITY
@@ -1670,6 +1562,11 @@ class Defence:
         # ----------------------------------------------------
         # Primary defensive signals
         # ----------------------------------------------------
+        #
+        # V1.1: xga_signal сохраняется только для диагностики.
+        # Он НЕ используется в process_signal, momentum_signal,
+        # venue_signal.
+        # ----------------------------------------------------
 
         xga_signal = (
             _inverse_state_signal(
@@ -1748,10 +1645,12 @@ class Defence:
         # ----------------------------------------------------
         # Process
         # ----------------------------------------------------
+        #
+        # V1.1: xga_signal НЕ передаётся в process_signal.
+        # ----------------------------------------------------
 
         process_signal = (
             self._process_signal(
-                xga_signal=xga_signal,
                 shots_signal=shots_signal,
                 sot_signal=sot_signal,
                 big_chances_signal=big_chances_signal,
@@ -1770,10 +1669,12 @@ class Defence:
         # ----------------------------------------------------
         # Momentum
         # ----------------------------------------------------
+        #
+        # V1.1: xga НЕ передаётся в momentum.
+        # ----------------------------------------------------
 
         momentum_signal = (
             self._momentum(
-                xga=xga,
                 shots=shots,
                 sot=sot,
                 goals=goals,
@@ -1782,6 +1683,9 @@ class Defence:
 
         # ----------------------------------------------------
         # Venue
+        # ----------------------------------------------------
+        #
+        # V1.1: venue_signal временно отключён.
         # ----------------------------------------------------
 
         venue_signal = (
@@ -1990,6 +1894,7 @@ class Defence:
             ),
 
             diagnostics={
+                "version": DEFENCE_VERSION,
                 "blocked_shots_are_diagnostic_only": True,
                 "woodwork_is_diagnostic_only": True,
                 "possession_is_contextual_only": True,
@@ -2007,6 +1912,16 @@ class Defence:
                 "momentum_weights": dict(
                     MOMENTUM_WEIGHTS
                 ),
+                "xga_used_in_process_signal": False,
+                "xga_used_in_momentum_signal": False,
+                "xga_used_in_venue_signal": False,
+                "change_log": [
+                    "v1.1: xGA полностью убран из process_signal",
+                    "v1.1: xGA полностью убран из momentum_signal",
+                    "v1.1: xGA полностью убран из venue_signal",
+                    "v1.1: PROCESS_WEIGHTS пересчитаны без xGA",
+                    "v1.1: MOMENTUM_WEIGHTS пересчитаны без xGA",
+                ],
             },
         )
 
