@@ -82,7 +82,7 @@ from app.core.form_win import FormWin
 from app.core.defence import Defence
 from app.core.form_control import FormControl
 from app.core.form_anomaly import FormAnomaly
-from app.core.special_form import SpecialForm
+from app.core.special_form import FormSpecial
 from app.core.goal_model import GoalModel
 from app.core.probability_model import ProbabilityModel
 from app.core.score_predictor import ScorePredictor
@@ -3382,7 +3382,7 @@ class FAJBrain:
         special_context = SimpleNamespace(
             **context
         )
-        special_form = SpecialForm()
+        special_form = FormSpecial()
         special_result = special_form.analyze(
             special_context,
             team_name=team_name,
