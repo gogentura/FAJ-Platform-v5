@@ -219,27 +219,152 @@ def parse_soccer365(url: str) -> Dict[str, Any]:
 
 
 def build_history_record(parsed: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Преобразует сырой результат Soccer365
+    в единый factual history record.
+    
+    ВАЖНО:
+        - только факты;
+        - ничего не рассчитываем;
+        - None сохраняется как None;
+        - prediction / learning сюда не попадают.
+    """
     stats = parsed.get("stats", {})
+    if not isinstance(stats, dict):
+        stats = {}
+    
     home_goals, away_goals = parse_score(parsed.get("score"))
     
     return {
+        # ====================================================
+        # IDENTITY
+        # ====================================================
         "home_team": parsed.get("home_team"),
         "away_team": parsed.get("away_team"),
         "match_date": parsed.get("match_date"),
         "score": parsed.get("score"),
+        
+        # ====================================================
+        # GOALS
+        # ====================================================
         "home_goals": home_goals,
         "away_goals": away_goals,
-        "xg": {"home": stats.get("home_xg"), "away": stats.get("away_xg")},
-        "shots": {"home": stats.get("home_shots"), "away": stats.get("away_shots")},
-        "shots_on_target": {"home": stats.get("home_shots_on_target"), "away": stats.get("away_shots_on_target")},
-        "possession": {"home": stats.get("home_possession"), "away": stats.get("away_possession")},
+        
+        # ====================================================
+        # XG
+        # ====================================================
+        "xg": {
+            "home": stats.get("home_xg"),
+            "away": stats.get("away_xg"),
+        },
+        
+        # ====================================================
+        # SHOTS
+        # ====================================================
+        "shots": {
+            "home": stats.get("home_shots"),
+            "away": stats.get("away_shots"),
+        },
+        "shots_on_target": {
+            "home": stats.get("home_shots_on_target"),
+            "away": stats.get("away_shots_on_target"),
+        },
+        "blocked_shots": {
+            "home": stats.get("home_blocked_shots"),
+            "away": stats.get("away_blocked_shots"),
+        },
+        
+        # ====================================================
+        # CHANCES
+        # ====================================================
+        "big_chances": {
+            "home": stats.get("home_big_chances"),
+            "away": stats.get("away_big_chances"),
+        },
+        
+        # ====================================================
+        # POSSESSION
+        # ====================================================
+        "possession": {
+            "home": stats.get("home_possession"),
+            "away": stats.get("away_possession"),
+        },
+        
+        # ====================================================
+        # PASSES
+        # ====================================================
+        "passes": {
+            "home": stats.get("home_total_passes"),
+            "away": stats.get("away_total_passes"),
+        },
+        "pass_accuracy": {
+            "home": stats.get("home_pass_accuracy"),
+            "away": stats.get("away_pass_accuracy"),
+        },
+        
+        # ====================================================
+        # PROGRESSION
+        # ====================================================
+        "crosses": {
+            "home": stats.get("home_crosses"),
+            "away": stats.get("away_crosses"),
+        },
+        "throw_ins": {
+            "home": stats.get("home_throw_ins"),
+            "away": stats.get("away_throw_ins"),
+        },
+        
+        # ====================================================
+        # DISCIPLINE / GAME CONTROL
+        # ====================================================
+        "fouls": {
+            "home": stats.get("home_fouls"),
+            "away": stats.get("away_fouls"),
+        },
+        "offsides": {
+            "home": stats.get("home_offsides"),
+            "away": stats.get("away_offsides"),
+        },
+        "yellow_cards": {
+            "home": stats.get("home_yellow_cards"),
+            "away": stats.get("away_yellow_cards"),
+        },
+        "red_cards": {
+            "home": stats.get("home_red_cards"),
+            "away": stats.get("away_red_cards"),
+        },
+        
+        # ====================================================
+        # CORNERS
+        # ====================================================
+        "corners": {
+            "home": stats.get("home_corners"),
+            "away": stats.get("away_corners"),
+        },
+        
+        # Legacy-compatible fields
         "home_corners": stats.get("home_corners"),
         "away_corners": stats.get("away_corners"),
         "home_yellow_cards": stats.get("home_yellow_cards"),
         "away_yellow_cards": stats.get("away_yellow_cards"),
+        
+        # ====================================================
+        # RAW FACTUAL STATS
+        # ====================================================
+        #
+        # Сохраняем исходную статистику целиком.
+        # Это важно для диагностических органов,
+        # которые могут потребовать дополнительные поля.
+        # ====================================================
+        "stats": dict(stats),
+        
+        # ====================================================
+        # META
+        # ====================================================
         "source_url": parsed.get("source_url"),
-        "quality": parsed.get("quality", 0.0),
+        "quality": parsed.get("quality", parsed.get("data_quality", 0.0)),
         "source": "Soccer365",
+        "parser_version": parsed.get("parser_version"),
     }
 
 
@@ -308,6 +433,29 @@ def collect_team_history(
             continue
         
         record = build_history_record(parsed)
+        
+        # ====================================================
+        # TEAM METADATA
+        # ====================================================
+        #
+        # Brain / FormControl должны знать,
+        # какая команда является текущей.
+        # ====================================================
+        
+        record["team"] = team_name
+        record["team_name"] = team_name
+        
+        # Определяем, является ли матч домашним для команды
+        if normalize_name(parsed.get("home_team")) == normalize_name(team_name):
+            record["is_home"] = True
+            record["venue"] = "home"
+        elif normalize_name(parsed.get("away_team")) == normalize_name(team_name):
+            record["is_home"] = False
+            record["venue"] = "away"
+        else:
+            errors.append(f"{position}. Не удалось определить сторону {team_name}.")
+            continue
+        
         match_date = record.get("match_date")
         if not match_date:
             errors.append(f"{position}. Не удалось определить дату матча.")
@@ -324,7 +472,37 @@ def collect_team_history(
         
         records.append(record)
     
-    return records[:MAX_HISTORY_MATCHES], errors
+    # ====================================================
+    # CANONICAL HISTORY ORDER
+    # ====================================================
+    #
+    # FormContext / FormModel contract:
+    #
+    #     M1 = oldest
+    #     ...
+    #     M6 = newest
+    #
+    # Пользователь может вставить URL
+    # в любом порядке.
+    #
+    # Источник истины — match_date.
+    # ====================================================
+    
+    records.sort(
+        key=lambda item: (
+            _parse_date(item.get("match_date"))
+            or date.min
+        )
+    )
+    
+    # Берём последние MAX_HISTORY_MATCHES матчей,
+    # сохраняя chronological order:
+    #
+    # oldest → newest
+    #
+    records = records[-MAX_HISTORY_MATCHES:]
+    
+    return records, errors
 
 
 # ============================================================
@@ -584,34 +762,135 @@ def render_form_context_card(
     home_context: Optional[Dict[str, Any]],
     away_context: Optional[Dict[str, Any]],
 ) -> None:
+    """
+    Отображает FormContext v1.7.
+
+    ВАЖНО:
+        - form может быть строкой "П-В-Н-..." или списком
+        - xG/xGA лежат в ключах "xg" и "xga" (не "xg_avg"/"xga_avg")
+        - Для обратной совместимости поддерживаются оба варианта
+    """
     home_context = home_context or {}
     away_context = away_context or {}
     
     st.markdown("### 📊 Форма перед матчем")
     
+    def format_form(context: Dict[str, Any]) -> str:
+        form = context.get("form")
+        
+        # Canonical FormContext v1.7: form = "П-В-Н-..."
+        if isinstance(form, str):
+            text = form.strip()
+            if text:
+                return text
+        
+        # Compatibility: form = ["П", "В", "Н"]
+        if isinstance(form, (list, tuple)):
+            values = []
+            mapping = {
+                "W": "В",
+                "WIN": "В",
+                "D": "Н",
+                "DRAW": "Н",
+                "L": "П",
+                "LOSS": "П",
+                "В": "В",
+                "Н": "Н",
+                "П": "П",
+            }
+            for item in form[:6]:
+                value = str(item).strip().upper()
+                values.append(mapping.get(value, value))
+            if values:
+                return "-".join(values)
+        
+        return "—"
+    
+    def format_number(value: Any) -> str:
+        if value is None:
+            return "—"
+        try:
+            return f"{float(value):.2f}"
+        except (TypeError, ValueError):
+            return "—"
+    
+    def home_away_record(context: Dict[str, Any]) -> tuple[str, str]:
+        home = context.get("home", {})
+        away = context.get("away", {})
+        if not isinstance(home, dict):
+            home = {}
+        if not isinstance(away, dict):
+            away = {}
+        home_text = f"{home.get('wins', 0)}-{home.get('draws', 0)}-{home.get('losses', 0)}"
+        away_text = f"{away.get('wins', 0)}-{away.get('draws', 0)}-{away.get('losses', 0)}"
+        return home_text, away_text
+    
+    home_form = format_form(home_context)
+    away_form = format_form(away_context)
+    
+    # ====================================================
+    # IMPORTANT:
+    # FormContext v1.7 uses:
+    #
+    #     xg
+    #     xga
+    #
+    # Not:
+    #
+    #     xg_avg
+    #     xga_avg
+    #
+    # Keep fallback for compatibility.
+    # ====================================================
+    
+    home_xg = home_context.get("xg")
+    if home_xg is None:
+        home_xg = home_context.get("xg_avg")
+    
+    home_xga = home_context.get("xga")
+    if home_xga is None:
+        home_xga = home_context.get("xga_avg")
+    
+    away_xg = away_context.get("xg")
+    if away_xg is None:
+        away_xg = away_context.get("xg_avg")
+    
+    away_xga = away_context.get("xga")
+    if away_xga is None:
+        away_xga = away_context.get("xga_avg")
+    
+    home_home, home_away = home_away_record(home_context)
+    away_home, away_away = home_away_record(away_context)
+    
     c1, c2 = st.columns(2)
     
+    # ====================================================
+    # HOME
+    # ====================================================
     with c1:
         st.markdown(f"**🏠 {home_team}**")
-        form = home_context.get("form", [])
-        if form:
-            st.markdown(f"**Форма:** {'-'.join(str(x) for x in form[:6])}")
+        st.markdown(f"**Форма:** `{home_form}`")
+        st.caption(f"Дома: {home_home}  ·  В гостях: {home_away}")
         
-        xg = home_context.get("xg_avg")
-        xga = home_context.get("xga_avg")
-        st.metric("xG", num(xg))
-        st.metric("xGA", num(xga))
+        metric1, metric2 = st.columns(2)
+        with metric1:
+            st.metric("xG", format_number(home_xg))
+        with metric2:
+            st.metric("xGA", format_number(home_xga))
     
+    # ====================================================
+    # AWAY
+    # ====================================================
     with c2:
         st.markdown(f"**✈️ {away_team}**")
-        form = away_context.get("form", [])
-        if form:
-            st.markdown(f"**Форма:** {'-'.join(str(x) for x in form[:6])}")
+        st.markdown(f"**Форма:** `{away_form}`")
+        st.caption(f"Дома: {away_home}  ·  В гостях: {away_away}")
         
-        xg = away_context.get("xg_avg")
-        xga = away_context.get("xga_avg")
-        st.metric("xG", num(xg))
-        st.metric("xGA", num(xga))
+        metric1, metric2 = st.columns(2)
+        with metric1:
+            st.metric("xG", format_number(away_xg))
+        with metric2:
+            st.metric("xGA", format_number(away_xga))
 
 
 def _percent_to_fraction(value: Optional[float]) -> Optional[float]:
