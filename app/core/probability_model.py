@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ PLATFORM v12.1
-FAJ PROBABILITY MODEL v1.0
+FAJ PROBABILITY MODEL v1.1
 ============================================================
 
 Назначение
@@ -73,19 +73,11 @@ Base:
     P(A=j) =
         lambda_away^j * exp(-lambda_away) / j!
 
-FAJ low-score correction:
+FAJ low-score correction (v1.1: ОТКЛЮЧЕНА):
 
-    tau(0,0) = 1 - lambda_home * lambda_away * rho
+    rho = 0.0
 
-    tau(0,1) = 1 + lambda_home * rho
-
-    tau(1,0) = 1 + lambda_away * rho
-
-    tau(1,1) = 1 - rho
-
-    tau(i,j) = 1 otherwise
-
-    rho = -0.08
+    tau(i,j) = 1 for all scores
 
 Raw joint probability:
 
@@ -103,10 +95,11 @@ All outputs are derived from THIS SAME matrix.
 FORMULA STATUS
 ============================================================
 
-RESEARCH_FORMULA
+POISSON_BASELINE
 
-The low-score dependence parameter is a research prior.
-It must be calibrated using historical backtesting.
+Dixon-Coles prior отключён до калибровки.
+ProbabilityModel использует чистую независимую Poisson-модель
+без искусственного усиления 0:0 / 1:0 / 0:1 / 1:1.
 
 ============================================================
 """
@@ -122,28 +115,17 @@ from typing import Any, Dict, List, Optional, Tuple
 # VERSION
 # ============================================================
 
-PROBABILITY_MODEL_VERSION = "1.0"
-FORMULA_STATUS = "RESEARCH_FORMULA"
+PROBABILITY_MODEL_VERSION = "1.1"
+FORMULA_STATUS = "POISSON_BASELINE"
 
 
 # ============================================================
 # RESEARCH PARAMETERS
 # ============================================================
 
-# Dixon-Coles style low-score dependence parameter.
-#
-# Это НЕ обученный коэффициент.
-#
-# Отрицательное значение:
-#   - корректирует низкие счета;
-#   - уменьшает избыточную независимость
-#     в 0:0 / 1:1;
-#   - перераспределяет вероятность внутри
-#     низкосчётной области.
-#
-# Будет калиброваться только после backtesting.
-
-LOW_SCORE_RHO = -0.08
+# Dixon-Coles prior отключён до калибровки.
+# ProbabilityModel не должен искусственно усиливать 0:0.
+LOW_SCORE_RHO = 0.0
 
 
 # ------------------------------------------------------------
@@ -219,7 +201,7 @@ class ProbabilityResult:
 
 class ProbabilityModel:
     """
-    FAJ ProbabilityModel v1.0.
+    FAJ ProbabilityModel v1.1.
 
     Converts GoalModel xG into a complete football
     probability distribution.
@@ -394,9 +376,8 @@ class ProbabilityModel:
             "formula_status": self.FORMULA_STATUS,
 
             "model": (
-                "Poisson + "
-                "FAJ low-score dependence "
-                "(Dixon-Coles style)"
+                "independent Poisson + "
+                "normalized score matrix"
             ),
 
             "home_xg": home,
@@ -441,7 +422,11 @@ class ProbabilityModel:
             "low_score_correction":
                 {
                     "rho": LOW_SCORE_RHO,
-                    "enabled": True,
+                    "enabled": False,
+                    "reason": (
+                        "uncalibrated research prior "
+                        "disabled in v1.1"
+                    ),
                     "cells": [
                         "0:0",
                         "0:1",
@@ -653,72 +638,15 @@ class ProbabilityModel:
         away_xg: float,
     ) -> float:
         """
-        FAJ low-score dependence correction.
+        Compatibility hook for the former Dixon-Coles layer.
 
-        Dixon-Coles style correction:
+        v1.1:
+        low-score correction отключён.
 
-            tau(0,0)
-                = 1 - lambda_H*lambda_A*rho
-
-            tau(0,1)
-                = 1 + lambda_H*rho
-
-            tau(1,0)
-                = 1 + lambda_A*rho
-
-            tau(1,1)
-                = 1 - rho
-
-        Otherwise:
-            tau = 1
+        ProbabilityModel использует чистую независимую
+        Poisson-модель без искусственного усиления
+        0:0 / 1:0 / 0:1 / 1:1.
         """
-
-        rho = LOW_SCORE_RHO
-
-        if (
-            home_goals == 0
-            and away_goals == 0
-        ):
-            return max(
-                0.0,
-                1.0
-                - home_xg
-                * away_xg
-                * rho,
-            )
-
-        if (
-            home_goals == 0
-            and away_goals == 1
-        ):
-            return max(
-                0.0,
-                1.0
-                + home_xg
-                * rho,
-            )
-
-        if (
-            home_goals == 1
-            and away_goals == 0
-        ):
-            return max(
-                0.0,
-                1.0
-                + away_xg
-                * rho,
-            )
-
-        if (
-            home_goals == 1
-            and away_goals == 1
-        ):
-            return max(
-                0.0,
-                1.0
-                - rho,
-            )
-
         return 1.0
 
     @classmethod
