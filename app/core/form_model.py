@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ PLATFORM v12.1
-FORM MODEL v1.0
+FORM MODEL v1.1
 ============================================================
 
 НАЗНАЧЕНИЕ
@@ -62,7 +62,17 @@ FormModel измеряет четыре независимых состояни�
 VERSION
 ------------------------------------------------------------
 
-FORM_MODEL_VERSION = "1.0"
+FORM_MODEL_VERSION = "1.1"
+
+------------------------------------------------------------
+ИЗМЕНЕНИЯ В V1.1
+------------------------------------------------------------
+
+- xg_recent / xga_recent теперь вычисляются как
+  temporally weighted mean (веса 1..6), а не копия xg_avg
+
+- Это позволяет GoalModel использовать свежее состояние xG
+  вместо шестиматчевого среднего
 
 ------------------------------------------------------------
 ВАЖНЫЕ ПРАВИЛА
@@ -114,7 +124,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 # VERSION / PARAMETERS
 # ============================================================
 
-FORM_MODEL_VERSION = "1.0"
+FORM_MODEL_VERSION = "1.1"
 
 # Research parameter.
 # История передаётся от старого к новому:
@@ -671,7 +681,7 @@ class FormModelResult:
 
 class FormModel:
     """
-    FormModel v1.
+    FormModel v1.1.
 
     Главный принцип:
 
@@ -896,10 +906,35 @@ class FormModel:
             xga_history
         )
 
-        # "recent" v1 intentionally remains
-        # the diagnostic mean of the six-match window.
-        xg_recent = xg_avg
-        xga_recent = xga_avg
+        # ------------------------------------------------------------
+        # TEMPORAL xG STATE
+        # ------------------------------------------------------------
+        #
+        # xg_avg / xga_avg:
+        #     historical six-match arithmetic baseline.
+        #
+        # xg_recent / xga_recent:
+        #     temporally weighted current state.
+        #
+        # M1 = oldest
+        # M6 = newest
+        #
+        # weights = 1..6
+        #
+        # Missing observations remain missing and their
+        # corresponding weight is excluded by _weighted_mean().
+        #
+        # This does NOT replace the historical baseline.
+        # It creates a separate recent-state signal.
+        # ------------------------------------------------------------
+        xg_recent = _weighted_mean(
+            xg_history,
+            self._weights_for(len(xg_history)),
+        )
+        xga_recent = _weighted_mean(
+            xga_history,
+            self._weights_for(len(xga_history)),
+        )
 
         xg_trend = _ols_slope(
             xg_history
