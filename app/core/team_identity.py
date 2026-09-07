@@ -519,6 +519,7 @@ TEAM_ALIASES: Dict[str, List[str]] = {
 
     "Депортиво Ла-Корунья": [
         "Депортиво Ла-Корунья",
+        "Депортиво А-Корунья",
         "Депортиво",
         "Deportivo",
         "Deportivo La Coruna",
