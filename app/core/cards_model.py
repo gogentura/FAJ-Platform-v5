@@ -341,8 +341,7 @@ def _recent_points_rate(
 
 
 # ============================================================
-# RES_history: List[
-ULT
+# RESULT
 # ============================================================
 
 @dataclass
@@ -357,7 +356,8 @@ class CardsModelResult:
         Optional[float]
     ]
 
-    opponent_cards        Optional[float]
+    opponent_cards_history: List[
+        Optional[float]
     ]
 
     team_cards_avg: Optional[float]
