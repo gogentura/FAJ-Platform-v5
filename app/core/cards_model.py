@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ PLATFORM v12.1
-CARDS MODEL v1.0
+CARDS MODEL v1.2
 ============================================================
 
 Назначение
@@ -15,7 +15,7 @@ CardsModel анализирует фактическую историю карт
 Модель НЕ:
 
     - изменяет xG;
-    - изменявает вероятность;
+    - изменяет вероятность;
     - изменяет счёт;
     - создаёт vulnerability multiplier;
     - превращает карточки напрямую в aggression;
@@ -36,8 +36,18 @@ CardsModel анализирует фактическую историю карт
 может стать OBSERVED PATTERN CANDIDATE
 на уровне Pattern/Analysis.
 
-Но CardsModel v1.0 не создаёт
+Но CardsModel v1.2 не создаёт
 математического штрафа.
+
+============================================================
+CHANGES IN V1.2
+============================================================
+
+- _recent_mean() теперь использует последние 3 доступных значения
+- synthesize_match() использует:
+    level = 0.80 * avg + 0.20 * recent3
+    + 0.05 * trend (capped at ±0.25)
+- Diagnostics обновлены
 
 ============================================================
 """
@@ -49,7 +59,7 @@ from typing import Any, Dict, Iterable, List, Optional
 import math
 
 
-CARDS_MODEL_VERSION = "1.1"
+CARDS_MODEL_VERSION = "1.2"
 
 MAX_HISTORY_MATCHES = 6
 
@@ -121,8 +131,20 @@ def _average(
 
 def _recent_mean(
     chronological_values: Iterable[Any],
+    window: int = 3,
 ) -> Optional[float]:
+    """
+    Среднее последних доступных наблюдений.
+    Используются последние `window` доступных
+    значений в хронологическом порядке.
+    None не считается нулём.
 
+    Пример:
+        M1 M2 M3 M4 M5 M6
+         3  4  -  5  6  7
+    window=3 →
+        5, 6, 7
+    """
     values = [
         _safe_float(value)
         for value in chronological_values
@@ -137,9 +159,9 @@ def _recent_mean(
     if not available:
         return None
 
-    return sum(available) / len(
-        available
-    )
+    recent = available[-max(1, int(window)):]
+
+    return sum(recent) / len(recent)
 
 
 def _ols_slope(
@@ -319,7 +341,8 @@ def _recent_points_rate(
 
 
 # ============================================================
-# RESULT
+# RES_history: List[
+ULT
 # ============================================================
 
 @dataclass
@@ -334,8 +357,7 @@ class CardsModelResult:
         Optional[float]
     ]
 
-    opponent_cards_history: List[
-        Optional[float]
+    opponent_cards        Optional[float]
     ]
 
     team_cards_avg: Optional[float]
@@ -376,22 +398,13 @@ class CardsModel:
     """
     Чистая математическая модель карточек.
 
-    Baseline:
+    Формула v1.2:
 
-        HomeBaseCards =
-            (
-                HomeTeamCardsAvg
-                +
-                AwayOpponentCardsAvg
-            ) / 2
-
-        AwayBaseCards =
-            (
-                AwayTeamCardsAvg
-                +
-                HomeOpponentCardsAvg
-            ) / 2
-
+        level = 0.80 * avg + 0.20 * recent3
+        expected = (home_team_level + away_opponent_level) / 2
+                   + 0.05 * home_team_trend
+                   + 0.05 * away_opponent_trend
+        trend clip: ±0.25
     """
 
     VERSION = CARDS_MODEL_VERSION
@@ -522,15 +535,17 @@ class CardsModel:
         )
 
         # ----------------------------------------------------
-        # Recent
+        # Recent (последние 3 доступных)
         # ----------------------------------------------------
 
         team_cards_recent = _recent_mean(
-            team_cards_chronological
+            team_cards_chronological,
+            window=3,
         )
 
         opponent_cards_recent = _recent_mean(
-            opponent_cards_chronological
+            opponent_cards_chronological,
+            window=3,
         )
 
         # ----------------------------------------------------
@@ -612,8 +627,17 @@ class CardsModel:
                 ),
 
             "formula":
-                "(team_cards_avg + "
-                "opponent_cards_avg) / 2",
+                "level = 0.80 * avg + 0.20 * recent3; "
+                "expected = (home_team_level + "
+                "away_opponent_level) / 2 "
+                "+ home_team_trend + away_opponent_trend",
+
+            "recent_window": 3,
+            "recent_weight": 0.20,
+            "history_weight": 0.80,
+            "trend_coefficient": 0.05,
+            "trend_clip": 0.25,
+            "points_rate_affects_cards": False,
 
             "result_context_used":
                 True,
@@ -677,7 +701,7 @@ class CardsModel:
                 data_coverage,
 
             formula_status=
-                "BASELINE_OBSERVATIONAL",
+                "RECENT3_TREND_OBSERVATIONAL",
 
             diagnostics=
                 diagnostics,
@@ -705,44 +729,173 @@ class CardsModel:
         away_expected = None
 
         # ----------------------------------------------------
+        # LEVEL
+        #
+        # Full history = 80%
+        # Recent 3     = 20%
+        #
+        # Если recent отсутствует, используется full average.
+        # ----------------------------------------------------
+
+        home_team_level = None
+        if home.team_cards_avg is not None:
+            home_recent = (
+                home.team_cards_recent
+                if home.team_cards_recent is not None
+                else home.team_cards_avg
+            )
+            home_team_level = (
+                0.80 * home.team_cards_avg
+                + 0.20 * home_recent
+            )
+
+        away_opponent_level = None
+        if away.opponent_cards_avg is not None:
+            away_recent = (
+                away.opponent_cards_recent
+                if away.opponent_cards_recent is not None
+                else away.opponent_cards_avg
+            )
+            away_opponent_level = (
+                0.80 * away.opponent_cards_avg
+                + 0.20 * away_recent
+            )
+
+        away_team_level = None
+        if away.team_cards_avg is not None:
+            away_recent = (
+                away.team_cards_recent
+                if away.team_cards_recent is not None
+                else away.team_cards_avg
+            )
+            away_team_level = (
+                0.80 * away.team_cards_avg
+                + 0.20 * away_recent
+            )
+
+        home_opponent_level = None
+        if home.opponent_cards_avg is not None:
+            home_recent = (
+                home.opponent_cards_recent
+                if home.opponent_cards_recent is not None
+                else home.opponent_cards_avg
+            )
+            home_opponent_level = (
+                0.80 * home.opponent_cards_avg
+                + 0.20 * home_recent
+            )
+
+        # ----------------------------------------------------
+        # TREND
+        #
+        # OLS slope is expressed in cards per match.
+        #
+        # Correction:
+        #
+        #     0.05 * trend
+        #
+        # capped at ±0.25.
+        # ----------------------------------------------------
+
+        home_team_trend = (
+            max(
+                -0.25,
+                min(
+                    0.25,
+                    0.05 * home.team_cards_trend,
+                ),
+            )
+            if home.team_cards_trend is not None
+            else 0.0
+        )
+
+        away_opponent_trend = (
+            max(
+                -0.25,
+                min(
+                    0.25,
+                    0.05 * away.opponent_cards_trend,
+                ),
+            )
+            if away.opponent_cards_trend is not None
+            else 0.0
+        )
+
+        away_team_trend = (
+            max(
+                -0.25,
+                min(
+                    0.25,
+                    0.05 * away.team_cards_trend,
+                ),
+            )
+            if away.team_cards_trend is not None
+            else 0.0
+        )
+
+        home_opponent_trend = (
+            max(
+                -0.25,
+                min(
+                    0.25,
+                    0.05 * home.opponent_cards_trend,
+                ),
+            )
+            if home.opponent_cards_trend is not None
+            else 0.0
+        )
+
+        # ----------------------------------------------------
         # HOME
         #
-        # Home team cards
-        # +
-        # Away opponent cards
-        # ------------------
-        # 2
+        # (
+        #     Home team cards level
+        #     +
+        #     Away opponent cards level
+        # ) / 2
+        #
+        # + Home team trend
+        # + Away opponent trend
         # ----------------------------------------------------
 
         if (
-            home.team_cards_avg is not None
-            and away.opponent_cards_avg is not None
+            home_team_level is not None
+            and away_opponent_level is not None
         ):
-
             home_expected = (
-                home.team_cards_avg
-                + away.opponent_cards_avg
+                home_team_level
+                + away_opponent_level
             ) / 2.0
+            home_expected += (
+                home_team_trend
+                + away_opponent_trend
+            )
 
         # ----------------------------------------------------
         # AWAY
         #
-        # Away team cards
-        # +
-        # Home opponent cards
-        # ------------------
-        # 2
+        # (
+        #     Away team cards level
+        #     +
+        #     Home opponent cards level
+        # ) / 2
+        #
+        # + Away team trend
+        # + Home opponent trend
         # ----------------------------------------------------
 
         if (
-            away.team_cards_avg is not None
-            and home.opponent_cards_avg is not None
+            away_team_level is not None
+            and home_opponent_level is not None
         ):
-
             away_expected = (
-                away.team_cards_avg
-                + home.opponent_cards_avg
+                away_team_level
+                + home_opponent_level
             ) / 2.0
+            away_expected += (
+                away_team_trend
+                + home_opponent_trend
+            )
 
         total_expected = None
 
@@ -770,7 +923,7 @@ class CardsModel:
 
                 "formula_status":
                     (
-                        "BASELINE_SYNTHESIS"
+                        "RECENT3_TREND_SYNTHESIS"
                         if home_expected is not None
                         else
                         "UNDEFINED_WITHOUT_BASELINE"
@@ -786,7 +939,7 @@ class CardsModel:
 
                 "formula_status":
                     (
-                        "BASELINE_SYNTHESIS"
+                        "RECENT3_TREND_SYNTHESIS"
                         if away_expected is not None
                         else
                         "UNDEFINED_WITHOUT_BASELINE"
@@ -804,7 +957,7 @@ class CardsModel:
 
             "formula_status":
                 (
-                    "BASELINE_SYNTHESIS"
+                    "RECENT3_TREND_SYNTHESIS"
                     if total_expected is not None
                     else
                     "UNDEFINED_WITHOUT_BASELINE"
