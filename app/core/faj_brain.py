@@ -86,6 +86,8 @@ from app.core.special_form import FormSpecial
 from app.core.goal_model import GoalModel
 from app.core.probability_model import ProbabilityModel
 from app.core.score_predictor import ScorePredictor
+from app.core.corners_model import CornersModel
+from app.core.cards_model import CardsModel
 
 
 # ============================================================
@@ -1117,7 +1119,19 @@ class FAJBrain:
         self.version = BRAIN_VERSION
 
         # ====================================================
-        # LEGACY MODELS (сохраняются для совместимости)
+        # DIAGNOSTIC MODELS
+        # ====================================================
+        #
+        # CornersModel / CardsModel используются
+        # непосредственно в финальном Brain pipeline.
+        #
+        # Они НЕ вмешиваются в:
+        #     xG
+        #     1X2
+        #     BTTS
+        #     ScorePredictor
+        #
+        # Они являются отдельными диагностическими органами.
         # ====================================================
 
         self.corners_model = CornersModel()
