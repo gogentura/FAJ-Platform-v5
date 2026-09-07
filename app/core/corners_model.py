@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ PLATFORM v12.1
-CORNERS MODEL v1.1
+CORNERS MODEL v1.2
 ============================================================
 
 Назначение
@@ -42,6 +42,16 @@ CornersModel анализирует фактическую историю угл
 Отсутствующее значение не превращается в ноль.
 
 ============================================================
+CHANGES IN V1.2
+============================================================
+
+- _recent_mean() теперь использует последние 3 доступных значения
+- synthesize_match() использует:
+    level = 0.70 * avg + 0.30 * recent3
+    + 0.10 * trend (capped at ±0.50)
+- Diagnostics обновлены
+
+============================================================
 """
 
 from __future__ import annotations
@@ -51,7 +61,7 @@ from typing import Any, Dict, Iterable, List, Optional
 import math
 
 
-CORNERS_MODEL_VERSION = "1.1"
+CORNERS_MODEL_VERSION = "1.2"
 
 MAX_HISTORY_MATCHES = 6
 
@@ -161,14 +171,20 @@ def _average(
 
 def _recent_mean(
     chronological_values: Iterable[Any],
+    window: int = 3,
 ) -> Optional[float]:
     """
     Среднее последних доступных наблюдений.
 
-    Без дополнительных весов.
+    Используются последние `window` доступных
+    значений в хронологическом порядке.
+    None не считается нулём.
 
-    Последний доступный период определяется
-    по хронологическому порядку.
+    Пример:
+        M1 M2 M3 M4 M5 M6
+         3  4  -  5  6  7
+    window=3 →
+        5, 6, 7
     """
 
     values = [
@@ -185,7 +201,9 @@ def _recent_mean(
     if not available:
         return None
 
-    return sum(available) / len(available)
+    recent = available[-max(1, int(window)):]
+
+    return sum(recent) / len(recent)
 
 
 def _ols_slope(
@@ -397,22 +415,13 @@ class CornersModel:
     """
     Чистая математическая модель угловых.
 
-    Основная baseline formula:
+    Формула v1.2:
 
-        HomeBaseCorners =
-            (
-                HomeCornersForAvg
-                +
-                AwayCornersAgainstAvg
-            ) / 2
-
-        AwayBaseCorners =
-            (
-                AwayCornersForAvg
-                +
-                HomeCornersAgainstAvg
-            ) / 2
-
+        level = 0.70 * avg + 0.30 * recent3
+        expected = (home_for_level + away_against_level) / 2
+                   + 0.10 * home_for_trend
+                   + 0.10 * away_against_trend
+        trend clip: ±0.50
     """
 
     VERSION = CORNERS_MODEL_VERSION
@@ -534,15 +543,17 @@ class CornersModel:
         )
 
         # ----------------------------------------------------
-        # Recent
+        # Recent (последние 3 доступных)
         # ----------------------------------------------------
 
         corners_for_recent = _recent_mean(
-            corners_for_chronological
+            corners_for_chronological,
+            window=3,
         )
 
         corners_against_recent = _recent_mean(
-            corners_against_chronological
+            corners_against_chronological,
+            window=3,
         )
 
         # ----------------------------------------------------
@@ -617,9 +628,17 @@ class CornersModel:
                 )
             ),
             "formula": (
-                "(team_corners_for_avg + "
-                "opponent_corners_against_avg) / 2"
+                "level = 0.70 * avg + 0.30 * recent3; "
+                "expected = (home_for_level + "
+                "away_against_level) / 2 "
+                "+ home_for_trend + away_against_trend"
             ),
+            "recent_window": 3,
+            "recent_weight": 0.30,
+            "history_weight": 0.70,
+            "trend_coefficient": 0.10,
+            "trend_clip": 0.50,
+            "points_rate_affects_corners": False,
             "result_context_used": True,
             "result_context_changes_corners": False,
         }
@@ -642,7 +661,7 @@ class CornersModel:
             away_corners_expected=None,
             total_expected_corners=None,
             data_coverage=data_coverage,
-            formula_status="BASELINE_OBSERVATIONAL",
+            formula_status="RECENT3_TREND_OBSERVATIONAL",
             diagnostics=diagnostics,
         )
 
@@ -668,44 +687,173 @@ class CornersModel:
         away_expected = None
 
         # ----------------------------------------------------
-        # Home:
+        # LEVEL
         #
-        # Home CF average
-        # +
-        # Away CA average
-        # ----------------
-        # 2
+        # Full history = 70%
+        # Recent 3     = 30%
+        #
+        # Если recent отсутствует, используется full average.
+        # ----------------------------------------------------
+
+        home_for_level = None
+        if home.corners_for_avg is not None:
+            home_recent = (
+                home.corners_for_recent
+                if home.corners_for_recent is not None
+                else home.corners_for_avg
+            )
+            home_for_level = (
+                0.70 * home.corners_for_avg
+                + 0.30 * home_recent
+            )
+
+        away_against_level = None
+        if away.corners_against_avg is not None:
+            away_recent = (
+                away.corners_against_recent
+                if away.corners_against_recent is not None
+                else away.corners_against_avg
+            )
+            away_against_level = (
+                0.70 * away.corners_against_avg
+                + 0.30 * away_recent
+            )
+
+        away_for_level = None
+        if away.corners_for_avg is not None:
+            away_recent = (
+                away.corners_for_recent
+                if away.corners_for_recent is not None
+                else away.corners_for_avg
+            )
+            away_for_level = (
+                0.70 * away.corners_for_avg
+                + 0.30 * away_recent
+            )
+
+        home_against_level = None
+        if home.corners_against_avg is not None:
+            home_recent = (
+                home.corners_against_recent
+                if home.corners_against_recent is not None
+                else home.corners_against_avg
+            )
+            home_against_level = (
+                0.70 * home.corners_against_avg
+                + 0.30 * home_recent
+            )
+
+        # ----------------------------------------------------
+        # TREND
+        #
+        # OLS slope is expressed in corners per match.
+        #
+        # Correction:
+        #
+        #     0.10 * trend
+        #
+        # capped at ±0.50.
+        # ----------------------------------------------------
+
+        home_for_trend = (
+            max(
+                -0.50,
+                min(
+                    0.50,
+                    0.10 * home.corners_for_trend,
+                ),
+            )
+            if home.corners_for_trend is not None
+            else 0.0
+        )
+
+        away_against_trend = (
+            max(
+                -0.50,
+                min(
+                    0.50,
+                    0.10 * away.corners_against_trend,
+                ),
+            )
+            if away.corners_against_trend is not None
+            else 0.0
+        )
+
+        away_for_trend = (
+            max(
+                -0.50,
+                min(
+                    0.50,
+                    0.10 * away.corners_for_trend,
+                ),
+            )
+            if away.corners_for_trend is not None
+            else 0.0
+        )
+
+        home_against_trend = (
+            max(
+                -0.50,
+                min(
+                    0.50,
+                    0.10 * home.corners_against_trend,
+                ),
+            )
+            if home.corners_against_trend is not None
+            else 0.0
+        )
+
+        # ----------------------------------------------------
+        # HOME
+        #
+        # (
+        #     Home CF level
+        #     +
+        #     Away CA level
+        # ) / 2
+        #
+        # + Home CF trend
+        # + Away CA trend
         # ----------------------------------------------------
 
         if (
-            home.corners_for_avg is not None
-            and away.corners_against_avg is not None
+            home_for_level is not None
+            and away_against_level is not None
         ):
-
             home_expected = (
-                home.corners_for_avg
-                + away.corners_against_avg
+                home_for_level
+                + away_against_level
             ) / 2.0
+            home_expected += (
+                home_for_trend
+                + away_against_trend
+            )
 
         # ----------------------------------------------------
-        # Away:
+        # AWAY
         #
-        # Away CF average
-        # +
-        # Home CA average
-        # ----------------
-        # 2
+        # (
+        #     Away CF level
+        #     +
+        #     Home CA level
+        # ) / 2
+        #
+        # + Away CF trend
+        # + Home CA trend
         # ----------------------------------------------------
 
         if (
-            away.corners_for_avg is not None
-            and home.corners_against_avg is not None
+            away_for_level is not None
+            and home_against_level is not None
         ):
-
             away_expected = (
-                away.corners_for_avg
-                + home.corners_against_avg
+                away_for_level
+                + home_against_level
             ) / 2.0
+            away_expected += (
+                away_for_trend
+                + home_against_trend
+            )
 
         total_expected = None
 
@@ -728,7 +876,7 @@ class CornersModel:
                     home_expected
                 ),
                 "formula_status": (
-                    "BASELINE_SYNTHESIS"
+                    "RECENT3_TREND_SYNTHESIS"
                     if home_expected is not None
                     else "UNDEFINED_WITHOUT_BASELINE"
                 ),
@@ -740,7 +888,7 @@ class CornersModel:
                     away_expected
                 ),
                 "formula_status": (
-                    "BASELINE_SYNTHESIS"
+                    "RECENT3_TREND_SYNTHESIS"
                     if away_expected is not None
                     else "UNDEFINED_WITHOUT_BASELINE"
                 ),
@@ -759,7 +907,7 @@ class CornersModel:
             ),
 
             "formula_status": (
-                "BASELINE_SYNTHESIS"
+                "RECENT3_TREND_SYNTHESIS"
                 if total_expected is not None
                 else "UNDEFINED_WITHOUT_BASELINE"
             ),
