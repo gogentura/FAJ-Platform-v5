@@ -1392,6 +1392,22 @@ def collect_history(
 
                 continue
 
+            # ====================================================
+            # TEAM METADATA
+            # ====================================================
+            #
+            # Brain / FormControl должны знать,
+            # какая команда является текущей.
+            # ====================================================
+
+            record["team"] = team_name
+            record["team_name"] = team_name
+
+            if record.get("is_home") is True:
+                record["venue"] = "home"
+            elif record.get("is_home") is False:
+                record["venue"] = "away"
+
             records.append(
                 record
             )
@@ -1402,11 +1418,21 @@ def collect_history(
                 f"Матч {index}: {exc}"
             )
 
-    # --------------------------------------------------------
-    # Сортировка по дате.
+    # ====================================================
+    # CANONICAL HISTORY ORDER
+    # ====================================================
     #
-    # Старый → новый.
-    # --------------------------------------------------------
+    # FormContext / FormModel contract:
+    #
+    #     M1 = oldest
+    #     ...
+    #     M6 = newest
+    #
+    # Пользователь может вставить URL
+    # в любом порядке.
+    #
+    # Источник истины — match_date.
+    # ====================================================
 
     records.sort(
         key=lambda item: (
@@ -1417,8 +1443,18 @@ def collect_history(
         )
     )
 
+    # Берём последние HISTORY_SIZE матчей,
+    # сохраняя chronological order:
+    #
+    # oldest → newest
+    #
+
+    records = records[
+        -HISTORY_SIZE:
+    ]
+
     return (
-        records[-HISTORY_SIZE:],
+        records,
         errors,
     )
 
