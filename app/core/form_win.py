@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ PLATFORM v12.1
-FORM WIN v1.1
+FORM WIN v1.2
 ============================================================
 
 МАТЕМАТИЧЕСКИЙ ОРГАН FAJ
@@ -79,7 +79,19 @@ Woodwork не используется как самостоятельный
 поскольку он уже является частью Shots.
 
 ============================================================
-VERSION
+CHANGES IN V1.2
+============================================================
+
+- xG полностью убран из attack_signal
+- xG полностью убран из momentum_signal
+- xGA полностью убран из momentum_signal
+- xG/xGA остаются только в diagnostics
+
+Это устраняет архитектурное дублирование:
+    xG → FormWin → GoalModel
+    xG → GoalModel (через FormModel)
+
+Теперь xG влияет на GoalModel ТОЛЬКО через FormModel.
 ============================================================
 """
 
@@ -91,7 +103,7 @@ from statistics import median
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
-FORM_WIN_VERSION = "1.1"
+FORM_WIN_VERSION = "1.2"
 
 
 # ============================================================
@@ -126,13 +138,20 @@ TEMPORAL_WEIGHTS: Tuple[float, ...] = (
 # исторических данных.
 # ------------------------------------------------------------
 
+# V1.2: xG убран из attack сигнала.
+# Оставшиеся веса пересчитаны пропорционально:
+# исходная сумма без xG: 0.20 + 0.15 + 0.05 + 0.05 + 0.15 = 0.60
+# SOT       0.20 / 0.60 = 0.333333
+# Shots     0.15 / 0.60 = 0.250000
+# Blocked   0.05 / 0.60 = 0.083333
+# Crosses   0.05 / 0.60 = 0.083333
+# Corners   0.15 / 0.60 = 0.250000
 ATTACK_WEIGHTS = {
-    "xg": 0.40,
-    "sot": 0.20,
-    "shots": 0.15,
-    "blocked": 0.05,
-    "crosses": 0.05,
-    "corners": 0.15,
+    "sot": 1.0 / 3.0,
+    "shots": 0.25,
+    "blocked": 1.0 / 12.0,
+    "crosses": 1.0 / 12.0,
+    "corners": 0.25,
 }
 
 CONTROL_WEIGHTS = {
@@ -158,13 +177,16 @@ SOT_RATE_WEIGHT = 0.35
 PASS_VOLUME_WEIGHT = 0.50
 PASS_ACCURACY_WEIGHT = 0.50
 
-# Momentum.
+# V1.2: xG и xGA убраны из momentum.
+# Оставшиеся веса пересчитаны пропорционально:
+# 0.15 + 0.10 + 0.05 = 0.30
+# shots_trend  0.15 / 0.30 = 0.50
+# sot_trend    0.10 / 0.30 = 0.333333
+# result_trend 0.05 / 0.30 = 0.166667
 MOMENTUM_WEIGHTS = {
-    "xg_trend": 0.40,
-    "xga_trend": -0.30,
-    "shots_trend": 0.15,
-    "sot_trend": 0.10,
-    "result_trend": 0.05,
+    "shots_trend": 0.50,
+    "sot_trend": 1.0 / 3.0,
+    "result_trend": 1.0 / 6.0,
 }
 
 
@@ -739,6 +761,8 @@ class FormWinSignals:
     momentum_signal: Optional[float] = None
     venue_signal: Optional[float] = None
 
+    # V1.2: xg_trend и xga_trend всегда None
+    # (оставлены для совместимости diagnostics)
     xg_trend: Optional[float] = None
     xga_trend: Optional[float] = None
     shots_trend: Optional[float] = None
@@ -848,6 +872,8 @@ class FormWin:
             form_context
         )
 
+        # V1.2: xG и xGA извлекаются ТОЛЬКО для диагностики
+        # Они НЕ используются в attack_signal и momentum_signal
         xg = _extract_history(
             form_context,
             (
@@ -946,6 +972,7 @@ class FormWin:
 
         signals = FormWinSignals()
 
+        # V1.2: xg_signal сохраняется только для диагностики
         signals.xg_signal = _bounded_deviation(xg)
 
         # ----------------------------------------------------
@@ -1055,13 +1082,13 @@ class FormWin:
         # ----------------------------------------------------
         # Attack
         # ----------------------------------------------------
+        #
+        # V1.2: xG полностью убран из attack_signal.
+        # Используются только: SOT, Shots, Blocked, Crosses, Corners.
+        # ----------------------------------------------------
 
         signals.attack_signal = _combine_optional(
             (
-                (
-                    signals.xg_signal,
-                    ATTACK_WEIGHTS["xg"],
-                ),
                 (
                     signals.sot_signal,
                     ATTACK_WEIGHTS["sot"],
@@ -1146,14 +1173,14 @@ class FormWin:
         # ----------------------------------------------------
         # MOMENTUM
         # ----------------------------------------------------
+        #
+        # V1.2: xG и xGA полностью убраны из momentum.
+        # Используются только: shots_trend, sot_trend, result_trend.
+        # ----------------------------------------------------
 
-        signals.xg_trend = _bounded_slope(
-            xg
-        )
-
-        signals.xga_trend = _bounded_slope(
-            xga
-        )
+        # V1.2: xg_trend и xga_trend всегда None
+        signals.xg_trend = None
+        signals.xga_trend = None
 
         signals.shots_trend = _bounded_slope(
             shots
@@ -1185,14 +1212,6 @@ class FormWin:
 
         signals.momentum_signal = _combine_optional(
             (
-                (
-                    signals.xg_trend,
-                    MOMENTUM_WEIGHTS["xg_trend"],
-                ),
-                (
-                    signals.xga_trend,
-                    MOMENTUM_WEIGHTS["xga_trend"],
-                ),
                 (
                     signals.shots_trend,
                     MOMENTUM_WEIGHTS["shots_trend"],
@@ -1304,6 +1323,7 @@ class FormWin:
             win_form_score=win_form_score,
             signals=signals,
             diagnostics={
+                "version": FORM_WIN_VERSION,
                 "next_venue": next_venue,
                 "woodwork_used": False,
                 "missing_is_zero": False,
@@ -1321,6 +1341,18 @@ class FormWin:
                 "final_weights": dict(
                     FINAL_WEIGHTS
                 ),
+                "momentum_weights": dict(
+                    MOMENTUM_WEIGHTS
+                ),
+                "xg_used_in_attack_signal": False,
+                "xg_used_in_momentum_signal": False,
+                "xga_used_in_momentum_signal": False,
+                "change_log": [
+                    "v1.2: xG полностью убран из attack_signal",
+                    "v1.2: xG и xGA полностью убраны из momentum_signal",
+                    "v1.2: ATTACK_WEIGHTS пересчитаны без xG",
+                    "v1.2: MOMENTUM_WEIGHTS пересчитаны без xG/xGA",
+                ],
             },
         )
 
