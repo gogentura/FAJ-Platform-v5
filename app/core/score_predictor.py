@@ -3,356 +3,174 @@
 
 """
 ============================================================
-FAJ PLATFORM v12.1
-SCORE PREDICTOR v2.1
+FAJ Platform v12.1
+SCORE PREDICTOR v2.2
 ============================================================
 
-Purpose
--------
-Selects the FAJ predicted exact score from an existing
-mathematical score distribution.
+Назначение
+----------
+ScorePredictor выбирает наиболее вероятные точные счета
+из уже рассчитанного ProbabilityModel распределения.
 
-Architecture
-------------
-GoalModel
-    ↓
-home_xg / away_xg
-    ↓
-ProbabilityModel
-    ↓
-Poisson score probabilities
-    ↓
-ScorePredictor
-    ├── Poisson probability
-    ├── Outcome Fit (uses State: Control/Anomaly/Special only)
-    ├── Margin Fit (pure xG-based)
-    ├── BTTS Fit
-    ├── Total Fit
-    └── State Advantage (Control + Anomaly + Special only)
-    ↓
-FAJ Predicted Score
+Архитектура:
 
-Key distinction
+    GoalModel v2
+          │
+          ▼
+       λ Home
+       λ Away
+          │
+          ▼
+    ProbabilityModel
+          │
+          ▼
+    Score Distribution
+          │
+          ▼
+    ScorePredictor v2.2
+          │
+          ├── likely_score
+          ├── predicted_score
+          ├── second_score
+          ├── third_score
+          └── top_scores
+
+ВАЖНЫЙ ПРИНЦИП
 ---------------
-likely_score:
-    Pure mathematical argmax of Poisson score probability.
 
-predicted_score:
-    FAJ exact-score decision selected from the same
-    mathematical score space using football state signals.
+ScorePredictor НЕ является второй probability model.
 
-Changes in v2.1
----------------
-- FormWin and Defence are NO longer used in ScorePredictor
-  (they already influenced xG through GoalModel)
-- State advantage NO longer influences MarginFit
-- MarginFit is now purely xG-based
-- State advantage influences ONLY OutcomeFit
-- Control, Anomaly, Special remain as additional signals
+Он НЕ пересчитывает:
 
-IMPORTANT
----------
-ScorePredictor does NOT:
-- calculate Poisson probabilities
-- modify xG
-- modify ProbabilityModel probabilities
-- modify FormWin
-- modify Defence
-- modify FormControl
-- modify FormAnomaly
-- modify SpecialForm
-- train parameters
-- learn from the result
-- use bookmaker odds
+- OutcomeFit
+- MarginFit
+- BTTSFit
+- TotalFit
+- ScenarioFit
+- ScoreUtility
+- FormWin
+- Defence
+- Control
+- Anomaly
+- Special signals
 
-Missing data
-------------
-None is never converted into zero as factual data.
+Главный и единственный источник вероятности
+точного счёта:
 
-For optional model signals, missing values are treated
-as neutral and the diagnostics record the missing signal.
+    P(score)
 
-Invalid xG / invalid probabilities do not produce an invented
-prediction.
+из ProbabilityModel.
 
-Formula
--------
-OutcomeFit =
-    sqrt(P_outcome × StateFit)
+Следовательно:
 
-MarginFit =
-    exp(-abs(score_margin - target_margin) / MARGIN_SIGMA)
-    where target_margin = abs(home_xg - away_xg) ONLY
+    predicted_score = argmax(P(score))
 
-BTTSFit =
-    P(BTTS)               if both teams score
-    1 - P(BTTS)           otherwise
+Top-N также строится непосредственно
+по P(score).
 
-TotalFit =
-    P(Over 2.5)           if total >= 3
-    P(Under 2.5)          otherwise
-
-ScenarioFit =
-    OutcomeFit^0.40
-    × MarginFit^0.25
-    × BTTSFit^0.15
-    × TotalFit^0.20
-
-ScoreUtility =
-    ln(P_score)
-    + SCENARIO_WEIGHT × ln(ScenarioFit)
-
-predicted_score =
-    argmax(ScoreUtility)
-
-Research parameters are structural priors.
-They must be calibrated/backtested over historical data,
-not tuned against a single match.
+============================================================
 """
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+import math
 
 
 # ============================================================
-# VERSION / STATUS
+# VERSION
 # ============================================================
 
-VERSION = "2.1"
+VERSION = "2.2"
 FORMULA_STATUS = "RESEARCH_FORMULA"
 
-
-# ============================================================
-# RESEARCH PARAMETERS
-# ============================================================
-
-# Overall influence of scenario compatibility relative
-# to pure Poisson probability.
-SCENARIO_WEIGHT = 0.75
-
-# Scenario component weights.
-OUTCOME_WEIGHT = 0.40
-MARGIN_WEIGHT = 0.25
-BTTS_WEIGHT = 0.15
-TOTAL_WEIGHT = 0.20
-
-# State advantage weights.
-# REMOVED: STATE_ATTACK_WEIGHT, STATE_DEFENCE_WEIGHT
-# (FormWin and Defence already influence xG through GoalModel)
-STATE_MOMENTUM_WEIGHT = 0.20
-STATE_CONTROL_WEIGHT = 0.10
-STATE_SPECIAL_WEIGHT = 0.10
-
-# Margin calculation.
-# REMOVED: STATE_MARGIN_FACTOR (margin is now purely xG-based)
-MARGIN_SIGMA = 0.90
-
-# Numerical protection.
-EPSILON = 1e-12
-
-# Maximum number of alternative scores exposed.
 TOP_SCORES_COUNT = 10
 
 
 # ============================================================
-# TYPES
-# ============================================================
-
-Score = Tuple[int, int]
-
-
-# ============================================================
-# HELPERS
-# ============================================================
-
-def _clamp(
-    value: float,
-    low: float = 0.0,
-    high: float = 1.0,
-) -> float:
-    return max(low, min(high, value))
-
-
-def _clamp_signal(value: float) -> float:
-    return _clamp(value, -1.0, 1.0)
-
-
-def _safe_float(value: Any) -> Optional[float]:
-    """
-    Convert a value to finite float.
-
-    None remains None.
-    Invalid/non-finite values become None.
-    """
-    if value is None:
-        return None
-
-    try:
-        result = float(value)
-    except (TypeError, ValueError):
-        return None
-
-    if not math.isfinite(result):
-        return None
-
-    return result
-
-
-def _get_value(
-    obj: Any,
-    *names: str,
-) -> Optional[float]:
-    """
-    Read a numeric attribute from either a dataclass/object
-    or a dictionary.
-    """
-    if obj is None:
-        return None
-
-    for name in names:
-        if isinstance(obj, Mapping):
-            value = obj.get(name)
-        else:
-            value = getattr(obj, name, None)
-
-        value = _safe_float(value)
-
-        if value is not None:
-            return value
-
-    return None
-
-
-def _get_raw_value(
-    obj: Any,
-    *names: str,
-) -> Any:
-    """
-    Read a raw attribute from object/dict.
-    """
-    if obj is None:
-        return None
-
-    for name in names:
-        if isinstance(obj, Mapping):
-            if name in obj:
-                return obj[name]
-        else:
-            if hasattr(obj, name):
-                return getattr(obj, name)
-
-    return None
-
-
-def _sign(value: float) -> int:
-    if value > 0:
-        return 1
-    if value < 0:
-        return -1
-    return 0
-
-
-def _log_safe(value: float) -> float:
-    return math.log(max(value, EPSILON))
-
-
-def _geometric_mean(
-    components: Iterable[Tuple[float, float]],
-) -> float:
-    """
-    Weighted geometric mean.
-
-    components:
-        iterable of (value, weight)
-    """
-    total_weight = 0.0
-    weighted_log = 0.0
-
-    for value, weight in components:
-        value = _clamp(value)
-        weight = max(float(weight), 0.0)
-
-        weighted_log += weight * _log_safe(value)
-        total_weight += weight
-
-    if total_weight <= 0.0:
-        return 0.0
-
-    return _clamp(
-        math.exp(weighted_log / total_weight)
-    )
-
-
-# ============================================================
-# RESULT
+# SCORE PREDICTION RESULT
 # ============================================================
 
 @dataclass
 class ScorePrediction:
     """
-    Result of FAJ ScorePredictor.
+    Результат ScorePredictor.
+
+    Старые поля сохраняются ради совместимости
+    с остальным FAJ.
+
+    В v2.2:
+
+        likely_score
+            чистый argmax P(score)
+
+        predicted_score
+            основной выбранный счёт.
+            В v2.2 равен likely_score.
+
+        second_score
+            второй по вероятности.
+
+        third_score
+            третий по вероятности.
+
+        primary_score_value
+            P(primary_score)
+
+        second_score_value
+            P(second_score)
+
+        third_score_value
+            P(third_score)
+
+        probability_score
+            P(predicted_score)
+
+    Старые secondary-fit поля оставлены,
+    но математически не используются.
     """
 
-    # --------------------------------------------------------
-    # Mathematical score
-    # --------------------------------------------------------
+    version: str
 
-    likely_score: Optional[Score]
-    likely_score_string: Optional[str]
+    likely_score: Optional[str]
+    predicted_score: Optional[str]
 
-    # --------------------------------------------------------
-    # FAJ selected score
-    # --------------------------------------------------------
-
-    predicted_score: Optional[Score]
-    predicted_score_string: Optional[str]
-
-    # --------------------------------------------------------
-    # Alternatives
-    # --------------------------------------------------------
-
-    second_score: Optional[Score]
-    second_score_string: Optional[str]
-
-    third_score: Optional[Score]
-    third_score_string: Optional[str]
-
-    # --------------------------------------------------------
-    # Decision values
-    # --------------------------------------------------------
+    second_score: Optional[str]
+    third_score: Optional[str]
 
     primary_score_value: Optional[float]
     second_score_value: Optional[float]
     third_score_value: Optional[float]
 
-    # --------------------------------------------------------
-    # Components of primary prediction
-    # --------------------------------------------------------
-
     probability_score: Optional[float]
-    outcome_fit_score: Optional[float]
-    margin_fit_score: Optional[float]
-    btts_fit_score: Optional[float]
-    total_fit_score: Optional[float]
-    scenario_fit_score: Optional[float]
-    state_advantage: Optional[float]
-
-    # --------------------------------------------------------
-    # Ranked candidate scores
-    # --------------------------------------------------------
 
     top_scores: List[Dict[str, Any]] = field(
         default_factory=list
     )
 
+    home_xg: Optional[float] = None
+    away_xg: Optional[float] = None
+
     # --------------------------------------------------------
-    # Metadata
+    # Compatibility fields
     # --------------------------------------------------------
 
-    formula_status: str = FORMULA_STATUS
+    outcome_fit_score: Optional[float] = None
+    margin_fit_score: Optional[float] = None
+    btts_fit_score: Optional[float] = None
+    total_fit_score: Optional[float] = None
+    scenario_fit_score: Optional[float] = None
+
+    state_advantage: Optional[float] = None
+
+    # --------------------------------------------------------
+    # Probability summary
+    # --------------------------------------------------------
+
+    probability_summary: Dict[str, Any] = field(
+        default_factory=dict
+    )
 
     diagnostics: Dict[str, Any] = field(
         default_factory=dict
@@ -365,15 +183,21 @@ class ScorePrediction:
 
 class ScorePredictor:
     """
-    FAJ exact-score decision organ.
+    Score ranking layer.
 
-    It does not generate probabilities.
+    Input:
 
-    It selects an exact-score scenario from the existing
-    ProbabilityModel distribution.
+        ProbabilityModel score distribution.
+
+    Output:
+
+        mathematically highest-probability exact scores.
+
+    No secondary scenario model.
     """
 
-    VERSION = VERSION
+    def __init__(self) -> None:
+        pass
 
     # ========================================================
     # PUBLIC API
@@ -385,106 +209,56 @@ class ScorePredictor:
         home_xg: Optional[float],
         away_xg: Optional[float],
         probability_result: Any = None,
-        home_form_win: Any = None,
-        away_form_win: Any = None,
-        home_defence: Any = None,
-        away_defence: Any = None,
-        control_advantage: Optional[str] = None,
-        control_strength: Optional[float] = None,
-        anomaly_signal: Optional[float] = None,
-        special_composite: Optional[float] = None,
     ) -> ScorePrediction:
         """
-        Select FAJ exact predicted score.
+        Select exact scores directly from ProbabilityModel.
 
         Parameters
         ----------
         score_probabilities:
-            Existing score distribution from ProbabilityModel.
+            Score probability distribution.
 
-            Supported formats:
+            Supported examples:
 
-            1. Dict:
-                {(0, 0): 0.10, (1, 0): 0.15, ...}
+                {
+                    "1:0": 0.18,
+                    "1:1": 0.14,
+                    "2:0": 0.11,
+                }
 
-            2. List of dictionaries:
-                [
-                    {
-                        "score": (2, 0),
-                        "probability": 0.15,
-                    },
-                    ...
-                ]
+            or a list of score records.
 
-            3. List using score_string:
-                [
-                    {
-                        "score_string": "2:0",
-                        "probability": 0.15,
-                    },
-                    ...
-                ]
+        home_xg:
+            GoalModel home lambda.
 
-        home_xg / away_xg:
-            Expected goals already produced by GoalModel.
+        away_xg:
+            GoalModel away lambda.
 
         probability_result:
-            Optional ProbabilityResult from ProbabilityModel.
-
-            If supplied, the predictor uses:
-                home_win
-                draw
-                away_win
-                btts
-                over_25
-                under_25
-
-            If absent, these values are derived from the supplied
-            score distribution.
-
-        home_form_win / away_form_win:
-            FormWin results. (NOT used in v2.1 for state advantage)
-
-        home_defence / away_defence:
-            Defence results. (NOT used in v2.1 for state advantage)
-
-        control_advantage:
-            "HOME", "AWAY" or "EQUAL".
-
-        control_strength:
-            0..1.
-
-        anomaly_signal:
-            Directional home-vs-away anomaly signal, -1..1.
-
-        special_composite:
-            Directional home-vs-away special-form signal,
-            -0.30..0.30.
+            Optional ProbabilityModel result.
+            Used only for diagnostics / summary.
 
         Returns
         -------
         ScorePrediction
         """
 
+        home_xg = self._safe_float(home_xg)
+        away_xg = self._safe_float(away_xg)
+
         # ----------------------------------------------------
-        # 1. Validate xG
+        # Validate xG
         # ----------------------------------------------------
 
-        home_xg_value = _safe_float(home_xg)
-        away_xg_value = _safe_float(away_xg)
-
-        if (
-            home_xg_value is None
-            or away_xg_value is None
-            or home_xg_value < 0.0
-            or away_xg_value < 0.0
-        ):
+        if home_xg is None or away_xg is None:
             return self._unavailable_prediction(
-                reason="INVALID_OR_MISSING_XG"
+                home_xg=home_xg,
+                away_xg=away_xg,
+                reason="INVALID_XG",
             )
 
         # ----------------------------------------------------
-        # 2. Normalize score distribution
+        # Normalize score distribution
         # ----------------------------------------------------
 
         candidates = self._normalize_score_probabilities(
@@ -493,231 +267,200 @@ class ScorePredictor:
 
         if not candidates:
             return self._unavailable_prediction(
-                reason="NO_SCORE_PROBABILITIES"
+                home_xg=home_xg,
+                away_xg=away_xg,
+                reason="EMPTY_SCORE_DISTRIBUTION",
             )
 
         # ----------------------------------------------------
-        # 3. Mathematical likely score
+        # Pure mathematical ranking
         # ----------------------------------------------------
 
-        likely = max(
+        evaluated = sorted(
             candidates,
             key=lambda item: item["probability"],
-        )
-
-        likely_score = likely["score"]
-        likely_probability = likely["probability"]
-
-        # ----------------------------------------------------
-        # 4. Extract / derive probability summaries
-        # ----------------------------------------------------
-
-        summary = self._extract_probability_summary(
-            probability_result=probability_result,
-            candidates=candidates,
-        )
-
-        # ----------------------------------------------------
-        # 5. Extract state signals (Control + Anomaly + Special only)
-        # ----------------------------------------------------
-
-        state = self._calculate_state_advantage(
-            control_advantage=control_advantage,
-            control_strength=control_strength,
-            anomaly_signal=anomaly_signal,
-            special_composite=special_composite,
-        )
-
-        state_advantage = state["state_advantage"]
-
-        # ----------------------------------------------------
-        # 6. Evaluate every candidate
-        # ----------------------------------------------------
-
-        evaluated: List[Dict[str, Any]] = []
-
-        for candidate in candidates:
-            score = candidate["score"]
-            probability = candidate["probability"]
-
-            home_goals, away_goals = score
-
-            outcome_fit = self._calculate_outcome_fit(
-                home_goals=home_goals,
-                away_goals=away_goals,
-                home_win_probability=summary["home_win"],
-                draw_probability=summary["draw"],
-                away_win_probability=summary["away_win"],
-                state_advantage=state_advantage,
-            )
-
-            margin_fit = self._calculate_margin_fit(
-                home_goals=home_goals,
-                away_goals=away_goals,
-                home_xg=home_xg_value,
-                away_xg=away_xg_value,
-            )
-
-            btts_fit = self._calculate_btts_fit(
-                home_goals=home_goals,
-                away_goals=away_goals,
-                btts_probability=summary["btts"],
-            )
-
-            total_fit = self._calculate_total_fit(
-                home_goals=home_goals,
-                away_goals=away_goals,
-                over_25_probability=summary["over_25"],
-                under_25_probability=summary["under_25"],
-            )
-
-            scenario_fit = _geometric_mean(
-                [
-                    (outcome_fit, OUTCOME_WEIGHT),
-                    (margin_fit, MARGIN_WEIGHT),
-                    (btts_fit, BTTS_WEIGHT),
-                    (total_fit, TOTAL_WEIGHT),
-                ]
-            )
-
-            score_utility = (
-                _log_safe(probability)
-                + SCENARIO_WEIGHT
-                * _log_safe(scenario_fit)
-            )
-
-            evaluated.append(
-                {
-                    "score": score,
-                    "score_string": (
-                        f"{home_goals}:{away_goals}"
-                    ),
-                    "probability": probability,
-                    "outcome_fit": outcome_fit,
-                    "margin_fit": margin_fit,
-                    "btts_fit": btts_fit,
-                    "total_fit": total_fit,
-                    "scenario_fit": scenario_fit,
-                    "score_utility": score_utility,
-                }
-            )
-
-        # ----------------------------------------------------
-        # 7. Rank by FAJ utility
-        # ----------------------------------------------------
-
-        evaluated.sort(
-            key=lambda item: item["score_utility"],
             reverse=True,
         )
 
-        primary = evaluated[0]
+        # ----------------------------------------------------
+        # Top N
+        # ----------------------------------------------------
+
+        top_scores = evaluated[
+            :TOP_SCORES_COUNT
+        ]
+
+        # ----------------------------------------------------
+        # Primary / secondary / tertiary
+        # ----------------------------------------------------
+
+        primary = (
+            top_scores[0]
+            if len(top_scores) >= 1
+            else None
+        )
 
         second = (
-            evaluated[1]
-            if len(evaluated) > 1
+            top_scores[1]
+            if len(top_scores) >= 2
             else None
         )
 
         third = (
-            evaluated[2]
-            if len(evaluated) > 2
+            top_scores[2]
+            if len(top_scores) >= 3
+            else None
+        )
+
+        likely_score = (
+            primary["score"]
+            if primary is not None
+            else None
+        )
+
+        predicted_score = likely_score
+
+        second_score = (
+            second["score"]
+            if second is not None
+            else None
+        )
+
+        third_score = (
+            third["score"]
+            if third is not None
+            else None
+        )
+
+        primary_probability = (
+            primary["probability"]
+            if primary is not None
+            else None
+        )
+
+        second_probability = (
+            second["probability"]
+            if second is not None
+            else None
+        )
+
+        third_probability = (
+            third["probability"]
+            if third is not None
             else None
         )
 
         # ----------------------------------------------------
-        # 8. Build result
+        # Probability summary
         # ----------------------------------------------------
 
+        probability_summary = (
+            self._extract_probability_summary(
+                probability_result
+            )
+        )
+
+        # ----------------------------------------------------
+        # Diagnostics
+        # ----------------------------------------------------
+
+        diagnostics = {
+            "version": VERSION,
+            "formula_status": FORMULA_STATUS,
+
+            "home_xg": home_xg,
+            "away_xg": away_xg,
+
+            "candidate_count": len(
+                candidates
+            ),
+
+            "top_scores_count": len(
+                top_scores
+            ),
+
+            "likely_score": likely_score,
+            "likely_probability": primary_probability,
+
+            "predicted_score": predicted_score,
+            "predicted_probability": primary_probability,
+
+            "second_score": second_score,
+            "second_probability": second_probability,
+
+            "third_score": third_score,
+            "third_probability": third_probability,
+
+            "selection_method": (
+                "PURE_SCORE_PROBABILITY"
+            ),
+
+            "distribution_source": (
+                "ProbabilityModel"
+            ),
+
+            # ------------------------------------------------
+            # Explicitly document what is NOT used.
+            # ------------------------------------------------
+
+            "secondary_signals_used": False,
+
+            "form_win_used": False,
+            "defence_used": False,
+
+            "control_used": False,
+            "anomaly_used": False,
+            "special_used": False,
+
+            "outcome_fit_used": False,
+            "margin_fit_used": False,
+            "btts_fit_used": False,
+            "total_fit_used": False,
+            "scenario_fit_used": False,
+
+            "score_utility_used": False,
+        }
+
         return ScorePrediction(
+            version=VERSION,
+
             likely_score=likely_score,
-            likely_score_string=(
-                f"{likely_score[0]}:{likely_score[1]}"
-            ),
-            predicted_score=primary["score"],
-            predicted_score_string=primary["score_string"],
-            second_score=(
-                second["score"]
-                if second is not None
-                else None
-            ),
-            second_score_string=(
-                second["score_string"]
-                if second is not None
-                else None
-            ),
-            third_score=(
-                third["score"]
-                if third is not None
-                else None
-            ),
-            third_score_string=(
-                third["score_string"]
-                if third is not None
-                else None
-            ),
-            primary_score_value=primary["score_utility"],
-            second_score_value=(
-                second["score_utility"]
-                if second is not None
-                else None
-            ),
-            third_score_value=(
-                third["score_utility"]
-                if third is not None
-                else None
-            ),
-            probability_score=primary["probability"],
-            outcome_fit_score=primary["outcome_fit"],
-            margin_fit_score=primary["margin_fit"],
-            btts_fit_score=primary["btts_fit"],
-            total_fit_score=primary["total_fit"],
-            scenario_fit_score=primary["scenario_fit"],
-            state_advantage=state_advantage,
-            top_scores=evaluated[
-                :TOP_SCORES_COUNT
-            ],
-            formula_status=FORMULA_STATUS,
-            diagnostics={
-                "version": self.VERSION,
-                "formula_status": FORMULA_STATUS,
-                "home_xg": home_xg_value,
-                "away_xg": away_xg_value,
-                "candidate_count": len(candidates),
-                "likely_score": (
-                    f"{likely_score[0]}:{likely_score[1]}"
-                ),
-                "likely_probability": likely_probability,
-                "predicted_score": primary[
-                    "score_string"
-                ],
-                "probability_summary": summary,
-                "state": state,
-                "weights": {
-                    "scenario": SCENARIO_WEIGHT,
-                    "outcome": OUTCOME_WEIGHT,
-                    "margin": MARGIN_WEIGHT,
-                    "btts": BTTS_WEIGHT,
-                    "total": TOTAL_WEIGHT,
-                    "state_momentum": (
-                        STATE_MOMENTUM_WEIGHT
-                    ),
-                    "state_control": (
-                        STATE_CONTROL_WEIGHT
-                    ),
-                    "state_special": (
-                        STATE_SPECIAL_WEIGHT
-                    ),
-                },
-                "note": (
-                    "FormWin and Defence are NOT used in ScorePredictor v2.1. "
-                    "They already influence xG through GoalModel."
-                ),
-            },
+            predicted_score=predicted_score,
+
+            second_score=second_score,
+            third_score=third_score,
+
+            primary_score_value=primary_probability,
+            second_score_value=second_probability,
+            third_score_value=third_probability,
+
+            probability_score=primary_probability,
+
+            top_scores=top_scores,
+
+            home_xg=home_xg,
+            away_xg=away_xg,
+
+            # ------------------------------------------------
+            # Compatibility fields.
+            # No secondary mathematical scoring.
+            # ------------------------------------------------
+
+            outcome_fit_score=None,
+            margin_fit_score=None,
+            btts_fit_score=None,
+            total_fit_score=None,
+            scenario_fit_score=None,
+
+            state_advantage=None,
+
+            probability_summary=probability_summary,
+
+            diagnostics=diagnostics,
         )
 
     # ========================================================
-    # SCORE INPUT NORMALIZATION
+    # NORMALIZE SCORE PROBABILITIES
     # ========================================================
 
     def _normalize_score_probabilities(
@@ -725,138 +468,310 @@ class ScorePredictor:
         score_probabilities: Any,
     ) -> List[Dict[str, Any]]:
         """
-        Normalize supported ProbabilityModel score formats.
+        Normalize different ProbabilityModel output shapes
+        into:
+
+            [
+                {
+                    "score": "1:2",
+                    "probability": 0.148
+                },
+                ...
+            ]
+
+        Missing/invalid probabilities are ignored.
+
+        No probability is invented.
         """
 
-        result: List[Dict[str, Any]] = []
-
         if score_probabilities is None:
-            return result
+            return []
+
+        candidates: List[
+            Dict[str, Any]
+        ] = []
 
         # ----------------------------------------------------
-        # Dict format
+        # Dictionary:
+        #
+        # {
+        #     "1:0": 0.15,
+        #     "1:1": 0.12
+        # }
         # ----------------------------------------------------
 
         if isinstance(
             score_probabilities,
-            Mapping,
+            dict,
         ):
-            for raw_score, raw_probability in (
+            for score, probability in (
                 score_probabilities.items()
             ):
-                score = self._parse_score(
-                    raw_score
+                score_text = self._parse_score(
+                    score
                 )
 
-                probability = _safe_float(
-                    raw_probability
+                probability_value = (
+                    self._safe_float(
+                        probability
+                    )
                 )
 
                 if (
-                    score is None
-                    or probability is None
-                    or probability <= 0.0
+                    score_text is None
+                    or probability_value is None
+                    or probability_value < 0
                 ):
                     continue
 
-                if probability > 1.0:
-                    continue
-
-                result.append(
+                candidates.append(
                     {
-                        "score": score,
-                        "probability": probability,
+                        "score": score_text,
+                        "probability": probability_value,
                     }
                 )
 
-            return result
-
         # ----------------------------------------------------
-        # List / iterable format
+        # List / tuple
         # ----------------------------------------------------
-
-        try:
-            iterable = list(score_probabilities)
-        except TypeError:
-            return result
-
-        for item in iterable:
-            if not isinstance(item, Mapping):
-                continue
-
-            raw_score = item.get("score")
-
-            if raw_score is None:
-                raw_score = item.get(
-                    "score_string"
-                )
-
-            probability = item.get(
-                "probability"
-            )
-
-            if probability is None:
-                probability = item.get(
-                    "prob"
-                )
-
-            score = self._parse_score(
-                raw_score
-            )
-
-            probability = _safe_float(
-                probability
-            )
-
-            if (
-                score is None
-                or probability is None
-                or probability <= 0.0
-                or probability > 1.0
-            ):
-                continue
-
-            result.append(
-                {
-                    "score": score,
-                    "probability": probability,
-                }
-            )
-
-        return result
-
-    def _parse_score(
-        self,
-        raw_score: Any,
-    ) -> Optional[Score]:
-        """
-        Parse:
-            (2, 0)
-            [2, 0]
-            "2:0"
-        """
-
-        if isinstance(
-            raw_score,
-            (tuple, list),
-        ):
-            if len(raw_score) != 2:
-                return None
-
-            try:
-                home = int(raw_score[0])
-                away = int(raw_score[1])
-            except (
-                TypeError,
-                ValueError,
-            ):
-                return None
 
         elif isinstance(
-            raw_score,
-            str,
+            score_probabilities,
+            (
+                list,
+                tuple,
+            ),
         ):
-            parts = raw_score.strip().split(":")
+            for item in score_probabilities:
+
+                score = None
+                probability = None
+
+                # --------------------------------------------
+                # Tuple:
+                #
+                # ("1:2", 0.14)
+                # --------------------------------------------
+
+                if isinstance(
+                    item,
+                    (list, tuple),
+                ):
+                    if len(item) >= 2:
+                        score = item[0]
+                        probability = item[1]
+
+                # --------------------------------------------
+                # Dict record
+                # --------------------------------------------
+
+                elif isinstance(
+                    item,
+                    dict,
+                ):
+                    score = (
+                        item.get("score")
+                        or item.get("exact_score")
+                        or item.get("result")
+                    )
+
+                    probability = (
+                        item.get("probability")
+                        if "probability" in item
+                        else item.get("prob")
+                    )
+
+                # --------------------------------------------
+                # Object
+                # --------------------------------------------
+
+                else:
+                    score = (
+                        self._get_value(
+                            item,
+                            "score",
+                        )
+                        or self._get_value(
+                            item,
+                            "exact_score",
+                        )
+                        or self._get_value(
+                            item,
+                            "result",
+                        )
+                    )
+
+                    probability = (
+                        self._get_value(
+                            item,
+                            "probability",
+                        )
+                    )
+
+                    if probability is None:
+                        probability = (
+                            self._get_value(
+                                item,
+                                "prob",
+                            )
+                        )
+
+                score_text = self._parse_score(
+                    score
+                )
+
+                probability_value = (
+                    self._safe_float(
+                        probability
+                    )
+                )
+
+                if (
+                    score_text is None
+                    or probability_value is None
+                    or probability_value < 0
+                ):
+                    continue
+
+                candidates.append(
+                    {
+                        "score": score_text,
+                        "probability": probability_value,
+                    }
+                )
+
+        # ----------------------------------------------------
+        # Object containing score_probabilities
+        # ----------------------------------------------------
+
+        else:
+            nested = self._get_value(
+                score_probabilities,
+                "score_probabilities",
+            )
+
+            if nested is not None:
+                return self._normalize_score_probabilities(
+                    nested
+                )
+
+            nested = self._get_value(
+                score_probabilities,
+                "scores",
+            )
+
+            if nested is not None:
+                return self._normalize_score_probabilities(
+                    nested
+                )
+
+            nested = self._get_value(
+                score_probabilities,
+                "distribution",
+            )
+
+            if nested is not None:
+                return self._normalize_score_probabilities(
+                    nested
+                )
+
+        # ----------------------------------------------------
+        # Merge duplicate scores
+        # ----------------------------------------------------
+
+        merged: Dict[
+            str,
+            float,
+        ] = {}
+
+        for item in candidates:
+
+            score = item["score"]
+            probability = item["probability"]
+
+            merged[score] = (
+                merged.get(score, 0.0)
+                + probability
+            )
+
+        # ----------------------------------------------------
+        # Normalize
+        # ----------------------------------------------------
+
+        total = sum(
+            merged.values()
+        )
+
+        if total <= 0.0:
+            return []
+
+        normalized = [
+            {
+                "score": score,
+                "probability": (
+                    probability / total
+                ),
+            }
+            for score, probability
+            in merged.items()
+        ]
+
+        return normalized
+
+    # ========================================================
+    # SCORE PARSER
+    # ========================================================
+
+    @staticmethod
+    def _parse_score(
+        score: Any,
+    ) -> Optional[str]:
+        """
+        Normalize score representation.
+
+        Accepted examples:
+
+            "1:2"
+            "1-2"
+            "1 : 2"
+            (1, 2)
+            [1, 2]
+            {"home": 1, "away": 2}
+        """
+
+        if score is None:
+            return None
+
+        # ----------------------------------------------------
+        # String
+        # ----------------------------------------------------
+
+        if isinstance(score, str):
+
+            value = score.strip()
+
+            if not value:
+                return None
+
+            value = value.replace(
+                " ",
+                "",
+            )
+
+            if "-" in value:
+                parts = value.split(
+                    "-",
+                    1,
+                )
+
+            elif ":" in value:
+                parts = value.split(
+                    ":",
+                    1,
+                )
+
+            else:
+                return None
 
             if len(parts) != 2:
                 return None
@@ -870,13 +785,71 @@ class ScorePredictor:
             ):
                 return None
 
-        else:
-            return None
+            if home < 0 or away < 0:
+                return None
 
-        if home < 0 or away < 0:
-            return None
+            return f"{home}:{away}"
 
-        return home, away
+        # ----------------------------------------------------
+        # Tuple / list
+        # ----------------------------------------------------
+
+        if isinstance(
+            score,
+            (tuple, list),
+        ):
+            if len(score) < 2:
+                return None
+
+            try:
+                home = int(score[0])
+                away = int(score[1])
+            except (
+                TypeError,
+                ValueError,
+            ):
+                return None
+
+            if home < 0 or away < 0:
+                return None
+
+            return f"{home}:{away}"
+
+        # ----------------------------------------------------
+        # Dict
+        # ----------------------------------------------------
+
+        if isinstance(
+            score,
+            dict,
+        ):
+            home = (
+                score.get("home")
+                if "home" in score
+                else score.get("home_goals")
+            )
+
+            away = (
+                score.get("away")
+                if "away" in score
+                else score.get("away_goals")
+            )
+
+            try:
+                home = int(home)
+                away = int(away)
+            except (
+                TypeError,
+                ValueError,
+            ):
+                return None
+
+            if home < 0 or away < 0:
+                return None
+
+            return f"{home}:{away}"
+
+        return None
 
     # ========================================================
     # PROBABILITY SUMMARY
@@ -885,578 +858,114 @@ class ScorePredictor:
     def _extract_probability_summary(
         self,
         probability_result: Any,
-        candidates: List[Dict[str, Any]],
-    ) -> Dict[str, Optional[float]]:
+    ) -> Dict[str, Any]:
         """
-        Read summary probabilities from ProbabilityModel.
+        Extract ProbabilityModel summary.
 
-        If ProbabilityResult is unavailable, derive them from
-        the supplied score distribution.
+        IMPORTANT:
 
-        Derived values may be incomplete if only TOP-N scores
-        were supplied. Diagnostics record this.
+        This data is diagnostic only.
+
+        It is NOT used to modify exact-score ranking.
         """
 
-        home_win = _get_value(
+        if probability_result is None:
+            return {}
+
+        summary = self._get_value(
             probability_result,
-            "home_win",
+            "probability_summary",
         )
 
-        draw = _get_value(
-            probability_result,
-            "draw",
-        )
-
-        away_win = _get_value(
-            probability_result,
-            "away_win",
-        )
-
-        btts = _get_value(
-            probability_result,
-            "btts",
-        )
-
-        over_25 = _get_value(
-            probability_result,
-            "over_25",
-        )
-
-        under_25 = _get_value(
-            probability_result,
-            "under_25",
-        )
-
-        source = "ProbabilityModel"
-
-        if (
-            home_win is None
-            or draw is None
-            or away_win is None
-            or btts is None
-            or over_25 is None
-            or under_25 is None
+        if isinstance(
+            summary,
+            dict,
         ):
-            (
-                derived_home,
-                derived_draw,
-                derived_away,
-                derived_btts,
-                derived_over,
-                derived_under,
-            ) = self._derive_probability_summary(
-                candidates
-            )
+            return dict(summary)
 
-            if home_win is None:
-                home_win = derived_home
+        return self._derive_probability_summary(
+            probability_result
+        )
 
-            if draw is None:
-                draw = derived_draw
-
-            if away_win is None:
-                away_win = derived_away
-
-            if btts is None:
-                btts = derived_btts
-
-            if over_25 is None:
-                over_25 = derived_over
-
-            if under_25 is None:
-                under_25 = derived_under
-
-            source = "DERIVED_FROM_SCORE_DISTRIBUTION"
-
-        return {
-            "home_win": (
-                _clamp(home_win)
-                if home_win is not None
-                else None
-            ),
-            "draw": (
-                _clamp(draw)
-                if draw is not None
-                else None
-            ),
-            "away_win": (
-                _clamp(away_win)
-                if away_win is not None
-                else None
-            ),
-            "btts": (
-                _clamp(btts)
-                if btts is not None
-                else None
-            ),
-            "over_25": (
-                _clamp(over_25)
-                if over_25 is not None
-                else None
-            ),
-            "under_25": (
-                _clamp(under_25)
-                if under_25 is not None
-                else None
-            ),
-            "source": source,
-        }
+    # ========================================================
+    # DERIVE PROBABILITY SUMMARY
+    # ========================================================
 
     def _derive_probability_summary(
         self,
-        candidates: List[Dict[str, Any]],
-    ) -> Tuple[
-        Optional[float],
-        Optional[float],
-        Optional[float],
-        Optional[float],
-        Optional[float],
-        Optional[float],
-    ]:
-        """
-        Derive summary probabilities from the supplied score
-        distribution.
-
-        This is exact only when the supplied distribution
-        contains the complete score matrix.
-        """
-
-        if not candidates:
-            return (
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
-
-        home_win = 0.0
-        draw = 0.0
-        away_win = 0.0
-        btts = 0.0
-        over_25 = 0.0
-        under_25 = 0.0
-
-        total_mass = 0.0
-
-        for item in candidates:
-            home, away = item["score"]
-            probability = item["probability"]
-
-            total_mass += probability
-
-            if home > away:
-                home_win += probability
-            elif home == away:
-                draw += probability
-            else:
-                away_win += probability
-
-            if home > 0 and away > 0:
-                btts += probability
-
-            if home + away >= 3:
-                over_25 += probability
-            else:
-                under_25 += probability
-
-        if total_mass <= EPSILON:
-            return (
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
-
-        # Normalize because a TOP-N score list may not sum to 1.
-        home_win /= total_mass
-        draw /= total_mass
-        away_win /= total_mass
-        btts /= total_mass
-        over_25 /= total_mass
-        under_25 /= total_mass
-
-        return (
-            home_win,
-            draw,
-            away_win,
-            btts,
-            over_25,
-            under_25,
-        )
-
-    # ========================================================
-    # STATE ADVANTAGE (Control + Anomaly + Special only)
-    # ========================================================
-
-    def _calculate_state_advantage(
-        self,
-        control_advantage: Optional[str],
-        control_strength: Optional[float],
-        anomaly_signal: Optional[float],
-        special_composite: Optional[float],
+        probability_result: Any,
     ) -> Dict[str, Any]:
         """
-        Build directional home-vs-away state advantage.
+        Best-effort extraction of common
+        ProbabilityModel aggregate values.
 
-        Positive:
-            home state advantage.
-
-        Negative:
-            away state advantage.
-
-        Missing signals are neutral for calculation but are
-        recorded in diagnostics.
-
-        v2.1: FormWin and Defence are NOT used here.
-        They already influence xG through GoalModel.
+        These values are diagnostic only.
         """
 
-        # ----------------------------------------------------
-        # Momentum / anomaly
-        # ----------------------------------------------------
-
-        anomaly_available = (
-            anomaly_signal is not None
+        fields = (
+            "home_win",
+            "draw",
+            "away_win",
+            "btts_yes",
+            "btts_no",
+            "over_25",
+            "under_25",
+            "over_15",
+            "under_15",
+            "over_35",
+            "under_35",
         )
 
-        anomaly = _safe_float(
-            anomaly_signal
-        )
+        result: Dict[str, Any] = {}
 
-        if anomaly is None:
-            anomaly = 0.0
+        for field_name in fields:
 
-        anomaly = _clamp_signal(anomaly)
+            value = self._get_value(
+                probability_result,
+                field_name,
+            )
 
-        # ----------------------------------------------------
-        # Control
-        # ----------------------------------------------------
+            value = self._safe_float(
+                value
+            )
 
-        control_available = (
-            control_advantage is not None
-            and control_strength is not None
-        )
-
-        strength = _safe_float(
-            control_strength
-        )
-
-        if strength is None:
-            strength = 0.0
-
-        strength = _clamp(strength)
-
-        control_name = (
-            str(control_advantage).upper().strip()
-            if control_advantage is not None
-            else "EQUAL"
-        )
-
-        if control_name == "HOME":
-            control_advantage_value = strength
-        elif control_name == "AWAY":
-            control_advantage_value = -strength
-        else:
-            control_advantage_value = 0.0
-
-        control_advantage_value = _clamp_signal(
-            control_advantage_value
-        )
+            if value is not None:
+                result[field_name] = value
 
         # ----------------------------------------------------
-        # Special form
+        # Common alternate names
         # ----------------------------------------------------
 
-        special_available = (
-            special_composite is not None
-        )
-
-        special = _safe_float(
-            special_composite
-        )
-
-        if special is None:
-            special = 0.0
-
-        special = _clamp_signal(special)
-
-        # ----------------------------------------------------
-        # Aggregate (only Control + Anomaly + Special)
-        # ----------------------------------------------------
-
-        state_advantage = (
-            STATE_MOMENTUM_WEIGHT * anomaly
-            + STATE_CONTROL_WEIGHT * control_advantage_value
-            + STATE_SPECIAL_WEIGHT * special
-        )
-
-        state_advantage = _clamp_signal(
-            state_advantage
-        )
-
-        return {
-            "state_advantage": state_advantage,
-            "momentum_advantage": anomaly,
-            "control_advantage": (
-                control_advantage_value
-            ),
-            "special_advantage": special,
-            "availability": {
-                "momentum": anomaly_available,
-                "control": control_available,
-                "special": special_available,
-            },
-            "note": (
-                "FormWin and Defence are excluded from state_advantage "
-                "in v2.1. They already influenced xG through GoalModel."
-            ),
+        aliases = {
+            "home_win_probability": "home_win",
+            "draw_probability": "draw",
+            "away_win_probability": "away_win",
+            "btts_yes_probability": "btts_yes",
+            "btts_no_probability": "btts_no",
+            "over_25_probability": "over_25",
+            "under_25_probability": "under_25",
         }
 
-    # ========================================================
-    # OUTCOME FIT
-    # ========================================================
-
-    def _calculate_outcome_fit(
-        self,
-        home_goals: int,
-        away_goals: int,
-        home_win_probability: Optional[float],
-        draw_probability: Optional[float],
-        away_win_probability: Optional[float],
-        state_advantage: float,
-    ) -> float:
-        """
-        Compatibility between candidate outcome,
-        ProbabilityModel outcome probability and team state.
-        """
-
-        if home_goals > away_goals:
-            probability = (
-                home_win_probability
-                if home_win_probability is not None
-                else 0.5
-            )
-
-            state_fit = (
-                0.5
-                + 0.5
-                * math.tanh(
-                    2.0 * state_advantage
-                )
-            )
-
-        elif home_goals < away_goals:
-            probability = (
-                away_win_probability
-                if away_win_probability is not None
-                else 0.5
-            )
-
-            state_fit = (
-                0.5
-                - 0.5
-                * math.tanh(
-                    2.0 * state_advantage
-                )
-            )
-
-        else:
-            probability = (
-                draw_probability
-                if draw_probability is not None
-                else 0.5
-            )
-
-            state_fit = (
-                1.0
-                - abs(state_advantage)
-            )
-
-        probability = _clamp(
-            probability
-        )
-
-        state_fit = _clamp(
-            state_fit
-        )
-
-        return _clamp(
-            math.sqrt(
-                max(
-                    probability,
-                    EPSILON,
-                )
-                * max(
-                    state_fit,
-                    EPSILON,
-                )
-            )
-        )
-
-    # ========================================================
-    # MARGIN FIT (purely xG-based)
-    # ========================================================
-
-    def _calculate_margin_fit(
-        self,
-        home_goals: int,
-        away_goals: int,
-        home_xg: float,
-        away_xg: float,
-    ) -> float:
-        """
-        Measure whether the candidate goal difference matches
-        the expected xG difference.
-
-        This is now PURELY xG-based.
-        State advantage does NOT influence margin fit.
-
-        target_margin = abs(home_xg - away_xg)
-        """
-
-        xg_difference = (
-            home_xg - away_xg
-        )
-
-        expected_direction = _sign(
-            xg_difference
-        )
-
-        expected_margin = abs(
-            xg_difference
-        )
-
-        candidate_difference = (
-            home_goals - away_goals
-        )
-
-        candidate_direction = _sign(
-            candidate_difference
-        )
-
-        # A score on the wrong side of the expected
-        # advantage receives a strong but continuous penalty.
-        direction_penalty = 1.0
-
-        if (
-            expected_direction != 0
-            and candidate_direction != 0
-            and candidate_direction
-            != expected_direction
+        for source_name, target_name in (
+            aliases.items()
         ):
-            direction_penalty = 0.35
 
-        if (
-            expected_direction != 0
-            and candidate_direction == 0
-        ):
-            direction_penalty = 0.70
+            if target_name in result:
+                continue
 
-        candidate_margin = abs(
-            candidate_difference
-        )
-
-        margin_distance = abs(
-            candidate_margin
-            - expected_margin
-        )
-
-        fit = math.exp(
-            -margin_distance
-            / MARGIN_SIGMA
-        )
-
-        return _clamp(
-            fit * direction_penalty
-        )
-
-    # ========================================================
-    # BTTS FIT
-    # ========================================================
-
-    def _calculate_btts_fit(
-        self,
-        home_goals: int,
-        away_goals: int,
-        btts_probability: Optional[float],
-    ) -> float:
-        """
-        Candidate compatibility with BTTS probability.
-        """
-
-        if btts_probability is None:
-            return 0.5
-
-        btts_probability = _clamp(
-            btts_probability
-        )
-
-        candidate_btts = (
-            home_goals > 0
-            and away_goals > 0
-        )
-
-        if candidate_btts:
-            return max(
-                btts_probability,
-                EPSILON,
+            value = self._get_value(
+                probability_result,
+                source_name,
             )
 
-        return max(
-            1.0 - btts_probability,
-            EPSILON,
-        )
-
-    # ========================================================
-    # TOTAL FIT
-    # ========================================================
-
-    def _calculate_total_fit(
-        self,
-        home_goals: int,
-        away_goals: int,
-        over_25_probability: Optional[float],
-        under_25_probability: Optional[float],
-    ) -> float:
-        """
-        Candidate compatibility with O/U 2.5.
-        """
-
-        if (
-            over_25_probability is None
-            and under_25_probability is None
-        ):
-            return 0.5
-
-        total = (
-            home_goals
-            + away_goals
-        )
-
-        if total >= 3:
-            if over_25_probability is None:
-                return 0.5
-
-            return max(
-                _clamp(
-                    over_25_probability
-                ),
-                EPSILON,
+            value = self._safe_float(
+                value
             )
 
-        if under_25_probability is None:
-            return 0.5
+            if value is not None:
+                result[target_name] = value
 
-        return max(
-            _clamp(
-                under_25_probability
-            ),
-            EPSILON,
-        )
+        return result
 
     # ========================================================
     # UNAVAILABLE RESULT
@@ -1464,46 +973,244 @@ class ScorePredictor:
 
     def _unavailable_prediction(
         self,
+        *,
+        home_xg: Optional[float],
+        away_xg: Optional[float],
         reason: str,
     ) -> ScorePrediction:
         """
-        Return a transparent no-prediction result.
+        Return safe empty result when prediction
+        cannot be calculated.
 
-        No invented score is produced.
+        No artificial score is created.
         """
 
+        diagnostics = {
+            "version": VERSION,
+            "formula_status": FORMULA_STATUS,
+
+            "home_xg": home_xg,
+            "away_xg": away_xg,
+
+            "candidate_count": 0,
+
+            "likely_score": None,
+            "likely_probability": None,
+
+            "predicted_score": None,
+            "predicted_probability": None,
+
+            "selection_method": (
+                "PURE_SCORE_PROBABILITY"
+            ),
+
+            "distribution_source": (
+                "ProbabilityModel"
+            ),
+
+            "error": reason,
+
+            "secondary_signals_used": False,
+
+            "form_win_used": False,
+            "defence_used": False,
+
+            "control_used": False,
+            "anomaly_used": False,
+            "special_used": False,
+
+            "outcome_fit_used": False,
+            "margin_fit_used": False,
+            "btts_fit_used": False,
+            "total_fit_used": False,
+            "scenario_fit_used": False,
+
+            "score_utility_used": False,
+        }
+
         return ScorePrediction(
+            version=VERSION,
+
             likely_score=None,
-            likely_score_string=None,
             predicted_score=None,
-            predicted_score_string=None,
+
             second_score=None,
-            second_score_string=None,
             third_score=None,
-            third_score_string=None,
+
             primary_score_value=None,
             second_score_value=None,
             third_score_value=None,
+
             probability_score=None,
+
+            top_scores=[],
+
+            home_xg=home_xg,
+            away_xg=away_xg,
+
             outcome_fit_score=None,
             margin_fit_score=None,
             btts_fit_score=None,
             total_fit_score=None,
             scenario_fit_score=None,
+
             state_advantage=None,
-            top_scores=[],
-            formula_status=FORMULA_STATUS,
-            diagnostics={
-                "version": self.VERSION,
-                "formula_status": FORMULA_STATUS,
-                "available": False,
-                "reason": reason,
-            },
+
+            probability_summary={},
+
+            diagnostics=diagnostics,
+        )
+
+    # ========================================================
+    # SAFE FLOAT
+    # ========================================================
+
+    @staticmethod
+    def _safe_float(
+        value: Any,
+    ) -> Optional[float]:
+        """
+        Convert value to finite float.
+
+        None stays None.
+        Invalid values stay None.
+        """
+
+        if value is None:
+            return None
+
+        if isinstance(
+            value,
+            bool,
+        ):
+            return None
+
+        try:
+            result = float(value)
+        except (
+            TypeError,
+            ValueError,
+        ):
+            return None
+
+        if not math.isfinite(result):
+            return None
+
+        return result
+
+    # ========================================================
+    # GET VALUE
+    # ========================================================
+
+    @staticmethod
+    def _get_value(
+        source: Any,
+        field: str,
+        default: Any = None,
+    ) -> Any:
+        """
+        Read field from dict or object.
+        """
+
+        if source is None:
+            return default
+
+        if isinstance(
+            source,
+            dict,
+        ):
+            return source.get(
+                field,
+                default,
+            )
+
+        return getattr(
+            source,
+            field,
+            default,
+        )
+
+    # ========================================================
+    # CLAMP
+    # ========================================================
+
+    @staticmethod
+    def _clamp(
+        value: Optional[float],
+        minimum: float = 0.0,
+        maximum: float = 1.0,
+    ) -> Optional[float]:
+        """
+        Generic numeric clamp.
+
+        Kept as a technical helper for compatibility.
+        """
+
+        if value is None:
+            return None
+
+        return max(
+            minimum,
+            min(
+                maximum,
+                value,
+            ),
+        )
+
+    # ========================================================
+    # LOG SAFE
+    # ========================================================
+
+    @staticmethod
+    def _log_safe(
+        value: Optional[float],
+        floor: float = 1e-12,
+    ) -> Optional[float]:
+        """
+        Safe natural logarithm.
+
+        Kept as a technical compatibility helper.
+
+        v2.2 does NOT use logarithmic ScoreUtility.
+        """
+
+        if value is None:
+            return None
+
+        value = max(
+            value,
+            floor,
+        )
+
+        return math.log(value)
+
+    # ========================================================
+    # COMPATIBILITY PUBLIC METHOD
+    # ========================================================
+
+    def predict_score(
+        self,
+        score_probabilities: Any,
+        home_xg: Optional[float],
+        away_xg: Optional[float],
+        probability_result: Any = None,
+    ) -> ScorePrediction:
+        """
+        Compatibility wrapper.
+
+        Delegates directly to predict().
+        """
+
+        return self.predict(
+            score_probabilities=score_probabilities,
+            home_xg=home_xg,
+            away_xg=away_xg,
+            probability_result=probability_result,
         )
 
 
 # ============================================================
-# CONVENIENCE FUNCTION
+# MODULE-LEVEL CONVENIENCE FUNCTION
 # ============================================================
 
 def predict_score(
@@ -1511,17 +1218,9 @@ def predict_score(
     home_xg: Optional[float],
     away_xg: Optional[float],
     probability_result: Any = None,
-    home_form_win: Any = None,
-    away_form_win: Any = None,
-    home_defence: Any = None,
-    away_defence: Any = None,
-    control_advantage: Optional[str] = None,
-    control_strength: Optional[float] = None,
-    anomaly_signal: Optional[float] = None,
-    special_composite: Optional[float] = None,
 ) -> ScorePrediction:
     """
-    Convenience wrapper for ScorePredictor.predict().
+    Module-level convenience API.
     """
 
     predictor = ScorePredictor()
@@ -1531,24 +1230,17 @@ def predict_score(
         home_xg=home_xg,
         away_xg=away_xg,
         probability_result=probability_result,
-        home_form_win=home_form_win,
-        away_form_win=away_form_win,
-        home_defence=home_defence,
-        away_defence=away_defence,
-        control_advantage=control_advantage,
-        control_strength=control_strength,
-        anomaly_signal=anomaly_signal,
-        special_composite=special_composite,
     )
 
 
 # ============================================================
-# EXPORTS
+# PUBLIC EXPORTS
 # ============================================================
 
 __all__ = [
     "VERSION",
     "FORMULA_STATUS",
+    "TOP_SCORES_COUNT",
     "ScorePrediction",
     "ScorePredictor",
     "predict_score",
