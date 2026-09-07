@@ -1,5 +1,5 @@
 """
-FAJ Platform — Goal Model v1.1
+FAJ Platform — Goal Model v1.2
 
 Purpose
 -------
@@ -18,7 +18,7 @@ home_xg / away_xg
     ↓
 Poisson / Score Distribution
 
-GoalModel v1.1 does NOT:
+GoalModel v1.2 does NOT:
 - calculate Poisson probabilities;
 - calculate exact scores;
 - calculate 1X2 probabilities;
@@ -34,6 +34,11 @@ GoalModel v1.1 does NOT:
 - use special effects as xG multipliers;
 - apply a hard-coded home advantage multiplier;
 - invent values when xG/xGA is missing.
+
+What's new in v1.2:
+- Uses xg_recent / xga_recent from FormModel (temporally weighted)
+- Falls back to xg_avg / xga_avg if recent is unavailable
+- Full audit trail showing which source was used
 
 What's new in v1.1:
 - RESEARCH COUPLING from FormWin + Defence
@@ -87,7 +92,7 @@ from dataclasses import dataclass, asdict
 from typing import Any, Optional
 
 
-GOAL_MODEL_VERSION = "1.1"
+GOAL_MODEL_VERSION = "1.2"
 GOAL_MODEL_COUPLING_VERSION = "1.1"
 FORMULA_STATUS = "RESEARCH_FORMULA"
 
@@ -176,7 +181,7 @@ class GoalModelResult:
 
 class GoalModel:
     """
-    GoalModel v1.1.
+    GoalModel v1.2.
 
     Input:
         home_form: FormModelResult-like object
@@ -186,11 +191,11 @@ class GoalModel:
         home_defence: DefenceResult-like object (optional)
         away_defence: DefenceResult-like object (optional)
 
-    Required values:
-        home_form.xg_avg
-        home_form.xga_avg
-        away_form.xg_avg
-        away_form.xga_avg
+    Required values (with fallback):
+        home_form.xg_recent (preferred) or home_form.xg_avg
+        home_form.xga_recent (preferred) or home_form.xga_avg
+        away_form.xg_recent (preferred) or away_form.xg_avg
+        away_form.xga_recent (preferred) or away_form.xga_avg
 
     The model accepts either:
         - dataclass/object attributes
@@ -230,10 +235,12 @@ class GoalModel:
         Parameters
         ----------
         home_form:
-            FormModelResult or dictionary containing xg_avg and xga_avg.
+            FormModelResult or dictionary containing xg_recent/xg_avg
+            and xga_recent/xga_avg.
 
         away_form:
-            FormModelResult or dictionary containing xg_avg and xga_avg.
+            FormModelResult or dictionary containing xg_recent/xg_avg
+            and xga_recent/xga_avg.
 
         home_team:
             Optional team name.
@@ -267,46 +274,83 @@ class GoalModel:
             Transparent result containing xG values and diagnostics.
         """
 
+        # ============================================================
+        # XG LEVEL — RECENT with fallback to AVG
+        # ============================================================
+        #
+        # Primary: temporally weighted recent state (xg_recent, xga_recent)
+        # Fallback: six-match arithmetic baseline (xg_avg, xga_avg)
+        #
+        # None values remain None. No invented numbers.
+        # ============================================================
+
+        home_xg_recent = self._get_value(home_form, "xg_recent")
+        home_xga_recent = self._get_value(home_form, "xga_recent")
+        away_xg_recent = self._get_value(away_form, "xg_recent")
+        away_xga_recent = self._get_value(away_form, "xga_recent")
+
         home_xg_avg = self._get_value(home_form, "xg_avg")
         home_xga_avg = self._get_value(home_form, "xga_avg")
-
         away_xg_avg = self._get_value(away_form, "xg_avg")
         away_xga_avg = self._get_value(away_form, "xga_avg")
+
+        # Recent temporal state has priority.
+        # Arithmetic six-match mean is the fallback.
+        home_xg_level = (
+            home_xg_recent
+            if home_xg_recent is not None
+            else home_xg_avg
+        )
+        home_xga_level = (
+            home_xga_recent
+            if home_xga_recent is not None
+            else home_xga_avg
+        )
+        away_xg_level = (
+            away_xg_recent
+            if away_xg_recent is not None
+            else away_xg_avg
+        )
+        away_xga_level = (
+            away_xga_recent
+            if away_xga_recent is not None
+            else away_xga_avg
+        )
 
         # --------------------------------------------------------------
         # HOME
         #
         # Home attack:
-        #     home team's xG
+        #     home team's xG (recent preferred)
         #
         # Away defence:
-        #     away team's xGA
+        #     away team's xGA (recent preferred)
         #
         # Home xG:
         #     (home_xG + away_xGA) / 2
         # --------------------------------------------------------------
 
         home_xg_base = self._calculate_expected_goals(
-            attack_xg=home_xg_avg,
-            opponent_xga=away_xga_avg,
+            attack_xg=home_xg_level,
+            opponent_xga=away_xga_level,
         )
 
         # --------------------------------------------------------------
         # AWAY
         #
         # Away attack:
-        #     away team's xG
+        #     away team's xG (recent preferred)
         #
         # Home defence:
-        #     home team's xGA
+        #     home team's xGA (recent preferred)
         #
         # Away xG:
         #     (away_xG + home_xGA) / 2
         # --------------------------------------------------------------
 
         away_xg_base = self._calculate_expected_goals(
-            attack_xg=away_xg_avg,
-            opponent_xga=home_xga_avg,
+            attack_xg=away_xg_level,
+            opponent_xga=home_xga_level,
         )
 
         # --------------------------------------------------------------
@@ -357,10 +401,18 @@ class GoalModel:
         )
 
         diagnostics = self._build_diagnostics(
+            home_xg_recent=home_xg_recent,
+            away_xg_recent=away_xg_recent,
+            home_xga_recent=home_xga_recent,
+            away_xga_recent=away_xga_recent,
             home_xg_avg=home_xg_avg,
             away_xg_avg=away_xg_avg,
             home_xga_avg=home_xga_avg,
             away_xga_avg=away_xga_avg,
+            home_xg_level=home_xg_level,
+            away_xg_level=away_xg_level,
+            home_xga_level=home_xga_level,
+            away_xga_level=away_xga_level,
             home_xg_base=home_xg_base,
             away_xg_base=away_xg_base,
             home_xg=home_xg,
@@ -392,15 +444,15 @@ class GoalModel:
             away_base_xg=away_xg_base,
 
             # Home attacking component
-            home_attack_component=home_xg_avg,
+            home_attack_component=home_xg_level,
 
             # Away attacking component
-            away_attack_component=away_xg_avg,
+            away_attack_component=away_xg_level,
 
             # Component of opponent's defence
             # used against each attack
-            home_defense_component=away_xga_avg,
-            away_defense_component=home_xga_avg,
+            home_defense_component=away_xga_level,
+            away_defense_component=home_xga_level,
 
             # No venue multiplier in v1.0
             home_venue_component=None,
@@ -602,10 +654,18 @@ class GoalModel:
     def _build_diagnostics(
         self,
         *,
+        home_xg_recent: Optional[float],
+        away_xg_recent: Optional[float],
+        home_xga_recent: Optional[float],
+        away_xga_recent: Optional[float],
         home_xg_avg: Optional[float],
         away_xg_avg: Optional[float],
         home_xga_avg: Optional[float],
         away_xga_avg: Optional[float],
+        home_xg_level: Optional[float],
+        away_xg_level: Optional[float],
+        home_xga_level: Optional[float],
+        away_xga_level: Optional[float],
         home_xg_base: Optional[float],
         away_xg_base: Optional[float],
         home_xg: Optional[float],
@@ -622,13 +682,13 @@ class GoalModel:
         """
 
         home_components_available = (
-            home_xg_avg is not None
-            and away_xga_avg is not None
+            home_xg_level is not None
+            and away_xga_level is not None
         )
 
         away_components_available = (
-            away_xg_avg is not None
-            and home_xga_avg is not None
+            away_xg_level is not None
+            and home_xga_level is not None
         )
 
         return {
@@ -636,8 +696,8 @@ class GoalModel:
             "version": self.VERSION,
 
             "formula": {
-                "home": "(home_xg_avg + away_xga_avg) / 2",
-                "away": "(away_xg_avg + home_xga_avg) / 2",
+                "home": "(home_xg_level + away_xga_level) / 2",
+                "away": "(away_xg_level + home_xga_level) / 2",
             },
 
             "formula_status": self.FORMULA_STATUS,
@@ -647,6 +707,44 @@ class GoalModel:
 
             "home_xg_result": home_xg,
             "away_xg_result": away_xg,
+
+            # ==========================================================
+            # XG LEVEL AUDIT
+            # ==========================================================
+            "xg_level": {
+                "home_attack": home_xg_level,
+                "away_attack": away_xg_level,
+                "home_defence": home_xga_level,
+                "away_defence": away_xga_level,
+                "home_attack_source": (
+                    "xg_recent"
+                    if home_xg_recent is not None
+                    else "xg_avg"
+                ),
+                "away_attack_source": (
+                    "xg_recent"
+                    if away_xg_recent is not None
+                    else "xg_avg"
+                ),
+                "home_defence_source": (
+                    "xga_recent"
+                    if home_xga_recent is not None
+                    else "xga_avg"
+                ),
+                "away_defence_source": (
+                    "xga_recent"
+                    if away_xga_recent is not None
+                    else "xga_avg"
+                ),
+                "home_xg_recent": home_xg_recent,
+                "away_xg_recent": away_xg_recent,
+                "home_xga_recent": home_xga_recent,
+                "away_xga_recent": away_xga_recent,
+                "home_xg_avg": home_xg_avg,
+                "away_xg_avg": away_xg_avg,
+                "home_xga_avg": home_xga_avg,
+                "away_xga_avg": away_xga_avg,
+            },
 
             # ==========================================================
             # RESEARCH COUPLING
