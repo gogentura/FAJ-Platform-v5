@@ -1,220 +1,277 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 """
-FAJ Platform — Goal Model v1.2
+============================================================
+FAJ Platform v12.1
+GOAL MODEL v2.0
+============================================================
 
-Purpose
--------
-GoalModel converts two FormModelResult objects into expected goals (xG)
-for the upcoming match.
+Назначение
+----------
+Преобразует текущее состояние команды из FormModel
+в ожидаемые голы (lambda) конкретного матча.
 
-Architectural role
-------------------
-FormContext
-    ↓
-FormModel + FormWin + Defence
-    ↓
-GoalModel
-    ↓
-home_xg / away_xg
-    ↓
-Poisson / Score Distribution
+Архитектура:
 
-GoalModel v1.2 does NOT:
-- calculate Poisson probabilities;
-- calculate exact scores;
-- calculate 1X2 probabilities;
-- calculate BTTS;
-- calculate totals;
-- use bookmaker odds;
-- use club rating;
-- use goals scored/conceded as predictive multipliers;
-- use finishing_delta as a multiplier;
-- use finishing_ratio as a multiplier;
-- use trend as a multiplier;
-- use consistency as a multiplier;
-- use special effects as xG multipliers;
-- apply a hard-coded home advantage multiplier;
-- invent values when xG/xGA is missing.
+    FormModel
+        │
+        ├── xG_recent
+        ├── xG_avg
+        ├── goals_for_avg
+        ├── xGA_recent
+        ├── xGA_avg
+        ├── goals_against_avg
+        ├── xG_trend
+        └── xGA_trend
+        │
+        ▼
+    GoalModel v2
+        │
+        ├── Attack Level
+        ├── Defence Level
+        ├── Trend Adjustment
+        └── Match-up
+        │
+        ▼
+    lambda_home / lambda_away
 
-What's new in v1.2:
-- Uses xg_recent / xga_recent from FormModel (temporally weighted)
-- Falls back to xg_avg / xga_avg if recent is unavailable
-- Full audit trail showing which source was used
+ВАЖНЫЕ ГРАНИЦЫ
+--------------
+GoalModel НЕ использует:
 
-What's new in v1.1:
-- RESEARCH COUPLING from FormWin + Defence
-- Small structural priors for first backtest
-- Full audit trail in diagnostics
+- Club Rating
+- FormWin
+- Defence.process_signal
+- finishing_delta
+- finishing_ratio
+- result_strength
+- consistency
+- effect signals
+- bookmaker odds
+- venue multiplier
 
-Formula v1.0 (base)
--------------------
-Home xG =
-    (Home team's historical xG average
-     + Away team's historical xGA average) / 2
+Club Rating остаётся независимым долгосрочным слоем.
 
-Away xG =
-    (Away team's historical xG average
-     + Home team's historical xGA average) / 2
+FormModel предоставляет текущее состояние.
+GoalModel преобразует это состояние в ожидаемые голы.
 
-Research Coupling v1.1
+Математическая формула
 ----------------------
-xG_final =
-    xG_base *
-    exp(
-        ATTACK_COUPLING * attack_signal
-        -
-        DEFENCE_COUPLING * opponent_defence_signal
+
+Attack:
+
+A =
+    weighted(
+        xG_recent,
+        xG_avg,
+        goals_for_avg
     )
 
-Where:
-    attack_signal = FormWin.attack_signal
-    opponent_defence_signal = Defence.process_signal
+при полном наборе:
 
-    ATTACK_COUPLING = 0.10
-    DEFENCE_COUPLING = 0.10
+A =
+    0.60 * xG_recent
+  + 0.30 * xG_avg
+  + 0.10 * goals_for_avg
 
-    signal = 0 → multiplier = 1 (no change)
-    signal = +1 → multiplier = 1.105
-    signal = -1 → multiplier = 0.905
 
-Status
-------
-RESEARCH_FORMULA with RESEARCH_COUPLING
+Defence:
 
-The arithmetic mean is a research baseline.
-Coupling coefficients are RESEARCH PARAMETERS,
-not calibrated coefficients.
+D =
+    weighted(
+        xGA_recent,
+        xGA_avg,
+        goals_against_avg
+    )
+
+при полном наборе:
+
+D =
+    0.60 * xGA_recent
+  + 0.30 * xGA_avg
+  + 0.10 * goals_against_avg
+
+
+Trend:
+
+T_attack =
+    clip(
+        xG_trend / max(xG_avg, 0.5),
+        -1,
+        +1
+    )
+
+T_defence =
+    clip(
+        xGA_trend / max(xGA_avg, 0.5),
+        -1,
+        +1
+    )
+
+
+Current state:
+
+A* = A * (1 + 0.20 * T_attack)
+
+D* = D * (1 + 0.20 * T_defence)
+
+
+Match-up:
+
+lambda_home =
+    (HomeAttack* + AwayDefence*) / 2
+
+lambda_away =
+    (AwayAttack* + HomeDefence*) / 2
+
+
+Final safety clamp:
+
+0.15 <= lambda <= 4.50
+
+None никогда не превращается в 0.
+
+Если часть данных отсутствует, веса
+перенормируются по доступным значениям.
+
+============================================================
 """
 
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass, asdict
-from typing import Any, Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional
 
 
-GOAL_MODEL_VERSION = "1.2"
-GOAL_MODEL_COUPLING_VERSION = "1.1"
+# ============================================================
+# VERSION / STATUS
+# ============================================================
+
+GOAL_MODEL_VERSION = "2.0"
 FORMULA_STATUS = "RESEARCH_FORMULA"
 
 
 # ============================================================
-# RESEARCH COUPLING — FORM WIN + DEFENCE
+# MATHEMATICAL CONTRACT
 # ============================================================
-#
-# Это НЕ обученные коэффициенты.
-# Это стартовые structural priors для первого backtest.
-#
-# FormWin.attack_signal:
-#   положительный → атакующее состояние лучше собственной истории
-#
-# Defence.process_signal:
-#   положительный → оборона лучше собственной истории
-#
-# Используется экспоненциальная связка:
-#
-# xG_final =
-#     xG_base *
-#     exp(
-#         ATTACK_COUPLING * attack_signal
-#         -
-#         DEFENCE_COUPLING * opponent_defence_signal
-#     )
-#
-# При signal = 0:
-#     множитель = 1
-#
-# Следовательно старая формула остаётся базовой.
-ATTACK_COUPLING = 0.10
-DEFENCE_COUPLING = 0.10
+
+ATTACK_RECENT_WEIGHT = 0.60
+ATTACK_AVG_WEIGHT = 0.30
+ATTACK_GOALS_WEIGHT = 0.10
+
+DEFENCE_RECENT_WEIGHT = 0.60
+DEFENCE_AVG_WEIGHT = 0.30
+DEFENCE_GOALS_WEIGHT = 0.10
+
+TREND_WEIGHT = 0.20
+
+MIN_XG_BASELINE = 0.5
+
+MIN_LAMBDA = 0.15
+MAX_LAMBDA = 4.50
 
 
-@dataclass(frozen=True)
+# ============================================================
+# RESULT
+# ============================================================
+
+@dataclass
 class GoalModelResult:
     """
-    Immutable result returned by GoalModel.
+    Результат GoalModel v2.
 
-    The result deliberately exposes the components used to calculate xG.
-    This makes the calculation auditable and prevents hidden mathematics
-    inside the Brain layer.
+    Поля сохранены максимально совместимыми
+    с предыдущим контрактом.
+
+    Семантика некоторых полей уточнена:
+
+    home_attack_component
+        Home Attack Level
+
+    home_defense_component
+        Away Defence Level,
+        то есть оборона соперника,
+        использованная для расчёта home lambda.
+
+    away_attack_component
+        Away Attack Level
+
+    away_defense_component
+        Home Defence Level
     """
 
     version: str
 
-    home_team: str
-    away_team: str
+    home_team: Optional[str]
+    away_team: Optional[str]
     venue: str
 
-    # Final expected goals
     home_xg: Optional[float]
     away_xg: Optional[float]
 
-    # Base xG values before any future extensions
     home_base_xg: Optional[float]
     away_base_xg: Optional[float]
 
-    # Components used by the formula
     home_attack_component: Optional[float]
     away_attack_component: Optional[float]
 
     home_defense_component: Optional[float]
     away_defense_component: Optional[float]
 
-    # Reserved for future calibrated venue model
     home_venue_component: Optional[float]
     away_venue_component: Optional[float]
 
-    # Reserved until statistically defined
     home_xg_confidence: Optional[float]
     away_xg_confidence: Optional[float]
 
-    # Reserved until league/team baseline exists
     attack_strength: Optional[float]
     defense_strength: Optional[float]
 
     formula_status: str
-    diagnostics: dict[str, Any]
 
-    def to_dict(self) -> dict[str, Any]:
-        """Return a serializable dictionary representation."""
-        return asdict(self)
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
 
+
+# ============================================================
+# GOAL MODEL
+# ============================================================
 
 class GoalModel:
     """
-    GoalModel v1.2.
+    FAJ GoalModel v2.0
 
-    Input:
-        home_form: FormModelResult-like object
-        away_form: FormModelResult-like object
-        home_form_win: FormWinResult-like object (optional)
-        away_form_win: FormWinResult-like object (optional)
-        home_defence: DefenceResult-like object (optional)
-        away_defence: DefenceResult-like object (optional)
+    Stateless model.
 
-    Required values (with fallback):
-        home_form.xg_recent (preferred) or home_form.xg_avg
-        home_form.xga_recent (preferred) or home_form.xga_avg
-        away_form.xg_recent (preferred) or away_form.xg_avg
-        away_form.xga_recent (preferred) or away_form.xga_avg
+    Ответственность:
 
-    The model accepts either:
-        - dataclass/object attributes
-        - dictionaries
+        FormModel state
+            ↓
+        Attack / Defence state
+            ↓
+        Trend adjustment
+            ↓
+        Match-up
+            ↓
+        lambda_home / lambda_away
 
-    This makes the model compatible with the current FAJ architecture
-    while keeping the mathematical contract explicit.
+    GoalModel не занимается:
+
+    - вероятностями 1X2
+    - BTTS
+    - totals
+    - exact score
+    - Club Rating
+    - обучением
+    - корректировкой по букмекерским коэффициентам
     """
 
-    VERSION = GOAL_MODEL_VERSION
-    FORMULA_STATUS = FORMULA_STATUS
-
     def __init__(self) -> None:
-        """Initialize a stateless GoalModel."""
         pass
 
-    # ------------------------------------------------------------------
+    # ========================================================
     # PUBLIC API
-    # ------------------------------------------------------------------
+    # ========================================================
 
     def analyze(
         self,
@@ -224,383 +281,505 @@ class GoalModel:
         home_team: Optional[str] = None,
         away_team: Optional[str] = None,
         venue: str = "HOME",
-        home_form_win: Any = None,
-        away_form_win: Any = None,
-        home_defence: Any = None,
-        away_defence: Any = None,
     ) -> GoalModelResult:
         """
-        Calculate expected goals for the upcoming match.
+        Рассчитать ожидаемые голы для конкретного матча.
 
         Parameters
         ----------
         home_form:
-            FormModelResult or dictionary containing xg_recent/xg_avg
-            and xga_recent/xga_avg.
+            FormModelResult или совместимый dict/object
+            для домашней команды.
 
         away_form:
-            FormModelResult or dictionary containing xg_recent/xg_avg
-            and xga_recent/xga_avg.
+            FormModelResult или совместимый dict/object
+            для гостевой команды.
 
         home_team:
-            Optional team name.
+            Название домашней команды.
 
         away_team:
-            Optional team name.
+            Название гостевой команды.
 
         venue:
-            Match venue/context. v1.0 records it but does not use it
-            as a numerical multiplier.
-
-        home_form_win:
-            FormWinResult from FormWin.analyze().
-            Optional. Used for research coupling.
-
-        away_form_win:
-            FormWinResult from FormWin.analyze().
-            Optional. Used for research coupling.
-
-        home_defence:
-            DefenceResult from Defence.calculate().
-            Optional. Used for research coupling.
-
-        away_defence:
-            DefenceResult from Defence.calculate().
-            Optional. Used for research coupling.
-
-        Returns
-        -------
-        GoalModelResult
-            Transparent result containing xG values and diagnostics.
+            Контекст площадки. Сохраняется в результате,
+            но НЕ используется как multiplier λ.
         """
 
-        # ============================================================
-        # XG LEVEL — RECENT with fallback to AVG
-        # ============================================================
-        #
-        # Primary: temporally weighted recent state (xg_recent, xga_recent)
-        # Fallback: six-match arithmetic baseline (xg_avg, xga_avg)
-        #
-        # None values remain None. No invented numbers.
-        # ============================================================
+        # ----------------------------------------------------
+        # 1. Получаем FormModel state
+        # ----------------------------------------------------
 
-        home_xg_recent = self._get_value(home_form, "xg_recent")
-        home_xga_recent = self._get_value(home_form, "xga_recent")
-        away_xg_recent = self._get_value(away_form, "xg_recent")
-        away_xga_recent = self._get_value(away_form, "xga_recent")
-
-        home_xg_avg = self._get_value(home_form, "xg_avg")
-        home_xga_avg = self._get_value(home_form, "xga_avg")
-        away_xg_avg = self._get_value(away_form, "xg_avg")
-        away_xga_avg = self._get_value(away_form, "xga_avg")
-
-        # Recent temporal state has priority.
-        # Arithmetic six-match mean is the fallback.
-        home_xg_level = (
-            home_xg_recent
-            if home_xg_recent is not None
-            else home_xg_avg
+        home_xg_recent = self._safe_float(
+            self._get_value(home_form, "xg_recent")
         )
-        home_xga_level = (
-            home_xga_recent
-            if home_xga_recent is not None
-            else home_xga_avg
+        home_xg_avg = self._safe_float(
+            self._get_value(home_form, "xg_avg")
         )
-        away_xg_level = (
-            away_xg_recent
-            if away_xg_recent is not None
-            else away_xg_avg
-        )
-        away_xga_level = (
-            away_xga_recent
-            if away_xga_recent is not None
-            else away_xga_avg
+        home_goals_for_avg = self._safe_float(
+            self._get_value(home_form, "goals_for_avg")
         )
 
-        # --------------------------------------------------------------
-        # HOME
-        #
-        # Home attack:
-        #     home team's xG (recent preferred)
-        #
-        # Away defence:
-        #     away team's xGA (recent preferred)
-        #
-        # Home xG:
-        #     (home_xG + away_xGA) / 2
-        # --------------------------------------------------------------
-
-        home_xg_base = self._calculate_expected_goals(
-            attack_xg=home_xg_level,
-            opponent_xga=away_xga_level,
+        home_xga_recent = self._safe_float(
+            self._get_value(home_form, "xga_recent")
+        )
+        home_xga_avg = self._safe_float(
+            self._get_value(home_form, "xga_avg")
+        )
+        home_goals_against_avg = self._safe_float(
+            self._get_value(home_form, "goals_against_avg")
         )
 
-        # --------------------------------------------------------------
-        # AWAY
-        #
-        # Away attack:
-        #     away team's xG (recent preferred)
-        #
-        # Home defence:
-        #     home team's xGA (recent preferred)
-        #
-        # Away xG:
-        #     (away_xG + home_xGA) / 2
-        # --------------------------------------------------------------
-
-        away_xg_base = self._calculate_expected_goals(
-            attack_xg=away_xg_level,
-            opponent_xga=home_xga_level,
+        home_xg_trend = self._safe_float(
+            self._get_value(home_form, "xg_trend")
+        )
+        home_xga_trend = self._safe_float(
+            self._get_value(home_form, "xga_trend")
         )
 
-        # --------------------------------------------------------------
-        # RESEARCH COUPLING
-        # --------------------------------------------------------------
-        #
-        # FormWin отвечает за текущее атакующее состояние.
-        #
-        # Defence отвечает за текущее оборонительное состояние
-        # соперника.
-        #
-        # Эти органы НЕ заменяют базовый xG.
-        # Они только слегка корректируют его.
-        #
-        # При отсутствии сигналов:
-        #
-        #     final_xg = base_xg
-        #
-        # --------------------------------------------------------------
+        away_xg_recent = self._safe_float(
+            self._get_value(away_form, "xg_recent")
+        )
+        away_xg_avg = self._safe_float(
+            self._get_value(away_form, "xg_avg")
+        )
+        away_goals_for_avg = self._safe_float(
+            self._get_value(away_form, "goals_for_avg")
+        )
 
-        home_attack_signal = self._get_nested_signal(
-            home_form_win,
-            "attack_signal",
+        away_xga_recent = self._safe_float(
+            self._get_value(away_form, "xga_recent")
         )
-        away_attack_signal = self._get_nested_signal(
-            away_form_win,
-            "attack_signal",
+        away_xga_avg = self._safe_float(
+            self._get_value(away_form, "xga_avg")
         )
-        home_defence_signal = self._get_nested_signal(
+        away_goals_against_avg = self._safe_float(
+            self._get_value(away_form, "goals_against_avg")
+        )
+
+        away_xg_trend = self._safe_float(
+            self._get_value(away_form, "xg_trend")
+        )
+        away_xga_trend = self._safe_float(
+            self._get_value(away_form, "xga_trend")
+        )
+
+        # ----------------------------------------------------
+        # 2. Attack Levels
+        # ----------------------------------------------------
+
+        home_attack = self._calculate_attack_level(
+            home_xg_recent,
+            home_xg_avg,
+            home_goals_for_avg,
+        )
+
+        away_attack = self._calculate_attack_level(
+            away_xg_recent,
+            away_xg_avg,
+            away_goals_for_avg,
+        )
+
+        # ----------------------------------------------------
+        # 3. Defence Levels
+        # ----------------------------------------------------
+
+        home_defence = self._calculate_defence_level(
+            home_xga_recent,
+            home_xga_avg,
+            home_goals_against_avg,
+        )
+
+        away_defence = self._calculate_defence_level(
+            away_xga_recent,
+            away_xga_avg,
+            away_goals_against_avg,
+        )
+
+        # ----------------------------------------------------
+        # 4. Trend adjustments
+        # ----------------------------------------------------
+
+        home_attack_trend = self._calculate_trend_adjustment(
+            home_xg_trend,
+            home_xg_avg,
+        )
+
+        away_attack_trend = self._calculate_trend_adjustment(
+            away_xg_trend,
+            away_xg_avg,
+        )
+
+        home_defence_trend = self._calculate_trend_adjustment(
+            home_xga_trend,
+            home_xga_avg,
+        )
+
+        away_defence_trend = self._calculate_trend_adjustment(
+            away_xga_trend,
+            away_xga_avg,
+        )
+
+        # ----------------------------------------------------
+        # 5. Current Attack / Defence states
+        # ----------------------------------------------------
+
+        home_attack_current = self._apply_trend(
+            home_attack,
+            home_attack_trend,
+        )
+
+        away_attack_current = self._apply_trend(
+            away_attack,
+            away_attack_trend,
+        )
+
+        home_defence_current = self._apply_trend(
             home_defence,
-            "process_signal",
+            home_defence_trend,
         )
-        away_defence_signal = self._get_nested_signal(
+
+        away_defence_current = self._apply_trend(
             away_defence,
-            "process_signal",
+            away_defence_trend,
         )
 
-        home_xg = self._apply_research_coupling(
-            base_xg=home_xg_base,
-            attack_signal=home_attack_signal,
-            opponent_defence_signal=away_defence_signal,
+        # ----------------------------------------------------
+        # 6. Match-up
+        # ----------------------------------------------------
+
+        home_base_xg = self._calculate_expected_goals(
+            home_attack_current,
+            away_defence_current,
         )
 
-        away_xg = self._apply_research_coupling(
-            base_xg=away_xg_base,
-            attack_signal=away_attack_signal,
-            opponent_defence_signal=home_defence_signal,
+        away_base_xg = self._calculate_expected_goals(
+            away_attack_current,
+            home_defence_current,
         )
+
+        # ----------------------------------------------------
+        # 7. Final lambda safety clamp
+        # ----------------------------------------------------
+
+        home_xg = self._clip_lambda(home_base_xg)
+        away_xg = self._clip_lambda(away_base_xg)
+
+        # ----------------------------------------------------
+        # 8. Diagnostics
+        # ----------------------------------------------------
 
         diagnostics = self._build_diagnostics(
-            home_xg_recent=home_xg_recent,
-            away_xg_recent=away_xg_recent,
-            home_xga_recent=home_xga_recent,
-            away_xga_recent=away_xga_recent,
-            home_xg_avg=home_xg_avg,
-            away_xg_avg=away_xg_avg,
-            home_xga_avg=home_xga_avg,
-            away_xga_avg=away_xga_avg,
-            home_xg_level=home_xg_level,
-            away_xg_level=away_xg_level,
-            home_xga_level=home_xga_level,
-            away_xga_level=away_xga_level,
-            home_xg_base=home_xg_base,
-            away_xg_base=away_xg_base,
+            home_attack=home_attack,
+            away_attack=away_attack,
+            home_defence=home_defence,
+            away_defence=away_defence,
+            home_attack_current=home_attack_current,
+            away_attack_current=away_attack_current,
+            home_defence_current=home_defence_current,
+            away_defence_current=away_defence_current,
+            home_attack_trend=home_attack_trend,
+            away_attack_trend=away_attack_trend,
+            home_defence_trend=home_defence_trend,
+            away_defence_trend=away_defence_trend,
+            home_base_xg=home_base_xg,
+            away_base_xg=away_base_xg,
             home_xg=home_xg,
             away_xg=away_xg,
-            home_attack_signal=home_attack_signal,
-            away_attack_signal=away_attack_signal,
-            home_defence_signal=home_defence_signal,
-            away_defence_signal=away_defence_signal,
         )
 
+        # ----------------------------------------------------
+        # 9. Result
+        # ----------------------------------------------------
+
         return GoalModelResult(
-            version=self.VERSION,
-            home_team=home_team or self._get_value(
-                home_form,
-                "team_name",
-                default="HOME",
-            ),
-            away_team=away_team or self._get_value(
-                away_form,
-                "team_name",
-                default="AWAY",
-            ),
+            version=GOAL_MODEL_VERSION,
+            home_team=home_team,
+            away_team=away_team,
             venue=venue,
 
             home_xg=home_xg,
             away_xg=away_xg,
 
-            home_base_xg=home_xg_base,
-            away_base_xg=away_xg_base,
+            home_base_xg=home_base_xg,
+            away_base_xg=away_base_xg,
 
-            # Home attacking component
-            home_attack_component=home_xg_level,
+            # Здесь сохраняем старые поля ради совместимости,
+            # но меняем их семантику согласно v2.
 
-            # Away attacking component
-            away_attack_component=away_xg_level,
+            home_attack_component=home_attack_current,
+            away_attack_component=away_attack_current,
 
-            # Component of opponent's defence
-            # used against each attack
-            home_defense_component=away_xga_level,
-            away_defense_component=home_xga_level,
+            # home_defense_component = defence соперника
+            home_defense_component=away_defence_current,
 
-            # No venue multiplier in v1.0
+            # away_defense_component = defence хозяев
+            away_defense_component=home_defence_current,
+
+            # Venue не является multiplier.
+            # Поля сохраняются ради совместимости.
             home_venue_component=None,
             away_venue_component=None,
 
-            # Confidence is deliberately undefined in v1.0
-            home_xg_confidence=None,
-            away_xg_confidence=None,
+            home_xg_confidence=self._calculate_confidence(
+                home_xg,
+                home_attack,
+                away_defence,
+            ),
 
-            # Relative strength requires baseline
-            attack_strength=None,
-            defense_strength=None,
+            away_xg_confidence=self._calculate_confidence(
+                away_xg,
+                away_attack,
+                home_defence,
+            ),
 
-            formula_status=self.FORMULA_STATUS,
+            # Сохраняем поля совместимости.
+            # В v2 отдельный FormWin / Strength не рассчитывается.
+            attack_strength=home_attack,
+            defense_strength=home_defence,
+
+            formula_status=FORMULA_STATUS,
             diagnostics=diagnostics,
         )
 
-    # ------------------------------------------------------------------
-    # FORMULA
-    # ------------------------------------------------------------------
+    # ========================================================
+    # ATTACK
+    # ========================================================
+
+    @staticmethod
+    def _calculate_attack_level(
+        xg_recent: Optional[float],
+        xg_avg: Optional[float],
+        goals_for_avg: Optional[float],
+    ) -> Optional[float]:
+        """
+        Calculate current attacking level.
+
+        Full formula:
+
+            0.60 * xG_recent
+          + 0.30 * xG_avg
+          + 0.10 * GoalsFor_avg
+
+        Missing values are excluded and remaining
+        weights are normalized.
+
+        None != 0.
+        """
+
+        values = [
+            (xg_recent, ATTACK_RECENT_WEIGHT),
+            (xg_avg, ATTACK_AVG_WEIGHT),
+            (goals_for_avg, ATTACK_GOALS_WEIGHT),
+        ]
+
+        return GoalModel._weighted_available(values)
+
+    # ========================================================
+    # DEFENCE
+    # ========================================================
+
+    @staticmethod
+    def _calculate_defence_level(
+        xga_recent: Optional[float],
+        xga_avg: Optional[float],
+        goals_against_avg: Optional[float],
+    ) -> Optional[float]:
+        """
+        Calculate current defensive level.
+
+        Full formula:
+
+            0.60 * xGA_recent
+          + 0.30 * xGA_avg
+          + 0.10 * GoalsAgainst_avg
+
+        Lower value = stronger defence.
+
+        Missing values are excluded and remaining
+        weights are normalized.
+        """
+
+        values = [
+            (xga_recent, DEFENCE_RECENT_WEIGHT),
+            (xga_avg, DEFENCE_AVG_WEIGHT),
+            (goals_against_avg, DEFENCE_GOALS_WEIGHT),
+        ]
+
+        return GoalModel._weighted_available(values)
+
+    # ========================================================
+    # WEIGHTED AVAILABLE
+    # ========================================================
+
+    @staticmethod
+    def _weighted_available(
+        values: list[tuple[Optional[float], float]],
+    ) -> Optional[float]:
+        """
+        Weighted mean over available values only.
+
+        Example:
+
+            xG_recent = 1.50
+            xG_avg    = 1.30
+            GoalsFor  = None
+
+        result:
+
+            (1.50*0.60 + 1.30*0.30) / 0.90
+        """
+
+        weighted_sum = 0.0
+        weight_sum = 0.0
+
+        for value, weight in values:
+            if value is None:
+                continue
+
+            weighted_sum += value * weight
+            weight_sum += weight
+
+        if weight_sum <= 0.0:
+            return None
+
+        return weighted_sum / weight_sum
+
+    # ========================================================
+    # TREND
+    # ========================================================
+
+    @staticmethod
+    def _calculate_trend_adjustment(
+        trend: Optional[float],
+        baseline: Optional[float],
+    ) -> float:
+        """
+        Calculate bounded relative trend.
+
+        T =
+            clip(
+                trend / max(baseline, 0.5),
+                -1,
+                +1
+            )
+
+        Returns 0.0 when trend/baseline is unavailable.
+
+        Important:
+
+        For xGA:
+
+            T_D < 0 -> improving defence
+            T_D > 0 -> worsening defence
+        """
+
+        if trend is None:
+            return 0.0
+
+        baseline_value = (
+            baseline
+            if baseline is not None
+            else MIN_XG_BASELINE
+        )
+
+        baseline_value = max(
+            baseline_value,
+            MIN_XG_BASELINE,
+        )
+
+        value = trend / baseline_value
+
+        return max(-1.0, min(1.0, value))
+
+    # ========================================================
+    # APPLY TREND
+    # ========================================================
+
+    @staticmethod
+    def _apply_trend(
+        level: Optional[float],
+        trend_adjustment: float,
+    ) -> Optional[float]:
+        """
+        Apply bounded trend to Attack or Defence.
+
+            Level* =
+                Level * (1 + 0.20 * T)
+        """
+
+        if level is None:
+            return None
+
+        return level * (
+            1.0 + TREND_WEIGHT * trend_adjustment
+        )
+
+    # ========================================================
+    # EXPECTED GOALS
+    # ========================================================
 
     @staticmethod
     def _calculate_expected_goals(
-        attack_xg: Optional[float],
-        opponent_xga: Optional[float],
+        attack_level: Optional[float],
+        opponent_defence_level: Optional[float],
     ) -> Optional[float]:
         """
-        Calculate expected goals using the v1.0 research formula.
+        Match-up calculation.
 
-        Formula:
-            ExpectedGoals = (AttackXG + OpponentXGA) / 2
+            lambda =
+                (Attack + OpponentDefence) / 2
 
-        Missing-data rule:
-            If either component is None, return None.
+        Important:
 
-        Never:
-            None → 0
-            None → ignored from the formula
-            None → replacement estimate
+        opponent_defence_level is xGA-based.
+
+        Therefore a HIGH defensive value means
+        the opponent allows more chances and should
+        increase the attacking team's expected goals.
+
+        A LOW defensive value means a stronger defence
+        and therefore reduces expected goals.
         """
 
-        if attack_xg is None or opponent_xga is None:
+        if attack_level is None:
             return None
 
-        attack_xg = GoalModel._safe_float(attack_xg)
-        opponent_xga = GoalModel._safe_float(opponent_xga)
-
-        if attack_xg is None or opponent_xga is None:
+        if opponent_defence_level is None:
             return None
 
-        return (attack_xg + opponent_xga) / 2.0
+        return (
+            attack_level
+            + opponent_defence_level
+        ) / 2.0
 
-    # ------------------------------------------------------------------
-    # RESEARCH COUPLING
-    # ------------------------------------------------------------------
+    # ========================================================
+    # LAMBDA CLAMP
+    # ========================================================
 
     @staticmethod
-    def _get_nested_signal(
-        source: Any,
-        field: str,
+    def _clip_lambda(
+        value: Optional[float],
     ) -> Optional[float]:
         """
-        Получает signal из dataclass/object/dict.
-        Missing -> None.
-        """
-        if source is None:
-            return None
+        Safety clamp:
 
-        if isinstance(source, dict):
-            value = source.get(field)
-        else:
-            value = getattr(
-                source,
-                field,
-                None,
-            )
+            0.15 <= lambda <= 4.50
+
+        None remains None.
+        """
 
         if value is None:
             return None
 
-        try:
-            value = float(value)
-        except (TypeError, ValueError):
-            return None
-
-        if not -1.0 <= value <= 1.0:
-            return None
-
-        return value
-
-    @staticmethod
-    def _apply_research_coupling(
-        *,
-        base_xg: Optional[float],
-        attack_signal: Optional[float],
-        opponent_defence_signal: Optional[float],
-    ) -> Optional[float]:
-        """
-        Apply small structural coupling from FormWin + Defence.
-
-        Formula:
-            xG_final =
-                xG_base *
-                exp(
-                    0.10 * attack_signal
-                    -
-                    0.10 * opponent_defence_signal
-                )
-
-        Missing signals are treated as zero EFFECT,
-        not as zero FACT.
-
-        This distinction is important:
-            missing signal → no correction
-        while:
-            observed signal = 0 → neutral correction.
-        """
-        if base_xg is None:
-            return None
-
-        attack = (
-            attack_signal
-            if attack_signal is not None
-            else 0.0
-        )
-        defence = (
-            opponent_defence_signal
-            if opponent_defence_signal is not None
-            else 0.0
-        )
-
-        multiplier = math.exp(
-            ATTACK_COUPLING * attack
-            -
-            DEFENCE_COUPLING * defence
-        )
-
-        result = float(base_xg) * multiplier
-
-        # Safety boundary.
         return max(
-            0.0,
-            min(10.0, result),
+            MIN_LAMBDA,
+            min(MAX_LAMBDA, value),
         )
 
-    # ------------------------------------------------------------------
-    # DATA ACCESS
-    # ------------------------------------------------------------------
+    # ========================================================
+    # VALUE ACCESS
+    # ========================================================
 
     @staticmethod
     def _get_value(
@@ -609,11 +788,12 @@ class GoalModel:
         default: Any = None,
     ) -> Any:
         """
-        Read a value from either a dictionary or an object.
+        Read value from either:
 
-        Supported:
-            dict["field"]
-            object.field
+        - object attribute
+        - dict
+
+        Missing field -> default.
         """
 
         if source is None:
@@ -622,16 +802,30 @@ class GoalModel:
         if isinstance(source, dict):
             return source.get(field, default)
 
-        return getattr(source, field, default)
+        return getattr(
+            source,
+            field,
+            default,
+        )
+
+    # ========================================================
+    # SAFE FLOAT
+    # ========================================================
 
     @staticmethod
-    def _safe_float(value: Any) -> Optional[float]:
+    def _safe_float(
+        value: Any,
+    ) -> Optional[float]:
         """
-        Convert a numeric value to float.
+        Convert numeric value to float.
 
-        Invalid or missing values become None.
+        Rules:
 
-        No fallback numeric value is invented.
+        None -> None
+        bool -> None
+        invalid -> None
+
+        No implicit None -> 0.
         """
 
         if value is None:
@@ -645,158 +839,162 @@ class GoalModel:
         except (TypeError, ValueError):
             return None
 
+        if not (
+            result == result
+            and result not in (
+                float("inf"),
+                float("-inf"),
+            )
+        ):
+            return None
+
         return result
 
-    # ------------------------------------------------------------------
-    # DIAGNOSTICS
-    # ------------------------------------------------------------------
+    # ========================================================
+    # CONFIDENCE
+    # ========================================================
 
+    @staticmethod
+    def _calculate_confidence(
+        xg: Optional[float],
+        attack_level: Optional[float],
+        defence_level: Optional[float],
+    ) -> Optional[float]:
+        """
+        Lightweight data-availability confidence.
+
+        Это НЕ probability и НЕ prediction confidence
+        в смысле ProbabilityModel.
+
+        Используется только как диагностическое поле.
+
+        Чем больше компонентов доступно,
+        тем выше техническая полнота входных данных.
+        """
+
+        if xg is None:
+            return None
+
+        available = sum(
+            value is not None
+            for value in (
+                attack_level,
+                defence_level,
+            )
+        )
+
+        if available == 2:
+            return 1.0
+
+        if available == 1:
+            return 0.5
+
+        return 0.0
+
+    # ========================================================
+    # DIAGNOSTICS
+    # ========================================================
+
+    @staticmethod
     def _build_diagnostics(
-        self,
         *,
-        home_xg_recent: Optional[float],
-        away_xg_recent: Optional[float],
-        home_xga_recent: Optional[float],
-        away_xga_recent: Optional[float],
-        home_xg_avg: Optional[float],
-        away_xg_avg: Optional[float],
-        home_xga_avg: Optional[float],
-        away_xga_avg: Optional[float],
-        home_xg_level: Optional[float],
-        away_xg_level: Optional[float],
-        home_xga_level: Optional[float],
-        away_xga_level: Optional[float],
-        home_xg_base: Optional[float],
-        away_xg_base: Optional[float],
+        home_attack: Optional[float],
+        away_attack: Optional[float],
+        home_defence: Optional[float],
+        away_defence: Optional[float],
+
+        home_attack_current: Optional[float],
+        away_attack_current: Optional[float],
+        home_defence_current: Optional[float],
+        away_defence_current: Optional[float],
+
+        home_attack_trend: float,
+        away_attack_trend: float,
+        home_defence_trend: float,
+        away_defence_trend: float,
+
+        home_base_xg: Optional[float],
+        away_base_xg: Optional[float],
+
         home_xg: Optional[float],
         away_xg: Optional[float],
-        home_attack_signal: Optional[float],
-        away_attack_signal: Optional[float],
-        home_defence_signal: Optional[float],
-        away_defence_signal: Optional[float],
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """
-        Build an explicit audit trail for the calculation.
+        Full mathematical diagnostics.
 
-        Diagnostics contain no additional mathematical adjustment.
+        Здесь намеренно нет старого coupling блока.
         """
-
-        home_components_available = (
-            home_xg_level is not None
-            and away_xga_level is not None
-        )
-
-        away_components_available = (
-            away_xg_level is not None
-            and home_xga_level is not None
-        )
 
         return {
             "model": "GoalModel",
-            "version": self.VERSION,
+            "version": GOAL_MODEL_VERSION,
+            "formula_status": FORMULA_STATUS,
 
-            "formula": {
-                "home": "(home_xg_level + away_xga_level) / 2",
-                "away": "(away_xg_level + home_xga_level) / 2",
+            "attack": {
+                "home": home_attack,
+                "away": away_attack,
+                "home_current": home_attack_current,
+                "away_current": away_attack_current,
             },
 
-            "formula_status": self.FORMULA_STATUS,
+            "defence": {
+                "home": home_defence,
+                "away": away_defence,
+                "home_current": home_defence_current,
+                "away_current": away_defence_current,
 
-            "home_components_available": home_components_available,
-            "away_components_available": away_components_available,
+                # Important semantic clarification:
+                "home_defense_component":
+                    away_defence_current,
 
-            "home_xg_result": home_xg,
-            "away_xg_result": away_xg,
-
-            # ==========================================================
-            # XG LEVEL AUDIT
-            # ==========================================================
-            "xg_level": {
-                "home_attack": home_xg_level,
-                "away_attack": away_xg_level,
-                "home_defence": home_xga_level,
-                "away_defence": away_xga_level,
-                "home_attack_source": (
-                    "xg_recent"
-                    if home_xg_recent is not None
-                    else "xg_avg"
-                ),
-                "away_attack_source": (
-                    "xg_recent"
-                    if away_xg_recent is not None
-                    else "xg_avg"
-                ),
-                "home_defence_source": (
-                    "xga_recent"
-                    if home_xga_recent is not None
-                    else "xga_avg"
-                ),
-                "away_defence_source": (
-                    "xga_recent"
-                    if away_xga_recent is not None
-                    else "xga_avg"
-                ),
-                "home_xg_recent": home_xg_recent,
-                "away_xg_recent": away_xg_recent,
-                "home_xga_recent": home_xga_recent,
-                "away_xga_recent": away_xga_recent,
-                "home_xg_avg": home_xg_avg,
-                "away_xg_avg": away_xg_avg,
-                "home_xga_avg": home_xga_avg,
-                "away_xga_avg": away_xga_avg,
+                "away_defense_component":
+                    home_defence_current,
             },
 
-            # ==========================================================
-            # RESEARCH COUPLING
-            # ==========================================================
-            "coupling": {
-                "version": GOAL_MODEL_COUPLING_VERSION,
-                "attack_coupling": ATTACK_COUPLING,
-                "defence_coupling": DEFENCE_COUPLING,
-                "home_attack_signal": home_attack_signal,
-                "away_attack_signal": away_attack_signal,
-                "home_defence_signal": home_defence_signal,
-                "away_defence_signal": away_defence_signal,
-                "home_xg_before_coupling": home_xg_base,
-                "away_xg_before_coupling": away_xg_base,
-                "home_xg_after_coupling": home_xg,
-                "away_xg_after_coupling": away_xg,
-                "status": "RESEARCH_COUPLING",
-                "formula": "base_xg * exp(0.10*attack - 0.10*defence)",
+            "trend": {
+                "home_xg": home_attack_trend,
+                "away_xg": away_attack_trend,
+                "home_xga": home_defence_trend,
+                "away_xga": away_defence_trend,
             },
 
-            # Explicit architectural boundaries
-            "baseline_available": False,
-            "venue_used_as_multiplier": False,
+            "lambda": {
+                "home_base": home_base_xg,
+                "away_base": away_base_xg,
+                "home_final": home_xg,
+                "away_final": away_xg,
+                "min": MIN_LAMBDA,
+                "max": MAX_LAMBDA,
+            },
+
+            "weights": {
+                "attack_recent": ATTACK_RECENT_WEIGHT,
+                "attack_avg": ATTACK_AVG_WEIGHT,
+                "attack_goals": ATTACK_GOALS_WEIGHT,
+
+                "defence_recent": DEFENCE_RECENT_WEIGHT,
+                "defence_avg": DEFENCE_AVG_WEIGHT,
+                "defence_goals": DEFENCE_GOALS_WEIGHT,
+
+                "trend": TREND_WEIGHT,
+            },
+
+            "club_rating_used": False,
+            "form_win_used": False,
+            "defence_signal_used": False,
             "finishing_delta_used": False,
             "finishing_ratio_used": False,
-            "trend_used_as_multiplier": False,
-            "consistency_used_as_multiplier": False,
-            "result_strength_used_as_multiplier": False,
-            "effect_signals_used_as_multiplier": False,
-            "club_rating_used": False,
-            "goals_for_used_as_multiplier": False,
-            "goals_against_used_as_multiplier": False,
+            "result_strength_used": False,
+            "consistency_used": False,
+            "effect_signals_used": False,
             "bookmaker_odds_used": False,
-
-            # Missing-data policy
-            "missing_component_policy": "return_none",
-
-            # Future research
-            "alternative_formula_candidates": [
-                "arithmetic_mean",
-                "geometric_mean",
-                "harmonic_mean",
-            ],
-
-            # Future extensions
-            "future_calibration_required": True,
+            "venue_multiplier_used": False,
         }
 
 
-# ----------------------------------------------------------------------
-# CONVENIENCE FUNCTION
-# ----------------------------------------------------------------------
+# ============================================================
+# CONVENIENCE API
+# ============================================================
 
 def calculate_expected_goals(
     home_form: Any,
@@ -805,27 +1003,9 @@ def calculate_expected_goals(
     home_team: Optional[str] = None,
     away_team: Optional[str] = None,
     venue: str = "HOME",
-    home_form_win: Any = None,
-    away_form_win: Any = None,
-    home_defence: Any = None,
-    away_defence: Any = None,
 ) -> GoalModelResult:
     """
     Convenience wrapper around GoalModel.analyze().
-
-    Example
-    -------
-    result = calculate_expected_goals(
-        zenit_form,
-        cska_form,
-        home_team="Zenit",
-        away_team="CSKA",
-        home_form_win=zenit_win,
-        away_form_win=cska_win,
-    )
-
-    result.home_xg
-    result.away_xg
     """
 
     model = GoalModel()
@@ -836,19 +1016,16 @@ def calculate_expected_goals(
         home_team=home_team,
         away_team=away_team,
         venue=venue,
-        home_form_win=home_form_win,
-        away_form_win=away_form_win,
-        home_defence=home_defence,
-        away_defence=away_defence,
     )
 
 
+# ============================================================
+# PUBLIC EXPORTS
+# ============================================================
+
 __all__ = [
     "GOAL_MODEL_VERSION",
-    "GOAL_MODEL_COUPLING_VERSION",
     "FORMULA_STATUS",
-    "ATTACK_COUPLING",
-    "DEFENCE_COUPLING",
     "GoalModel",
     "GoalModelResult",
     "calculate_expected_goals",
