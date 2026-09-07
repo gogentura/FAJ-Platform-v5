@@ -73,6 +73,10 @@ from typing import Any, Dict, Iterable, List, Optional
 # ============================================================
 
 from app.core.form_context import build_form_context
+from app.core.brain_contract import (
+    FormContext as BrainFormContext,
+    MatchRecord,
+)
 from app.core.form_model import FormModel
 from app.core.form_win import FormWin
 from app.core.defence import Defence
@@ -817,7 +821,7 @@ class HistoricalMatch:
 
 
 # ============================================================
-# TEAM PROFILE
+# TEAM PROFILE (LEGACY)
 # ============================================================
 
 @dataclass
@@ -1111,6 +1115,13 @@ class FAJBrain:
         # ====================================================
 
         self.version = BRAIN_VERSION
+
+        # ====================================================
+        # LEGACY MODELS (сохраняются для совместимости)
+        # ====================================================
+
+        self.corners_model = CornersModel()
+        self.cards_model = CardsModel()
 
     # ========================================================
     # NORMALIZATION (LEGACY)
@@ -2610,90 +2621,709 @@ class FAJBrain:
     # ========================================================
     # ========================================================
     # FAJ MATHEMATICAL BRAIN BRIDGE
-    # v1.0
+    # v1.1
     #
     # RAW HISTORY
     #     ↓
-    # FormContext
+    # build_form_context() → runtime dict
     #     ↓
-    # FormModel
-    #     ├── FormWin
-    #     ├── Defence
-    #     ├── FormControl
-    #     ├── FormAnomaly
-    #     └── SpecialForm
-    #     ↓
-    # GoalModel
-    #     ↓
-    # ProbabilityModel
-    #     ↓
-    # ScorePredictor
+    # ┌──────────────────────────────────┐
+    # │ Brain Context Adapter            │
+    # ├──────────────────────────────────┤
+    # │ - FormModel context              │
+    # │ - Control adapter                │
+    # │ - BrainContract adapter          │
+    # └──────────────┬───────────────────┘
+    #                ↓
+    #           FormModel
+    #                ↓
+    #           FormWin
+    #                ↓
+    #           Defence
+    #                ↓
+    #           FormControl
+    #                ↓
+    #           FormAnomaly
+    #                ↓
+    #           SpecialForm
+    #                ↓
+    #           GoalModel
+    #                ↓
+    #           ProbabilityModel
+    #                ↓
+    #           ScorePredictor
+    #                ↓
+    #              BRAIN
     # ============================================================
+
+    # ------------------------------------------------------------
+    # HELPERS
+    # ------------------------------------------------------------
+
+    def _value(
+        self,
+        obj: Any,
+        *names: str,
+    ) -> Any:
+        """
+        Унифицированное получение значения
+        из dict / sqlite3.Row / object.
+        """
+        if obj is None:
+            return None
+
+        for name in names:
+            if isinstance(obj, dict):
+                if name in obj:
+                    return obj[name]
+
+            try:
+                keys = obj.keys()
+                if name in keys:
+                    return obj[name]
+            except (AttributeError, TypeError):
+                pass
+
+            try:
+                return getattr(
+                    obj,
+                    name,
+                )
+            except AttributeError:
+                pass
+
+        return None
+
+    def _safe_float(
+        self,
+        value: Any,
+    ) -> Optional[float]:
+        if value is None:
+            return None
+
+        if isinstance(value, bool):
+            return None
+
+        try:
+            value = float(value)
+            if value != value:
+                return None
+            return value
+        except (
+            TypeError,
+            ValueError,
+        ):
+            return None
+
+    def _safe_int(
+        self,
+        value: Any,
+    ) -> Optional[int]:
+        value = self._safe_float(value)
+        if value is None:
+            return None
+        return int(round(value))
+
+    # ------------------------------------------------------------
+    # CONTROL CONTEXT ADAPTER
+    # ------------------------------------------------------------
+
+    def _build_control_context(
+        self,
+        matches: List[Any],
+    ) -> Dict[str, Any]:
+        """
+        Создаёт именно тот слой истории,
+        который ожидает FormControl v1.1.
+
+        Источник — исходные historical records.
+        Никаких новых значений не придумываем.
+        None остаётся None.
+
+        Порядок:
+            M1 → M6
+            старый → новый
+        """
+        context = {
+            "possession_history": [],
+            "opponent_possession_history": [],
+            "passes_history": [],
+            "opponent_passes_history": [],
+            "pass_accuracy_history": [],
+            "opponent_pass_accuracy_history": [],
+            "crosses_history": [],
+            "opponent_crosses_history": [],
+            "throw_ins_history": [],
+            "opponent_throw_ins_history": [],
+            "offsides_history": [],
+            "opponent_offsides_history": [],
+            "shots_history": [],
+            "shots_conceded_history": [],
+            "big_chances_history": [],
+            "big_chances_against_history": [],
+            "corners_for_history": [],
+            "corners_against_history": [],
+        }
+
+        for record in list(matches or [])[:6]:
+            stats = self._value(
+                record,
+                "stats",
+                "statistics",
+            )
+
+            if not isinstance(
+                stats,
+                dict,
+            ):
+                stats = {}
+
+            def stat(
+                *names: str,
+            ) -> Any:
+                value = self._value(
+                    record,
+                    *names,
+                )
+                if value is not None:
+                    return value
+                return self._value(
+                    stats,
+                    *names,
+                )
+
+            # ----------------------------------------------------
+            # Определяем сторону
+            # ----------------------------------------------------
+            home_team = self._value(
+                record,
+                "home_team",
+                "home_name",
+                "home",
+            )
+            away_team = self._value(
+                record,
+                "away_team",
+                "away_name",
+                "away",
+            )
+            team_name = self._value(
+                record,
+                "team",
+                "team_name",
+            )
+
+            is_home = (
+                team_name is not None
+                and home_team is not None
+                and str(team_name).strip().lower()
+                == str(home_team).strip().lower()
+            )
+
+            is_away = (
+                team_name is not None
+                and away_team is not None
+                and str(team_name).strip().lower()
+                == str(away_team).strip().lower()
+            )
+
+            # ----------------------------------------------------
+            # Универсальный side extractor
+            # ----------------------------------------------------
+            def side_value(
+                metric: str,
+            ) -> Any:
+                if is_home:
+                    return stat(
+                        f"home_{metric}",
+                        f"{metric}_home",
+                    )
+                if is_away:
+                    return stat(
+                        f"away_{metric}",
+                        f"{metric}_away",
+                    )
+                return stat(
+                    f"team_{metric}",
+                    metric,
+                )
+
+            def opponent_value(
+                metric: str,
+            ) -> Any:
+                if is_home:
+                    return stat(
+                        f"away_{metric}",
+                        f"{metric}_away",
+                    )
+                if is_away:
+                    return stat(
+                        f"home_{metric}",
+                        f"{metric}_home",
+                    )
+                return stat(
+                    f"opponent_{metric}",
+                )
+
+            # ----------------------------------------------------
+            # CONTROL
+            # ----------------------------------------------------
+            context[
+                "possession_history"
+            ].append(
+                self._safe_float(
+                    side_value("possession")
+                )
+            )
+
+            context[
+                "opponent_possession_history"
+            ].append(
+                self._safe_float(
+                    opponent_value("possession")
+                )
+            )
+
+            context[
+                "passes_history"
+            ].append(
+                self._safe_float(
+                    side_value("passes")
+                )
+            )
+
+            context[
+                "opponent_passes_history"
+            ].append(
+                self._safe_float(
+                    opponent_value("passes")
+                )
+            )
+
+            context[
+                "pass_accuracy_history"
+            ].append(
+                self._safe_float(
+                    side_value(
+                        "pass_accuracy"
+                    )
+                )
+            )
+
+            context[
+                "opponent_pass_accuracy_history"
+            ].append(
+                self._safe_float(
+                    opponent_value(
+                        "pass_accuracy"
+                    )
+                )
+            )
+
+            # ----------------------------------------------------
+            # PROGRESSION
+            # ----------------------------------------------------
+            context[
+                "crosses_history"
+            ].append(
+                self._safe_float(
+                    side_value("crosses")
+                )
+            )
+
+            context[
+                "opponent_crosses_history"
+            ].append(
+                self._safe_float(
+                    opponent_value("crosses")
+                )
+            )
+
+            context[
+                "throw_ins_history"
+            ].append(
+                self._safe_float(
+                    side_value("throw_ins")
+                )
+            )
+
+            context[
+                "opponent_throw_ins_history"
+            ].append(
+                self._safe_float(
+                    opponent_value("throw_ins")
+                )
+            )
+
+            context[
+                "offsides_history"
+            ].append(
+                self._safe_float(
+                    side_value("offsides")
+                )
+            )
+
+            context[
+                "opponent_offsides_history"
+            ].append(
+                self._safe_float(
+                    opponent_value("offsides")
+                )
+            )
+
+            # ----------------------------------------------------
+            # PRESSURE
+            # ----------------------------------------------------
+            context[
+                "shots_history"
+            ].append(
+                self._safe_float(
+                    side_value("shots")
+                )
+            )
+
+            context[
+                "shots_conceded_history"
+            ].append(
+                self._safe_float(
+                    opponent_value("shots")
+                )
+            )
+
+            context[
+                "big_chances_history"
+            ].append(
+                self._safe_float(
+                    side_value("big_chances")
+                )
+            )
+
+            context[
+                "big_chances_against_history"
+            ].append(
+                self._safe_float(
+                    opponent_value("big_chances")
+                )
+            )
+
+            # ----------------------------------------------------
+            # CORNERS
+            # ----------------------------------------------------
+            context[
+                "corners_for_history"
+            ].append(
+                self._safe_float(
+                    side_value("corners")
+                )
+            )
+
+            context[
+                "corners_against_history"
+            ].append(
+                self._safe_float(
+                    opponent_value("corners")
+                )
+            )
+
+        return context
+
+    # ------------------------------------------------------------
+    # BRAIN CONTRACT ADAPTER
+    # ------------------------------------------------------------
+
+    def _build_brain_form_context(
+        self,
+        team_name: str,
+        matches: List[Any],
+        runtime_context: Dict[str, Any],
+    ) -> BrainFormContext:
+        """
+        Runtime FormContext
+                ↓
+        brain_contract.FormContext
+
+        Только адаптация.
+        Никаких прогнозов.
+        """
+        results = []
+        for match in runtime_context.get(
+            "matches",
+            [],
+        ):
+            result = match.get(
+                "result"
+            )
+            if result in (
+                "W",
+                "D",
+                "L",
+            ):
+                results.append(result)
+
+        wins = results.count("W")
+        draws = results.count("D")
+        losses = results.count("L")
+        points = (
+            wins * 3
+            + draws
+        )
+
+        # --------------------------------------------------------
+        # Goals
+        # --------------------------------------------------------
+        goals_for = []
+        goals_against = []
+
+        for match in runtime_context.get(
+            "matches",
+            [],
+        ):
+            gf = self._safe_float(
+                match.get("team_goals")
+            )
+            ga = self._safe_float(
+                match.get("opponent_goals")
+            )
+
+            if gf is not None:
+                goals_for.append(gf)
+            if ga is not None:
+                goals_against.append(ga)
+
+        goals_for_avg = (
+            sum(goals_for) / len(goals_for)
+            if goals_for
+            else None
+        )
+
+        goals_against_avg = (
+            sum(goals_against)
+            / len(goals_against)
+            if goals_against
+            else None
+        )
+
+        # --------------------------------------------------------
+        # xG
+        # --------------------------------------------------------
+        xg_values = [
+            value
+            for value in runtime_context.get(
+                "recent_xg",
+                ()
+            )
+            if value is not None
+        ]
+
+        xga_values = [
+            value
+            for value in runtime_context.get(
+                "recent_xga",
+                ()
+            )
+            if value is not None
+        ]
+
+        xg_avg = (
+            sum(xg_values)
+            / len(xg_values)
+            if xg_values
+            else None
+        )
+
+        xga_avg = (
+            sum(xga_values)
+            / len(xga_values)
+            if xga_values
+            else None
+        )
+
+        # --------------------------------------------------------
+        # Home / Away
+        # --------------------------------------------------------
+        home = runtime_context.get(
+            "home",
+            {},
+        )
+        away = runtime_context.get(
+            "away",
+            {},
+        )
+
+        # --------------------------------------------------------
+        # Derived flags
+        # --------------------------------------------------------
+        consecutive_wins = 0
+        for result in reversed(results):
+            if result == "W":
+                consecutive_wins += 1
+            else:
+                break
+
+        home_unbeaten = 0
+        for match in reversed(
+            runtime_context.get(
+                "matches",
+                [],
+            )
+        ):
+            if match.get("venue") != "дома":
+                continue
+            if match.get("result") in (
+                "W",
+                "D",
+            ):
+                home_unbeaten += 1
+            else:
+                break
+
+        away_wins_recent = 0
+        for match in reversed(
+            runtime_context.get(
+                "matches",
+                [],
+            )
+        ):
+            if match.get("venue") != "гости":
+                continue
+            if match.get("result") == "W":
+                away_wins_recent += 1
+            else:
+                break
+
+        consecutive_away = 0
+        for match in reversed(
+            runtime_context.get(
+                "matches",
+                [],
+            )
+        ):
+            if match.get("venue") == "гости":
+                consecutive_away += 1
+            else:
+                break
+
+        return BrainFormContext(
+            team=team_name,
+            results=tuple(results),
+            wins=wins,
+            draws=draws,
+            losses=losses,
+            points=points,
+
+            home_wins=int(
+                home.get("wins", 0)
+            ),
+            home_draws=int(
+                home.get("draws", 0)
+            ),
+            home_losses=int(
+                home.get("losses", 0)
+            ),
+            away_wins=int(
+                away.get("wins", 0)
+            ),
+            away_draws=int(
+                away.get("draws", 0)
+            ),
+            away_losses=int(
+                away.get("losses", 0)
+            ),
+
+            goals_for_avg=goals_for_avg,
+            goals_against_avg=goals_against_avg,
+
+            xg_avg=xg_avg,
+            xga_avg=xga_avg,
+
+            corners_for_avg=None,
+            corners_against_avg=None,
+            possession_avg=None,
+            cards_avg=None,
+            fouls_avg=None,
+
+            difficulty=tuple(
+                runtime_context.get(
+                    "difficulty",
+                    []
+                )
+            ),
+
+            consecutive_away_matches=(
+                consecutive_away
+            ),
+            consecutive_wins=(
+                consecutive_wins
+            ),
+            home_unbeaten_count=(
+                home_unbeaten
+            ),
+            away_wins_recent=(
+                away_wins_recent
+            ),
+        )
+
+    # ------------------------------------------------------------
+    # MAIN MATH CONTEXT
+    # ------------------------------------------------------------
 
     def _build_math_context(
         self,
         team_name: str,
-        matches: list,
+        matches: List[Any],
         venue: str,
-    ) -> dict:
-        """
-        Создаёт единый FormContext для одной команды.
-
-        ВАЖНО:
-            FormContext является единственным источником
-            исторических фактов для математических органов.
-
-        Никакой орган не получает RAW history напрямую.
-        """
-        context = build_form_context(
+    ) -> Dict[str, Any]:
+        runtime_context = build_form_context(
             team_name,
             matches,
             limit=6,
         )
 
-        if not isinstance(context, dict):
-            try:
-                context = dict(context)
-            except Exception:
-                raise TypeError(
-                    "FAJ FormContext должен быть dict-compatible"
-                )
+        if not isinstance(
+            runtime_context,
+            dict,
+        ):
+            runtime_context = dict(
+                runtime_context
+            )
+
+        runtime_context["team_name"] = team_name
+        runtime_context["venue"] = venue
 
         # --------------------------------------------------------
-        # Метаданные текущего матча
+        # FormControl adapter
         # --------------------------------------------------------
-        context["team_name"] = team_name
-        context["venue"] = venue
+        control_context = self._build_control_context(
+            matches
+        )
+        runtime_context.update(
+            control_context
+        )
 
-        return context
+        # --------------------------------------------------------
+        # Strict Brain Contract
+        # --------------------------------------------------------
+        runtime_context[
+            "brain_contract"
+        ] = self._build_brain_form_context(
+            team_name=team_name,
+            matches=matches,
+            runtime_context=runtime_context,
+        )
+
+        return runtime_context
+
+    # ------------------------------------------------------------
+    # FORM PIPELINE
+    # ------------------------------------------------------------
 
     def _run_form_pipeline(
         self,
         team_name: str,
         opponent_name: str,
-        matches: list,
+        matches: List[Any],
         venue: str,
-    ) -> dict:
-        """
-        Полный математический pipeline одной команды.
-
-        FormContext
-            ↓
-        FormModel
-            ↓
-        FormWin
-            ↓
-        Defence
-            ↓
-        FormControl
-            ↓
-        FormAnomaly
-            ↓
-        SpecialForm
-        """
-        # ========================================================
-        # 1. FORM CONTEXT
-        # ========================================================
+    ) -> Dict[str, Any]:
         context = self._build_math_context(
             team_name=team_name,
             matches=matches,
@@ -2701,7 +3331,7 @@ class FAJBrain:
         )
 
         # ========================================================
-        # 2. FORM MODEL
+        # 1. FORM MODEL
         # ========================================================
         form_model = FormModel()
         form_result = form_model.analyze(
@@ -2710,7 +3340,7 @@ class FAJBrain:
         )
 
         # ========================================================
-        # 3. FORM WIN
+        # 2. FORM WIN
         # ========================================================
         form_win = FormWin()
         form_win_result = form_win.analyze(
@@ -2719,7 +3349,7 @@ class FAJBrain:
         )
 
         # ========================================================
-        # 4. DEFENCE
+        # 3. DEFENCE
         # ========================================================
         defence = Defence()
         defence_result = defence.calculate(
@@ -2728,7 +3358,7 @@ class FAJBrain:
         )
 
         # ========================================================
-        # 5. FORM CONTROL
+        # 4. FORM CONTROL
         # ========================================================
         form_control = FormControl()
         control_result = form_control.analyze(
@@ -2739,7 +3369,7 @@ class FAJBrain:
         )
 
         # ========================================================
-        # 6. FORM ANOMALY
+        # 5. ANOMALY
         # ========================================================
         anomaly = FormAnomaly()
         anomaly_result = anomaly.analyze(
@@ -2747,16 +3377,8 @@ class FAJBrain:
         )
 
         # ========================================================
-        # 7. SPECIAL FORM
+        # 6. SPECIAL FORM
         # ========================================================
-        #
-        # ВАЖНО:
-        # SpecialForm v1.0 читает FormContext через attributes,
-        # тогда как остальные органы принимают dict.
-        #
-        # Поэтому создаём только адаптер-представление.
-        # Исходный context НЕ изменяется.
-        #
         special_context = SimpleNamespace(
             **context
         )
@@ -2767,13 +3389,18 @@ class FAJBrain:
         )
 
         # ========================================================
-        # 8. RETURN
+        # 7. STRICT BRAIN CONTRACT
         # ========================================================
+        brain_context = context.get(
+            "brain_contract"
+        )
+
         return {
             "team": team_name,
             "opponent": opponent_name,
             "venue": venue,
             "context": context,
+            "brain_context": brain_context,
             "form_model": form_result,
             "form_win": form_win_result,
             "defence": defence_result,
@@ -2782,22 +3409,18 @@ class FAJBrain:
             "special_form": special_result,
         }
 
+    # ------------------------------------------------------------
+    # MATCH PIPELINE
+    # ------------------------------------------------------------
+
     def _run_match_math_pipeline(
         self,
         home_team: str,
         away_team: str,
-        home_matches: list,
-        away_matches: list,
-    ) -> dict:
-        """
-        Полный математический pipeline матча.
+        home_matches: List[Any],
+        away_matches: List[Any],
+    ) -> Dict[str, Any]:
 
-        HOME и AWAY сначала рассчитываются независимо.
-        Только после этого:
-            GoalModel
-            ProbabilityModel
-            ScorePredictor
-        """
         # ========================================================
         # HOME
         # ========================================================
@@ -2819,40 +3442,58 @@ class FAJBrain:
         )
 
         # ========================================================
-        # 1. GOAL MODEL
+        # GOAL MODEL
         # ========================================================
         goal_model = GoalModel()
         goal_result = goal_model.analyze(
-            home_form=home_state["form_model"],
-            away_form=away_state["form_model"],
+            home_form=home_state[
+                "form_model"
+            ],
+            away_form=away_state[
+                "form_model"
+            ],
             home_team=home_team,
             away_team=away_team,
             venue="HOME",
-            home_form_win=home_state["form_win"],
-            away_form_win=away_state["form_win"],
-            home_defence=home_state["defence"],
-            away_defence=away_state["defence"],
+            home_form_win=home_state[
+                "form_win"
+            ],
+            away_form_win=away_state[
+                "form_win"
+            ],
+            home_defence=home_state[
+                "defence"
+            ],
+            away_defence=away_state[
+                "defence"
+            ],
         )
 
         # ========================================================
-        # 2. PROBABILITY MODEL
+        # PROBABILITY MODEL
         # ========================================================
         probability_model = ProbabilityModel()
-        probability_result = probability_model.calculate(
-            home_xg=goal_result.home_xg,
-            away_xg=goal_result.away_xg,
+        probability_result = (
+            probability_model.calculate(
+                home_xg=goal_result.home_xg,
+                away_xg=goal_result.away_xg,
+            )
         )
 
         # ========================================================
-        # 3. CONTROL ADVANTAGE
+        # CONTROL
         # ========================================================
         home_control = getattr(
-            home_state["form_control"],
+            home_state[
+                "form_control"
+            ],
             "control_signal",
             None,
         )
         away_control = getattr(
-            away_state["form_control"],
+            away_state[
+                "form_control"
+            ],
             "control_signal",
             None,
         )
@@ -2864,31 +3505,37 @@ class FAJBrain:
             home_control is not None
             and away_control is not None
         ):
-            control_difference = (
+            difference = (
                 float(home_control)
                 - float(away_control)
             )
-            if control_difference > 0.05:
+
+            if difference > 0.05:
                 control_advantage = "HOME"
-            elif control_difference < -0.05:
+            elif difference < -0.05:
                 control_advantage = "AWAY"
             else:
                 control_advantage = "EQUAL"
+
             control_strength = min(
                 1.0,
-                abs(control_difference),
+                abs(difference),
             )
 
         # ========================================================
-        # 4. ANOMALY ADVANTAGE
+        # ANOMALY
         # ========================================================
         home_anomaly = getattr(
-            home_state["form_anomaly"],
+            home_state[
+                "form_anomaly"
+            ],
             "anomaly_signal",
             None,
         )
         away_anomaly = getattr(
-            away_state["form_anomaly"],
+            away_state[
+                "form_anomaly"
+            ],
             "anomaly_signal",
             None,
         )
@@ -2909,15 +3556,19 @@ class FAJBrain:
             )
 
         # ========================================================
-        # 5. SPECIAL FORM ADVANTAGE
+        # SPECIAL FORM
         # ========================================================
         home_special = getattr(
-            home_state["special_form"],
+            home_state[
+                "special_form"
+            ],
             "composite_signal",
             None,
         )
         away_special = getattr(
-            away_state["special_form"],
+            away_state[
+                "special_form"
+            ],
             "composite_signal",
             None,
         )
@@ -2938,7 +3589,7 @@ class FAJBrain:
             )
 
         # ========================================================
-        # 6. SCORE PREDICTOR
+        # SCORE
         # ========================================================
         score_predictor = ScorePredictor()
         score_result = score_predictor.predict(
@@ -2947,25 +3598,45 @@ class FAJBrain:
             ),
             home_xg=goal_result.home_xg,
             away_xg=goal_result.away_xg,
-            probability_result=probability_result,
-            home_form_win=home_state["form_win"],
-            away_form_win=away_state["form_win"],
-            home_defence=home_state["defence"],
-            away_defence=away_state["defence"],
-            control_advantage=control_advantage,
-            control_strength=control_strength,
-            anomaly_signal=anomaly_signal,
-            special_composite=special_composite,
+            probability_result=(
+                probability_result
+            ),
+            home_form_win=home_state[
+                "form_win"
+            ],
+            away_form_win=away_state[
+                "form_win"
+            ],
+            home_defence=home_state[
+                "defence"
+            ],
+            away_defence=away_state[
+                "defence"
+            ],
+            control_advantage=(
+                control_advantage
+            ),
+            control_strength=(
+                control_strength
+            ),
+            anomaly_signal=(
+                anomaly_signal
+            ),
+            special_composite=(
+                special_composite
+            ),
         )
 
         # ========================================================
-        # 7. FINAL MATH PACKAGE
+        # RESULT
         # ========================================================
         return {
             "home": home_state,
             "away": away_state,
             "goal_model": goal_result,
-            "probability_model": probability_result,
+            "probability_model": (
+                probability_result
+            ),
             "score_predictor": score_result,
             "diagnostics": {
                 "home_team": home_team,
@@ -2976,8 +3647,12 @@ class FAJBrain:
                 "away_matches": len(
                     away_matches or []
                 ),
-                "home_xg": goal_result.home_xg,
-                "away_xg": goal_result.away_xg,
+                "home_xg": (
+                    goal_result.home_xg
+                ),
+                "away_xg": (
+                    goal_result.away_xg
+                ),
                 "control_advantage": (
                     control_advantage
                 ),
@@ -3008,7 +3683,7 @@ class FAJBrain:
     ) -> Dict[str, Any]:
 
         # ====================================================
-        # 1. NORMALIZE (LEGACY)
+        # 1. NORMALIZE (LEGACY - для совместимости)
         # ====================================================
 
         home_history = (
