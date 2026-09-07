@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ PLATFORM v12.1
-SCORE PREDICTOR v2.0
+SCORE PREDICTOR v2.1
 ============================================================
 
 Purpose
@@ -24,13 +24,31 @@ Poisson score probabilities
     ↓
 ScorePredictor
     ├── Poisson probability
-    ├── Outcome Fit
-    ├── Margin Fit
+    ├── Outcome Fit (uses State: Control/Anomaly/Special only)
+    ├── Margin Fit (pure xG-based)
     ├── BTTS Fit
     ├── Total Fit
-    └── State Advantage
+    └── State Advantage (Control + Anomaly + Special only)
     ↓
 FAJ Predicted Score
+
+Key distinction
+---------------
+likely_score:
+    Pure mathematical argmax of Poisson score probability.
+
+predicted_score:
+    FAJ exact-score decision selected from the same
+    mathematical score space using football state signals.
+
+Changes in v2.1
+---------------
+- FormWin and Defence are NO longer used in ScorePredictor
+  (they already influenced xG through GoalModel)
+- State advantage NO longer influences MarginFit
+- MarginFit is now purely xG-based
+- State advantage influences ONLY OutcomeFit
+- Control, Anomaly, Special remain as additional signals
 
 IMPORTANT
 ---------
@@ -46,17 +64,6 @@ ScorePredictor does NOT:
 - train parameters
 - learn from the result
 - use bookmaker odds
-
-It only selects the best exact-score scenario.
-
-Key distinction
----------------
-likely_score:
-    Pure mathematical argmax of Poisson score probability.
-
-predicted_score:
-    FAJ exact-score decision selected from the same
-    mathematical score space using football state signals.
 
 Missing data
 ------------
@@ -75,6 +82,7 @@ OutcomeFit =
 
 MarginFit =
     exp(-abs(score_margin - target_margin) / MARGIN_SIGMA)
+    where target_margin = abs(home_xg - away_xg) ONLY
 
 BTTSFit =
     P(BTTS)               if both teams score
@@ -113,7 +121,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 # VERSION / STATUS
 # ============================================================
 
-VERSION = "2.0"
+VERSION = "2.1"
 FORMULA_STATUS = "RESEARCH_FORMULA"
 
 
@@ -132,14 +140,14 @@ BTTS_WEIGHT = 0.15
 TOTAL_WEIGHT = 0.20
 
 # State advantage weights.
-STATE_ATTACK_WEIGHT = 0.35
-STATE_DEFENCE_WEIGHT = 0.25
+# REMOVED: STATE_ATTACK_WEIGHT, STATE_DEFENCE_WEIGHT
+# (FormWin and Defence already influence xG through GoalModel)
 STATE_MOMENTUM_WEIGHT = 0.20
 STATE_CONTROL_WEIGHT = 0.10
 STATE_SPECIAL_WEIGHT = 0.10
 
 # Margin calculation.
-STATE_MARGIN_FACTOR = 0.80
+# REMOVED: STATE_MARGIN_FACTOR (margin is now purely xG-based)
 MARGIN_SIGMA = 0.90
 
 # Numerical protection.
@@ -435,10 +443,10 @@ class ScorePredictor:
             score distribution.
 
         home_form_win / away_form_win:
-            FormWin results.
+            FormWin results. (NOT used in v2.1 for state advantage)
 
         home_defence / away_defence:
-            Defence results.
+            Defence results. (NOT used in v2.1 for state advantage)
 
         control_advantage:
             "HOME", "AWAY" or "EQUAL".
@@ -510,14 +518,10 @@ class ScorePredictor:
         )
 
         # ----------------------------------------------------
-        # 5. Extract state signals
+        # 5. Extract state signals (Control + Anomaly + Special only)
         # ----------------------------------------------------
 
         state = self._calculate_state_advantage(
-            home_form_win=home_form_win,
-            away_form_win=away_form_win,
-            home_defence=home_defence,
-            away_defence=away_defence,
             control_advantage=control_advantage,
             control_strength=control_strength,
             anomaly_signal=anomaly_signal,
@@ -552,7 +556,6 @@ class ScorePredictor:
                 away_goals=away_goals,
                 home_xg=home_xg_value,
                 away_xg=away_xg_value,
-                state_advantage=state_advantage,
             )
 
             btts_fit = self._calculate_btts_fit(
@@ -696,12 +699,6 @@ class ScorePredictor:
                     "margin": MARGIN_WEIGHT,
                     "btts": BTTS_WEIGHT,
                     "total": TOTAL_WEIGHT,
-                    "state_attack": (
-                        STATE_ATTACK_WEIGHT
-                    ),
-                    "state_defence": (
-                        STATE_DEFENCE_WEIGHT
-                    ),
                     "state_momentum": (
                         STATE_MOMENTUM_WEIGHT
                     ),
@@ -712,6 +709,10 @@ class ScorePredictor:
                         STATE_SPECIAL_WEIGHT
                     ),
                 },
+                "note": (
+                    "FormWin and Defence are NOT used in ScorePredictor v2.1. "
+                    "They already influence xG through GoalModel."
+                ),
             },
         )
 
@@ -1088,15 +1089,11 @@ class ScorePredictor:
         )
 
     # ========================================================
-    # STATE ADVANTAGE
+    # STATE ADVANTAGE (Control + Anomaly + Special only)
     # ========================================================
 
     def _calculate_state_advantage(
         self,
-        home_form_win: Any,
-        away_form_win: Any,
-        home_defence: Any,
-        away_defence: Any,
         control_advantage: Optional[str],
         control_strength: Optional[float],
         anomaly_signal: Optional[float],
@@ -1113,72 +1110,10 @@ class ScorePredictor:
 
         Missing signals are neutral for calculation but are
         recorded in diagnostics.
+
+        v2.1: FormWin and Defence are NOT used here.
+        They already influence xG through GoalModel.
         """
-
-        # ----------------------------------------------------
-        # Attack
-        # ----------------------------------------------------
-
-        home_attack = _get_value(
-            home_form_win,
-            "attack_signal",
-            "attack",
-        )
-
-        away_attack = _get_value(
-            away_form_win,
-            "attack_signal",
-            "attack",
-        )
-
-        attack_available = (
-            home_attack is not None
-            and away_attack is not None
-        )
-
-        if home_attack is None:
-            home_attack = 0.0
-
-        if away_attack is None:
-            away_attack = 0.0
-
-        attack_advantage = _clamp_signal(
-            home_attack - away_attack
-        )
-
-        # ----------------------------------------------------
-        # Defence
-        # ----------------------------------------------------
-
-        home_defence_signal = _get_value(
-            home_defence,
-            "process_signal",
-            "defence_signal",
-            "defence",
-        )
-
-        away_defence_signal = _get_value(
-            away_defence,
-            "process_signal",
-            "defence_signal",
-            "defence",
-        )
-
-        defence_available = (
-            home_defence_signal is not None
-            and away_defence_signal is not None
-        )
-
-        if home_defence_signal is None:
-            home_defence_signal = 0.0
-
-        if away_defence_signal is None:
-            away_defence_signal = 0.0
-
-        defence_advantage = _clamp_signal(
-            home_defence_signal
-            - away_defence_signal
-        )
 
         # ----------------------------------------------------
         # Momentum / anomaly
@@ -1250,20 +1185,13 @@ class ScorePredictor:
         special = _clamp_signal(special)
 
         # ----------------------------------------------------
-        # Aggregate
+        # Aggregate (only Control + Anomaly + Special)
         # ----------------------------------------------------
 
         state_advantage = (
-            STATE_ATTACK_WEIGHT
-            * attack_advantage
-            + STATE_DEFENCE_WEIGHT
-            * defence_advantage
-            + STATE_MOMENTUM_WEIGHT
-            * anomaly
-            + STATE_CONTROL_WEIGHT
-            * control_advantage_value
-            + STATE_SPECIAL_WEIGHT
-            * special
+            STATE_MOMENTUM_WEIGHT * anomaly
+            + STATE_CONTROL_WEIGHT * control_advantage_value
+            + STATE_SPECIAL_WEIGHT * special
         )
 
         state_advantage = _clamp_signal(
@@ -1272,20 +1200,20 @@ class ScorePredictor:
 
         return {
             "state_advantage": state_advantage,
-            "attack_advantage": attack_advantage,
-            "defence_advantage": defence_advantage,
             "momentum_advantage": anomaly,
             "control_advantage": (
                 control_advantage_value
             ),
             "special_advantage": special,
             "availability": {
-                "attack": attack_available,
-                "defence": defence_available,
                 "momentum": anomaly_available,
                 "control": control_available,
                 "special": special_available,
             },
+            "note": (
+                "FormWin and Defence are excluded from state_advantage "
+                "in v2.1. They already influenced xG through GoalModel."
+            ),
         }
 
     # ========================================================
@@ -1370,7 +1298,7 @@ class ScorePredictor:
         )
 
     # ========================================================
-    # MARGIN FIT
+    # MARGIN FIT (purely xG-based)
     # ========================================================
 
     def _calculate_margin_fit(
@@ -1379,50 +1307,28 @@ class ScorePredictor:
         away_goals: int,
         home_xg: float,
         away_xg: float,
-        state_advantage: float,
     ) -> float:
         """
         Measure whether the candidate goal difference matches
-        the expected strength difference.
+        the expected xG difference.
 
-        Base expected margin:
-            abs(home_xg - away_xg)
+        This is now PURELY xG-based.
+        State advantage does NOT influence margin fit.
 
-        State can strengthen the expected margin:
-
-            target_margin =
-                xG_difference
-                + STATE_MARGIN_FACTOR × abs(state_advantage)
-
-        Direction is taken from xG first and state second.
+        target_margin = abs(home_xg - away_xg)
         """
 
         xg_difference = (
             home_xg - away_xg
         )
 
-        xg_direction = _sign(
+        expected_direction = _sign(
             xg_difference
         )
-
-        state_direction = _sign(
-            state_advantage
-        )
-
-        if xg_direction != 0:
-            expected_direction = xg_direction
-        else:
-            expected_direction = state_direction
 
         expected_margin = abs(
             xg_difference
         )
-
-        if expected_direction != 0:
-            expected_margin += (
-                STATE_MARGIN_FACTOR
-                * abs(state_advantage)
-            )
 
         candidate_difference = (
             home_goals - away_goals
