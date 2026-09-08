@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ PLATFORM v12.1
-CARDS MODEL v1.2
+CARDS MODEL v1.3
 ============================================================
 
 Назначение
@@ -36,8 +36,17 @@ CardsModel анализирует фактическую историю карт
 может стать OBSERVED PATTERN CANDIDATE
 на уровне Pattern/Analysis.
 
-Но CardsModel v1.2 не создаёт
+Но CardsModel v1.3 не создаёт
 математического штрафа.
+
+============================================================
+CHANGES IN V1.3
+============================================================
+
+- Веса изменены: 0.65 * avg + 0.35 * recent3 (было 0.80/0.20)
+- Trend коэффициент увеличен: 0.05 → 0.08
+- Добавлен context_factor = 1.08 для мягкого повышения
+- Diagnostics обновлены
 
 ============================================================
 CHANGES IN V1.2
@@ -59,9 +68,19 @@ from typing import Any, Dict, Iterable, List, Optional
 import math
 
 
-CARDS_MODEL_VERSION = "1.2"
+CARDS_MODEL_VERSION = "1.3"
 
 MAX_HISTORY_MATCHES = 6
+
+# ============================================================
+# RESEARCH PARAMETERS — V1.3
+# ============================================================
+
+CARDS_AVG_WEIGHT = 0.65
+CARDS_RECENT_WEIGHT = 0.35
+CARDS_TREND_COEFFICIENT = 0.08
+CARDS_TREND_CLIP = 0.25
+CARDS_CONTEXT_FACTOR = 1.08
 
 
 # ============================================================
@@ -398,12 +417,13 @@ class CardsModel:
     """
     Чистая математическая модель карточек.
 
-    Формула v1.2:
+    Формула v1.3:
 
-        level = 0.80 * avg + 0.20 * recent3
+        level = 0.65 * avg + 0.35 * recent3
         expected = (home_team_level + away_opponent_level) / 2
-                   + 0.05 * home_team_trend
-                   + 0.05 * away_opponent_trend
+                   + 0.08 * home_team_trend
+                   + 0.08 * away_opponent_trend
+        context_factor = 1.08
         trend clip: ±0.25
     """
 
@@ -627,16 +647,18 @@ class CardsModel:
                 ),
 
             "formula":
-                "level = 0.80 * avg + 0.20 * recent3; "
+                "level = 0.65 * avg + 0.35 * recent3; "
                 "expected = (home_team_level + "
                 "away_opponent_level) / 2 "
-                "+ home_team_trend + away_opponent_trend",
+                "+ 0.08 * home_team_trend + 0.08 * away_opponent_trend; "
+                "context_factor = 1.08",
 
             "recent_window": 3,
-            "recent_weight": 0.20,
-            "history_weight": 0.80,
-            "trend_coefficient": 0.05,
-            "trend_clip": 0.25,
+            "recent_weight": CARDS_RECENT_WEIGHT,
+            "history_weight": CARDS_AVG_WEIGHT,
+            "trend_coefficient": CARDS_TREND_COEFFICIENT,
+            "trend_clip": CARDS_TREND_CLIP,
+            "context_factor": CARDS_CONTEXT_FACTOR,
             "points_rate_affects_cards": False,
 
             "result_context_used":
@@ -731,8 +753,8 @@ class CardsModel:
         # ----------------------------------------------------
         # LEVEL
         #
-        # Full history = 80%
-        # Recent 3     = 20%
+        # Full history = 65%
+        # Recent 3     = 35%
         #
         # Если recent отсутствует, используется full average.
         # ----------------------------------------------------
@@ -745,8 +767,8 @@ class CardsModel:
                 else home.team_cards_avg
             )
             home_team_level = (
-                0.80 * home.team_cards_avg
-                + 0.20 * home_recent
+                CARDS_AVG_WEIGHT * home.team_cards_avg
+                + CARDS_RECENT_WEIGHT * home_recent
             )
 
         away_opponent_level = None
@@ -757,8 +779,8 @@ class CardsModel:
                 else away.opponent_cards_avg
             )
             away_opponent_level = (
-                0.80 * away.opponent_cards_avg
-                + 0.20 * away_recent
+                CARDS_AVG_WEIGHT * away.opponent_cards_avg
+                + CARDS_RECENT_WEIGHT * away_recent
             )
 
         away_team_level = None
@@ -769,8 +791,8 @@ class CardsModel:
                 else away.team_cards_avg
             )
             away_team_level = (
-                0.80 * away.team_cards_avg
-                + 0.20 * away_recent
+                CARDS_AVG_WEIGHT * away.team_cards_avg
+                + CARDS_RECENT_WEIGHT * away_recent
             )
 
         home_opponent_level = None
@@ -781,8 +803,8 @@ class CardsModel:
                 else home.opponent_cards_avg
             )
             home_opponent_level = (
-                0.80 * home.opponent_cards_avg
-                + 0.20 * home_recent
+                CARDS_AVG_WEIGHT * home.opponent_cards_avg
+                + CARDS_RECENT_WEIGHT * home_recent
             )
 
         # ----------------------------------------------------
@@ -792,17 +814,17 @@ class CardsModel:
         #
         # Correction:
         #
-        #     0.05 * trend
+        #     0.08 * trend
         #
         # capped at ±0.25.
         # ----------------------------------------------------
 
         home_team_trend = (
             max(
-                -0.25,
+                -CARDS_TREND_CLIP,
                 min(
-                    0.25,
-                    0.05 * home.team_cards_trend,
+                    CARDS_TREND_CLIP,
+                    CARDS_TREND_COEFFICIENT * home.team_cards_trend,
                 ),
             )
             if home.team_cards_trend is not None
@@ -811,10 +833,10 @@ class CardsModel:
 
         away_opponent_trend = (
             max(
-                -0.25,
+                -CARDS_TREND_CLIP,
                 min(
-                    0.25,
-                    0.05 * away.opponent_cards_trend,
+                    CARDS_TREND_CLIP,
+                    CARDS_TREND_COEFFICIENT * away.opponent_cards_trend,
                 ),
             )
             if away.opponent_cards_trend is not None
@@ -823,10 +845,10 @@ class CardsModel:
 
         away_team_trend = (
             max(
-                -0.25,
+                -CARDS_TREND_CLIP,
                 min(
-                    0.25,
-                    0.05 * away.team_cards_trend,
+                    CARDS_TREND_CLIP,
+                    CARDS_TREND_COEFFICIENT * away.team_cards_trend,
                 ),
             )
             if away.team_cards_trend is not None
@@ -835,10 +857,10 @@ class CardsModel:
 
         home_opponent_trend = (
             max(
-                -0.25,
+                -CARDS_TREND_CLIP,
                 min(
-                    0.25,
-                    0.05 * home.opponent_cards_trend,
+                    CARDS_TREND_CLIP,
+                    CARDS_TREND_COEFFICIENT * home.opponent_cards_trend,
                 ),
             )
             if home.opponent_cards_trend is not None
@@ -896,6 +918,18 @@ class CardsModel:
                 away_team_trend
                 + home_opponent_trend
             )
+
+        # ----------------------------------------------------
+        # CONTEXT FACTOR
+        #
+        # Применяется до total_expected для мягкого повышения
+        # ----------------------------------------------------
+
+        if home_expected is not None:
+            home_expected *= CARDS_CONTEXT_FACTOR
+
+        if away_expected is not None:
+            away_expected *= CARDS_CONTEXT_FACTOR
 
         total_expected = None
 
