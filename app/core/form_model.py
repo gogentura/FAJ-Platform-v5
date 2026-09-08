@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ PLATFORM v12.1
-FORM MODEL v1.1
+FORM MODEL v1.2
 ============================================================
 
 НАЗНАЧЕНИЕ
@@ -59,10 +59,13 @@ FormModel измеряет четыре независимых состояни�
 Никакие каналы не смешиваются в один score.
 
 ------------------------------------------------------------
-VERSION
+ИЗМЕНЕНИЯ В V1.2
 ------------------------------------------------------------
 
-FORM_MODEL_VERSION = "1.1"
+- Добавлены shots_avg, shots_against_avg,
+  shots_on_target_avg, shots_on_target_against_avg
+
+- Это позволяет GoalModel использовать SOT dominance
 
 ------------------------------------------------------------
 ИЗМЕНЕНИЯ В V1.1
@@ -124,7 +127,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 # VERSION / PARAMETERS
 # ============================================================
 
-FORM_MODEL_VERSION = "1.1"
+FORM_MODEL_VERSION = "1.2"
 
 # Research parameter.
 # История передаётся от старого к новому:
@@ -613,6 +616,18 @@ class FormModelResult:
     xga_trend: Optional[float]
 
     # --------------------------------------------------------
+    # PERFORMANCE STATE — SHOTS
+    # --------------------------------------------------------
+
+    shots_avg: Optional[float]
+
+    shots_against_avg: Optional[float]
+
+    shots_on_target_avg: Optional[float]
+
+    shots_on_target_against_avg: Optional[float]
+
+    # --------------------------------------------------------
     # REALIZATION
     # --------------------------------------------------------
 
@@ -681,7 +696,7 @@ class FormModelResult:
 
 class FormModel:
     """
-    FormModel v1.1.
+    FormModel v1.2.
 
     Главный принцип:
 
@@ -777,6 +792,52 @@ class FormModel:
             matches,
             "recent_xga",
             "opponent_xg",
+        )
+
+        # ========================================================
+        # SHOTS HISTORY
+        # ========================================================
+
+        shots_values = self._extract_history(
+            form_context,
+            matches,
+            (
+                "shots",
+                "shots_for",
+                "team_shots",
+            ),
+        )
+
+        shots_against_values = self._extract_history(
+            form_context,
+            matches,
+            (
+                "shots_against",
+                "shots_conceded",
+                "opponent_shots",
+            ),
+        )
+
+        sot_values = self._extract_history(
+            form_context,
+            matches,
+            (
+                "shots_on_target",
+                "sot",
+                "shots_on_target_for",
+                "team_sot",
+            ),
+        )
+
+        sot_against_values = self._extract_history(
+            form_context,
+            matches,
+            (
+                "shots_on_target_against",
+                "sot_against",
+                "opponent_shots_on_target",
+                "opponent_sot",
+            ),
         )
 
         venues = self._extract_history(
@@ -892,6 +953,38 @@ class FormModel:
 
         goals_against_avg = _mean(
             goals_against
+        )
+
+        # ----------------------------------------------------
+        # SHOTS
+        # ----------------------------------------------------
+
+        shots_avg = _mean(
+            [
+                _safe_float(value)
+                for value in shots_values
+            ]
+        )
+
+        shots_against_avg = _mean(
+            [
+                _safe_float(value)
+                for value in shots_against_values
+            ]
+        )
+
+        shots_on_target_avg = _mean(
+            [
+                _safe_float(value)
+                for value in sot_values
+            ]
+        )
+
+        shots_on_target_against_avg = _mean(
+            [
+                _safe_float(value)
+                for value in sot_against_values
+            ]
         )
 
         # ----------------------------------------------------
@@ -1147,6 +1240,12 @@ class FormModel:
 
             xg_trend=xg_trend,
             xga_trend=xga_trend,
+
+            # SHOTS
+            shots_avg=shots_avg,
+            shots_against_avg=shots_against_avg,
+            shots_on_target_avg=shots_on_target_avg,
+            shots_on_target_against_avg=shots_on_target_against_avg,
 
             # REALIZATION
             finishing_delta=finishing_delta,
