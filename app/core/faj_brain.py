@@ -23,23 +23,23 @@ FAJ Personal Prediction Brain
           ↓
     Defence
           ↓
-    GoalModel
+    FormControl
+          ↓
+    FormAnomaly
+          ↓
+    SpecialForm
+          ↓
+    GoalModel v2.1
           ↓
     home_xg / away_xg
           ↓
-    score distribution
+    ProbabilityModel v1.1
           ↓
-    result probabilities
+    ScorePredictor v2.2
           ↓
-    BTTS / totals
+    CornersModel v1.2
           ↓
-    corners
-          ↓
-    cards
-          ↓
-    confidence / risk
-          ↓
-    analytical conclusion
+    CardsModel v1.2
 
 ВАЖНО:
     Этот модуль НЕ:
@@ -57,7 +57,7 @@ FAJ Personal Prediction Brain
     None НЕ превращается в 0.
 
 Версия:
-    FAJ-BRAIN-0.8
+    FAJ-BRAIN-1.0
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ from app.core.cards_model import CardsModel
 # VERSION
 # ============================================================
 
-BRAIN_VERSION = "FAJ-BRAIN-0.8"
+BRAIN_VERSION = "FAJ-BRAIN-1.0"
 
 MIN_MATCHES = 1
 EXTENDED_ANALYSIS_MATCHES = 3
@@ -2097,13 +2097,17 @@ class FAJBrain:
         )
 
     # ========================================================
-    # EXPECTED GOALS (UPDATED: v0.8 — только FormModel, без FormWin/Defence)
+    # EXPECTED GOALS (UPDATED: v1.0 — GoalModel v2.1)
     # ========================================================
 
     def _calculate_expected_goals(
         self,
         home_form_result: Any,
         away_form_result: Any,
+        home_control: Any,
+        away_control: Any,
+        home_special: Any,
+        away_special: Any,
         home_team: str,
         away_team: str,
     ) -> tuple[
@@ -2112,9 +2116,14 @@ class FAJBrain:
         Any,
     ]:
 
-        goal_result = self.goal_model.analyze(
+        goal_model = GoalModel()
+        goal_result = goal_model.analyze(
             home_form=home_form_result,
             away_form=away_form_result,
+            home_control=home_control,
+            away_control=away_control,
+            home_special=home_special,
+            away_special=away_special,
             home_team=home_team,
             away_team=away_team,
             venue="HOME",
@@ -2627,15 +2636,15 @@ class FAJBrain:
     #                ↓
     #           SpecialForm
     #                ↓
-    #           GoalModel (v2.0 — только FormModel)
+    #           GoalModel v2.1
     #                ↓
-    #           ProbabilityModel (v1.1)
+    #           ProbabilityModel v1.1
     #                ↓
-    #           ScorePredictor (v2.2)
+    #           ScorePredictor v2.2
     #                ↓
-    #           CornersModel (v1.2)
+    #           CornersModel v1.2
     #                ↓
-    #           CardsModel (v1.2)
+    #           CardsModel v1.2
     #                ↓
     #              BRAIN
     # ============================================================
@@ -3426,12 +3435,24 @@ class FAJBrain:
         )
 
         # ========================================================
-        # GOAL MODEL (v2.0 — только FormModel)
+        # GOAL MODEL v2.1
+        #
+        # FormModel
+        #     +
+        # FormControl
+        #     +
+        # SpecialForm
+        #     ↓
+        # GoalModel
         # ========================================================
         goal_model = GoalModel()
         goal_result = goal_model.analyze(
             home_form=home_state["form_model"],
             away_form=away_state["form_model"],
+            home_control=home_state["form_control"],
+            away_control=away_state["form_control"],
+            home_special=home_state["special_form"],
+            away_special=away_state["special_form"],
             home_team=home_team,
             away_team=away_team,
             venue="HOME",
@@ -3447,13 +3468,11 @@ class FAJBrain:
         )
 
         # ========================================================
-        # SCORE PREDICTOR (v2.2 — только ProbabilityModel)
+        # SCORE PREDICTOR (v2.2)
         # ========================================================
         score_predictor = ScorePredictor()
         score_result = score_predictor.predict(
             score_probabilities=probability_result.score_distribution,
-            home_xg=goal_result.home_xg,
-            away_xg=goal_result.away_xg,
             probability_result=probability_result,
         )
 
@@ -3575,7 +3594,6 @@ class FAJBrain:
 
         top_scores = score_result.top_scores
 
-        # v2.2 возвращает поле "score", а не "score_string"
         score_strings = [
             item["score"] for item in top_scores[:3]
         ]
@@ -3681,21 +3699,9 @@ class FAJBrain:
             over35_probability=totals["over35"] if totals["over35"] is not None else 0.0,
             home_xg=home_xg,
             away_xg=away_xg,
-            most_likely_score=(
-                score_result.predicted_score
-                if score_result.predicted_score is not None
-                else "-"
-            ),
-            second_likely_score=(
-                score_result.second_score
-                if score_result.second_score is not None
-                else "-"
-            ),
-            third_likely_score=(
-                score_result.third_score
-                if score_result.third_score is not None
-                else "-"
-            ),
+            most_likely_score=score_result.predicted_score if score_result.predicted_score is not None else "-",
+            second_likely_score=score_result.second_score if score_result.second_score is not None else "-",
+            third_likely_score=score_result.third_score if score_result.third_score is not None else "-",
             corners_expected=corner_total,
             home_corners_expected=home_corners_expected,
             away_corners_expected=away_corners_expected,
@@ -3770,13 +3776,13 @@ class FAJBrain:
                 "corners_result": self._json_safe(corners_result),
                 "cards_result": self._json_safe(cards_result),
                 "method": (
-                    "FormModel v1.1 + "
+                    "FormModel v1.2 + "
                     "FormWin v1.2 + "
                     "Defence v1.1 + "
                     "FormControl v1.1 + "
                     "FormAnomaly v1.0 + "
                     "SpecialForm v1.0 + "
-                    "GoalModel v2.0 + "
+                    "GoalModel v2.1 + "
                     "ProbabilityModel v1.1 + "
                     "ScorePredictor v2.2 + "
                     "CornersModel v1.2 + "
@@ -3784,8 +3790,8 @@ class FAJBrain:
                 ),
                 "xg_internal": {"home": home_xg, "away": away_xg},
                 "note": (
-                    "FAJ-BRAIN-0.8. "
-                    "GoalModel v2.0: только FormModel. "
+                    "FAJ-BRAIN-1.0. "
+                    "GoalModel v2.1: FormModel + FormControl + SpecialForm. "
                     "ScorePredictor v2.2: только ProbabilityModel. "
                     "Corners v1.2 и Cards v1.2 с recent3 + trend."
                 ),
