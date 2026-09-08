@@ -3473,6 +3473,8 @@ class FAJBrain:
         score_predictor = ScorePredictor()
         score_result = score_predictor.predict(
             score_probabilities=probability_result.score_distribution,
+            home_xg=goal_result.home_xg,
+            away_xg=goal_result.away_xg,
             probability_result=probability_result,
         )
 
