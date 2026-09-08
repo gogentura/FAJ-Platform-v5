@@ -57,7 +57,7 @@ FAJ Personal Prediction Brain
     None НЕ превращается в 0.
 
 Версия:
-    FAJ-BRAIN-0.7
+    FAJ-BRAIN-0.8
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ from app.core.cards_model import CardsModel
 # VERSION
 # ============================================================
 
-BRAIN_VERSION = "FAJ-BRAIN-0.7"
+BRAIN_VERSION = "FAJ-BRAIN-0.8"
 
 MIN_MATCHES = 1
 EXTENDED_ANALYSIS_MATCHES = 3
@@ -1119,19 +1119,7 @@ class FAJBrain:
         self.version = BRAIN_VERSION
 
         # ====================================================
-        # DIAGNOSTIC MODELS
-        # ====================================================
-        #
-        # CornersModel / CardsModel используются
-        # непосредственно в финальном Brain pipeline.
-        #
-        # Они НЕ вмешиваются в:
-        #     xG
-        #     1X2
-        #     BTTS
-        #     ScorePredictor
-        #
-        # Они являются отдельными диагностическими органами.
+        # DIAGNOSTIC MODELS (Corners/Cards)
         # ====================================================
 
         self.corners_model = CornersModel()
@@ -2109,17 +2097,13 @@ class FAJBrain:
         )
 
     # ========================================================
-    # EXPECTED GOALS (LEGACY)
+    # EXPECTED GOALS (UPDATED: v0.8 — только FormModel, без FormWin/Defence)
     # ========================================================
 
     def _calculate_expected_goals(
         self,
         home_form_result: Any,
         away_form_result: Any,
-        home_form_win: Any,
-        away_form_win: Any,
-        home_defence: Any,
-        away_defence: Any,
         home_team: str,
         away_team: str,
     ) -> tuple[
@@ -2128,35 +2112,17 @@ class FAJBrain:
         Any,
     ]:
 
-        goal_result = (
-            self.goal_model.analyze(
-
-                home_form=home_form_result,
-
-                away_form=away_form_result,
-
-                home_team=home_team,
-
-                away_team=away_team,
-
-                venue="HOME",
-
-                home_form_win=home_form_win,
-
-                away_form_win=away_form_win,
-
-                home_defence=home_defence,
-
-                away_defence=away_defence,
-            )
+        goal_result = self.goal_model.analyze(
+            home_form=home_form_result,
+            away_form=away_form_result,
+            home_team=home_team,
+            away_team=away_team,
+            venue="HOME",
         )
 
         return (
-
             goal_result.home_xg,
-
             goal_result.away_xg,
-
             goal_result,
         )
 
@@ -2635,7 +2601,7 @@ class FAJBrain:
     # ========================================================
     # ========================================================
     # FAJ MATHEMATICAL BRAIN BRIDGE
-    # v1.1
+    # v1.2
     #
     # RAW HISTORY
     #     ↓
@@ -2661,11 +2627,15 @@ class FAJBrain:
     #                ↓
     #           SpecialForm
     #                ↓
-    #           GoalModel
+    #           GoalModel (v2.0 — только FormModel)
     #                ↓
-    #           ProbabilityModel
+    #           ProbabilityModel (v1.1)
     #                ↓
-    #           ScorePredictor
+    #           ScorePredictor (v2.2)
+    #                ↓
+    #           CornersModel (v1.2)
+    #                ↓
+    #           CardsModel (v1.2)
     #                ↓
     #              BRAIN
     # ============================================================
@@ -3456,189 +3426,35 @@ class FAJBrain:
         )
 
         # ========================================================
-        # GOAL MODEL
+        # GOAL MODEL (v2.0 — только FormModel)
         # ========================================================
         goal_model = GoalModel()
         goal_result = goal_model.analyze(
-            home_form=home_state[
-                "form_model"
-            ],
-            away_form=away_state[
-                "form_model"
-            ],
+            home_form=home_state["form_model"],
+            away_form=away_state["form_model"],
             home_team=home_team,
             away_team=away_team,
             venue="HOME",
-            home_form_win=home_state[
-                "form_win"
-            ],
-            away_form_win=away_state[
-                "form_win"
-            ],
-            home_defence=home_state[
-                "defence"
-            ],
-            away_defence=away_state[
-                "defence"
-            ],
         )
 
         # ========================================================
-        # PROBABILITY MODEL
+        # PROBABILITY MODEL (v1.1)
         # ========================================================
         probability_model = ProbabilityModel()
-        probability_result = (
-            probability_model.calculate(
-                home_xg=goal_result.home_xg,
-                away_xg=goal_result.away_xg,
-            )
+        probability_result = probability_model.calculate(
+            home_xg=goal_result.home_xg,
+            away_xg=goal_result.away_xg,
         )
 
         # ========================================================
-        # CONTROL
-        # ========================================================
-        home_control = getattr(
-            home_state[
-                "form_control"
-            ],
-            "control_signal",
-            None,
-        )
-        away_control = getattr(
-            away_state[
-                "form_control"
-            ],
-            "control_signal",
-            None,
-        )
-
-        control_advantage = None
-        control_strength = None
-
-        if (
-            home_control is not None
-            and away_control is not None
-        ):
-            difference = (
-                float(home_control)
-                - float(away_control)
-            )
-
-            if difference > 0.05:
-                control_advantage = "HOME"
-            elif difference < -0.05:
-                control_advantage = "AWAY"
-            else:
-                control_advantage = "EQUAL"
-
-            control_strength = min(
-                1.0,
-                abs(difference),
-            )
-
-        # ========================================================
-        # ANOMALY
-        # ========================================================
-        home_anomaly = getattr(
-            home_state[
-                "form_anomaly"
-            ],
-            "anomaly_signal",
-            None,
-        )
-        away_anomaly = getattr(
-            away_state[
-                "form_anomaly"
-            ],
-            "anomaly_signal",
-            None,
-        )
-
-        anomaly_signal = None
-
-        if (
-            home_anomaly is not None
-            and away_anomaly is not None
-        ):
-            anomaly_signal = max(
-                -1.0,
-                min(
-                    1.0,
-                    float(home_anomaly)
-                    - float(away_anomaly),
-                ),
-            )
-
-        # ========================================================
-        # SPECIAL FORM
-        # ========================================================
-        home_special = getattr(
-            home_state[
-                "special_form"
-            ],
-            "composite_signal",
-            None,
-        )
-        away_special = getattr(
-            away_state[
-                "special_form"
-            ],
-            "composite_signal",
-            None,
-        )
-
-        special_composite = None
-
-        if (
-            home_special is not None
-            and away_special is not None
-        ):
-            special_composite = max(
-                -0.30,
-                min(
-                    0.30,
-                    float(home_special)
-                    - float(away_special),
-                ),
-            )
-
-        # ========================================================
-        # SCORE
+        # SCORE PREDICTOR (v2.2 — только ProbabilityModel)
         # ========================================================
         score_predictor = ScorePredictor()
         score_result = score_predictor.predict(
-            score_probabilities=(
-                probability_result.score_distribution
-            ),
+            score_probabilities=probability_result.score_distribution,
             home_xg=goal_result.home_xg,
             away_xg=goal_result.away_xg,
-            probability_result=(
-                probability_result
-            ),
-            home_form_win=home_state[
-                "form_win"
-            ],
-            away_form_win=away_state[
-                "form_win"
-            ],
-            home_defence=home_state[
-                "defence"
-            ],
-            away_defence=away_state[
-                "defence"
-            ],
-            control_advantage=(
-                control_advantage
-            ),
-            control_strength=(
-                control_strength
-            ),
-            anomaly_signal=(
-                anomaly_signal
-            ),
-            special_composite=(
-                special_composite
-            ),
+            probability_result=probability_result,
         )
 
         # ========================================================
@@ -3648,37 +3464,15 @@ class FAJBrain:
             "home": home_state,
             "away": away_state,
             "goal_model": goal_result,
-            "probability_model": (
-                probability_result
-            ),
+            "probability_model": probability_result,
             "score_predictor": score_result,
             "diagnostics": {
                 "home_team": home_team,
                 "away_team": away_team,
-                "home_matches": len(
-                    home_matches or []
-                ),
-                "away_matches": len(
-                    away_matches or []
-                ),
-                "home_xg": (
-                    goal_result.home_xg
-                ),
-                "away_xg": (
-                    goal_result.away_xg
-                ),
-                "control_advantage": (
-                    control_advantage
-                ),
-                "control_strength": (
-                    control_strength
-                ),
-                "anomaly_signal": (
-                    anomaly_signal
-                ),
-                "special_composite": (
-                    special_composite
-                ),
+                "home_matches": len(home_matches or []),
+                "away_matches": len(away_matches or []),
+                "home_xg": goal_result.home_xg,
+                "away_xg": goal_result.away_xg,
             },
         }
 
@@ -3700,33 +3494,21 @@ class FAJBrain:
         # 1. NORMALIZE (LEGACY - для совместимости)
         # ====================================================
 
-        home_history = (
-            self._normalize_matches(
-                home_matches,
-                home_team,
-            )
+        home_history = self._normalize_matches(
+            home_matches,
+            home_team,
         )
 
-        away_history = (
-            self._normalize_matches(
-                away_matches,
-                away_team,
-            )
+        away_history = self._normalize_matches(
+            away_matches,
+            away_team,
         )
 
         if not home_history:
-
-            raise ValueError(
-                f"Нет исторических данных "
-                f"для {home_team}."
-            )
+            raise ValueError(f"Нет исторических данных для {home_team}.")
 
         if not away_history:
-
-            raise ValueError(
-                f"Нет исторических данных "
-                f"для {away_team}."
-            )
+            raise ValueError(f"Нет исторических данных для {away_team}.")
 
         # ====================================================
         # 2. NEW FAJ MATHEMATICAL BRAIN
@@ -3756,20 +3538,11 @@ class FAJBrain:
         # 4. NONE PROTECTION
         # ====================================================
 
-        if (
-            home_xg is None
-            or away_xg is None
-        ):
-
+        if home_xg is None or away_xg is None:
             raise ValueError(
-
-                "GoalModel не смог "
-                "рассчитать xG: "
-                "для одной или обеих "
-                "команд отсутствует "
-                "необходимый xG/xGA "
-                "компонент в "
-                "FormModelResult."
+                "GoalModel не смог рассчитать xG: "
+                "для одной или обеих команд отсутствует "
+                "необходимый xG/xGA компонент в FormModelResult."
             )
 
         # ====================================================
@@ -3777,15 +3550,9 @@ class FAJBrain:
         # ====================================================
 
         probabilities = {
-
-            "home":
-                probability_result.home_win,
-
-            "draw":
-                probability_result.draw,
-
-            "away":
-                probability_result.away_win,
+            "home": probability_result.home_win,
+            "draw": probability_result.draw,
+            "away": probability_result.away_win,
         }
 
         # ====================================================
@@ -3797,14 +3564,9 @@ class FAJBrain:
         over35 = probability_result.over_35
 
         totals = {
-            "btts": _probability(btts)
-            if btts is not None else None,
-
-            "over25": _probability(over25)
-            if over25 is not None else None,
-
-            "over35": _probability(over35)
-            if over35 is not None else None,
+            "btts": _probability(btts) if btts is not None else None,
+            "over25": _probability(over25) if over25 is not None else None,
+            "over35": _probability(over35) if over35 is not None else None,
         }
 
         # ====================================================
@@ -3813,60 +3575,26 @@ class FAJBrain:
 
         top_scores = score_result.top_scores
 
+        # v2.2 возвращает поле "score", а не "score_string"
         score_strings = [
-
-            item["score_string"]
-
-            for item in top_scores[:3]
+            item["score"] for item in top_scores[:3]
         ]
 
-        while len(
-            score_strings
-        ) < 3:
-
-            score_strings.append(
-                "-"
-            )
+        while len(score_strings) < 3:
+            score_strings.append("-")
 
         # ====================================================
         # 8. CORNERS
         # ====================================================
-
-        # Используем существующие CornersModel через старый метод
-        # для сохранения совместимости с текущим UI.
 
         corners_result = self.corners_model.synthesize_match(
             home_math["context"],
             away_math["context"],
         )
 
-        corner_total = (
-            corners_result.get(
-                "total_expected_corners"
-            )
-        )
-
-        home_corners_expected = (
-            corners_result
-            .get(
-                "home",
-                {}
-            )
-            .get(
-                "home_corners_expected"
-            )
-        )
-
-        away_corners_expected = (
-            corners_result
-            .get(
-                "away",
-                {}
-            )
-            .get(
-                "away_corners_expected"
-            )
-        )
+        corner_total = corners_result.get("total_expected_corners")
+        home_corners_expected = corners_result.get("home", {}).get("home_corners_expected")
+        away_corners_expected = corners_result.get("away", {}).get("away_corners_expected")
 
         # ====================================================
         # 9. CARDS
@@ -3877,463 +3605,190 @@ class FAJBrain:
             away_math["context"],
         )
 
-        card_total = (
-            cards_result.get(
-                "total_expected_cards"
-            )
-        )
-
-        home_cards_expected = (
-            cards_result
-            .get(
-                "home",
-                {}
-            )
-            .get(
-                "home_cards_expected"
-            )
-        )
-
-        away_cards_expected = (
-            cards_result
-            .get(
-                "away",
-                {}
-            )
-            .get(
-                "away_cards_expected"
-            )
-        )
+        card_total = cards_result.get("total_expected_cards")
+        home_cards_expected = cards_result.get("home", {}).get("home_cards_expected")
+        away_cards_expected = cards_result.get("away", {}).get("away_cards_expected")
 
         # ====================================================
         # 10. CONFIDENCE (LEGACY - требует доработки)
         # ====================================================
 
-        # Пока используем старый расчёт на основе TeamProfile
-        # Это будет заменено на новую метрику после калибровки
+        home_profile = self.build_profile(home_team, home_history)
+        away_profile = self.build_profile(away_team, away_history)
 
-        home_profile = (
-            self.build_profile(
-                home_team,
-                home_history,
-            )
+        confidence = self._confidence(
+            home_profile,
+            away_profile,
+            probabilities,
         )
 
-        away_profile = (
-            self.build_profile(
-                away_team,
-                away_history,
-            )
-        )
-
-        confidence = (
-            self._confidence(
-                home_profile,
-                away_profile,
-                probabilities,
-            )
-        )
-
-        risk = (
-            self._risk(
-                confidence,
-                home_profile,
-                away_profile,
-            )
+        risk = self._risk(
+            confidence,
+            home_profile,
+            away_profile,
         )
 
         # ====================================================
         # 11. CONCLUSION (LEGACY)
         # ====================================================
 
-        (
-            conclusion,
-            factors,
-        ) = (
-            self._conclusion(
-                home_profile,
-                away_profile,
-                probabilities,
-                totals,
-            )
+        conclusion, factors = self._conclusion(
+            home_profile,
+            away_profile,
+            probabilities,
+            totals,
         )
 
         # ====================================================
         # 12. ANALYSIS MODE
         # ====================================================
 
-        min_matches = min(
+        min_matches = min(len(home_history), len(away_history))
 
-            len(home_history),
-
-            len(away_history),
-        )
-
-        if (
-            min_matches
-            >= PREFERRED_MATCHES
-        ):
-
-            analysis_mode = (
-                "Расширенный"
-            )
-
-        elif (
-            min_matches
-            >= EXTENDED_ANALYSIS_MATCHES
-        ):
-
-            analysis_mode = (
-                "Базовый+"
-            )
-
+        if min_matches >= PREFERRED_MATCHES:
+            analysis_mode = "Расширенный"
+        elif min_matches >= EXTENDED_ANALYSIS_MATCHES:
+            analysis_mode = "Базовый+"
         elif min_matches >= 2:
-
-            analysis_mode = (
-                "Базовый"
-            )
-
+            analysis_mode = "Базовый"
         else:
-
-            analysis_mode = (
-                "Экспресс"
-            )
+            analysis_mode = "Экспресс"
 
         # ====================================================
         # 13. OUTPUT
         # ====================================================
 
         result = BrainPrediction(
-
             home_team=home_team,
-
             away_team=away_team,
-
             home_win_probability=(
-                _probability(
-                    probabilities["home"]
-                )
+                _probability(probabilities["home"])
                 if probabilities["home"] is not None
                 else 0.0
             ),
-
             draw_probability=(
-                _probability(
-                    probabilities["draw"]
-                )
+                _probability(probabilities["draw"])
                 if probabilities["draw"] is not None
                 else 0.0
             ),
-
             away_win_probability=(
-                _probability(
-                    probabilities["away"]
-                )
+                _probability(probabilities["away"])
                 if probabilities["away"] is not None
                 else 0.0
             ),
-
-            btts_probability=(
-                totals["btts"]
-                if totals["btts"] is not None
-                else 0.0
-            ),
-
-            over25_probability=(
-                totals["over25"]
-                if totals["over25"] is not None
-                else 0.0
-            ),
-
-            over35_probability=(
-                totals["over35"]
-                if totals["over35"] is not None
-                else 0.0
-            ),
-
+            btts_probability=totals["btts"] if totals["btts"] is not None else 0.0,
+            over25_probability=totals["over25"] if totals["over25"] is not None else 0.0,
+            over35_probability=totals["over35"] if totals["over35"] is not None else 0.0,
             home_xg=home_xg,
-
             away_xg=away_xg,
-
             most_likely_score=(
-                score_result.predicted_score_string
-                if score_result.predicted_score_string is not None
+                score_result.predicted_score
+                if score_result.predicted_score is not None
                 else "-"
             ),
-
             second_likely_score=(
-                score_result.second_score_string
-                if score_result.second_score_string is not None
+                score_result.second_score
+                if score_result.second_score is not None
                 else "-"
             ),
-
             third_likely_score=(
-                score_result.third_score_string
-                if score_result.third_score_string is not None
+                score_result.third_score
+                if score_result.third_score is not None
                 else "-"
             ),
-
-            corners_expected=(
-                corner_total
-            ),
-
-            home_corners_expected=(
-                home_corners_expected
-            ),
-
-            away_corners_expected=(
-                away_corners_expected
-            ),
-
+            corners_expected=corner_total,
+            home_corners_expected=home_corners_expected,
+            away_corners_expected=away_corners_expected,
             over75_corners_probability=(
-
-                self._over_probability(
-                    corner_total,
-                    7.5,
-                )
-
+                self._over_probability(corner_total, 7.5)
                 if corner_total is not None
-
                 else None
             ),
-
             over85_corners_probability=(
-
-                self._over_probability(
-                    corner_total,
-                    8.5,
-                )
-
+                self._over_probability(corner_total, 8.5)
                 if corner_total is not None
-
                 else None
             ),
-
             over95_corners_probability=(
-
-                self._over_probability(
-                    corner_total,
-                    9.5,
-                )
-
+                self._over_probability(corner_total, 9.5)
                 if corner_total is not None
-
                 else None
             ),
-
             over105_corners_probability=(
-
-                self._over_probability(
-                    corner_total,
-                    10.5,
-                )
-
+                self._over_probability(corner_total, 10.5)
                 if corner_total is not None
-
                 else None
             ),
-
-            cards_expected=(
-                card_total
-            ),
-
-            home_cards_expected=(
-                home_cards_expected
-            ),
-
-            away_cards_expected=(
-                away_cards_expected
-            ),
-
+            cards_expected=card_total,
+            home_cards_expected=home_cards_expected,
+            away_cards_expected=away_cards_expected,
             over25_cards_probability=(
-
-                self._over_probability(
-                    card_total,
-                    2.5,
-                )
-
+                self._over_probability(card_total, 2.5)
                 if card_total is not None
-
                 else None
             ),
-
             over35_cards_probability=(
-
-                self._over_probability(
-                    card_total,
-                    3.5,
-                )
-
+                self._over_probability(card_total, 3.5)
                 if card_total is not None
-
                 else None
             ),
-
             over45_cards_probability=(
-
-                self._over_probability(
-                    card_total,
-                    4.5,
-                )
-
+                self._over_probability(card_total, 4.5)
                 if card_total is not None
-
                 else None
             ),
-
             confidence=confidence,
-
             risk=risk,
-
-            analysis_mode=(
-                analysis_mode
-            ),
-
+            analysis_mode=analysis_mode,
             data_quality=round(
-
-                (
-                    home_profile.data_quality
-                    + away_profile.data_quality
-                ) / 2.0,
-
+                (home_profile.data_quality + away_profile.data_quality) / 2.0,
                 1,
             ),
-
             conclusion=conclusion,
-
             factors=factors,
-
             calculation_meta={
-
-                "brain_version":
-                    BRAIN_VERSION,
-
-                "home_matches":
-                    len(home_history),
-
-                "away_matches":
-                    len(away_history),
-
-                "home_profile":
-                    home_profile.__dict__,
-
-                "away_profile":
-                    away_profile.__dict__,
-
-                "home_form_result":
-                    self._json_safe(
-                        home_math["form_model"]
-                    ),
-
-                "away_form_result":
-                    self._json_safe(
-                        away_math["form_model"]
-                    ),
-
-                "home_form_win":
-                    self._json_safe(
-                        home_math["form_win"]
-                    ),
-
-                "away_form_win":
-                    self._json_safe(
-                        away_math["form_win"]
-                    ),
-
-                "home_defence":
-                    self._json_safe(
-                        home_math["defence"]
-                    ),
-
-                "away_defence":
-                    self._json_safe(
-                        away_math["defence"]
-                    ),
-
-                "home_form_control":
-                    self._json_safe(
-                        home_math["form_control"]
-                    ),
-
-                "away_form_control":
-                    self._json_safe(
-                        away_math["form_control"]
-                    ),
-
-                "home_form_anomaly":
-                    self._json_safe(
-                        home_math["form_anomaly"]
-                    ),
-
-                "away_form_anomaly":
-                    self._json_safe(
-                        away_math["form_anomaly"]
-                    ),
-
-                "home_special_form":
-                    self._json_safe(
-                        home_math["special_form"]
-                    ),
-
-                "away_special_form":
-                    self._json_safe(
-                        away_math["special_form"]
-                    ),
-
-                "goal_model":
-                    self._json_safe(
-                        goal_result
-                    ),
-
-                "probability_model":
-                    self._json_safe(
-                        probability_result
-                    ),
-
-                "score_predictor":
-                    self._json_safe(
-                        score_result
-                    ),
-
-                "corners_result":
-                    self._json_safe(
-                        corners_result
-                    ),
-
-                "cards_result":
-                    self._json_safe(
-                        cards_result
-                    ),
-
-                "method":
-                    "FormModel v1.0 + "
-                    "FormWin v1.1 + "
-                    "Defence v1.0 + "
+                "brain_version": BRAIN_VERSION,
+                "home_matches": len(home_history),
+                "away_matches": len(away_history),
+                "home_profile": home_profile.__dict__,
+                "away_profile": away_profile.__dict__,
+                "home_form_result": self._json_safe(home_math["form_model"]),
+                "away_form_result": self._json_safe(away_math["form_model"]),
+                "home_form_win": self._json_safe(home_math["form_win"]),
+                "away_form_win": self._json_safe(away_math["form_win"]),
+                "home_defence": self._json_safe(home_math["defence"]),
+                "away_defence": self._json_safe(away_math["defence"]),
+                "home_form_control": self._json_safe(home_math["form_control"]),
+                "away_form_control": self._json_safe(away_math["form_control"]),
+                "home_form_anomaly": self._json_safe(home_math["form_anomaly"]),
+                "away_form_anomaly": self._json_safe(away_math["form_anomaly"]),
+                "home_special_form": self._json_safe(home_math["special_form"]),
+                "away_special_form": self._json_safe(away_math["special_form"]),
+                "goal_model": self._json_safe(goal_result),
+                "probability_model": self._json_safe(probability_result),
+                "score_predictor": self._json_safe(score_result),
+                "corners_result": self._json_safe(corners_result),
+                "cards_result": self._json_safe(cards_result),
+                "method": (
+                    "FormModel v1.1 + "
+                    "FormWin v1.2 + "
+                    "Defence v1.1 + "
                     "FormControl v1.1 + "
                     "FormAnomaly v1.0 + "
                     "SpecialForm v1.0 + "
-                    "GoalModel v1.1 + "
-                    "ProbabilityModel v1.0 + "
-                    "ScorePredictor v2.0 + "
-                    "CornersModel v1.0 + "
-                    "CardsModel v1.0",
-
-                "xg_internal": {
-
-                    "home":
-                        home_xg,
-
-                    "away":
-                        away_xg,
-                },
-
-                "note":
-                    "FAJ-BRAIN-0.7. "
-                    "Новая математическая цепочка: "
-                    "FormContext -> FormModel -> FormWin/Defence "
-                    "-> GoalModel -> ProbabilityModel -> ScorePredictor. "
-                    "Старая математика пока сохранена для confidence/risk. "
-                    "После калибровки будет полностью заменена.",
+                    "GoalModel v2.0 + "
+                    "ProbabilityModel v1.1 + "
+                    "ScorePredictor v2.2 + "
+                    "CornersModel v1.2 + "
+                    "CardsModel v1.2"
+                ),
+                "xg_internal": {"home": home_xg, "away": away_xg},
+                "note": (
+                    "FAJ-BRAIN-0.8. "
+                    "GoalModel v2.0: только FormModel. "
+                    "ScorePredictor v2.2: только ProbabilityModel. "
+                    "Corners v1.2 и Cards v1.2 с recent3 + trend."
+                ),
             },
         )
 
@@ -4356,17 +3811,11 @@ def predict_match(
     brain = FAJBrain()
 
     return brain.predict(
-
         home_team=home_team,
-
         away_team=away_team,
-
         home_matches=home_matches,
-
         away_matches=away_matches,
-
         home_form_context=home_form_context,
-
         away_form_context=away_form_context,
     )
 
@@ -4378,7 +3827,6 @@ def predict_match(
 if __name__ == "__main__":
 
     home = [
-
         {
             "goals_for": 3,
             "goals_against": 0,
@@ -4397,7 +3845,6 @@ if __name__ == "__main__":
             "xg": 2.2,
             "is_home": True,
         },
-
         {
             "goals_for": 2,
             "goals_against": 1,
@@ -4416,7 +3863,6 @@ if __name__ == "__main__":
             "xg": 1.8,
             "is_home": False,
         },
-
         {
             "goals_for": 1,
             "goals_against": 1,
@@ -4438,7 +3884,6 @@ if __name__ == "__main__":
     ]
 
     away = [
-
         {
             "goals_for": 1,
             "goals_against": 2,
@@ -4457,7 +3902,6 @@ if __name__ == "__main__":
             "xg": 1.1,
             "is_home": False,
         },
-
         {
             "goals_for": 2,
             "goals_against": 2,
@@ -4476,7 +3920,6 @@ if __name__ == "__main__":
             "xg": 1.5,
             "is_home": True,
         },
-
         {
             "goals_for": 0,
             "goals_against": 1,
@@ -4498,26 +3941,15 @@ if __name__ == "__main__":
     ]
 
     prediction = predict_match(
-
         "Liverpool",
-
         "Nottingham Forest",
-
         home,
-
         away,
     )
 
     print("=" * 70)
-
-    print(
-        "FAJ BRAIN SELF TEST"
-    )
-
+    print("FAJ BRAIN SELF TEST")
     print("=" * 70)
 
     for key, value in prediction.items():
-
-        print(
-            f"{key}: {value}"
-        )
+        print(f"{key}: {value}")
