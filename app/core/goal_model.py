@@ -1384,6 +1384,35 @@ class GoalModel:
         )
 
     # ========================================================
+    # CLAMP
+    # ========================================================
+
+    @staticmethod
+    def _clamp(
+        value: float,
+        minimum: float,
+        maximum: float,
+    ) -> float:
+        """
+        Ограничение значения заданным диапазоном.
+
+        Используется для всех bounded signals:
+            trend
+            dominance
+            control
+            special
+            total adjustment
+        """
+
+        return max(
+            minimum,
+            min(
+                maximum,
+                value,
+            ),
+        )
+
+    # ========================================================
     # LAMBDA CLAMP
     # ========================================================
 
