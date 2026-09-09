@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-GOAL MODEL v2.1
+GOAL MODEL v2.2
 ============================================================
 
 Назначение
@@ -26,7 +26,7 @@ GOAL MODEL v2.1
         └── xGA_trend
         │
         ▼
-    GoalModel v2.1
+    GoalModel v2.2
         │
         ├── Attack Level
         ├── Defence Level
@@ -35,30 +35,36 @@ GOAL MODEL v2.1
         ├── Dominance Adjustment
         ├── FormControl Adjustment
         ├── SpecialForm Adjustment
-        └── Goal Allocation (NEW v1.0)
+        └── Winner Signal + Goal Allocation v2.0
         │
         ▼
     lambda_home / lambda_away
 
 ------------------------------------------------------------
-GOAL ALLOCATION v1.0 (NEW)
+WINNER SIGNAL + GOAL ALLOCATION v2.0
 ------------------------------------------------------------
 Цель:
-    Распределить уже рассчитанный goal volume
-    между командами.
+    Определить относительную силу команд (Winner Signal)
+    и распределить существующий goal volume.
 
 Принцип:
     λH + λA (до allocation) = λH + λA (после allocation)
 
-Сигналы:
-    - SOT dominance (вес 0.70)
-    - Shots dominance (вес 0.30)
+Winner Signal компоненты:
+    - xG (25%)
+    - xGA (15%)
+    - SOT (15%)
+    - Shots (10%)
+    - Recent points rate (10%)
+    - Overall points rate (5%)
+    - Home/Away points rate (10%)
+    - xG trend (5%)
+    - xGA trend (5%)
 
-Влияние:
-    максимум ±4%
-
-Это НЕ создаёт новый xG.
-Это только перераспределяет существующий объём голов.
+Распределение:
+    home_share = 0.50 + 0.18 * winner_signal
+    away_share = 1.0 - home_share
+    ограничение: home_share ∈ [0.32, 0.68]
 
 ------------------------------------------------------------
 ГРАНИЦЫ МОДЕЛИ
@@ -87,7 +93,7 @@ GoalModel использует:
 4. opponent-relative dominance;
 5. FormControl как ограниченный дополнительный сигнал;
 6. SpecialForm как ограниченный дополнительный сигнал;
-7. Goal Allocation (SOT + Shots) для мягкого распределения.
+7. Winner Signal для распределения goal volume.
 
 ------------------------------------------------------------
 ОСНОВНАЯ ФОРМУЛА
@@ -239,29 +245,36 @@ SpecialForm v1.0 выдаёт:
 
 
 ------------------------------------------------------------
-GOAL ALLOCATION v1.0
+WINNER SIGNAL
 ------------------------------------------------------------
 
-Secondary pre-match performance signals.
+Определяет относительную силу команд.
 
-SOT_edge =
-    (SOT_home - SOT_away) / max((SOT_home + SOT_away) / 2, 1.0)
+Компоненты и веса:
+    xG              25%
+    xGA             15%
+    SOT             15%
+    Shots           10%
+    Recent points   10%
+    Overall points   5%
+    Home/Away       10%
+    xG trend         5%
+    xGA trend        5%
 
-Shots_edge =
-    (Shots_home - Shots_away) / max((Shots_home + Shots_away) / 2, 1.0)
+Каждый компонент преобразуется в относительное
+преимущество [-1, +1].
 
-allocation_signal =
-    0.70 * SOT_edge + 0.30 * Shots_edge
 
-allocation_adjustment =
-    0.04 * allocation_signal
+------------------------------------------------------------
+GOAL ALLOCATION v2.0
+------------------------------------------------------------
 
-Применяется симметрично:
+Распределяет существующий total xG на основе Winner Signal.
 
-    λH = λH * (1 + allocation_adjustment)
-    λA = λA * (1 - allocation_adjustment)
+home_share = 0.50 + 0.18 * winner_signal
+away_share = 1.0 - home_share
 
-λH + λA сохраняется.
+Максимальный сдвиг: 32% / 68%
 
 
 ------------------------------------------------------------
@@ -314,7 +327,7 @@ from typing import Any, Dict, Optional
 # VERSION / STATUS
 # ============================================================
 
-GOAL_MODEL_VERSION = "2.1"
+GOAL_MODEL_VERSION = "2.2"
 FORMULA_STATUS = "RESEARCH_FORMULA"
 
 
@@ -367,13 +380,21 @@ MAX_TOTAL_ADJUSTMENT = 0.20
 
 
 # ============================================================
-# GOAL ALLOCATION PARAMETERS (NEW v1.0)
+# WINNER SIGNAL / GOAL ALLOCATION v2.0
 # ============================================================
 
-ALLOCATION_SOT_WEIGHT = 0.70
-ALLOCATION_SHOTS_WEIGHT = 0.30
-ALLOCATION_MAX_INFLUENCE = 0.04
-ALLOCATION_MIN_DENOMINATOR = 1.0
+WINNER_XG_WEIGHT = 0.25
+WINNER_XGA_WEIGHT = 0.15
+WINNER_SOT_WEIGHT = 0.15
+WINNER_SHOTS_WEIGHT = 0.10
+WINNER_RECENT_POINTS_WEIGHT = 0.10
+WINNER_POINTS_WEIGHT = 0.05
+WINNER_VENUE_POINTS_WEIGHT = 0.10
+WINNER_XG_TREND_WEIGHT = 0.05
+WINNER_XGA_TREND_WEIGHT = 0.05
+
+WINNER_MAX_SHARE_SHIFT = 0.18
+WINNER_MIN_DENOMINATOR = 1.0
 
 
 # ============================================================
@@ -383,7 +404,7 @@ ALLOCATION_MIN_DENOMINATOR = 1.0
 @dataclass
 class GoalModelResult:
     """
-    Результат GoalModel v2.1.
+    Результат GoalModel v2.2.
 
     Старые поля сохранены ради совместимости
     с FAJBrain и остальным pipeline.
@@ -427,7 +448,7 @@ class GoalModelResult:
 
 class GoalModel:
     """
-    FAJ GoalModel v2.1
+    FAJ GoalModel v2.2
 
     Основной источник силы:
         FormModel xG/xGA
@@ -436,7 +457,7 @@ class GoalModel:
         Dominance
         FormControl
         SpecialForm
-        Goal Allocation (SOT + Shots)
+        Winner Signal + Goal Allocation v2.0
 
     Важно:
 
@@ -446,8 +467,7 @@ class GoalModel:
     Они только корректируют уже рассчитанное
     objective xG состояние.
 
-    Goal Allocation только перераспределяет
-    существующий объём голов между командами.
+    Winner Signal распределяет существующий goal volume.
     """
 
     def __init__(self) -> None:
@@ -532,7 +552,7 @@ class GoalModel:
         )
 
         # ----------------------------------------------------
-        # 1A. HOME FORM — SHOTS / SOT (NEW)
+        # 1A. HOME FORM — SHOTS / SOT
         # ----------------------------------------------------
 
         home_shots_avg = self._safe_float(
@@ -549,6 +569,22 @@ class GoalModel:
 
         home_sot_against_avg = self._safe_float(
             self._get_value(home_form, "shots_on_target_against_avg")
+        )
+
+        # ----------------------------------------------------
+        # 1B. HOME FORM — POINTS (NEW)
+        # ----------------------------------------------------
+
+        home_recent_points_rate = self._safe_float(
+            self._get_value(home_form, "recent_points_rate")
+        )
+
+        home_points_rate = self._safe_float(
+            self._get_value(home_form, "points_rate")
+        )
+
+        home_home_points_rate = self._safe_float(
+            self._get_value(home_form, "home_points_rate")
         )
 
         # ----------------------------------------------------
@@ -588,7 +624,7 @@ class GoalModel:
         )
 
         # ----------------------------------------------------
-        # 2A. AWAY FORM — SHOTS / SOT (NEW)
+        # 2A. AWAY FORM — SHOTS / SOT
         # ----------------------------------------------------
 
         away_shots_avg = self._safe_float(
@@ -605,6 +641,22 @@ class GoalModel:
 
         away_sot_against_avg = self._safe_float(
             self._get_value(away_form, "shots_on_target_against_avg")
+        )
+
+        # ----------------------------------------------------
+        # 2B. AWAY FORM — POINTS (NEW)
+        # ----------------------------------------------------
+
+        away_recent_points_rate = self._safe_float(
+            self._get_value(away_form, "recent_points_rate")
+        )
+
+        away_points_rate = self._safe_float(
+            self._get_value(away_form, "points_rate")
+        )
+
+        away_away_points_rate = self._safe_float(
+            self._get_value(away_form, "away_points_rate")
         )
 
         # ----------------------------------------------------
@@ -787,7 +839,58 @@ class GoalModel:
             special_adjustment *= SPECIAL_MAX_INFLUENCE
 
         # ----------------------------------------------------
-        # 11. TOTAL MATCH ASYMMETRY
+        # 11. WINNER SIGNAL v1.0
+        #
+        # Кто сильнее?
+        #
+        # Используем несколько независимых pre-match
+        # показателей.
+        #
+        # Winner Signal НЕ создаёт xG.
+        # ----------------------------------------------------
+
+        winner_signal = self._calculate_winner_signal(
+            home_xg=home_xg_avg,
+            away_xg=away_xg_avg,
+            home_xga=home_xga_avg,
+            away_xga=away_xga_avg,
+            home_sot=home_sot_avg,
+            away_sot=away_sot_avg,
+            home_shots=home_shots_avg,
+            away_shots=away_shots_avg,
+            home_recent_points=home_recent_points_rate,
+            away_recent_points=away_recent_points_rate,
+            home_points=home_points_rate,
+            away_points=away_points_rate,
+            home_venue_points=home_home_points_rate,
+            away_venue_points=away_away_points_rate,
+            home_xg_trend=home_xg_trend,
+            away_xg_trend=away_xg_trend,
+            home_xga_trend=home_xga_trend,
+            away_xga_trend=away_xga_trend,
+        )
+
+        # ----------------------------------------------------
+        # 12. BASE GOAL VOLUME
+        #
+        # Это количество голов, которое модель ожидает
+        # в матче.
+        #
+        # Winner Signal его НЕ увеличивает.
+        # ----------------------------------------------------
+
+        total_before_allocation = None
+        if (
+            home_base_xg is not None
+            and away_base_xg is not None
+        ):
+            total_before_allocation = (
+                home_base_xg
+                + away_base_xg
+            )
+
+        # ----------------------------------------------------
+        # 13. DOMINANCE / CONTROL / SPECIAL ADJUSTMENT
         # ----------------------------------------------------
 
         total_adjustment = (
@@ -802,10 +905,6 @@ class GoalModel:
             MAX_TOTAL_ADJUSTMENT,
         )
 
-        # ----------------------------------------------------
-        # 12. APPLY ASYMMETRY
-        # ----------------------------------------------------
-
         home_xg = self._apply_match_adjustment(
             home_base_xg,
             total_adjustment,
@@ -817,67 +916,73 @@ class GoalModel:
         )
 
         # ----------------------------------------------------
-        # 13. GOAL ALLOCATION (NEW v1.0)
+        # 14. GOAL ALLOCATION v2.0
         #
-        # Только перераспределяет существующий объём голов.
-        # Не создаёт новый xG.
+        # Распределяем существующий total xG на основе
+        # Winner Signal.
+        #
+        # Если Winner Signal недоступен, сохраняем
+        # исходное распределение.
         # ----------------------------------------------------
 
-        allocation_signal = self._calculate_goal_allocation_signal(
-            home_shots=home_shots_avg,
-            away_shots=away_shots_avg,
-            home_sot=home_sot_avg,
-            away_sot=away_sot_avg,
-            home_shots_against=home_shots_against_avg,
-            away_shots_against=away_shots_against_avg,
-            home_sot_against=home_sot_against_avg,
-            away_sot_against=away_sot_against_avg,
-        )
-
-        allocation_adjustment = (
-            ALLOCATION_MAX_INFLUENCE * allocation_signal
-            if allocation_signal is not None
-            else 0.0
-        )
+        home_share = None
+        away_share = None
+        allocation_adjustment = 0.0
 
         if (
-            home_xg is not None
+            winner_signal is not None
+            and total_before_allocation is not None
+            and total_before_allocation > 0
+            and home_xg is not None
             and away_xg is not None
-            and allocation_adjustment != 0.0
         ):
-            total_before_allocation = (
-                home_xg + away_xg
+            allocation_adjustment = (
+                WINNER_MAX_SHARE_SHIFT
+                * winner_signal
             )
-
-            if total_before_allocation > 0:
+            home_share = self._clamp(
+                0.50 + allocation_adjustment,
+                0.32,
+                0.68,
+            )
+            away_share = (
+                1.0
+                - home_share
+            )
+            home_xg = (
+                total_before_allocation
+                * home_share
+            )
+            away_xg = (
+                total_before_allocation
+                * away_share
+            )
+        else:
+            # Если Winner Signal недостаточен,
+            # сохраняем исходное распределение.
+            if (
+                total_before_allocation is not None
+                and total_before_allocation > 0
+                and home_xg is not None
+            ):
                 home_share = (
-                    home_xg / total_before_allocation
+                    home_xg
+                    / total_before_allocation
                 )
-
-                new_home_share = self._clamp(
-                    home_share + allocation_adjustment,
-                    0.05,
-                    0.95,
-                )
-
-                home_xg = (
-                    total_before_allocation
-                    * new_home_share
-                )
-                away_xg = (
-                    total_before_allocation
-                    - home_xg
+                away_share = (
+                    away_xg
+                    / total_before_allocation
                 )
 
         # ----------------------------------------------------
-        # 14. FINAL CLAMP
+        # 15. FINAL CLAMP
         # ----------------------------------------------------
 
         home_xg = self._clip_lambda(home_xg)
         away_xg = self._clip_lambda(away_xg)
 
         # ----------------------------------------------------
-        # 15. DIAGNOSTICS
+        # 16. DIAGNOSTICS
         # ----------------------------------------------------
 
         diagnostics = self._build_diagnostics(
@@ -917,20 +1022,30 @@ class GoalModel:
 
             total_adjustment=total_adjustment,
 
-            allocation_signal=allocation_signal,
-            allocation_adjustment=allocation_adjustment,
+            winner_signal=winner_signal,
+            home_share=home_share,
+            away_share=away_share,
 
             home_shots=home_shots_avg,
             away_shots=away_shots_avg,
             home_sot=home_sot_avg,
             away_sot=away_sot_avg,
 
+            home_recent_points=home_recent_points_rate,
+            away_recent_points=away_recent_points_rate,
+            home_points=home_points_rate,
+            away_points=away_points_rate,
+            home_venue_points=home_home_points_rate,
+            away_venue_points=away_away_points_rate,
+
+            total_before_allocation=total_before_allocation,
+
             home_xg=home_xg,
             away_xg=away_xg,
         )
 
         # ----------------------------------------------------
-        # 16. RESULT
+        # 17. RESULT
         # ----------------------------------------------------
 
         return GoalModelResult(
@@ -1578,66 +1693,186 @@ class GoalModel:
         )
 
     # ========================================================
-    # GOAL ALLOCATION (NEW v1.0)
+    # WINNER SIGNAL v1.0
     # ========================================================
 
     @classmethod
-    def _calculate_goal_allocation_signal(
+    def _calculate_winner_signal(
         cls,
         *,
-        home_shots: Optional[float],
-        away_shots: Optional[float],
+        home_xg: Optional[float],
+        away_xg: Optional[float],
+        home_xga: Optional[float],
+        away_xga: Optional[float],
         home_sot: Optional[float],
         away_sot: Optional[float],
-        home_shots_against: Optional[float],
-        away_shots_against: Optional[float],
-        home_sot_against: Optional[float],
-        away_sot_against: Optional[float],
+        home_shots: Optional[float],
+        away_shots: Optional[float],
+        home_recent_points: Optional[float],
+        away_recent_points: Optional[float],
+        home_points: Optional[float],
+        away_points: Optional[float],
+        home_venue_points: Optional[float],
+        away_venue_points: Optional[float],
+        home_xg_trend: Optional[float],
+        away_xg_trend: Optional[float],
+        home_xga_trend: Optional[float],
+        away_xga_trend: Optional[float],
     ) -> Optional[float]:
         """
-        Secondary pre-match signal.
+        Winner Signal v1.0.
 
-        Purpose:
-            распределить уже рассчитанный goal volume.
-
-        It MUST NOT create additional total xG.
+        Определяет относительную силу команд.
 
         Positive:
-            slight allocation toward Home.
+            Home stronger.
 
         Negative:
-            slight allocation toward Away.
+            Away stronger.
+
+        Signal НЕ создаёт новый xG.
+        Он используется только для распределения
+        существующего goal volume.
         """
-
-        sot_gap = cls._calculate_allocation_gap(
-            home_for=home_sot,
-            away_for=away_sot,
-            home_against=home_sot_against,
-            away_against=away_sot_against,
-        )
-
-        shots_gap = cls._calculate_allocation_gap(
-            home_for=home_shots,
-            away_for=away_shots,
-            home_against=home_shots_against,
-            away_against=away_shots_against,
-        )
 
         components = []
 
-        if sot_gap is not None:
+        # ----------------------------------------------------
+        # 1. xG
+        # ----------------------------------------------------
+        value = cls._relative_gap(
+            home_xg,
+            away_xg,
+            DOMINANCE_XG_BASELINE,
+        )
+        if value is not None:
+            components.append(
+                (value, WINNER_XG_WEIGHT)
+            )
+
+        # ----------------------------------------------------
+        # 2. xGA
+        #
+        # Lower xGA = stronger defence.
+        # ----------------------------------------------------
+        value = cls._relative_gap(
+            home_xga,
+            away_xga,
+            DOMINANCE_XGA_BASELINE,
+        )
+        if value is not None:
             components.append(
                 (
-                    sot_gap,
-                    ALLOCATION_SOT_WEIGHT,
+                    -value,
+                    WINNER_XGA_WEIGHT,
                 )
             )
 
-        if shots_gap is not None:
+        # ----------------------------------------------------
+        # 3. SOT
+        # ----------------------------------------------------
+        value = cls._relative_gap(
+            home_sot,
+            away_sot,
+            4.0,
+        )
+        if value is not None:
+            components.append(
+                (value, WINNER_SOT_WEIGHT)
+            )
+
+        # ----------------------------------------------------
+        # 4. SHOTS
+        # ----------------------------------------------------
+        value = cls._relative_gap(
+            home_shots,
+            away_shots,
+            12.0,
+        )
+        if value is not None:
+            components.append(
+                (value, WINNER_SHOTS_WEIGHT)
+            )
+
+        # ----------------------------------------------------
+        # 5. RECENT POINTS
+        # ----------------------------------------------------
+        value = cls._relative_gap(
+            home_recent_points,
+            away_recent_points,
+            1.50,
+        )
+        if value is not None:
             components.append(
                 (
-                    shots_gap,
-                    ALLOCATION_SHOTS_WEIGHT,
+                    value,
+                    WINNER_RECENT_POINTS_WEIGHT,
+                )
+            )
+
+        # ----------------------------------------------------
+        # 6. OVERALL POINTS
+        # ----------------------------------------------------
+        value = cls._relative_gap(
+            home_points,
+            away_points,
+            1.50,
+        )
+        if value is not None:
+            components.append(
+                (
+                    value,
+                    WINNER_POINTS_WEIGHT,
+                )
+            )
+
+        # ----------------------------------------------------
+        # 7. HOME / AWAY FORM
+        # ----------------------------------------------------
+        value = cls._relative_gap(
+            home_venue_points,
+            away_venue_points,
+            1.50,
+        )
+        if value is not None:
+            components.append(
+                (
+                    value,
+                    WINNER_VENUE_POINTS_WEIGHT,
+                )
+            )
+
+        # ----------------------------------------------------
+        # 8. xG TREND
+        # ----------------------------------------------------
+        value = cls._relative_gap(
+            home_xg_trend,
+            away_xg_trend,
+            0.50,
+        )
+        if value is not None:
+            components.append(
+                (
+                    value,
+                    WINNER_XG_TREND_WEIGHT,
+                )
+            )
+
+        # ----------------------------------------------------
+        # 9. xGA TREND
+        #
+        # Lower / more negative trend is stronger.
+        # ----------------------------------------------------
+        value = cls._relative_gap(
+            home_xga_trend,
+            away_xga_trend,
+            0.50,
+        )
+        if value is not None:
+            components.append(
+                (
+                    -value,
+                    WINNER_XGA_TREND_WEIGHT,
                 )
             )
 
@@ -1654,65 +1889,11 @@ class GoalModel:
             for _, weight in components
         )
 
-        if weight_sum <= 0.0:
+        if weight_sum <= 0:
             return None
 
         return cls._clamp(
             weighted_sum / weight_sum,
-            -1.0,
-            1.0,
-        )
-
-    @classmethod
-    def _calculate_allocation_gap(
-        cls,
-        home_for: Optional[float],
-        away_for: Optional[float],
-        home_against: Optional[float],
-        away_against: Optional[float],
-    ) -> Optional[float]:
-        """
-        Opponent-relative secondary performance gap.
-
-        Home attack is compared with Away defensive allowance.
-        Away attack is compared with Home defensive allowance.
-
-        Missing data remains missing.
-        """
-
-        if (
-            home_for is None
-            or away_for is None
-            or home_against is None
-            or away_against is None
-        ):
-            return None
-
-        home_signal = (
-            home_for
-            + away_against
-        ) / 2.0
-
-        away_signal = (
-            away_for
-            + home_against
-        ) / 2.0
-
-        denominator = max(
-            (
-                abs(home_signal)
-                + abs(away_signal)
-            ) / 2.0,
-            ALLOCATION_MIN_DENOMINATOR,
-        )
-
-        gap = (
-            home_signal
-            - away_signal
-        ) / denominator
-
-        return cls._clamp(
-            gap,
             -1.0,
             1.0,
         )
@@ -1869,13 +2050,23 @@ class GoalModel:
 
         total_adjustment: float,
 
-        allocation_signal: Optional[float],
-        allocation_adjustment: float,
+        winner_signal: Optional[float],
+        home_share: Optional[float],
+        away_share: Optional[float],
 
         home_shots: Optional[float],
         away_shots: Optional[float],
         home_sot: Optional[float],
         away_sot: Optional[float],
+
+        home_recent_points: Optional[float],
+        away_recent_points: Optional[float],
+        home_points: Optional[float],
+        away_points: Optional[float],
+        home_venue_points: Optional[float],
+        away_venue_points: Optional[float],
+
+        total_before_allocation: Optional[float],
 
         home_xg: Optional[float],
         away_xg: Optional[float],
@@ -1890,28 +2081,23 @@ class GoalModel:
         """
 
         # ----------------------------------------------------
-        # Total preservation check
+        # Total preservation check (corrected)
         # ----------------------------------------------------
 
         total_preserved = None
 
         if (
-            home_base_xg is not None
-            and away_base_xg is not None
+            total_before_allocation is not None
             and home_xg is not None
             and away_xg is not None
         ):
-            base_total = (
-                home_base_xg
-                + away_base_xg
-            )
             final_total = (
                 home_xg
                 + away_xg
             )
             total_preserved = (
                 abs(
-                    base_total
+                    total_before_allocation
                     - final_total
                 ) < 1e-9
             )
@@ -1920,8 +2106,8 @@ class GoalModel:
         # Allocation shift
         # ----------------------------------------------------
 
-        home_share = None
-        away_share = None
+        final_home_share = None
+        final_away_share = None
 
         if (
             home_xg is not None
@@ -1929,8 +2115,8 @@ class GoalModel:
             and home_xg + away_xg > 0
         ):
             total = home_xg + away_xg
-            home_share = home_xg / total
-            away_share = away_xg / total
+            final_home_share = home_xg / total
+            final_away_share = away_xg / total
 
         return {
             "model": "GoalModel",
@@ -1944,7 +2130,8 @@ class GoalModel:
                 "dominance": True,
                 "form_control": True,
                 "special_form": True,
-                "goal_allocation": True,
+                "winner_signal": True,
+                "goal_allocation_v2": True,
                 "probability_model": False,
                 "score_model": False,
             },
@@ -2071,44 +2258,42 @@ class GoalModel:
             },
 
             # ----------------------------------------------------
-            # GOAL ALLOCATION (NEW v1.0)
+            # WINNER SIGNAL + GOAL ALLOCATION v2.0
             # ----------------------------------------------------
 
-            "goal_allocation": {
-                "signal":
-                    allocation_signal,
-
-                "adjustment":
-                    allocation_adjustment,
-
-                "max_influence":
-                    ALLOCATION_MAX_INFLUENCE,
-
-                "sot_weight":
-                    ALLOCATION_SOT_WEIGHT,
-
-                "shots_weight":
-                    ALLOCATION_SHOTS_WEIGHT,
-
-                "affects_total_xg":
-                    False,
-
-                "home_shots":
-                    home_shots,
-
-                "away_shots":
-                    away_shots,
-
-                "home_sot":
-                    home_sot,
-
-                "away_sot":
-                    away_sot,
+            "winner_signal": {
+                "signal": winner_signal,
+                "max_share_shift": WINNER_MAX_SHARE_SHIFT,
+                "home_share_before": home_share,
+                "away_share_before": away_share,
+                "home_share_after": final_home_share,
+                "away_share_after": final_away_share,
+                "affects_total_xg": False,
             },
 
-            "allocation_shift": {
-                "home_share": home_share,
-                "away_share": away_share,
+            "winner_components": {
+                "xg_weight": WINNER_XG_WEIGHT,
+                "xga_weight": WINNER_XGA_WEIGHT,
+                "sot_weight": WINNER_SOT_WEIGHT,
+                "shots_weight": WINNER_SHOTS_WEIGHT,
+                "recent_points_weight": WINNER_RECENT_POINTS_WEIGHT,
+                "points_weight": WINNER_POINTS_WEIGHT,
+                "venue_points_weight": WINNER_VENUE_POINTS_WEIGHT,
+                "xg_trend_weight": WINNER_XG_TREND_WEIGHT,
+                "xga_trend_weight": WINNER_XGA_TREND_WEIGHT,
+            },
+
+            "inputs": {
+                "home_shots": home_shots,
+                "away_shots": away_shots,
+                "home_sot": home_sot,
+                "away_sot": away_sot,
+                "home_recent_points": home_recent_points,
+                "away_recent_points": away_recent_points,
+                "home_points": home_points,
+                "away_points": away_points,
+                "home_venue_points": home_venue_points,
+                "away_venue_points": away_venue_points,
             },
 
             "lambda": {
@@ -2131,6 +2316,7 @@ class GoalModel:
                     MAX_LAMBDA,
             },
 
+            "total_before_allocation": total_before_allocation,
             "total_preserved": total_preserved,
 
             "weights": {
@@ -2163,12 +2349,6 @@ class GoalModel:
 
                 "dominance_goals":
                     DOMINANCE_GOALS_WEIGHT,
-
-                "allocation_sot":
-                    ALLOCATION_SOT_WEIGHT,
-
-                "allocation_shots":
-                    ALLOCATION_SHOTS_WEIGHT,
             },
 
             # ------------------------------------------------
@@ -2267,10 +2447,16 @@ __all__ = [
     "SPECIAL_MAX_INFLUENCE",
     "MAX_TOTAL_ADJUSTMENT",
 
-    "ALLOCATION_SOT_WEIGHT",
-    "ALLOCATION_SHOTS_WEIGHT",
-    "ALLOCATION_MAX_INFLUENCE",
-    "ALLOCATION_MIN_DENOMINATOR",
+    "WINNER_XG_WEIGHT",
+    "WINNER_XGA_WEIGHT",
+    "WINNER_SOT_WEIGHT",
+    "WINNER_SHOTS_WEIGHT",
+    "WINNER_RECENT_POINTS_WEIGHT",
+    "WINNER_POINTS_WEIGHT",
+    "WINNER_VENUE_POINTS_WEIGHT",
+    "WINNER_XG_TREND_WEIGHT",
+    "WINNER_XGA_TREND_WEIGHT",
+    "WINNER_MAX_SHARE_SHIFT",
 
     "GoalModel",
     "GoalModelResult",
