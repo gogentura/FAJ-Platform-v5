@@ -34,10 +34,31 @@ GOAL MODEL v2.1
         ├── Match-up
         ├── Dominance Adjustment
         ├── FormControl Adjustment
-        └── SpecialForm Adjustment
+        ├── SpecialForm Adjustment
+        └── Goal Allocation (NEW v1.0)
         │
         ▼
     lambda_home / lambda_away
+
+------------------------------------------------------------
+GOAL ALLOCATION v1.0 (NEW)
+------------------------------------------------------------
+Цель:
+    Распределить уже рассчитанный goal volume
+    между командами.
+
+Принцип:
+    λH + λA (до allocation) = λH + λA (после allocation)
+
+Сигналы:
+    - SOT dominance (вес 0.70)
+    - Shots dominance (вес 0.30)
+
+Влияние:
+    максимум ±4%
+
+Это НЕ создаёт новый xG.
+Это только перераспределяет существующий объём голов.
 
 ------------------------------------------------------------
 ГРАНИЦЫ МОДЕЛИ
@@ -65,7 +86,8 @@ GoalModel использует:
 3. динамику xG/xGA;
 4. opponent-relative dominance;
 5. FormControl как ограниченный дополнительный сигнал;
-6. SpecialForm как ограниченный дополнительный сигнал.
+6. SpecialForm как ограниченный дополнительный сигнал;
+7. Goal Allocation (SOT + Shots) для мягкого распределения.
 
 ------------------------------------------------------------
 ОСНОВНАЯ ФОРМУЛА
@@ -176,16 +198,6 @@ Dominance не заменяет xG.
     home_factor = 1 + adjustment
     away_factor = 1 - adjustment
 
-Таким образом:
-
-сильная Home команда
-    → Home lambda немного вверх
-    → Away lambda немного вниз
-
-сильная Away команда
-    → Away lambda немного вверх
-    → Home lambda немного вниз
-
 
 ------------------------------------------------------------
 FORM CONTROL
@@ -203,12 +215,6 @@ GoalModel использует только разницу:
 Влияние ограничено:
 
     ±5%
-
-FormControl НЕ может самостоятельно
-создать большой xG.
-
-Он только слегка усиливает
-объективное преимущество команды.
 
 
 ------------------------------------------------------------
@@ -231,9 +237,31 @@ SpecialForm v1.0 выдаёт:
 
     ±5%
 
-SpecialForm не является вторым GoalModel.
 
-Это только bounded contextual correction.
+------------------------------------------------------------
+GOAL ALLOCATION v1.0
+------------------------------------------------------------
+
+Secondary pre-match performance signals.
+
+SOT_edge =
+    (SOT_home - SOT_away) / max((SOT_home + SOT_away) / 2, 1.0)
+
+Shots_edge =
+    (Shots_home - Shots_away) / max((Shots_home + Shots_away) / 2, 1.0)
+
+allocation_signal =
+    0.70 * SOT_edge + 0.30 * Shots_edge
+
+allocation_adjustment =
+    0.04 * allocation_signal
+
+Применяется симметрично:
+
+    λH = λH * (1 + allocation_adjustment)
+    λA = λA * (1 - allocation_adjustment)
+
+λH + λA сохраняется.
 
 
 ------------------------------------------------------------
@@ -258,7 +286,6 @@ adjustment =
 
     away_lambda =
         away_base_lambda * (1 - adjustment)
-
 
 Максимальное суммарное влияние:
 
@@ -340,6 +367,16 @@ MAX_TOTAL_ADJUSTMENT = 0.20
 
 
 # ============================================================
+# GOAL ALLOCATION PARAMETERS (NEW v1.0)
+# ============================================================
+
+ALLOCATION_SOT_WEIGHT = 0.70
+ALLOCATION_SHOTS_WEIGHT = 0.30
+ALLOCATION_MAX_INFLUENCE = 0.04
+ALLOCATION_MIN_DENOMINATOR = 1.0
+
+
+# ============================================================
 # RESULT
 # ============================================================
 
@@ -399,6 +436,7 @@ class GoalModel:
         Dominance
         FormControl
         SpecialForm
+        Goal Allocation (SOT + Shots)
 
     Важно:
 
@@ -407,6 +445,9 @@ class GoalModel:
 
     Они только корректируют уже рассчитанное
     objective xG состояние.
+
+    Goal Allocation только перераспределяет
+    существующий объём голов между командами.
     """
 
     def __init__(self) -> None:
@@ -491,6 +532,26 @@ class GoalModel:
         )
 
         # ----------------------------------------------------
+        # 1A. HOME FORM — SHOTS / SOT (NEW)
+        # ----------------------------------------------------
+
+        home_shots_avg = self._safe_float(
+            self._get_value(home_form, "shots_avg")
+        )
+
+        home_shots_against_avg = self._safe_float(
+            self._get_value(home_form, "shots_against_avg")
+        )
+
+        home_sot_avg = self._safe_float(
+            self._get_value(home_form, "shots_on_target_avg")
+        )
+
+        home_sot_against_avg = self._safe_float(
+            self._get_value(home_form, "shots_on_target_against_avg")
+        )
+
+        # ----------------------------------------------------
         # 2. AWAY FORM
         # ----------------------------------------------------
 
@@ -524,6 +585,26 @@ class GoalModel:
 
         away_xga_trend = self._safe_float(
             self._get_value(away_form, "xga_trend")
+        )
+
+        # ----------------------------------------------------
+        # 2A. AWAY FORM — SHOTS / SOT (NEW)
+        # ----------------------------------------------------
+
+        away_shots_avg = self._safe_float(
+            self._get_value(away_form, "shots_avg")
+        )
+
+        away_shots_against_avg = self._safe_float(
+            self._get_value(away_form, "shots_against_avg")
+        )
+
+        away_sot_avg = self._safe_float(
+            self._get_value(away_form, "shots_on_target_avg")
+        )
+
+        away_sot_against_avg = self._safe_float(
+            self._get_value(away_form, "shots_on_target_against_avg")
         )
 
         # ----------------------------------------------------
@@ -725,30 +806,78 @@ class GoalModel:
         # 12. APPLY ASYMMETRY
         # ----------------------------------------------------
 
-        home_xg_adjusted = self._apply_match_adjustment(
+        home_xg = self._apply_match_adjustment(
             home_base_xg,
             total_adjustment,
         )
 
-        away_xg_adjusted = self._apply_match_adjustment(
+        away_xg = self._apply_match_adjustment(
             away_base_xg,
             -total_adjustment,
         )
 
         # ----------------------------------------------------
-        # 13. FINAL CLAMP
+        # 13. GOAL ALLOCATION (NEW v1.0)
+        #
+        # Только перераспределяет существующий объём голов.
+        # Не создаёт новый xG.
         # ----------------------------------------------------
 
-        home_xg = self._clip_lambda(
-            home_xg_adjusted
+        allocation_signal = self._calculate_goal_allocation_signal(
+            home_shots=home_shots_avg,
+            away_shots=away_shots_avg,
+            home_sot=home_sot_avg,
+            away_sot=away_sot_avg,
+            home_shots_against=home_shots_against_avg,
+            away_shots_against=away_shots_against_avg,
+            home_sot_against=home_sot_against_avg,
+            away_sot_against=away_sot_against_avg,
         )
 
-        away_xg = self._clip_lambda(
-            away_xg_adjusted
+        allocation_adjustment = (
+            ALLOCATION_MAX_INFLUENCE * allocation_signal
+            if allocation_signal is not None
+            else 0.0
         )
+
+        if (
+            home_xg is not None
+            and away_xg is not None
+            and allocation_adjustment != 0.0
+        ):
+            total_before_allocation = (
+                home_xg + away_xg
+            )
+
+            if total_before_allocation > 0:
+                home_share = (
+                    home_xg / total_before_allocation
+                )
+
+                new_home_share = self._clamp(
+                    home_share + allocation_adjustment,
+                    0.05,
+                    0.95,
+                )
+
+                home_xg = (
+                    total_before_allocation
+                    * new_home_share
+                )
+                away_xg = (
+                    total_before_allocation
+                    - home_xg
+                )
 
         # ----------------------------------------------------
-        # 14. DIAGNOSTICS
+        # 14. FINAL CLAMP
+        # ----------------------------------------------------
+
+        home_xg = self._clip_lambda(home_xg)
+        away_xg = self._clip_lambda(away_xg)
+
+        # ----------------------------------------------------
+        # 15. DIAGNOSTICS
         # ----------------------------------------------------
 
         diagnostics = self._build_diagnostics(
@@ -788,12 +917,20 @@ class GoalModel:
 
             total_adjustment=total_adjustment,
 
+            allocation_signal=allocation_signal,
+            allocation_adjustment=allocation_adjustment,
+
+            home_shots=home_shots_avg,
+            away_shots=away_shots_avg,
+            home_sot=home_sot_avg,
+            away_sot=away_sot_avg,
+
             home_xg=home_xg,
             away_xg=away_xg,
         )
 
         # ----------------------------------------------------
-        # 15. RESULT
+        # 16. RESULT
         # ----------------------------------------------------
 
         return GoalModelResult(
@@ -1402,6 +1539,7 @@ class GoalModel:
             control
             special
             total adjustment
+            allocation
         """
 
         return max(
@@ -1437,6 +1575,146 @@ class GoalModel:
                 MAX_LAMBDA,
                 value,
             ),
+        )
+
+    # ========================================================
+    # GOAL ALLOCATION (NEW v1.0)
+    # ========================================================
+
+    @classmethod
+    def _calculate_goal_allocation_signal(
+        cls,
+        *,
+        home_shots: Optional[float],
+        away_shots: Optional[float],
+        home_sot: Optional[float],
+        away_sot: Optional[float],
+        home_shots_against: Optional[float],
+        away_shots_against: Optional[float],
+        home_sot_against: Optional[float],
+        away_sot_against: Optional[float],
+    ) -> Optional[float]:
+        """
+        Secondary pre-match signal.
+
+        Purpose:
+            распределить уже рассчитанный goal volume.
+
+        It MUST NOT create additional total xG.
+
+        Positive:
+            slight allocation toward Home.
+
+        Negative:
+            slight allocation toward Away.
+        """
+
+        sot_gap = cls._calculate_allocation_gap(
+            home_for=home_sot,
+            away_for=away_sot,
+            home_against=home_sot_against,
+            away_against=away_sot_against,
+        )
+
+        shots_gap = cls._calculate_allocation_gap(
+            home_for=home_shots,
+            away_for=away_shots,
+            home_against=home_shots_against,
+            away_against=away_shots_against,
+        )
+
+        components = []
+
+        if sot_gap is not None:
+            components.append(
+                (
+                    sot_gap,
+                    ALLOCATION_SOT_WEIGHT,
+                )
+            )
+
+        if shots_gap is not None:
+            components.append(
+                (
+                    shots_gap,
+                    ALLOCATION_SHOTS_WEIGHT,
+                )
+            )
+
+        if not components:
+            return None
+
+        weighted_sum = sum(
+            value * weight
+            for value, weight in components
+        )
+
+        weight_sum = sum(
+            weight
+            for _, weight in components
+        )
+
+        if weight_sum <= 0.0:
+            return None
+
+        return cls._clamp(
+            weighted_sum / weight_sum,
+            -1.0,
+            1.0,
+        )
+
+    @classmethod
+    def _calculate_allocation_gap(
+        cls,
+        home_for: Optional[float],
+        away_for: Optional[float],
+        home_against: Optional[float],
+        away_against: Optional[float],
+    ) -> Optional[float]:
+        """
+        Opponent-relative secondary performance gap.
+
+        Home attack is compared with Away defensive allowance.
+        Away attack is compared with Home defensive allowance.
+
+        Missing data remains missing.
+        """
+
+        if (
+            home_for is None
+            or away_for is None
+            or home_against is None
+            or away_against is None
+        ):
+            return None
+
+        home_signal = (
+            home_for
+            + away_against
+        ) / 2.0
+
+        away_signal = (
+            away_for
+            + home_against
+        ) / 2.0
+
+        denominator = max(
+            (
+                abs(home_signal)
+                + abs(away_signal)
+            ) / 2.0,
+            ALLOCATION_MIN_DENOMINATOR,
+        )
+
+        gap = (
+            home_signal
+            - away_signal
+        ) / denominator
+
+        return cls._clamp(
+            gap,
+            -1.0,
+            1.0,
         )
 
     # ========================================================
@@ -1591,6 +1869,14 @@ class GoalModel:
 
         total_adjustment: float,
 
+        allocation_signal: Optional[float],
+        allocation_adjustment: float,
+
+        home_shots: Optional[float],
+        away_shots: Optional[float],
+        home_sot: Optional[float],
+        away_sot: Optional[float],
+
         home_xg: Optional[float],
         away_xg: Optional[float],
     ) -> Dict[str, Any]:
@@ -1602,6 +1888,49 @@ class GoalModel:
             увидеть, почему новая модель
             дала другой lambda.
         """
+
+        # ----------------------------------------------------
+        # Total preservation check
+        # ----------------------------------------------------
+
+        total_preserved = None
+
+        if (
+            home_base_xg is not None
+            and away_base_xg is not None
+            and home_xg is not None
+            and away_xg is not None
+        ):
+            base_total = (
+                home_base_xg
+                + away_base_xg
+            )
+            final_total = (
+                home_xg
+                + away_xg
+            )
+            total_preserved = (
+                abs(
+                    base_total
+                    - final_total
+                ) < 1e-9
+            )
+
+        # ----------------------------------------------------
+        # Allocation shift
+        # ----------------------------------------------------
+
+        home_share = None
+        away_share = None
+
+        if (
+            home_xg is not None
+            and away_xg is not None
+            and home_xg + away_xg > 0
+        ):
+            total = home_xg + away_xg
+            home_share = home_xg / total
+            away_share = away_xg / total
 
         return {
             "model": "GoalModel",
@@ -1615,6 +1944,7 @@ class GoalModel:
                 "dominance": True,
                 "form_control": True,
                 "special_form": True,
+                "goal_allocation": True,
                 "probability_model": False,
                 "score_model": False,
             },
@@ -1740,6 +2070,47 @@ class GoalModel:
                     MAX_TOTAL_ADJUSTMENT,
             },
 
+            # ----------------------------------------------------
+            # GOAL ALLOCATION (NEW v1.0)
+            # ----------------------------------------------------
+
+            "goal_allocation": {
+                "signal":
+                    allocation_signal,
+
+                "adjustment":
+                    allocation_adjustment,
+
+                "max_influence":
+                    ALLOCATION_MAX_INFLUENCE,
+
+                "sot_weight":
+                    ALLOCATION_SOT_WEIGHT,
+
+                "shots_weight":
+                    ALLOCATION_SHOTS_WEIGHT,
+
+                "affects_total_xg":
+                    False,
+
+                "home_shots":
+                    home_shots,
+
+                "away_shots":
+                    away_shots,
+
+                "home_sot":
+                    home_sot,
+
+                "away_sot":
+                    away_sot,
+            },
+
+            "allocation_shift": {
+                "home_share": home_share,
+                "away_share": away_share,
+            },
+
             "lambda": {
                 "home_base":
                     home_base_xg,
@@ -1759,6 +2130,8 @@ class GoalModel:
                 "max":
                     MAX_LAMBDA,
             },
+
+            "total_preserved": total_preserved,
 
             "weights": {
                 "attack_recent":
@@ -1790,6 +2163,12 @@ class GoalModel:
 
                 "dominance_goals":
                     DOMINANCE_GOALS_WEIGHT,
+
+                "allocation_sot":
+                    ALLOCATION_SOT_WEIGHT,
+
+                "allocation_shots":
+                    ALLOCATION_SHOTS_WEIGHT,
             },
 
             # ------------------------------------------------
@@ -1887,6 +2266,11 @@ __all__ = [
     "CONTROL_MAX_INFLUENCE",
     "SPECIAL_MAX_INFLUENCE",
     "MAX_TOTAL_ADJUSTMENT",
+
+    "ALLOCATION_SOT_WEIGHT",
+    "ALLOCATION_SHOTS_WEIGHT",
+    "ALLOCATION_MAX_INFLUENCE",
+    "ALLOCATION_MIN_DENOMINATOR",
 
     "GoalModel",
     "GoalModelResult",
