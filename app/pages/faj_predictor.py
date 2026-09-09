@@ -3120,6 +3120,284 @@ with st.expander(
 
 
 # ============================================================
+# GOAL MODEL — TECHNICAL DIAGNOSTICS (NEW)
+# ============================================================
+
+with st.expander("🔬 Техническая диагностика GoalModel", expanded=False):
+    diagnostics = getattr(
+        prediction.get("goal_result"),
+        "diagnostics",
+        {},
+    ) or {}
+    st.markdown("### GoalModel v2.1")
+    # --------------------------------------------------------
+    # BASE xG
+    # --------------------------------------------------------
+    st.markdown("#### Базовый xG")
+    base_home = safe_float(
+        diagnostics.get("base_home_xg")
+    )
+    base_away = safe_float(
+        diagnostics.get("base_away_xg")
+    )
+    base_total = safe_float(
+        diagnostics.get("base_total_xg")
+    )
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric(
+            "Хозяева",
+            f"{base_home:.2f}"
+            if base_home is not None
+            else "—",
+        )
+    with c2:
+        st.metric(
+            "Гости",
+            f"{base_away:.2f}"
+            if base_away is not None
+            else "—",
+        )
+    with c3:
+        st.metric(
+            "Всего",
+            f"{base_total:.2f}"
+            if base_total is not None
+            else "—",
+        )
+    # --------------------------------------------------------
+    # MAIN ADJUSTMENTS
+    # --------------------------------------------------------
+    st.markdown("#### Основные коррекции")
+    dominance = safe_float(
+        diagnostics.get("dominance_adjustment")
+    )
+    control = safe_float(
+        diagnostics.get("control_adjustment")
+    )
+    special = safe_float(
+        diagnostics.get("special_adjustment")
+    )
+    total_adjustment = safe_float(
+        diagnostics.get("total_adjustment")
+    )
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric(
+            "Dominance",
+            f"{dominance * 100:+.2f}%"
+            if dominance is not None
+            else "—",
+        )
+    with c2:
+        st.metric(
+            "Control",
+            f"{control * 100:+.2f}%"
+            if control is not None
+            else "—",
+        )
+    with c3:
+        st.metric(
+            "Special",
+            f"{special * 100:+.2f}%"
+            if special is not None
+            else "—",
+        )
+    with c4:
+        st.metric(
+            "Итого",
+            f"{total_adjustment * 100:+.2f}%"
+            if total_adjustment is not None
+            else "—",
+        )
+    # --------------------------------------------------------
+    # GOAL ALLOCATION
+    # --------------------------------------------------------
+    st.markdown("#### Goal Allocation")
+    allocation_signal = safe_float(
+        diagnostics.get("allocation_signal")
+    )
+    allocation_adjustment = safe_float(
+        diagnostics.get("allocation_adjustment")
+    )
+    # Получаем SOT и Shots сигналы из goal_allocation блока
+    goal_allocation = diagnostics.get("goal_allocation", {})
+    sot_signal = safe_float(
+        goal_allocation.get("sot_signal")
+    )
+    shots_signal = safe_float(
+        goal_allocation.get("shots_signal")
+    )
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric(
+            "SOT signal",
+            f"{sot_signal:+.3f}"
+            if sot_signal is not None
+            else "—",
+        )
+    with c2:
+        st.metric(
+            "Shots signal",
+            f"{shots_signal:+.3f}"
+            if shots_signal is not None
+            else "—",
+        )
+    with c3:
+        st.metric(
+            "Allocation",
+            f"{allocation_signal:+.3f}"
+            if allocation_signal is not None
+            else "—",
+        )
+    with c4:
+        st.metric(
+            "Влияние",
+            f"{allocation_adjustment * 100:+.2f}%"
+            if allocation_adjustment is not None
+            else "—",
+        )
+    # --------------------------------------------------------
+    # SHOTS / SOT INPUTS
+    # --------------------------------------------------------
+    st.markdown("#### Входные показатели")
+    home_name = prediction.get("home_team", "Хозяева")
+    away_name = prediction.get("away_team", "Гости")
+    shots_home = safe_float(
+        diagnostics.get("home_shots")
+    )
+    shots_away = safe_float(
+        diagnostics.get("away_shots")
+    )
+    sot_home = safe_float(
+        diagnostics.get("home_sot")
+    )
+    sot_away = safe_float(
+        diagnostics.get("away_sot")
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        st.write(
+            f"**{home_name}**"
+        )
+        st.write(
+            f"Удары: "
+            f"{shots_home:.2f}"
+            if shots_home is not None
+            else "Удары: —"
+        )
+        st.write(
+            f"SOT: "
+            f"{sot_home:.2f}"
+            if sot_home is not None
+            else "SOT: —"
+        )
+    with c2:
+        st.write(
+            f"**{away_name}**"
+        )
+        st.write(
+            f"Удары: "
+            f"{shots_away:.2f}"
+            if shots_away is not None
+            else "Удары: —"
+        )
+        st.write(
+            f"SOT: "
+            f"{sot_away:.2f}"
+            if sot_away is not None
+            else "SOT: —"
+        )
+    # --------------------------------------------------------
+    # FINAL xG
+    # --------------------------------------------------------
+    st.markdown("#### Финальный xG")
+    final_home = safe_float(
+        diagnostics.get("final_home_xg")
+    )
+    final_away = safe_float(
+        diagnostics.get("final_away_xg")
+    )
+    final_total = safe_float(
+        diagnostics.get("final_total_xg")
+    )
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric(
+            "Хозяева",
+            f"{final_home:.2f}"
+            if final_home is not None
+            else "—",
+        )
+    with c2:
+        st.metric(
+            "Гости",
+            f"{final_away:.2f}"
+            if final_away is not None
+            else "—",
+        )
+    with c3:
+        st.metric(
+            "Всего",
+            f"{final_total:.2f}"
+            if final_total is not None
+            else "—",
+        )
+    # --------------------------------------------------------
+    # SHARES
+    # --------------------------------------------------------
+    home_share = safe_float(
+        diagnostics.get("home_share")
+    )
+    away_share = safe_float(
+        diagnostics.get("away_share")
+    )
+    if (
+        home_share is not None
+        and away_share is not None
+    ):
+        st.markdown("#### Распределение goal volume")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.metric(
+                f"{home_name} share",
+                f"{home_share * 100:.1f}%",
+            )
+        with c2:
+            st.metric(
+                f"{away_name} share",
+                f"{away_share * 100:.1f}%",
+            )
+    # --------------------------------------------------------
+    # TOTAL PRESERVED
+    # --------------------------------------------------------
+    total_preserved = diagnostics.get(
+        "total_preserved"
+    )
+    if total_preserved is True:
+        st.success(
+            "✅ Общий goal volume сохранён"
+        )
+    elif total_preserved is False:
+        st.error(
+            "❌ Общий goal volume изменился"
+        )
+    else:
+        st.info(
+            "ℹ️ Контроль сохранения total xG "
+            "не передан GoalModel."
+        )
+    allocation_affects_total = diagnostics.get(
+        "allocation_affects_total_xg"
+    )
+    st.caption(
+        "Goal Allocation не должен создавать новый xG. "
+        f"allocation_affects_total_xg="
+        f"{allocation_affects_total}"
+    )
+
+
+# ============================================================
 # FOOTER
 # ============================================================
 
