@@ -1411,7 +1411,7 @@ class GoalModel:
     # WINNER SIGNAL v2.3
     # ========================================================
 
-    def _relative_gap(
+    def _winner_relative_gap(
         self,
         home: Optional[float],
         away: Optional[float],
@@ -1492,57 +1492,57 @@ class GoalModel:
             xGA trend      5%
         """
 
-        xg_gap = self._relative_gap(
+        xg_gap = self._winner_relative_gap(
             getattr(home_form, "xg_avg", None),
             getattr(away_form, "xg_avg", None),
             WINNER_XG_BASELINE,
         )
 
-        xga_gap = self._relative_gap(
+        xga_gap = self._winner_relative_gap(
             getattr(home_form, "xga_avg", None),
             getattr(away_form, "xga_avg", None),
             WINNER_XGA_BASELINE,
             invert=True,
         )
 
-        sot_gap = self._relative_gap(
+        sot_gap = self._winner_relative_gap(
             getattr(home_form, "shots_on_target_avg", None),
             getattr(away_form, "shots_on_target_avg", None),
             WINNER_SOT_BASELINE,
         )
 
-        shots_gap = self._relative_gap(
+        shots_gap = self._winner_relative_gap(
             getattr(home_form, "shots_avg", None),
             getattr(away_form, "shots_avg", None),
             WINNER_SHOTS_BASELINE,
         )
 
-        recent_points_gap = self._relative_gap(
+        recent_points_gap = self._winner_relative_gap(
             getattr(home_form, "recent_points_rate", None),
             getattr(away_form, "recent_points_rate", None),
             WINNER_POINTS_BASELINE,
         )
 
-        points_gap = self._relative_gap(
+        points_gap = self._winner_relative_gap(
             getattr(home_form, "points_rate", None),
             getattr(away_form, "points_rate", None),
             WINNER_POINTS_BASELINE,
         )
 
-        venue_gap = self._relative_gap(
+        venue_gap = self._winner_relative_gap(
             getattr(home_form, "home_points_rate", None),
             getattr(away_form, "away_points_rate", None),
             WINNER_POINTS_BASELINE,
         )
 
-        xg_trend_gap = self._relative_gap(
+        xg_trend_gap = self._winner_relative_gap(
             getattr(home_form, "xg_trend", None),
             getattr(away_form, "xg_trend", None),
             WINNER_TREND_BASELINE,
         )
 
         # Для xGA: снижение xGA = улучшение.
-        xga_trend_gap = self._relative_gap(
+        xga_trend_gap = self._winner_relative_gap(
             getattr(home_form, "xga_trend", None),
             getattr(away_form, "xga_trend", None),
             WINNER_TREND_BASELINE,
