@@ -303,7 +303,7 @@ st.markdown(
 
 
     /* --------------------------------------------------------
-       DIAGNOSTICS BLOCK (V3.1)
+       DIAGNOSTICS BLOCK
     -------------------------------------------------------- */
 
     .diag-block {
@@ -1424,10 +1424,6 @@ def collect_history(
             # ====================================================
             # TEAM METADATA
             # ====================================================
-            #
-            # Brain / FormControl должны знать,
-            # какая команда является текущей.
-            # ====================================================
 
             record["team"] = team_name
             record["team_name"] = team_name
@@ -1450,18 +1446,6 @@ def collect_history(
     # ====================================================
     # CANONICAL HISTORY ORDER
     # ====================================================
-    #
-    # FormContext / FormModel contract:
-    #
-    #     M1 = oldest
-    #     ...
-    #     M6 = newest
-    #
-    # Пользователь может вставить URL
-    # в любом порядке.
-    #
-    # Источник истины — match_date.
-    # ====================================================
 
     records.sort(
         key=lambda item: (
@@ -1471,12 +1455,6 @@ def collect_history(
             or ""
         )
     )
-
-    # Берём последние HISTORY_SIZE матчей,
-    # сохраняя chronological order:
-    #
-    # oldest → newest
-    #
 
     records = records[
         -HISTORY_SIZE:
@@ -3080,169 +3058,364 @@ with st.expander(
 
 
 # ============================================================
-# GOALMODEL v3.1 — ВИДИМАЯ ДИАГНОСТИКА (НОВЫЙ БЛОК)
+# 🔬 GOALMODEL DIAGNOSTICS — BRUTE FORCE OUTPUT
+# ============================================================
+#
+# Отладочный блок.
+#
+# Пытаемся достать diagnostics из goal_result напрямую
+# и вывести их как обычный JSON через st.json().
+#
+# Это гарантирует, что мы увидим реальную структуру
+# diagnostics, даже если предыдущий UI-блок диагностики
+# по какой-то причине не отображается.
+#
 # ============================================================
 
 st.markdown(
-    '<div class="section-title">🔬 GoalModel v3.1 — диагностика</div>',
+    '<div class="section-title">🔬 GoalModel Diagnostics (raw)</div>',
     unsafe_allow_html=True,
 )
-
-# ------------------------------------------------------------
-# Извлекаем diagnostics из goal_result
-# ------------------------------------------------------------
 
 _goal_result = prediction.get("goal_result")
-_diag = value(_goal_result, "diagnostics") or {}
 
-_base_lambda = _diag.get("base_lambda", {}) or {}
-_goal_alloc = _diag.get("goal_allocation", {}) or {}
-_fundamental = _diag.get("fundamental_strength", {}) or {}
-_current_form = _diag.get("current_form", {}) or {}
-_form_impact = _diag.get("form_impact", {}) or {}
-_lambda_data = _diag.get("lambda", {}) or {}
+if _goal_result is None:
+    st.error("❌ goal_result отсутствует в prediction")
 
-# ------------------------------------------------------------
-# Собираем текстовый отчёт
-# ------------------------------------------------------------
+else:
+    st.success("✅ goal_result найден")
 
-def _fmt_float(v: Any, digits: int = 3) -> str:
-    f = safe_float(v)
-    if f is None:
-        return "—"
-    return f"{f:.{digits}f}"
+    _diagnostics = value(
+        _goal_result,
+        "diagnostics",
+    )
 
+    if _diagnostics is None:
+        st.error("❌ diagnostics = None внутри goal_result")
 
-def _fmt_pct(v: Any) -> str:
-    f = safe_float(v)
-    if f is None:
-        return "—"
-    return f"{f * 100:.1f}%"
+    elif not isinstance(_diagnostics, dict):
+        st.warning(
+            f"⚠️ diagnostics имеет тип "
+            f"{type(_diagnostics).__name__}, а не dict"
+        )
+        st.write(_diagnostics)
 
+    elif len(_diagnostics) == 0:
+        st.error("❌ diagnostics пуст (dict без ключей)")
 
-def _fmt_signed(v: Any, digits: int = 3) -> str:
-    f = safe_float(v)
-    if f is None:
-        return "—"
-    return f"{f:+.{digits}f}"
-
-
-_hb = _base_lambda.get("home")
-_ab = _base_lambda.get("away")
-_total_xg = _base_lambda.get("total")
-
-_base_share = _goal_alloc.get("base_share")
-_context_share = _goal_alloc.get("context_share")
-_home_share = _goal_alloc.get("home_share")
-_away_share = _goal_alloc.get("away_share")
-
-_strength_gap = _fundamental.get("gap")
-_proximity = _form_impact.get("proximity_gate")
-
-_raw_form = _current_form.get("raw_form_effect")
-_protected_form = _current_form.get("protected_form_effect")
-_form_limit = _current_form.get("protection_limit")
-
-_effective_gap = _current_form.get("effective_gap")
-_match_gap = _current_form.get("match_gap")
-
-_lambda_home = _lambda_data.get("home_final")
-_lambda_away = _lambda_data.get("away_final")
-
-_total_preserved = _lambda_data.get("total_preserved")
-_allocation_affects_total = _goal_alloc.get("affects_total_xg")
-
-# ------------------------------------------------------------
-# Проверки
-# ------------------------------------------------------------
-
-_lambda_total = None
-if _lambda_home is not None and _lambda_away is not None:
-    _lambda_total = _lambda_home + _lambda_away
-
-# Total preserved: сравниваем TOTAL из base_lambda с финальными λH + λA
-_preserved_str = "—"
-if (
-    _total_xg is not None
-    and _lambda_total is not None
-    and abs(_total_xg) > 1e-9
-):
-    if abs(_lambda_total - _total_xg) < 0.01:
-        _preserved_str = "YES"
     else:
-        _preserved_str = f"NO (Δ={_lambda_total - _total_xg:+.3f})"
+        st.success(
+            f"✅ diagnostics найден: "
+            f"{len(_diagnostics)} ключей"
+        )
 
-_allocation_affects_str = (
-    "YES" if _allocation_affects_total is True
-    else "NO" if _allocation_affects_total is False
-    else "—"
-)
+        with st.expander(
+            "📋 Полный diagnostics (JSON)",
+            expanded=True,
+        ):
+            st.json(_diagnostics)
 
-_version = _diag.get("version", "—")
-_formula_status = _diag.get("formula_status", "—")
+        # ------------------------------------------------
+        # Дублируем ключевые поля для удобства
+        # ------------------------------------------------
 
-_report_lines = []
-_report_lines.append("FAJ GOALMODEL DIAGNOSTICS")
-_report_lines.append("==========================")
-_report_lines.append(f"Match: {prediction['home_team']} — {prediction['away_team']}")
-_report_lines.append(f"Model: GoalModel v{_version} ({_formula_status})")
-_report_lines.append("")
-_report_lines.append("BASE LAMBDA")
-_report_lines.append(f"HB:    {_fmt_float(_hb)}")
-_report_lines.append(f"AB:    {_fmt_float(_ab)}")
-_report_lines.append(f"TOTAL: {_fmt_float(_total_xg)}")
-_report_lines.append("")
-_report_lines.append("ALLOCATION")
-_report_lines.append(f"Base Share:    {_fmt_pct(_base_share)}")
-_report_lines.append(f"Context Share: {_fmt_pct(_context_share)}")
-_report_lines.append(f"Final Home:    {_fmt_pct(_home_share)}")
-_report_lines.append(f"Final Away:    {_fmt_pct(_away_share)}")
-_report_lines.append("")
-_report_lines.append("STRENGTH")
-_report_lines.append(f"Strength Gap: {_fmt_signed(_strength_gap)}")
-_report_lines.append(f"Proximity:    {_fmt_float(_proximity)}")
-_report_lines.append("")
-_report_lines.append("FORM")
-_report_lines.append(f"Raw Form Effect:       {_fmt_signed(_raw_form)}")
-_report_lines.append(f"Protected Form Effect: {_fmt_signed(_protected_form)}")
-_report_lines.append(f"Protection Limit:      {_fmt_float(_form_limit)}")
-_report_lines.append("")
-_report_lines.append("MATCH STATE")
-_report_lines.append(f"Effective Gap: {_fmt_signed(_effective_gap)}")
-_report_lines.append(f"Match Gap:     {_fmt_signed(_match_gap)}")
-_report_lines.append("")
-_report_lines.append("FINAL XG")
-_report_lines.append(f"Home λ:  {_fmt_float(_lambda_home)}")
-_report_lines.append(f"Away λ:  {_fmt_float(_lambda_away)}")
-_report_lines.append(f"Total λ: {_fmt_float(_lambda_total)}")
-_report_lines.append("")
-_report_lines.append("CONTROL")
-_report_lines.append(f"Total Preserved:           {_preserved_str}")
-_report_lines.append(f"Allocation affects Total:  {_allocation_affects_str}")
-_report_lines.append("")
+        st.markdown("#### Ключевые поля")
 
-_report_text = "\n".join(_report_lines)
+        _version_val = _diagnostics.get("version", "—")
+        _status_val = _diagnostics.get("formula_status", "—")
 
-# ------------------------------------------------------------
-# Видимый блок + кнопка копирования
-# ------------------------------------------------------------
+        st.write(
+            f"**Version:** {_version_val}  ·  "
+            f"**Status:** {_status_val}"
+        )
 
-st.markdown(
-    f"""
-<div class="diag-block">
-<div class="diag-header">GOALMODEL v{_version}</div>{_report_text}
-</div>
-""",
-    unsafe_allow_html=True,
-)
+        # ------------------------------------------------
+        # BASE LAMBDA
+        # ------------------------------------------------
 
-# ------------------------------------------------------------
-# Кнопка копирования через HTML/JS
-# ------------------------------------------------------------
+        _base_lambda = _diagnostics.get("base_lambda", {}) or {}
 
-_copy_payload = _report_text.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
+        if _base_lambda:
+            st.markdown("**Base Lambda**")
+            _bl1, _bl2, _bl3 = st.columns(3)
+            with _bl1:
+                st.metric(
+                    "HB",
+                    f"{safe_float(_base_lambda.get('home')):.3f}"
+                    if safe_float(_base_lambda.get("home")) is not None
+                    else "—",
+                )
+            with _bl2:
+                st.metric(
+                    "AB",
+                    f"{safe_float(_base_lambda.get('away')):.3f}"
+                    if safe_float(_base_lambda.get("away")) is not None
+                    else "—",
+                )
+            with _bl3:
+                st.metric(
+                    "TOTAL",
+                    f"{safe_float(_base_lambda.get('total')):.3f}"
+                    if safe_float(_base_lambda.get("total")) is not None
+                    else "—",
+                )
 
-_copy_html = f"""
+        # ------------------------------------------------
+        # GOAL ALLOCATION
+        # ------------------------------------------------
+
+        _goal_alloc = _diagnostics.get("goal_allocation", {}) or {}
+
+        if _goal_alloc:
+            st.markdown("**Goal Allocation**")
+            _ga1, _ga2 = st.columns(2)
+            with _ga1:
+                st.metric(
+                    "Base Share",
+                    f"{safe_float(_goal_alloc.get('base_share')) * 100:.1f}%"
+                    if safe_float(_goal_alloc.get("base_share")) is not None
+                    else "—",
+                )
+            with _ga2:
+                st.metric(
+                    "Context Share",
+                    f"{safe_float(_goal_alloc.get('context_share')) * 100:.1f}%"
+                    if safe_float(_goal_alloc.get("context_share")) is not None
+                    else "—",
+                )
+
+            _ga3, _ga4 = st.columns(2)
+            with _ga3:
+                st.metric(
+                    "Final Home Share",
+                    f"{safe_float(_goal_alloc.get('home_share')) * 100:.1f}%"
+                    if safe_float(_goal_alloc.get("home_share")) is not None
+                    else "—",
+                )
+            with _ga4:
+                st.metric(
+                    "Final Away Share",
+                    f"{safe_float(_goal_alloc.get('away_share')) * 100:.1f}%"
+                    if safe_float(_goal_alloc.get("away_share")) is not None
+                    else "—",
+                )
+
+        # ------------------------------------------------
+        # FUNDAMENTAL STRENGTH
+        # ------------------------------------------------
+
+        _fundamental = _diagnostics.get("fundamental_strength", {}) or {}
+
+        if _fundamental:
+            st.markdown("**Fundamental Strength**")
+            _fs1, _fs2 = st.columns(2)
+            with _fs1:
+                st.metric(
+                    "Strength Gap",
+                    f"{safe_float(_fundamental.get('gap')):+.3f}"
+                    if safe_float(_fundamental.get("gap")) is not None
+                    else "—",
+                )
+
+        # ------------------------------------------------
+        # CURRENT FORM
+        # ------------------------------------------------
+
+        _current_form = _diagnostics.get("current_form", {}) or {}
+
+        if _current_form:
+            st.markdown("**Current Form**")
+
+            _cf1, _cf2, _cf3 = st.columns(3)
+            with _cf1:
+                st.metric(
+                    "Raw Form Effect",
+                    f"{safe_float(_current_form.get('raw_form_effect')):+.3f}"
+                    if safe_float(_current_form.get("raw_form_effect")) is not None
+                    else "—",
+                )
+            with _cf2:
+                st.metric(
+                    "Protected Effect",
+                    f"{safe_float(_current_form.get('protected_form_effect')):+.3f}"
+                    if safe_float(_current_form.get("protected_form_effect")) is not None
+                    else "—",
+                )
+            with _cf3:
+                st.metric(
+                    "Protection Limit",
+                    f"{safe_float(_current_form.get('protection_limit')):.3f}"
+                    if safe_float(_current_form.get("protection_limit")) is not None
+                    else "—",
+                )
+
+            _cf4, _cf5 = st.columns(2)
+            with _cf4:
+                st.metric(
+                    "Effective Gap",
+                    f"{safe_float(_current_form.get('effective_gap')):+.3f}"
+                    if safe_float(_current_form.get("effective_gap")) is not None
+                    else "—",
+                )
+            with _cf5:
+                st.metric(
+                    "Match Gap",
+                    f"{safe_float(_current_form.get('match_gap')):+.3f}"
+                    if safe_float(_current_form.get("match_gap")) is not None
+                    else "—",
+                )
+
+        # ------------------------------------------------
+        # FINAL LAMBDA
+        # ------------------------------------------------
+
+        _lambda_data = _diagnostics.get("lambda", {}) or {}
+
+        if _lambda_data:
+            st.markdown("**Final Lambda**")
+            _l1, _l2, _l3 = st.columns(3)
+            with _l1:
+                st.metric(
+                    "λ Home",
+                    f"{safe_float(_lambda_data.get('home_final')):.3f}"
+                    if safe_float(_lambda_data.get("home_final")) is not None
+                    else "—",
+                )
+            with _l2:
+                st.metric(
+                    "λ Away",
+                    f"{safe_float(_lambda_data.get('away_final')):.3f}"
+                    if safe_float(_lambda_data.get("away_final")) is not None
+                    else "—",
+                )
+            with _l3:
+                _lh = safe_float(_lambda_data.get("home_final"))
+                _la = safe_float(_lambda_data.get("away_final"))
+                st.metric(
+                    "λ Total",
+                    f"{_lh + _la:.3f}"
+                    if _lh is not None and _la is not None
+                    else "—",
+                )
+
+        # ------------------------------------------------
+        # COPY BUTTON
+        # ------------------------------------------------
+
+        _report_lines = []
+        _report_lines.append("FAJ GOALMODEL DIAGNOSTICS")
+        _report_lines.append("==========================")
+        _report_lines.append(
+            f"Match: {prediction['home_team']} — {prediction['away_team']}"
+        )
+        _report_lines.append(
+            f"Model: GoalModel v{_version_val} ({_status_val})"
+        )
+        _report_lines.append("")
+
+        _bl_home = safe_float(_base_lambda.get("home"))
+        _bl_away = safe_float(_base_lambda.get("away"))
+        _bl_total = safe_float(_base_lambda.get("total"))
+
+        _report_lines.append("BASE LAMBDA")
+        _report_lines.append(
+            f"HB:    {_bl_home:.3f}" if _bl_home is not None else "HB:    —"
+        )
+        _report_lines.append(
+            f"AB:    {_bl_away:.3f}" if _bl_away is not None else "AB:    —"
+        )
+        _report_lines.append(
+            f"TOTAL: {_bl_total:.3f}" if _bl_total is not None else "TOTAL: —"
+        )
+        _report_lines.append("")
+
+        _bs = safe_float(_goal_alloc.get("base_share"))
+        _cs = safe_float(_goal_alloc.get("context_share"))
+        _hs = safe_float(_goal_alloc.get("home_share"))
+        _aws = safe_float(_goal_alloc.get("away_share"))
+
+        _report_lines.append("ALLOCATION")
+        _report_lines.append(
+            f"Base Share:    {_bs * 100:.1f}%" if _bs is not None else "Base Share:    —"
+        )
+        _report_lines.append(
+            f"Context Share: {_cs * 100:.1f}%" if _cs is not None else "Context Share: —"
+        )
+        _report_lines.append(
+            f"Final Home:    {_hs * 100:.1f}%" if _hs is not None else "Final Home:    —"
+        )
+        _report_lines.append(
+            f"Final Away:    {_aws * 100:.1f}%" if _aws is not None else "Final Away:    —"
+        )
+        _report_lines.append("")
+
+        _sg = safe_float(_fundamental.get("gap"))
+        _prox = safe_float(_diagnostics.get("form_impact", {}).get("proximity_gate"))
+
+        _report_lines.append("STRENGTH")
+        _report_lines.append(
+            f"Strength Gap: {_sg:+.3f}" if _sg is not None else "Strength Gap: —"
+        )
+        _report_lines.append(
+            f"Proximity:    {_prox:.3f}" if _prox is not None else "Proximity:    —"
+        )
+        _report_lines.append("")
+
+        _rf = safe_float(_current_form.get("raw_form_effect"))
+        _pf = safe_float(_current_form.get("protected_form_effect"))
+        _fl = safe_float(_current_form.get("protection_limit"))
+
+        _report_lines.append("FORM")
+        _report_lines.append(
+            f"Raw Form Effect:       {_rf:+.3f}" if _rf is not None else "Raw Form Effect:       —"
+        )
+        _report_lines.append(
+            f"Protected Form Effect: {_pf:+.3f}" if _pf is not None else "Protected Form Effect: —"
+        )
+        _report_lines.append(
+            f"Protection Limit:      {_fl:.3f}" if _fl is not None else "Protection Limit:      —"
+        )
+        _report_lines.append("")
+
+        _eg = safe_float(_current_form.get("effective_gap"))
+        _mg = safe_float(_current_form.get("match_gap"))
+
+        _report_lines.append("MATCH STATE")
+        _report_lines.append(
+            f"Effective Gap: {_eg:+.3f}" if _eg is not None else "Effective Gap: —"
+        )
+        _report_lines.append(
+            f"Match Gap:     {_mg:+.3f}" if _mg is not None else "Match Gap:     —"
+        )
+        _report_lines.append("")
+
+        _lfh = safe_float(_lambda_data.get("home_final"))
+        _lfa = safe_float(_lambda_data.get("away_final"))
+
+        _report_lines.append("FINAL XG")
+        _report_lines.append(
+            f"Home λ:  {_lfh:.3f}" if _lfh is not None else "Home λ:  —"
+        )
+        _report_lines.append(
+            f"Away λ:  {_lfa:.3f}" if _lfa is not None else "Away λ:  —"
+        )
+        _report_lines.append(
+            f"Total λ: {_lfh + _lfa:.3f}"
+            if _lfh is not None and _lfa is not None
+            else "Total λ: —"
+        )
+        _report_lines.append("")
+
+        _report_text = "\n".join(_report_lines)
+
+        _copy_payload = (
+            _report_text
+            .replace("\\", "\\\\")
+            .replace("`", "\\`")
+            .replace("${", "\\${")
+        )
+
+        _copy_html = f"""
 <div style="margin-top:8px;">
 <button id="faj-copy-btn" style="
     width:100%;
@@ -3293,10 +3466,10 @@ _copy_html = f"""
 </script>
 """
 
-components.html(
-    _copy_html,
-    height=90,
-)
+        components.html(
+            _copy_html,
+            height=90,
+        )
 
 
 # ============================================================
