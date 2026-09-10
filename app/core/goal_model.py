@@ -4,97 +4,132 @@
 """
 ============================================================
 FAJ Platform v12.1
-GOAL MODEL v4.0
+FAJ GoalModel v5.0
 ============================================================
 
-Назначение
-----------
-GoalModel v4.0 меняет механизм генерации голов.
+Purpose
+-------
+Estimate independent expected goals (lambda) for home and away
+teams from:
 
-Ключевое изменение:
+    Team Class
+    + Current Form
+    + Opponent Defence
+    + Venue Context
+    + Available Process Evidence
 
-    v3.x:
-        Home attack × Away defence → base_H
-        Away attack × Home defence → base_A
-        total = base_H + base_A
-        share = sigmoid(strength_gap)
-        λH = total × share
-        λA = total × (1 - share)
+Core principle
+--------------
+Football logic first.
 
-    v4.0:
-        Home attack × Away defence → λH
-        Away attack × Home defence → λA
+The model does NOT:
+    - redistribute a shared total xG;
+    - use strength gap to steal xG from the opponent;
+    - use sigmoid xG allocation;
+    - use bookmaker odds;
+    - use post-match information;
+    - use corners/cards;
+    - use prediction results;
+    - invent missing values as zero;
+    - invent a club rating;
+    - apply an arbitrary home-advantage multiplier.
 
-То есть каждая команда получает собственный
-голевой потенциал, независимо от соперника.
+The model generates:
 
-Больше нет:
-    - shared total xG;
-    - redistribution through strength_gap;
-    - доли от общего пирога.
+    lambda_home independently
+    lambda_away independently
 
-Форма:
-    Вместо перераспределения общего xG
-    форма корректирует собственный атакующий λ:
-        λH = base_H × (1 + 0.15 × form_H)
-        λA = base_A × (1 + 0.15 × form_A)
+and passes those values downstream to ProbabilityModel.
 
-    Максимум ±15% собственного λ.
-    Хорошая форма не уменьшает λ соперника.
+Architecture
+------------
+FormContext
+    ↓
+FormModel
+    ↓
+Team Class + Current Form
+    ↓
+Venue shrinkage
+    ↓
+Opponent Defence
+    ↓
+Goal Matchup
+    ↓
+lambda_home / lambda_away
+    ↓
+ProbabilityModel
+    ↓
+ScorePredictor
 
-Home advantage:
-    Не используется как отдельный multiplier.
-    Venue уже учтён в фундаментальной истории.
+Formula
+-------
+AttackClass:
+    xG average if available
+    otherwise goals-for average
+    otherwise None
 
-------------------------------------------------------------
-ПРИНЦИП
-------------------------------------------------------------
+DefenceClass:
+    xGA average if available
+    otherwise goals-against average
+    otherwise None
 
-    Каждая команда имеет собственный
-    атакующий потенциал:
+AttackForm:
+    0.60 * xG state
+  + 0.25 * xG trend
+  + 0.15 * process signal
 
-        λH = (Attack_H + Defence_A) / 2
-        λA = (Attack_A + Defence_H) / 2
+DefenceForm:
+    0.70 * xGA state
+  + 0.30 * xGA trend
 
-    Total xG больше не является управляющей величиной.
+Effective attack:
+    A_eff = A * (1 + 0.12 * F_attack)
 
-    Сила (strength_gap) остаётся только для 1X2,
-    но НЕ перераспределяет xG.
+Effective defence:
+    D_eff = D * (1 - 0.10 * F_defence)
 
-------------------------------------------------------------
-ЧТО ИЗМЕНЕНО В V4.0
-------------------------------------------------------------
+Matchup:
+    lambda_home =
+        ((A_home_eff + D_away_eff) / 2) * V_home
 
-- Убран shared total xG;
-- Убран sigmoid goal allocation;
-- Убран redistribution through strength_gap;
-- Форма корректирует собственный λ (не общий);
-- MIN_MATCHUP_XG снижен до 0.15 (было 0.50);
-- Home advantage не multiplier (venue уже в истории).
+    lambda_away =
+        ((A_away_eff + D_home_eff) / 2) * V_away
 
-------------------------------------------------------------
-ИЗМЕНЕНИЯ ВЕРСИЙ
-------------------------------------------------------------
+Venue
+------
+No arbitrary home multiplier.
 
-v3.2:
-    λH = BASE_H × form_modifier_H × home_multiplier
-    λA = BASE_A × form_modifier_A
+If venue-specific xG is actually supplied, shrink it toward
+the overall class:
 
-v4.0:
-    λH = BASE_H × (1 + 0.15 × form_H)
-    λA = BASE_A × (1 + 0.15 × form_A)
+    alpha = n_venue / (n_venue + 4)
 
-    где form_H, form_A ∈ [-1, +1]
-    base_H = (Attack_H + Defence_A) / 2
-    base_A = (Attack_A + Defence_H) / 2
+    venue_profile =
+        (1 - alpha) * overall_profile
+        + alpha * venue_profile
 
-============================================================
+Missing data
+------------
+Missing != 0.
+
+No fake process data is created from absent histories.
+
+Compatibility
+-------------
+Existing GoalModelResult fields are retained.
+New v5 diagnostics are added through diagnostics.
+
+database.py is not touched.
+ProbabilityModel is not touched.
+ScorePredictor is not touched.
+CornersModel is not touched.
+CardsModel is not touched.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional, Sequence
 import math
 
 
@@ -102,32 +137,77 @@ import math
 # VERSION / STATUS
 # ============================================================
 
-GOAL_MODEL_VERSION = "4.0"
-FORMULA_STATUS = "RESEARCH_FORMULA"
+GOAL_MODEL_VERSION = "5.0"
+FORMULA_STATUS = "PRODUCTION_RESEARCH_FORMULA"
 
 
 # ============================================================
-# BASE PARAMETERS
+# CORE PARAMETERS
 # ============================================================
 
-# v4.0: сниженный минимум matchup
-MIN_MATCHUP_XG = 0.15
-MIN_XG_BASELINE = 0.50  # оставлен для совместимости
-MIN_LAMBDA = 0.15
+# Maximum direct influence of current attacking state.
+ATTACK_FORM_INFLUENCE = 0.12
+
+# Maximum direct influence of current defensive state.
+DEFENCE_FORM_INFLUENCE = 0.10
+
+# Venue shrinkage prior.
+VENUE_SHRINKAGE_K = 4.0
+
+# Technical lambda boundaries.
+MIN_LAMBDA = 0.0
 MAX_LAMBDA = 4.50
 
 
 # ============================================================
-# FUNDAMENTAL STRENGTH PARAMETERS
+# FORMULA WEIGHTS
 # ============================================================
+
+# Attack form.
+ATTACK_XG_STATE_WEIGHT = 0.60
+ATTACK_XG_TREND_WEIGHT = 0.25
+ATTACK_PROCESS_WEIGHT = 0.15
+
+# Process split.
+PROCESS_SOT_WEIGHT = 0.50
+PROCESS_SHOTS_WEIGHT = 0.50
+
+# Defence form.
+DEFENCE_XGA_STATE_WEIGHT = 0.70
+DEFENCE_XGA_TREND_WEIGHT = 0.30
+
+
+# ============================================================
+# PROCESS BASELINES
+#
+# These are used only when actual process averages exist.
+# They do NOT create data when fields are missing.
+# ============================================================
+
+SHOTS_BASELINE = 12.0
+SOT_BASELINE = 4.0
+
+
+# ============================================================
+# ROBUST HISTORY SETTINGS
+# ============================================================
+
+EPSILON = 1e-9
+MIN_ROBUST_SCALE = 0.25
+
+
+# ============================================================
+# COMPATIBILITY EXPORTS
+#
+# Existing code may import these names.
+# They are retained, but are no longer part of the v5
+# mathematical xG allocation.
+# ============================================================
+
+MIN_XG_BASELINE = 0.0
 
 FUNDAMENTAL_XG_WEIGHT = 0.60
 FUNDAMENTAL_XGA_WEIGHT = 0.40
-
-
-# ============================================================
-# CURRENT FORM PARAMETERS
-# ============================================================
 
 FORM_XG_WEIGHT = 0.40
 FORM_XGA_WEIGHT = 0.30
@@ -135,31 +215,18 @@ FORM_SOT_WEIGHT = 0.15
 FORM_SHOTS_WEIGHT = 0.10
 FORM_POINTS_WEIGHT = 0.05
 
-# Диагностический масштаб proximity gate
+FORM_MAX_EFFECT = ATTACK_FORM_INFLUENCE
 FORM_GAP_SCALE = 0.90
-
-# ------------------------------------------------------------
-# v4.0 FORM INFLUENCE
-# ------------------------------------------------------------
-#
-# Максимальное влияние формы на СВОЙ λ:
-#     ±15%
-#
-FORM_XG_INFLUENCE = 0.15
-
-
-# ============================================================
-# REGIME CHANGE PARAMETERS
-# ============================================================
 
 REGIME_PROCESS_THRESHOLD = 0.55
 REGIME_ALIGNMENT_THRESHOLD = 0.55
 REGIME_MAX_BONUS = 0.35
 
+HOME_ADVANTAGE_LOGIT = 0.0
 
-# ============================================================
-# LEGACY EXPORTS (для совместимости)
-# ============================================================
+SHARE_SLOPE = 0.0
+MIN_SHARE = 0.0
+MAX_SHARE = 1.0
 
 ATTACK_RECENT_WEIGHT = 0.60
 ATTACK_AVG_WEIGHT = 0.30
@@ -171,7 +238,6 @@ DEFENCE_GOALS_WEIGHT = 0.10
 
 TREND_WEIGHT = 0.20
 DOMINANCE_WEIGHT = 0.10
-
 CONTROL_MAX_INFLUENCE = 0.05
 SPECIAL_MAX_INFLUENCE = 0.05
 MAX_TOTAL_ADJUSTMENT = 0.20
@@ -189,20 +255,20 @@ WINNER_MAX_SHARE_SHIFT = 0.18
 
 
 # ============================================================
-# RESULT
+# PUBLIC RESULT
 # ============================================================
 
 @dataclass
 class GoalModelResult:
     """
-    Результат GoalModel v4.0.
+    Backward-compatible public result.
 
-    Старые поля сохранены ради совместимости
-    с FAJBrain и остальным pipeline.
+    Existing positional fields are retained.
+
+    v5-specific information is available through diagnostics.
     """
 
     version: str
-
     home_team: Optional[str]
     away_team: Optional[str]
     venue: str
@@ -234,28 +300,22 @@ class GoalModelResult:
 
 
 # ============================================================
-# GOAL MODEL v4.0
+# GOAL MODEL
 # ============================================================
 
 class GoalModel:
     """
-    FAJ GoalModel v4.0.
+    FAJ GoalModel v5.0.
 
-    Основная идея:
+    The model separates:
 
-        HOME ATTACK + AWAY DEFENCE
-                    ↓
-                   λH
+        Team Class
+            from
+        Current State
 
-        AWAY ATTACK + HOME DEFENCE
-                    ↓
-                   λA
+    and then creates independent goal expectations for both sides.
 
-    Каждая команда генерирует голы независимо.
-
-    Сила (strength_gap) используется только
-    для диагностики и оценки фаворита,
-    но НЕ перераспределяет xG.
+    No shared total xG is constructed.
     """
 
     def __init__(self) -> None:
@@ -278,410 +338,404 @@ class GoalModel:
         home_special: Any = None,
         away_special: Any = None,
     ) -> GoalModelResult:
-        """
-        Рассчитать ожидаемые голы.
 
-        v4.0:
-        - Independent goal generation
-        - Form modifies own λ only
-        - No shared total
-        - No sigmoid allocation
-        """
+        home = self._snapshot(home_form)
+        away = self._snapshot(away_form)
 
         # ----------------------------------------------------
-        # 1. SNAPSHOT
+        # 1. TEAM CLASS
         # ----------------------------------------------------
 
-        h = self._snapshot(home_form)
-        a = self._snapshot(away_form)
+        home_attack_class = self._attack_class(home)
+        away_attack_class = self._attack_class(away)
+
+        home_defence_class = self._defence_class(home)
+        away_defence_class = self._defence_class(away)
 
         # ----------------------------------------------------
-        # 2. FUNDAMENTAL STRENGTH
+        # 2. CURRENT FORM
         # ----------------------------------------------------
 
-        hf = self._fundamental(h)
-        af = self._fundamental(a)
+        home_attack_form = self._attack_form(home)
+        away_attack_form = self._attack_form(away)
+
+        home_defence_form = self._defence_form(home)
+        away_defence_form = self._defence_form(away)
 
         # ----------------------------------------------------
-        # 3. CONFIDENCE
+        # 3. VENUE PROFILE
         # ----------------------------------------------------
 
-        hc = self._confidence(h)
-        ac = self._confidence(a)
-
-        # ----------------------------------------------------
-        # 4. CURRENT FORM
-        # ----------------------------------------------------
-
-        hform = self._form(h)
-        aform = self._form(a)
-
-        # ----------------------------------------------------
-        # 5. REGIME CHANGE
-        # ----------------------------------------------------
-
-        hreg = self._regime(h)
-        areg = self._regime(a)
-
-        # ----------------------------------------------------
-        # 6. FORM STRENGTH
-        # ----------------------------------------------------
-
-        hfs = self._form_strength(hform, hc, hreg)
-        afs = self._form_strength(aform, ac, areg)
-
-        # ----------------------------------------------------
-        # 7. DIAGNOSTIC: strength gap и match gap
-        #
-        # Используется ТОЛЬКО для diagnostics.
-        # λ больше не зависит от этих величин.
-        # ----------------------------------------------------
-
-        strength_gap = hf["score"] - af["score"]
-
-        proximity = 1.0 / (
-            1.0 + abs(strength_gap) / FORM_GAP_SCALE
+        home_attack_venue = self._venue_adjusted_profile(
+            overall=home_attack_class,
+            venue_value=home.get("venue_attack_xg"),
+            venue_matches=home.get("venue_matches"),
         )
 
-        form_gap = (hfs - afs) * proximity
-
-        effective_gap = strength_gap + form_gap
-        match_gap = effective_gap
-
-        # ====================================================
-        # GOAL GENERATION v4.0
-        # Independent attacking potential
-        # ====================================================
-
-        ha = self._fundamental_attack(h)
-        aa = self._fundamental_attack(a)
-
-        hd = self._fundamental_defence(h)
-        ad = self._fundamental_defence(a)
-
-        # ----------------------------------------------------
-        # 8. Independent matchup xG
-        #
-        # Home attack vs Away defence
-        # Away attack vs Home defence
-        #
-        # IMPORTANT:
-        # No shared total xG.
-        # No redistribution through strength_gap.
-        # ----------------------------------------------------
-
-        hb = self._independent_matchup(ha, ad)
-        ab = self._independent_matchup(aa, hd)
-
-        # ----------------------------------------------------
-        # 9. Current form modifies OWN attacking potential only
-        # ----------------------------------------------------
-
-        home_form_effect = self._clamp(
-            hform["score"] * hc,
-            -1.0,
-            1.0,
+        away_attack_venue = self._venue_adjusted_profile(
+            overall=away_attack_class,
+            venue_value=away.get("venue_attack_xg"),
+            venue_matches=away.get("venue_matches"),
         )
 
-        away_form_effect = self._clamp(
-            aform["score"] * ac,
-            -1.0,
-            1.0,
+        home_defence_venue = self._venue_adjusted_profile(
+            overall=home_defence_class,
+            venue_value=home.get("venue_defence_xga"),
+            venue_matches=home.get("venue_matches"),
         )
 
-        if hb is not None:
-            hx = hb * (
-                1.0 + FORM_XG_INFLUENCE * home_form_effect
-            )
-        else:
-            hx = None
-
-        if ab is not None:
-            ax = ab * (
-                1.0 + FORM_XG_INFLUENCE * away_form_effect
-            )
-        else:
-            ax = None
+        away_defence_venue = self._venue_adjusted_profile(
+            overall=away_defence_class,
+            venue_value=away.get("venue_defence_xga"),
+            venue_matches=away.get("venue_matches"),
+        )
 
         # ----------------------------------------------------
-        # 10. Final safety bounds
+        # 4. EFFECTIVE ATTACK
         # ----------------------------------------------------
 
-        hx = self._clip(hx)
-        ax = self._clip(ax)
+        effective_home_attack = self._apply_attack_form(
+            home_attack_venue,
+            home_attack_form["score"],
+        )
+
+        effective_away_attack = self._apply_attack_form(
+            away_attack_venue,
+            away_attack_form["score"],
+        )
 
         # ----------------------------------------------------
-        # 11. TOTALS (diagnostics)
+        # 5. EFFECTIVE DEFENCE
         # ----------------------------------------------------
 
-        total_base = (
+        effective_home_defence = self._apply_defence_form(
+            home_defence_venue,
+            home_defence_form["score"],
+        )
+
+        effective_away_defence = self._apply_defence_form(
+            away_defence_venue,
+            away_defence_form["score"],
+        )
+
+        # ----------------------------------------------------
+        # 6. INDEPENDENT MATCHUPS
+        #
+        # Home goals:
+        #     home attack + away defence
+        #
+        # Away goals:
+        #     away attack + home defence
+        #
+        # Neither branch depends on opponent attack.
+        # ----------------------------------------------------
+
+        home_base_xg = self._matchup(
+            effective_home_attack,
+            effective_away_defence,
+        )
+
+        away_base_xg = self._matchup(
+            effective_away_attack,
+            effective_home_defence,
+        )
+
+        # ----------------------------------------------------
+        # 7. VENUE MULTIPLIER
+        #
+        # No arbitrary home advantage.
+        #
+        # V = 1.0 unless an actual venue-specific profile is
+        # available and has been shrunk above.
+        #
+        # The venue information therefore enters through the
+        # profile itself, not through a magic 1.12 multiplier.
+        # ----------------------------------------------------
+
+        venue_home = 1.0
+        venue_away = 1.0
+
+        home_xg = self._clip_lambda(
             None
-            if hb is None or ab is None
-            else hb + ab
+            if home_base_xg is None
+            else home_base_xg * venue_home
         )
 
-        total_final = (
+        away_xg = self._clip_lambda(
             None
-            if hx is None or ax is None
-            else hx + ax
+            if away_base_xg is None
+            else away_base_xg * venue_away
         )
 
         # ----------------------------------------------------
-        # 12. DIAGNOSTICS
+        # 8. DATA CONFIDENCE
+        #
+        # Descriptive only.
+        # It NEVER changes lambda.
         # ----------------------------------------------------
 
-        diagnostics = {
+        home_confidence = self._data_confidence(home)
+        away_confidence = self._data_confidence(away)
+
+        # ----------------------------------------------------
+        # 9. DIAGNOSTICS
+        # ----------------------------------------------------
+
+        diagnostics: Dict[str, Any] = {
             "model": "GoalModel",
+
             "version": GOAL_MODEL_VERSION,
+
             "formula_status": FORMULA_STATUS,
 
             "architecture": {
-                "fundamental_strength": True,
+                "team_class": True,
                 "current_form": True,
-                "regime_change": True,
-                "opponent_adjustment": True,
-                "independent_goal_generation": True,
-                "shared_total_used": False,
-                "sigmoid_goal_allocation": False,
-                "strength_gap_controls_xg_share": False,
+                "venue_context": True,
+                "opponent_defence": True,
+                "independent_lambda_home": True,
+                "independent_lambda_away": True,
+                "shared_total_xg": False,
+                "sigmoid_xg_allocation": False,
+                "strength_gap_controls_xg": False,
                 "probability_model": False,
                 "score_model": False,
             },
 
-            # ------------------------------------------------
-            # FUNDAMENTAL
-            # ------------------------------------------------
-
-            "fundamental_strength": {
-                "home": hf,
-                "away": af,
-                "gap": strength_gap,
-            },
-
-            # ------------------------------------------------
-            # CURRENT FORM
-            # ------------------------------------------------
-
-            "current_form": {
-                "home": hform,
-                "away": aform,
-
-                "raw_gap": hform["score"] - aform["score"],
-
-                "form_strength_home": hfs,
-                "form_strength_away": afs,
-
-                "proximity_gate": proximity,
-                "effective_gap": effective_gap,
-                "match_gap": match_gap,
-            },
-
-            # ------------------------------------------------
-            # FORM IMPACT
-            # ------------------------------------------------
-
-            "form_impact": {
-                "direct_xg_influence": FORM_XG_INFLUENCE,
-
-                "home_form_effect": home_form_effect,
-                "away_form_effect": away_form_effect,
-
-                "home_modifier": (
-                    1.0 + FORM_XG_INFLUENCE * home_form_effect
+            "formula": {
+                "attack_class": (
+                    "xG_avg if available, else goals_for_avg"
                 ),
-                "away_modifier": (
-                    1.0 + FORM_XG_INFLUENCE * away_form_effect
+                "defence_class": (
+                    "xGA_avg if available, else goals_against_avg"
                 ),
-
-                "principle": (
-                    "form_modifies_own_lambda_not_opponent"
+                "attack_form": (
+                    "0.60*R_xG + 0.25*T_xG + 0.15*P_process"
+                ),
+                "defence_form": (
+                    "0.70*R_xGA + 0.30*T_xGA"
+                ),
+                "effective_attack": (
+                    "A * (1 + 0.12*F_attack)"
+                ),
+                "effective_defence": (
+                    "D * (1 - 0.10*F_defence)"
+                ),
+                "home_lambda": (
+                    "((A_home_eff + D_away_eff) / 2) * V_home"
+                ),
+                "away_lambda": (
+                    "((A_away_eff + D_home_eff) / 2) * V_away"
                 ),
             },
 
-            # ------------------------------------------------
-            # REGIME
-            # ------------------------------------------------
+            "team_class": {
+                "home": {
+                    "attack_class": home_attack_class,
+                    "defence_class": home_defence_class,
+                },
+                "away": {
+                    "attack_class": away_attack_class,
+                    "defence_class": away_defence_class,
+                },
+            },
 
-            "regime_change": {
-                "home": hreg,
-                "away": areg,
-                "principle": (
-                    "process_evidence_required_before_strength_shift"
+            "attack_profile": {
+                "home": {
+                    "overall": home_attack_class,
+                    "venue_adjusted": home_attack_venue,
+                },
+                "away": {
+                    "overall": away_attack_class,
+                    "venue_adjusted": away_attack_venue,
+                },
+            },
+
+            "defence_profile": {
+                "home": {
+                    "overall": home_defence_class,
+                    "venue_adjusted": home_defence_venue,
+                },
+                "away": {
+                    "overall": away_defence_class,
+                    "venue_adjusted": away_defence_venue,
+                },
+            },
+
+            "attack_form": {
+                "home": home_attack_form["score"],
+                "away": away_attack_form["score"],
+            },
+
+            "defence_form": {
+                "home": home_defence_form["score"],
+                "away": away_defence_form["score"],
+            },
+
+            "xg_signal": {
+                "home": home_attack_form["xg_signal"],
+                "away": away_attack_form["xg_signal"],
+            },
+
+            "xg_trend_signal": {
+                "home": home_attack_form["xg_trend_signal"],
+                "away": away_attack_form["xg_trend_signal"],
+            },
+
+            "xga_signal": {
+                "home": home_defence_form["xga_signal"],
+                "away": away_defence_form["xga_signal"],
+            },
+
+            "xga_trend_signal": {
+                "home": home_defence_form["xga_trend_signal"],
+                "away": away_defence_form["xga_trend_signal"],
+            },
+
+            "shots_signal": {
+                "home": home_attack_form["shots_signal"],
+                "away": away_attack_form["shots_signal"],
+            },
+
+            "sot_signal": {
+                "home": home_attack_form["sot_signal"],
+                "away": away_attack_form["sot_signal"],
+            },
+
+            "process_signal": {
+                "home": home_attack_form["process_signal"],
+                "away": away_attack_form["process_signal"],
+            },
+
+            "finishing_delta": {
+                "home": home.get("finishing_delta"),
+                "away": away.get("finishing_delta"),
+            },
+
+            "finishing_signal": {
+                "home": self._finishing_signal(home),
+                "away": self._finishing_signal(away),
+            },
+
+            "venue_effect": {
+                "home": venue_home,
+                "away": venue_away,
+                "home_venue_matches": home.get("venue_matches"),
+                "away_venue_matches": away.get("venue_matches"),
+                "home_venue_alpha": self._venue_alpha(
+                    home.get("venue_matches")
                 ),
-            },
-
-            # ------------------------------------------------
-            # CONFIDENCE
-            # ------------------------------------------------
-
-            "confidence": {
-                "home": hc,
-                "away": ac,
-                "home_form_strength": hfs,
-                "away_form_strength": afs,
-            },
-
-            # ------------------------------------------------
-            # OPPONENT QUALITY
-            # ------------------------------------------------
-
-            "opponent_adjustment": {
-                "home": h["opponent_quality"],
-                "away": a["opponent_quality"],
-                "used": (
-                    h["opponent_quality"] is not None
-                    or a["opponent_quality"] is not None
+                "away_venue_alpha": self._venue_alpha(
+                    away.get("venue_matches")
                 ),
+                "arbitrary_home_multiplier_used": False,
             },
 
-            # ------------------------------------------------
-            # BASE LAMBDA
-            # ------------------------------------------------
+            "opponent_effect": {
+                "home_attack_vs_away_defence": effective_away_defence,
+                "away_attack_vs_home_defence": effective_home_defence,
+                "home_opponent_attack_used": False,
+                "away_opponent_attack_used": False,
+            },
+
+            "effective_components": {
+                "home_attack": effective_home_attack,
+                "away_attack": effective_away_attack,
+                "home_defence": effective_home_defence,
+                "away_defence": effective_away_defence,
+            },
 
             "base_lambda": {
-                "home": hb,
-                "away": ab,
-                "total": total_base,
+                "home": home_base_xg,
+                "away": away_base_xg,
                 "source": "independent_attack_defence_matchup",
             },
 
-            # ------------------------------------------------
-            # GOAL GENERATION v4.0
-            # ------------------------------------------------
-
-            "goal_generation": {
-                "version": "4.0",
-                "mode": "INDEPENDENT",
-
-                "home": {
-                    "attack": ha,
-                    "opponent_defence": ad,
-                    "base_xg": hb,
-                    "form_effect": home_form_effect,
-                    "form_multiplier": (
-                        1.0 + FORM_XG_INFLUENCE * home_form_effect
-                    ),
-                    "final_xg": hx,
-                },
-
-                "away": {
-                    "attack": aa,
-                    "opponent_defence": hd,
-                    "base_xg": ab,
-                    "form_effect": away_form_effect,
-                    "form_multiplier": (
-                        1.0 + FORM_XG_INFLUENCE * away_form_effect
-                    ),
-                    "final_xg": ax,
-                },
-
-                "shared_total_used": False,
-                "strength_gap_used_for_xg_allocation": False,
-                "form_used_for_own_xg": True,
-            },
-
-            # ------------------------------------------------
-            # GOAL ALLOCATION (удалено)
-            # ------------------------------------------------
-
-            "goal_allocation": {
-                "mode": "INDEPENDENT",
-                "home_share": None,
-                "away_share": None,
-                "shared_total": None,
-                "affects_total_xg": False,
-                "strength_gap_controls_xg_share": False,
-            },
-
-            # ------------------------------------------------
-            # FINAL LAMBDA
-            # ------------------------------------------------
-
             "lambda": {
-                "home_base": hb,
-                "away_base": ab,
-
-                "home_final": hx,
-                "away_final": ax,
-
+                "home_base": home_base_xg,
+                "away_base": away_base_xg,
+                "home_final": home_xg,
+                "away_final": away_xg,
                 "min": MIN_LAMBDA,
                 "max": MAX_LAMBDA,
-
-                "total_base": total_base,
-                "total_final": total_final,
             },
 
-            # ------------------------------------------------
-            # LEGACY SIGNALS
-            # ------------------------------------------------
+            "data_confidence": {
+                "home": home_confidence,
+                "away": away_confidence,
+                "descriptive_only": True,
+                "changes_lambda": False,
+            },
 
             "legacy_signals": {
                 "form_control_received": (
                     home_control is not None
                     or away_control is not None
                 ),
-
                 "special_form_received": (
                     home_special is not None
                     or away_special is not None
                 ),
-
                 "form_control_used_for_lambda": False,
                 "special_form_used_for_lambda": False,
-                "winner_signal_v2_3_used": False,
+                "winner_signal_used": False,
             },
-
-            # ------------------------------------------------
-            # EXCLUSIONS
-            # ------------------------------------------------
 
             "exclusions": {
                 "club_rating_used": False,
-                "form_win_used": False,
-                "result_strength_used": False,
+                "invented_rating": False,
+                "form_win_used_for_lambda": False,
+                "result_strength_used_for_lambda": False,
                 "post_match_facts_used": False,
                 "bookmaker_odds_used": False,
                 "corners_used": False,
                 "cards_used": False,
                 "prediction_result_leakage": False,
-                "venue_multiplier_used": False,
+                "shared_total_xg": False,
+                "sigmoid_allocation": False,
+                "strength_gap_xg_redistribution": False,
+                "arbitrary_home_advantage": False,
+                "finishing_direct_xg_adjustment": False,
+                "missing_data_as_zero": False,
+            },
+
+            "availability": {
+                "home": self._availability(home),
+                "away": self._availability(away),
+            },
+
+            "final_outputs": {
+                "attack_class_home": home_attack_class,
+                "attack_class_away": away_attack_class,
+                "defence_class_home": home_defence_class,
+                "defence_class_away": away_defence_class,
+                "home_base_xg": home_base_xg,
+                "away_base_xg": away_base_xg,
+                "home_xg": home_xg,
+                "away_xg": away_xg,
             },
         }
 
-        # ----------------------------------------------------
-        # 13. RESULT
-        # ----------------------------------------------------
-
         return GoalModelResult(
             version=GOAL_MODEL_VERSION,
-
             home_team=home_team,
             away_team=away_team,
             venue=venue,
-
-            home_xg=hx,
-            away_xg=ax,
-
-            home_base_xg=hb,
-            away_base_xg=ab,
-
-            home_attack_component=ha,
-            away_attack_component=aa,
-
-            home_defense_component=ad,
-            away_defense_component=hd,
-
-            home_venue_component=None,
-            away_venue_component=None,
-
-            home_xg_confidence=hc,
-            away_xg_confidence=ac,
-
-            attack_strength=hf["attack"],
-            defense_strength=hf["defence"],
-
+            home_xg=home_xg,
+            away_xg=away_xg,
+            home_base_xg=home_base_xg,
+            away_base_xg=away_base_xg,
+            home_attack_component=home_attack_class,
+            away_attack_component=away_attack_class,
+            home_defense_component=away_defence_class,
+            away_defense_component=home_defence_class,
+            home_venue_component=venue_home,
+            away_venue_component=venue_away,
+            home_xg_confidence=home_confidence,
+            away_xg_confidence=away_confidence,
+            attack_strength=home_attack_class,
+            defense_strength=home_defence_class,
             formula_status=FORMULA_STATUS,
-
             diagnostics=diagnostics,
         )
 
@@ -690,755 +744,807 @@ class GoalModel:
     # ========================================================
 
     @classmethod
-    def _snapshot(
-        cls,
-        s: Any,
-    ) -> Dict[str, Optional[float]]:
+    def _snapshot(cls, source: Any) -> Dict[str, Any]:
         """
-        Извлекает все необходимые показатели
-        из FormModelResult.
+        Extract only values that actually exist.
 
-        Missing remains None.
+        Missing values remain None.
         """
 
         names = (
+            # Main six-match values.
             "xg_recent",
             "xg_avg",
             "goals_for_avg",
-
             "xga_recent",
             "xga_avg",
             "goals_against_avg",
 
+            # Trends.
             "xg_trend",
             "xga_trend",
 
+            # Process averages.
             "shots_avg",
             "shots_against_avg",
-
             "shots_on_target_avg",
             "shots_on_target_against_avg",
 
+            # Results/context.
             "recent_points_rate",
             "points_rate",
-
             "home_points_rate",
             "away_points_rate",
 
+            # Sample.
             "matches_count",
 
+            # Existing contextual fields.
             "opponent_strength",
             "opponent_quality",
-
             "form_confidence",
+
+            # Finishing.
+            "finishing_delta",
+            "finishing_ratio",
+
+            # Venue profile candidates.
+            "home_xg_avg",
+            "away_xg_avg",
+            "home_xga_avg",
+            "away_xga_avg",
+
+            "venue_xg_avg",
+            "venue_xga_avg",
+            "venue_attack_xg",
+            "venue_defence_xga",
+            "venue_matches",
+
+            # Possible history fields.
+            "xg_history",
+            "xga_history",
+            "shots_history",
+            "shots_against_history",
+            "shots_on_target_history",
+            "shots_on_target_against_history",
+
+            "recent_xg",
+            "recent_xga",
+            "recent_shots",
+            "recent_sot",
         )
 
-        return {
-            n: cls._safe_float(
-                cls._get_value(s, n)
-            )
-            for n in names
-        }
+        snapshot: Dict[str, Any] = {}
+
+        for name in names:
+            value = cls._get_value(source, name)
+
+            if name.endswith("_history"):
+                snapshot[name] = cls._safe_history(value)
+            else:
+                snapshot[name] = cls._safe_float(value)
+
+        # ----------------------------------------------------
+        # Aliases for venue information.
+        # ----------------------------------------------------
+
+        if snapshot["venue_attack_xg"] is None:
+            snapshot["venue_attack_xg"] = snapshot["home_xg_avg"]
+
+        if snapshot["venue_defence_xga"] is None:
+            snapshot["venue_defence_xga"] = snapshot["home_xga_avg"]
+
+        # venue_xg_avg is a generic optional explicit venue field.
+        if snapshot["venue_attack_xg"] is None:
+            snapshot["venue_attack_xg"] = snapshot["venue_xg_avg"]
+
+        if snapshot["venue_defence_xga"] is None:
+            snapshot["venue_defence_xga"] = snapshot["venue_xga_avg"]
+
+        # ----------------------------------------------------
+        # FormModel-compatible aliases.
+        # ----------------------------------------------------
+
+        if snapshot["xg_recent"] is None:
+            snapshot["xg_recent"] = snapshot["recent_xg"]
+
+        if snapshot["xga_recent"] is None:
+            snapshot["xga_recent"] = snapshot["recent_xga"]
+
+        return snapshot
 
     # ========================================================
-    # VALUE ACCESS
-    # ========================================================
-
-    @staticmethod
-    def _get_value(
-        s: Any,
-        n: str,
-        default: Any = None,
-    ) -> Any:
-        """Унифицированное получение значения."""
-
-        if s is None:
-            return default
-
-        if isinstance(s, dict):
-            return s.get(n, default)
-
-        return getattr(s, n, default)
-
-    # ========================================================
-    # SAFE FLOAT
-    # ========================================================
-
-    @staticmethod
-    def _safe_float(
-        v: Any,
-    ) -> Optional[float]:
-        """Безопасное преобразование в float."""
-
-        if v is None or isinstance(v, bool):
-            return None
-
-        try:
-            x = float(v)
-        except (TypeError, ValueError):
-            return None
-
-        return x if math.isfinite(x) else None
-
-    # ========================================================
-    # FUNDAMENTAL ATTACK
+    # TEAM CLASS
     # ========================================================
 
     @classmethod
-    def _fundamental_attack(
-        cls,
-        s: Dict[str, Optional[float]],
-    ) -> Optional[float]:
+    def _attack_class(cls, s: Dict[str, Any]) -> Optional[float]:
         """
-        Фундаментальная атака:
+        Structural attacking class.
 
-            90% xG_avg
-            10% goals_for_avg
-        """
-
-        return cls._weighted([
-            (s["xg_avg"], 0.90),
-            (s["goals_for_avg"], 0.10),
-        ])
-
-    # ========================================================
-    # FUNDAMENTAL DEFENCE
-    # ========================================================
-
-    @classmethod
-    def _fundamental_defence(
-        cls,
-        s: Dict[str, Optional[float]],
-    ) -> Optional[float]:
-        """
-        Фундаментальная оборона:
-
-            90% xGA_avg
-            10% goals_against_avg
-        """
-
-        return cls._weighted([
-            (s["xga_avg"], 0.90),
-            (s["goals_against_avg"], 0.10),
-        ])
-
-    # ========================================================
-    # FUNDAMENTAL STRENGTH
-    # ========================================================
-
-    @classmethod
-    def _fundamental(
-        cls,
-        s: Dict[str, Optional[float]],
-    ) -> Dict[str, Any]:
-        """
-        Фундаментальная сила команды.
-
-        attack_score:
-            log(attack / 1.25)
-
-        defence_score:
-            log(1.25 / defence)
-        """
-
-        atk = cls._fundamental_attack(s)
-        df = cls._fundamental_defence(s)
-
-        ats = (
+        Priority:
+            xG average
+            →
+            goals-for average
+            →
             None
-            if atk is None
-            else math.log(
-                max(atk, 0.10) / 1.25
-            )
-        )
 
-        dfs = (
+        Goals are NOT blended with xG when xG exists.
+        """
+
+        xg = s.get("xg_avg")
+
+        if xg is not None:
+            return max(0.0, xg)
+
+        goals = s.get("goals_for_avg")
+
+        if goals is not None:
+            return max(0.0, goals)
+
+        return None
+
+    @classmethod
+    def _defence_class(cls, s: Dict[str, Any]) -> Optional[float]:
+        """
+        Structural defensive exposure.
+
+        Priority:
+            xGA average
+            →
+            goals-against average
+            →
             None
-            if df is None
-            else math.log(
-                1.25 / max(df, 0.10)
-            )
-        )
 
-        score = cls._weighted([
-            (ats, FUNDAMENTAL_XG_WEIGHT),
-            (dfs, FUNDAMENTAL_XGA_WEIGHT),
-        ])
+        Lower xGA = stronger defence.
+        """
 
-        return {
-            "score": (
-                0.0
-                if score is None
-                else score
-            ),
+        xga = s.get("xga_avg")
 
-            "attack": atk,
-            "defence": df,
+        if xga is not None:
+            return max(0.0, xga)
 
-            "attack_score": ats,
-            "defence_score": dfs,
+        goals_against = s.get("goals_against_avg")
 
-            "available_components": sum(
-                v is not None
-                for v in (ats, dfs)
-            ),
-        }
+        if goals_against is not None:
+            return max(0.0, goals_against)
+
+        return None
 
     # ========================================================
-    # CURRENT FORM
+    # ATTACK FORM
     # ========================================================
 
     @classmethod
-    def _form(
-        cls,
-        s: Dict[str, Optional[float]],
-    ) -> Dict[str, Any]:
+    def _attack_form(cls, s: Dict[str, Any]) -> Dict[str, Optional[float]]:
         """
-        Текущая форма команды.
+        Current attacking state.
 
-        Компоненты:
-
-            xG relative
-            xGA relative
-            SOT ratio
-            Shots ratio
-            Recent points rate
-            Trend
-            Opponent quality
+        F_A =
+            0.60 R_xG
+          + 0.25 T_xG
+          + 0.15 P_process
         """
 
-        xg = cls._relative(
-            s["xg_recent"],
-            s["xg_avg"],
+        xg_signal = cls._relative_state(
+            s.get("xg_recent"),
+            s.get("xg_avg"),
             positive=True,
         )
 
-        xga = cls._relative(
-            s["xga_recent"],
-            s["xga_avg"],
+        xg_trend_signal = cls._xg_trend_signal(
+            s.get("xg_trend"),
+            s.get("xg_avg"),
+        )
+
+        shots_signal = cls._process_average_signal(
+            s.get("shots_avg"),
+            SHOTS_BASELINE,
+        )
+
+        sot_signal = cls._process_average_signal(
+            s.get("shots_on_target_avg"),
+            SOT_BASELINE,
+        )
+
+        process_signal = cls._weighted_available(
+            (
+                (sot_signal, PROCESS_SOT_WEIGHT),
+                (shots_signal, PROCESS_SHOTS_WEIGHT),
+            )
+        )
+
+        score = cls._weighted_available(
+            (
+                (xg_signal, ATTACK_XG_STATE_WEIGHT),
+                (xg_trend_signal, ATTACK_XG_TREND_WEIGHT),
+                (process_signal, ATTACK_PROCESS_WEIGHT),
+            )
+        )
+
+        return {
+            "score": cls._clamp(
+                0.0 if score is None else score,
+                -1.0,
+                1.0,
+            ),
+            "xg_signal": xg_signal,
+            "xg_trend_signal": xg_trend_signal,
+            "shots_signal": shots_signal,
+            "sot_signal": sot_signal,
+            "process_signal": process_signal,
+        }
+
+    # ========================================================
+    # DEFENCE FORM
+    # ========================================================
+
+    @classmethod
+    def _defence_form(cls, s: Dict[str, Any]) -> Dict[str, Optional[float]]:
+        """
+        Current defensive state.
+
+        Positive value = improving defence.
+
+        F_D =
+            0.70 R_xGA
+          + 0.30 T_xGA
+        """
+
+        xga_signal = cls._relative_state(
+            s.get("xga_recent"),
+            s.get("xga_avg"),
             positive=False,
         )
 
-        sot = cls._ratio(
-            s["shots_on_target_avg"],
-            4.0,
+        xga_trend_signal = cls._xga_trend_signal(
+            s.get("xga_trend"),
+            s.get("xga_avg"),
         )
 
-        shots = cls._ratio(
-            s["shots_avg"],
-            12.0,
-        )
-
-        pts = cls._ratio(
-            s["recent_points_rate"],
-            1.5,
-        )
-
-        score = cls._weighted([
-            (xg, FORM_XG_WEIGHT),
-            (xga, FORM_XGA_WEIGHT),
-            (sot, FORM_SOT_WEIGHT),
-            (shots, FORM_SHOTS_WEIGHT),
-            (pts, FORM_POINTS_WEIGHT),
-        ])
-
-        # ----------------------------------------------------
-        # Trend
-        # ----------------------------------------------------
-
-        trend = cls._weighted([
+        score = cls._weighted_available(
             (
-                cls._trend(s["xg_trend"]),
-                0.5,
-            ),
-
-            (
-                cls._trend(-s["xga_trend"])
-                if s["xga_trend"] is not None
-                else None,
-                0.5,
-            ),
-        ])
-
-        if score is not None and trend is not None:
-            score = (
-                0.80 * score
-                + 0.20 * trend
+                (xga_signal, DEFENCE_XGA_STATE_WEIGHT),
+                (xga_trend_signal, DEFENCE_XGA_TREND_WEIGHT),
             )
-
-        # ----------------------------------------------------
-        # Opponent quality
-        # ----------------------------------------------------
-
-        oq = (
-            s["opponent_quality"]
-            if s["opponent_quality"] is not None
-            else s["opponent_strength"]
         )
-
-        if score is not None and oq is not None:
-            score *= (
-                0.75
-                + 0.25 * cls._clamp(
-                    oq,
-                    0.70,
-                    1.30,
-                )
-            )
 
         return {
-            "score": (
-                0.0
-                if score is None
-                else cls._clamp(
-                    score,
-                    -1,
-                    1,
-                )
+            "score": cls._clamp(
+                0.0 if score is None else score,
+                -1.0,
+                1.0,
             ),
-
-            "xg": xg,
-            "xga": xga,
-            "sot": sot,
-            "shots": shots,
-            "points": pts,
-            "trend": trend,
-            "opponent_quality": oq,
+            "xga_signal": xga_signal,
+            "xga_trend_signal": xga_trend_signal,
         }
+
+    # ========================================================
+    # EFFECTIVE ATTACK / DEFENCE
+    # ========================================================
+
+    @classmethod
+    def _apply_attack_form(
+        cls,
+        attack_class: Optional[float],
+        form: Optional[float],
+    ) -> Optional[float]:
+
+        if attack_class is None:
+            return None
+
+        f = 0.0 if form is None else cls._clamp(form, -1.0, 1.0)
+
+        return max(
+            0.0,
+            attack_class * (
+                1.0 + ATTACK_FORM_INFLUENCE * f
+            ),
+        )
+
+    @classmethod
+    def _apply_defence_form(
+        cls,
+        defence_class: Optional[float],
+        form: Optional[float],
+    ) -> Optional[float]:
+
+        if defence_class is None:
+            return None
+
+        f = 0.0 if form is None else cls._clamp(form, -1.0, 1.0)
+
+        return max(
+            0.0,
+            defence_class * (
+                1.0 - DEFENCE_FORM_INFLUENCE * f
+            ),
+        )
+
+    # ========================================================
+    # MATCHUP
+    # ========================================================
+
+    @classmethod
+    def _matchup(
+        cls,
+        attack: Optional[float],
+        opponent_defence: Optional[float],
+    ) -> Optional[float]:
+        """
+        Independent goal branch.
+
+        No arbitrary minimum xG floor.
+        """
+
+        if attack is None or opponent_defence is None:
+            return None
+
+        return max(
+            MIN_LAMBDA,
+            (attack + opponent_defence) / 2.0,
+        )
+
+    # ========================================================
+    # VENUE
+    # ========================================================
+
+    @classmethod
+    def _venue_adjusted_profile(
+        cls,
+        *,
+        overall: Optional[float],
+        venue_value: Optional[float],
+        venue_matches: Optional[float],
+    ) -> Optional[float]:
+        """
+        Shrink venue-specific evidence toward the overall class.
+
+            alpha = n / (n + 4)
+
+            profile =
+                (1-alpha)*overall + alpha*venue_value
+        """
+
+        if overall is None:
+            return venue_value
+
+        if venue_value is None:
+            return overall
+
+        alpha = cls._venue_alpha(venue_matches)
+
+        return (
+            (1.0 - alpha) * overall
+            + alpha * venue_value
+        )
+
+    @staticmethod
+    def _venue_alpha(
+        venue_matches: Optional[float],
+    ) -> float:
+
+        if venue_matches is None:
+            return 0.0
+
+        n = max(0.0, float(venue_matches))
+
+        return n / (n + VENUE_SHRINKAGE_K)
+
+    # ========================================================
+    # STATE SIGNALS
+    # ========================================================
+
+    @classmethod
+    def _relative_state(
+        cls,
+        recent: Optional[float],
+        baseline: Optional[float],
+        *,
+        positive: bool,
+    ) -> Optional[float]:
+        """
+        Relative recent-vs-class signal.
+
+        Positive=True:
+            higher recent value is better.
+
+        Positive=False:
+            lower recent value is better.
+
+        Denominator uses the actual baseline.
+        A small technical epsilon is used only to prevent
+        division by zero.
+        """
+
+        if recent is None or baseline is None:
+            return None
+
+        denominator = max(abs(baseline), EPSILON)
+
+        delta = (recent - baseline) / denominator
+
+        if not positive:
+            delta = -delta
+
+        return cls._clamp(delta, -1.0, 1.0)
+
+    @classmethod
+    def _xg_trend_signal(
+        cls,
+        trend: Optional[float],
+        baseline: Optional[float],
+    ) -> Optional[float]:
+        """
+        T_xG = tanh(xG_trend / xG_avg)
+
+        No arbitrary ±0.50 normalization.
+        """
+
+        if trend is None:
+            return None
+
+        denominator = max(
+            abs(baseline) if baseline is not None else 0.0,
+            EPSILON,
+        )
+
+        return cls._clamp(
+            math.tanh(trend / denominator),
+            -1.0,
+            1.0,
+        )
+
+    @classmethod
+    def _xga_trend_signal(
+        cls,
+        trend: Optional[float],
+        baseline: Optional[float],
+    ) -> Optional[float]:
+        """
+        T_xGA = -tanh(xGA_trend / xGA_avg)
+
+        Increasing xGA = worse defence.
+        Decreasing xGA = better defence.
+        """
+
+        if trend is None:
+            return None
+
+        denominator = max(
+            abs(baseline) if baseline is not None else 0.0,
+            EPSILON,
+        )
+
+        return cls._clamp(
+            -math.tanh(trend / denominator),
+            -1.0,
+            1.0,
+        )
+
+    @classmethod
+    def _process_average_signal(
+        cls,
+        value: Optional[float],
+        baseline: float,
+    ) -> Optional[float]:
+
+        if value is None:
+            return None
+
+        denominator = max(abs(baseline), EPSILON)
+
+        return cls._clamp(
+            (value - baseline) / denominator,
+            -1.0,
+            1.0,
+        )
+
+    # ========================================================
+    # PROCESS HISTORY
+    # ========================================================
+
+    @classmethod
+    def _history_process_signal(
+        cls,
+        history: Optional[Sequence[Any]],
+    ) -> Optional[float]:
+        """
+        Optional robust recent-vs-history process signal.
+
+        This function is deliberately conservative.
+
+        It returns None unless an actual history is supplied.
+        """
+
+        values = cls._numeric_history(history)
+
+        if len(values) < 2:
+            return None
+
+        midpoint = max(1, len(values) // 2)
+
+        baseline_values = values[:midpoint]
+        recent_values = values[midpoint:]
+
+        if not baseline_values or not recent_values:
+            return None
+
+        baseline = cls._median(baseline_values)
+        recent = cls._median(recent_values)
+
+        scale = cls._robust_scale(baseline_values)
+
+        denominator = max(
+            scale,
+            MIN_ROBUST_SCALE,
+        )
+
+        return cls._clamp(
+            (recent - baseline) / denominator,
+            -1.0,
+            1.0,
+        )
+
+    # ========================================================
+    # FINISHING
+    # ========================================================
+
+    @classmethod
+    def _finishing_signal(
+        cls,
+        s: Dict[str, Any],
+    ) -> Optional[float]:
+        """
+        Finishing remains diagnostic in v5.0.
+
+        It does NOT modify lambda.
+        """
+
+        delta = s.get("finishing_delta")
+
+        if delta is not None:
+            return cls._clamp(
+                math.tanh(delta),
+                -1.0,
+                1.0,
+            )
+
+        ratio = s.get("finishing_ratio")
+
+        if ratio is not None:
+            return cls._clamp(
+                math.tanh(ratio - 1.0),
+                -1.0,
+                1.0,
+            )
+
+        gf = s.get("goals_for_avg")
+        xg = s.get("xg_avg")
+
+        if gf is None or xg is None:
+            return None
+
+        return cls._clamp(
+            math.tanh(gf - xg),
+            -1.0,
+            1.0,
+        )
 
     # ========================================================
     # CONFIDENCE
     # ========================================================
 
     @classmethod
-    def _confidence(
+    def _data_confidence(
         cls,
-        s: Dict[str, Optional[float]],
-    ) -> float:
+        s: Dict[str, Any],
+    ) -> Optional[float]:
         """
-        Уверенность в данных о команде.
+        Descriptive data quality only.
 
-        Учитывает:
-
-            - доступность xG/xGA
-            - размер выборки
-            - явную FormModel confidence
+        IMPORTANT:
+            confidence NEVER modifies lambda.
         """
 
-        vals = (
-            s["xg_avg"],
-            s["xga_avg"],
-            s["xg_recent"],
-            s["xga_recent"],
-        )
+        dimensions = []
 
-        availability = (
-            sum(v is not None for v in vals)
-            / 4.0
-        )
+        # Sample.
+        n = s.get("matches_count")
 
-        n = s["matches_count"]
-
-        sample = (
-            1.0
-            if n is None
-            else cls._clamp(
-                n / 6.0,
-                0.50,
-                1.0,
+        if n is not None:
+            dimensions.append(
+                cls._clamp(n / 6.0, 0.0, 1.0)
             )
+
+        # xG availability.
+        xg_available = (
+            s.get("xg_avg") is not None
+            and s.get("xga_avg") is not None
         )
 
-        explicit = s["form_confidence"]
+        dimensions.append(
+            1.0 if xg_available else 0.0
+        )
 
-        if explicit is not None:
-            return cls._clamp(
-                0.70 * availability * sample
-                + 0.30 * cls._clamp(
-                    explicit,
-                    0,
-                    1,
-                ),
-                0,
-                1,
-            )
+        # Recent xG availability.
+        recent_available = (
+            s.get("xg_recent") is not None
+            and s.get("xga_recent") is not None
+        )
+
+        dimensions.append(
+            1.0 if recent_available else 0.0
+        )
+
+        # Process availability.
+        process_available = (
+            s.get("shots_avg") is not None
+            or s.get("shots_on_target_avg") is not None
+        )
+
+        dimensions.append(
+            1.0 if process_available else 0.0
+        )
+
+        # Venue availability.
+        venue_available = (
+            s.get("venue_attack_xg") is not None
+            and s.get("venue_matches") is not None
+            and s.get("venue_matches", 0.0) > 0
+        )
+
+        dimensions.append(
+            1.0 if venue_available else 0.0
+        )
+
+        if not dimensions:
+            return None
 
         return cls._clamp(
-            availability * sample,
-            0,
-            1,
-        )
-
-    # ========================================================
-    # REGIME CHANGE
-    # ========================================================
-
-    @classmethod
-    def _regime(
-        cls,
-        s: Dict[str, Optional[float]],
-    ) -> Dict[str, Any]:
-        """
-        Обнаружение смены режима игры команды.
-
-        Используются:
-
-            xG relative
-            xGA relative
-            SOT ratio
-            Shots ratio
-        """
-
-        vals = [
-            v
-            for v in (
-                cls._relative(
-                    s["xg_recent"],
-                    s["xg_avg"],
-                    True,
-                ),
-
-                cls._relative(
-                    s["xga_recent"],
-                    s["xga_avg"],
-                    False,
-                ),
-
-                cls._ratio(
-                    s["shots_on_target_avg"],
-                    4.0,
-                ),
-
-                cls._ratio(
-                    s["shots_avg"],
-                    12.0,
-                ),
-            )
-            if v is not None
-        ]
-
-        if not vals:
-            return {
-                "score": 0.0,
-                "process": 0.0,
-                "alignment": 0.0,
-                "active": False,
-            }
-
-        pos = sum(
-            1 for v in vals
-            if v > 0
-        )
-
-        neg = sum(
-            1 for v in vals
-            if v < 0
-        )
-
-        alignment = (
-            max(pos, neg)
-            / len(vals)
-        )
-
-        process = (
-            sum(vals)
-            / len(vals)
-        )
-
-        # ----------------------------------------------------
-        # Trend
-        # ----------------------------------------------------
-
-        trend = cls._weighted([
-            (
-                cls._trend(
-                    s["xg_trend"]
-                ),
-                0.5,
-            ),
-
-            (
-                cls._trend(
-                    -s["xga_trend"]
-                )
-                if s["xga_trend"] is not None
-                else None,
-                0.5,
-            ),
-        ])
-
-        if trend is not None:
-            process = (
-                0.80 * process
-                + 0.20 * trend
-            )
-
-        active = (
-            abs(process)
-            >= REGIME_PROCESS_THRESHOLD
-            and alignment
-            >= REGIME_ALIGNMENT_THRESHOLD
-        )
-
-        return {
-            "score": cls._clamp(
-                process * alignment,
-                -1,
-                1,
-            ),
-
-            "process": process,
-
-            "alignment": alignment,
-
-            "active": active,
-        }
-
-    # ========================================================
-    # FORM STRENGTH
-    # ========================================================
-
-    @classmethod
-    def _form_strength(
-        cls,
-        form: Dict[str, Any],
-        confidence: float,
-        regime: Dict[str, Any],
-    ) -> float:
-        """
-        Итоговая сила формы.
-
-        Regime повышает доказательность формы,
-        но не превращает её в новый фундаментальный класс.
-        """
-
-        evidence = cls._clamp(
-            confidence,
-            0.20,
+            sum(dimensions) / len(dimensions),
+            0.0,
             1.0,
         )
 
-        if regime["active"]:
-            evidence = cls._clamp(
-                evidence
-                + REGIME_MAX_BONUS
-                * abs(regime["score"]),
-                0,
-                1,
-            )
+    # ========================================================
+    # AVAILABILITY
+    # ========================================================
 
-        return (
-            cls._clamp(
-                form["score"],
-                -1,
-                1,
-            )
-            * evidence
-        )
+    @classmethod
+    def _availability(
+        cls,
+        s: Dict[str, Any],
+    ) -> Dict[str, bool]:
+
+        return {
+            "xg_avg": s.get("xg_avg") is not None,
+            "xga_avg": s.get("xga_avg") is not None,
+            "goals_for_avg": s.get("goals_for_avg") is not None,
+            "goals_against_avg": s.get("goals_against_avg") is not None,
+            "xg_recent": s.get("xg_recent") is not None,
+            "xga_recent": s.get("xga_recent") is not None,
+            "xg_trend": s.get("xg_trend") is not None,
+            "xga_trend": s.get("xga_trend") is not None,
+            "shots_avg": s.get("shots_avg") is not None,
+            "shots_on_target_avg": (
+                s.get("shots_on_target_avg") is not None
+            ),
+            "shots_history": bool(s.get("shots_history")),
+            "sot_history": bool(
+                s.get("shots_on_target_history")
+            ),
+            "venue_profile": (
+                s.get("venue_attack_xg") is not None
+                and s.get("venue_matches") is not None
+            ),
+        }
 
     # ========================================================
-    # INDEPENDENT MATCHUP (v4.0)
+    # NUMERIC HELPERS
     # ========================================================
 
     @staticmethod
-    def _independent_matchup(
-        attack: Optional[float],
-        opponent_defence: Optional[float],
+    def _get_value(
+        source: Any,
+        name: str,
+        default: Any = None,
+    ) -> Any:
+
+        if source is None:
+            return default
+
+        if isinstance(source, dict):
+            return source.get(name, default)
+
+        return getattr(source, name, default)
+
+    @staticmethod
+    def _safe_float(
+        value: Any,
     ) -> Optional[float]:
-        """
-        GoalModel v4.0
-        Independent goal generation.
 
-        Team attack and opponent defensive vulnerability
-        determine the team's own expected goals.
-
-        No shared-total redistribution.
-
-        Сниженный минимум: MIN_MATCHUP_XG = 0.15.
-        """
-        if attack is None or opponent_defence is None:
+        if value is None:
             return None
 
-        value = (attack + opponent_defence) / 2.0
+        if isinstance(value, bool):
+            return None
 
-        return max(MIN_MATCHUP_XG, float(value))
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
 
-    # ========================================================
-    # LEGACY MATCHUP (для совместимости)
-    # ========================================================
+        if not math.isfinite(number):
+            return None
+
+        return number
+
+    @classmethod
+    def _safe_history(
+        cls,
+        value: Any,
+    ) -> Optional[tuple]:
+
+        if value is None:
+            return None
+
+        if isinstance(value, (str, bytes)):
+            return None
+
+        try:
+            values = tuple(value)
+        except TypeError:
+            return None
+
+        result = []
+
+        for item in values:
+            number = cls._safe_float(item)
+
+            if number is not None:
+                result.append(number)
+
+        return tuple(result) if result else None
+
+    @classmethod
+    def _numeric_history(
+        cls,
+        history: Optional[Sequence[Any]],
+    ) -> tuple:
+
+        if not history:
+            return ()
+
+        values = []
+
+        for item in history:
+            number = cls._safe_float(item)
+
+            if number is not None:
+                values.append(number)
+
+        return tuple(values)
 
     @staticmethod
-    def _matchup(
-        attack_level: Optional[float],
-        opponent_defence_level: Optional[float],
+    def _weighted_available(
+        values: Iterable,
     ) -> Optional[float]:
-        """
-        Легаси-совместимость.
-        Делегирует в _independent_matchup.
-        """
-        return GoalModel._independent_matchup(
-            attack_level,
-            opponent_defence_level,
-        )
-
-    # ========================================================
-    # WEIGHTED
-    # ========================================================
-
-    @staticmethod
-    def _weighted(
-        values: list[
-            tuple[
-                Optional[float],
-                float,
-            ]
-        ],
-    ) -> Optional[float]:
-        """
-        Взвешенное среднее.
-
-        None исключаются.
-        Их веса перераспределяются.
-
-        Missing != 0.
-        """
 
         total = 0.0
-        weight_sum = 0.0
+        weight_total = 0.0
 
         for value, weight in values:
-
             if value is None:
                 continue
 
-            total += value * weight
-            weight_sum += weight
+            total += float(value) * float(weight)
+            weight_total += float(weight)
 
-        if weight_sum <= 0:
+        if weight_total <= 0.0:
             return None
 
-        return total / weight_sum
-
-    # ========================================================
-    # RELATIVE GAP
-    # ========================================================
-
-    @staticmethod
-    def _relative(
-        recent: Optional[float],
-        base: Optional[float],
-        positive: bool,
-    ) -> Optional[float]:
-        """
-        Относительное изменение:
-
-            (recent - base)
-            / max(|base|, 0.5)
-
-        positive=True:
-            рост = улучшение
-
-        positive=False:
-            снижение = улучшение
-        """
-
-        if recent is None or base is None:
-            return None
-
-        diff = (
-            recent - base
-        ) / max(
-            abs(base),
-            0.50,
-        )
-
-        if not positive:
-            diff = -diff
-
-        return GoalModel._clamp(
-            diff,
-            -1,
-            1,
-        )
-
-    # ========================================================
-    # RATIO GAP
-    # ========================================================
-
-    @staticmethod
-    def _ratio(
-        value: Optional[float],
-        baseline: float,
-    ) -> Optional[float]:
-        """
-        Относительное отклонение:
-
-            (value - baseline)
-            / max(|baseline|, 0.5)
-        """
-
-        if value is None:
-            return None
-
-        return GoalModel._clamp(
-            (
-                value - baseline
-            )
-            / max(
-                abs(baseline),
-                0.50,
-            ),
-            -1,
-            1,
-        )
-
-    # ========================================================
-    # TREND
-    # ========================================================
-
-    @staticmethod
-    def _trend(
-        value: Optional[float],
-    ) -> Optional[float]:
-        """Нормализация тренда."""
-
-        if value is None:
-            return None
-
-        return GoalModel._clamp(
-            value / 0.50,
-            -1,
-            1,
-        )
-
-    # ========================================================
-    # CLIP
-    # ========================================================
-
-    @staticmethod
-    def _clip(
-        value: Optional[float],
-    ) -> Optional[float]:
-        """
-        Ограничение lambda:
-
-            MIN_LAMBDA ... MAX_LAMBDA
-        """
-
-        if value is None:
-            return None
-
-        return max(
-            MIN_LAMBDA,
-            min(
-                MAX_LAMBDA,
-                float(value),
-            ),
-        )
-
-    # ========================================================
-    # CLAMP
-    # ========================================================
+        return total / weight_total
 
     @staticmethod
     def _clamp(
@@ -1446,80 +1552,96 @@ class GoalModel:
         low: float,
         high: float,
     ) -> float:
-        """Ограничение значения."""
 
-        return max(
-            low,
-            min(
-                high,
-                value,
-            ),
+        return max(low, min(high, value))
+
+    @classmethod
+    def _clip_lambda(
+        cls,
+        value: Optional[float],
+    ) -> Optional[float]:
+
+        if value is None:
+            return None
+
+        return cls._clamp(
+            float(value),
+            MIN_LAMBDA,
+            MAX_LAMBDA,
         )
 
+    # ========================================================
+    # ROBUST STATISTICS
+    # ========================================================
 
-# ============================================================
-# CONVENIENCE API
-# ============================================================
+    @staticmethod
+    def _median(
+        values: Sequence[float],
+    ) -> float:
+
+        ordered = sorted(values)
+
+        n = len(ordered)
+
+        if n == 0:
+            return 0.0
+
+        middle = n // 2
+
+        if n % 2:
+            return ordered[middle]
+
+        return (
+            ordered[middle - 1]
+            + ordered[middle]
+        ) / 2.0
+
+    @classmethod
+    def _robust_scale(
+        cls,
+        values: Sequence[float],
+    ) -> float:
+
+        if not values:
+            return 0.0
+
+        median = cls._median(values)
+
+        deviations = [
+            abs(value - median)
+            for value in values
+        ]
+
+        return cls._median(deviations)
+
+    # ========================================================
+    # PUBLIC FUNCTION
+    # ========================================================
+
 
 def calculate_expected_goals(
     home_form: Any,
     away_form: Any,
-    *,
-    home_team: Optional[str] = None,
-    away_team: Optional[str] = None,
-    venue: str = "HOME",
-    home_control: Any = None,
-    away_control: Any = None,
-    home_special: Any = None,
-    away_special: Any = None,
+    **kwargs: Any,
 ) -> GoalModelResult:
     """
-    Convenience wrapper around GoalModel.analyze().
+    Backward-compatible helper.
     """
 
     return GoalModel().analyze(
         home_form,
         away_form,
-
-        home_team=home_team,
-        away_team=away_team,
-
-        venue=venue,
-
-        home_control=home_control,
-        away_control=away_control,
-
-        home_special=home_special,
-        away_special=away_special,
+        **kwargs,
     )
 
 
 # ============================================================
-# PUBLIC EXPORTS
+# EXPORTS
 # ============================================================
 
 __all__ = [
     "GOAL_MODEL_VERSION",
     "FORMULA_STATUS",
-
-    "ATTACK_RECENT_WEIGHT",
-    "ATTACK_AVG_WEIGHT",
-    "ATTACK_GOALS_WEIGHT",
-
-    "DEFENCE_RECENT_WEIGHT",
-    "DEFENCE_AVG_WEIGHT",
-    "DEFENCE_GOALS_WEIGHT",
-
-    "TREND_WEIGHT",
-    "DOMINANCE_WEIGHT",
-
-    "CONTROL_MAX_INFLUENCE",
-    "SPECIAL_MAX_INFLUENCE",
-    "MAX_TOTAL_ADJUSTMENT",
-
-    "MIN_MATCHUP_XG",
-    "FORM_XG_INFLUENCE",
-
     "GoalModel",
     "GoalModelResult",
     "calculate_expected_goals",
