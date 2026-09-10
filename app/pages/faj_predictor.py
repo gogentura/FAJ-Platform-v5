@@ -58,6 +58,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 # ============================================================
 # PARSER
@@ -302,6 +303,30 @@ st.markdown(
 
 
     /* --------------------------------------------------------
+       DIAGNOSTICS BLOCK (V3.1)
+    -------------------------------------------------------- */
+
+    .diag-block {
+        border-radius: 14px;
+        padding: 12px 14px;
+        border: 1px solid rgba(128,128,128,.20);
+        background: rgba(128,128,128,.05);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.55;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+
+    .diag-block .diag-header {
+        font-weight: 800;
+        font-size: 13px;
+        margin-bottom: 8px;
+        opacity: .85;
+    }
+
+
+    /* --------------------------------------------------------
        MOBILE
     -------------------------------------------------------- */
 
@@ -331,6 +356,10 @@ st.markdown(
 
         .section-title {
             font-size: 14px;
+        }
+
+        .diag-block {
+            font-size: 11px;
         }
     }
 
@@ -3051,350 +3080,223 @@ with st.expander(
 
 
 # ============================================================
-# DIAGNOSTICS
+# GOALMODEL v3.1 — ВИДИМАЯ ДИАГНОСТИКА (НОВЫЙ БЛОК)
 # ============================================================
 
-with st.expander(
-    "Математическая диагностика",
-    expanded=False,
+st.markdown(
+    '<div class="section-title">🔬 GoalModel v3.1 — диагностика</div>',
+    unsafe_allow_html=True,
+)
+
+# ------------------------------------------------------------
+# Извлекаем diagnostics из goal_result
+# ------------------------------------------------------------
+
+_goal_result = prediction.get("goal_result")
+_diag = value(_goal_result, "diagnostics") or {}
+
+_base_lambda = _diag.get("base_lambda", {}) or {}
+_goal_alloc = _diag.get("goal_allocation", {}) or {}
+_fundamental = _diag.get("fundamental_strength", {}) or {}
+_current_form = _diag.get("current_form", {}) or {}
+_form_impact = _diag.get("form_impact", {}) or {}
+_lambda_data = _diag.get("lambda", {}) or {}
+
+# ------------------------------------------------------------
+# Собираем текстовый отчёт
+# ------------------------------------------------------------
+
+def _fmt_float(v: Any, digits: int = 3) -> str:
+    f = safe_float(v)
+    if f is None:
+        return "—"
+    return f"{f:.{digits}f}"
+
+
+def _fmt_pct(v: Any) -> str:
+    f = safe_float(v)
+    if f is None:
+        return "—"
+    return f"{f * 100:.1f}%"
+
+
+def _fmt_signed(v: Any, digits: int = 3) -> str:
+    f = safe_float(v)
+    if f is None:
+        return "—"
+    return f"{f:+.{digits}f}"
+
+
+_hb = _base_lambda.get("home")
+_ab = _base_lambda.get("away")
+_total_xg = _base_lambda.get("total")
+
+_base_share = _goal_alloc.get("base_share")
+_context_share = _goal_alloc.get("context_share")
+_home_share = _goal_alloc.get("home_share")
+_away_share = _goal_alloc.get("away_share")
+
+_strength_gap = _fundamental.get("gap")
+_proximity = _form_impact.get("proximity_gate")
+
+_raw_form = _current_form.get("raw_form_effect")
+_protected_form = _current_form.get("protected_form_effect")
+_form_limit = _current_form.get("protection_limit")
+
+_effective_gap = _current_form.get("effective_gap")
+_match_gap = _current_form.get("match_gap")
+
+_lambda_home = _lambda_data.get("home_final")
+_lambda_away = _lambda_data.get("away_final")
+
+_total_preserved = _lambda_data.get("total_preserved")
+_allocation_affects_total = _goal_alloc.get("affects_total_xg")
+
+# ------------------------------------------------------------
+# Проверки
+# ------------------------------------------------------------
+
+_lambda_total = None
+if _lambda_home is not None and _lambda_away is not None:
+    _lambda_total = _lambda_home + _lambda_away
+
+# Total preserved: сравниваем TOTAL из base_lambda с финальными λH + λA
+_preserved_str = "—"
+if (
+    _total_xg is not None
+    and _lambda_total is not None
+    and abs(_total_xg) > 1e-9
 ):
-
-    st.write(
-        {
-            "predictor_version":
-                PREDICTOR_VERSION,
-
-            "goal_model":
-                value(
-                    prediction["goal_result"],
-                    "version",
-                ),
-
-            "home_xg":
-                prediction["home_xg"],
-
-            "away_xg":
-                prediction["away_xg"],
-
-            "home_base_xg":
-                value(
-                    prediction["goal_result"],
-                    "home_base_xg",
-                ),
-
-            "away_base_xg":
-                value(
-                    prediction["goal_result"],
-                    "away_base_xg",
-                ),
-
-            "home_attack_signal":
-                nested(
-                    prediction["goal_result"],
-                    "diagnostics",
-                    "home_attack_signal",
-                ),
-
-            "away_attack_signal":
-                nested(
-                    prediction["goal_result"],
-                    "diagnostics",
-                    "away_attack_signal",
-                ),
-
-            "home_defence_signal":
-                nested(
-                    prediction["goal_result"],
-                    "diagnostics",
-                    "home_defence_signal",
-                ),
-
-            "away_defence_signal":
-                nested(
-                    prediction["goal_result"],
-                    "diagnostics",
-                    "away_defence_signal",
-                ),
-        }
-    )
-
-
-# ============================================================
-# GOAL MODEL — TECHNICAL DIAGNOSTICS (NEW)
-# ============================================================
-
-with st.expander("🔬 Техническая диагностика GoalModel", expanded=False):
-    diagnostics = getattr(
-        prediction.get("goal_result"),
-        "diagnostics",
-        {},
-    ) or {}
-    st.markdown("### GoalModel v2.1")
-    # --------------------------------------------------------
-    # BASE xG
-    # --------------------------------------------------------
-    st.markdown("#### Базовый xG")
-    base_home = safe_float(
-        diagnostics.get("base_home_xg")
-    )
-    base_away = safe_float(
-        diagnostics.get("base_away_xg")
-    )
-    base_total = safe_float(
-        diagnostics.get("base_total_xg")
-    )
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric(
-            "Хозяева",
-            f"{base_home:.2f}"
-            if base_home is not None
-            else "—",
-        )
-    with c2:
-        st.metric(
-            "Гости",
-            f"{base_away:.2f}"
-            if base_away is not None
-            else "—",
-        )
-    with c3:
-        st.metric(
-            "Всего",
-            f"{base_total:.2f}"
-            if base_total is not None
-            else "—",
-        )
-    # --------------------------------------------------------
-    # MAIN ADJUSTMENTS
-    # --------------------------------------------------------
-    st.markdown("#### Основные коррекции")
-    dominance = safe_float(
-        diagnostics.get("dominance_adjustment")
-    )
-    control = safe_float(
-        diagnostics.get("control_adjustment")
-    )
-    special = safe_float(
-        diagnostics.get("special_adjustment")
-    )
-    total_adjustment = safe_float(
-        diagnostics.get("total_adjustment")
-    )
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.metric(
-            "Dominance",
-            f"{dominance * 100:+.2f}%"
-            if dominance is not None
-            else "—",
-        )
-    with c2:
-        st.metric(
-            "Control",
-            f"{control * 100:+.2f}%"
-            if control is not None
-            else "—",
-        )
-    with c3:
-        st.metric(
-            "Special",
-            f"{special * 100:+.2f}%"
-            if special is not None
-            else "—",
-        )
-    with c4:
-        st.metric(
-            "Итого",
-            f"{total_adjustment * 100:+.2f}%"
-            if total_adjustment is not None
-            else "—",
-        )
-    # --------------------------------------------------------
-    # GOAL ALLOCATION
-    # --------------------------------------------------------
-    st.markdown("#### Goal Allocation")
-    allocation_signal = safe_float(
-        diagnostics.get("allocation_signal")
-    )
-    allocation_adjustment = safe_float(
-        diagnostics.get("allocation_adjustment")
-    )
-    # Получаем SOT и Shots сигналы из goal_allocation блока
-    goal_allocation = diagnostics.get("goal_allocation", {})
-    sot_signal = safe_float(
-        goal_allocation.get("sot_signal")
-    )
-    shots_signal = safe_float(
-        goal_allocation.get("shots_signal")
-    )
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.metric(
-            "SOT signal",
-            f"{sot_signal:+.3f}"
-            if sot_signal is not None
-            else "—",
-        )
-    with c2:
-        st.metric(
-            "Shots signal",
-            f"{shots_signal:+.3f}"
-            if shots_signal is not None
-            else "—",
-        )
-    with c3:
-        st.metric(
-            "Allocation",
-            f"{allocation_signal:+.3f}"
-            if allocation_signal is not None
-            else "—",
-        )
-    with c4:
-        st.metric(
-            "Влияние",
-            f"{allocation_adjustment * 100:+.2f}%"
-            if allocation_adjustment is not None
-            else "—",
-        )
-    # --------------------------------------------------------
-    # SHOTS / SOT INPUTS
-    # --------------------------------------------------------
-    st.markdown("#### Входные показатели")
-    home_name = prediction.get("home_team", "Хозяева")
-    away_name = prediction.get("away_team", "Гости")
-    shots_home = safe_float(
-        diagnostics.get("home_shots")
-    )
-    shots_away = safe_float(
-        diagnostics.get("away_shots")
-    )
-    sot_home = safe_float(
-        diagnostics.get("home_sot")
-    )
-    sot_away = safe_float(
-        diagnostics.get("away_sot")
-    )
-    c1, c2 = st.columns(2)
-    with c1:
-        st.write(
-            f"**{home_name}**"
-        )
-        st.write(
-            f"Удары: "
-            f"{shots_home:.2f}"
-            if shots_home is not None
-            else "Удары: —"
-        )
-        st.write(
-            f"SOT: "
-            f"{sot_home:.2f}"
-            if sot_home is not None
-            else "SOT: —"
-        )
-    with c2:
-        st.write(
-            f"**{away_name}**"
-        )
-        st.write(
-            f"Удары: "
-            f"{shots_away:.2f}"
-            if shots_away is not None
-            else "Удары: —"
-        )
-        st.write(
-            f"SOT: "
-            f"{sot_away:.2f}"
-            if sot_away is not None
-            else "SOT: —"
-        )
-    # --------------------------------------------------------
-    # FINAL xG
-    # --------------------------------------------------------
-    st.markdown("#### Финальный xG")
-    final_home = safe_float(
-        diagnostics.get("final_home_xg")
-    )
-    final_away = safe_float(
-        diagnostics.get("final_away_xg")
-    )
-    final_total = safe_float(
-        diagnostics.get("final_total_xg")
-    )
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric(
-            "Хозяева",
-            f"{final_home:.2f}"
-            if final_home is not None
-            else "—",
-        )
-    with c2:
-        st.metric(
-            "Гости",
-            f"{final_away:.2f}"
-            if final_away is not None
-            else "—",
-        )
-    with c3:
-        st.metric(
-            "Всего",
-            f"{final_total:.2f}"
-            if final_total is not None
-            else "—",
-        )
-    # --------------------------------------------------------
-    # SHARES
-    # --------------------------------------------------------
-    home_share = safe_float(
-        diagnostics.get("home_share")
-    )
-    away_share = safe_float(
-        diagnostics.get("away_share")
-    )
-    if (
-        home_share is not None
-        and away_share is not None
-    ):
-        st.markdown("#### Распределение goal volume")
-        c1, c2 = st.columns(2)
-        with c1:
-            st.metric(
-                f"{home_name} share",
-                f"{home_share * 100:.1f}%",
-            )
-        with c2:
-            st.metric(
-                f"{away_name} share",
-                f"{away_share * 100:.1f}%",
-            )
-    # --------------------------------------------------------
-    # TOTAL PRESERVED
-    # --------------------------------------------------------
-    total_preserved = diagnostics.get(
-        "total_preserved"
-    )
-    if total_preserved is True:
-        st.success(
-            "✅ Общий goal volume сохранён"
-        )
-    elif total_preserved is False:
-        st.error(
-            "❌ Общий goal volume изменился"
-        )
+    if abs(_lambda_total - _total_xg) < 0.01:
+        _preserved_str = "YES"
     else:
-        st.info(
-            "ℹ️ Контроль сохранения total xG "
-            "не передан GoalModel."
-        )
-    allocation_affects_total = diagnostics.get(
-        "allocation_affects_total_xg"
-    )
-    st.caption(
-        "Goal Allocation не должен создавать новый xG. "
-        f"allocation_affects_total_xg="
-        f"{allocation_affects_total}"
-    )
+        _preserved_str = f"NO (Δ={_lambda_total - _total_xg:+.3f})"
+
+_allocation_affects_str = (
+    "YES" if _allocation_affects_total is True
+    else "NO" if _allocation_affects_total is False
+    else "—"
+)
+
+_version = _diag.get("version", "—")
+_formula_status = _diag.get("formula_status", "—")
+
+_report_lines = []
+_report_lines.append("FAJ GOALMODEL DIAGNOSTICS")
+_report_lines.append("==========================")
+_report_lines.append(f"Match: {prediction['home_team']} — {prediction['away_team']}")
+_report_lines.append(f"Model: GoalModel v{_version} ({_formula_status})")
+_report_lines.append("")
+_report_lines.append("BASE LAMBDA")
+_report_lines.append(f"HB:    {_fmt_float(_hb)}")
+_report_lines.append(f"AB:    {_fmt_float(_ab)}")
+_report_lines.append(f"TOTAL: {_fmt_float(_total_xg)}")
+_report_lines.append("")
+_report_lines.append("ALLOCATION")
+_report_lines.append(f"Base Share:    {_fmt_pct(_base_share)}")
+_report_lines.append(f"Context Share: {_fmt_pct(_context_share)}")
+_report_lines.append(f"Final Home:    {_fmt_pct(_home_share)}")
+_report_lines.append(f"Final Away:    {_fmt_pct(_away_share)}")
+_report_lines.append("")
+_report_lines.append("STRENGTH")
+_report_lines.append(f"Strength Gap: {_fmt_signed(_strength_gap)}")
+_report_lines.append(f"Proximity:    {_fmt_float(_proximity)}")
+_report_lines.append("")
+_report_lines.append("FORM")
+_report_lines.append(f"Raw Form Effect:       {_fmt_signed(_raw_form)}")
+_report_lines.append(f"Protected Form Effect: {_fmt_signed(_protected_form)}")
+_report_lines.append(f"Protection Limit:      {_fmt_float(_form_limit)}")
+_report_lines.append("")
+_report_lines.append("MATCH STATE")
+_report_lines.append(f"Effective Gap: {_fmt_signed(_effective_gap)}")
+_report_lines.append(f"Match Gap:     {_fmt_signed(_match_gap)}")
+_report_lines.append("")
+_report_lines.append("FINAL XG")
+_report_lines.append(f"Home λ:  {_fmt_float(_lambda_home)}")
+_report_lines.append(f"Away λ:  {_fmt_float(_lambda_away)}")
+_report_lines.append(f"Total λ: {_fmt_float(_lambda_total)}")
+_report_lines.append("")
+_report_lines.append("CONTROL")
+_report_lines.append(f"Total Preserved:           {_preserved_str}")
+_report_lines.append(f"Allocation affects Total:  {_allocation_affects_str}")
+_report_lines.append("")
+
+_report_text = "\n".join(_report_lines)
+
+# ------------------------------------------------------------
+# Видимый блок + кнопка копирования
+# ------------------------------------------------------------
+
+st.markdown(
+    f"""
+<div class="diag-block">
+<div class="diag-header">GOALMODEL v{_version}</div>{_report_text}
+</div>
+""",
+    unsafe_allow_html=True,
+)
+
+# ------------------------------------------------------------
+# Кнопка копирования через HTML/JS
+# ------------------------------------------------------------
+
+_copy_payload = _report_text.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
+
+_copy_html = f"""
+<div style="margin-top:8px;">
+<button id="faj-copy-btn" style="
+    width:100%;
+    padding:10px 14px;
+    border-radius:12px;
+    border:1px solid rgba(128,128,128,.35);
+    background:rgba(128,128,128,.10);
+    color:inherit;
+    font-size:14px;
+    font-weight:700;
+    cursor:pointer;
+">📋 СКОПИРОВАТЬ ДИАГНОСТИКУ</button>
+<div id="faj-copy-status" style="
+    margin-top:6px;
+    font-size:11px;
+    opacity:.6;
+    text-align:center;
+"></div>
+</div>
+<script>
+(function() {{
+    const text = `{_copy_payload}`;
+    const btn = document.getElementById('faj-copy-btn');
+    const status = document.getElementById('faj-copy-status');
+    if (!btn) return;
+    btn.addEventListener('click', async function() {{
+        try {{
+            if (navigator.clipboard && window.isSecureContext) {{
+                await navigator.clipboard.writeText(text);
+            }} else {{
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.style.position = 'fixed';
+                ta.style.opacity = '0';
+                document.body.appendChild(ta);
+                ta.focus();
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+            }}
+            status.innerText = '✅ Скопировано';
+            setTimeout(function() {{ status.innerText = ''; }}, 2000);
+        }} catch (e) {{
+            status.innerText = '❌ Ошибка копирования';
+        }}
+    }});
+}})();
+</script>
+"""
+
+components.html(
+    _copy_html,
+    height=90,
+)
 
 
 # ============================================================
