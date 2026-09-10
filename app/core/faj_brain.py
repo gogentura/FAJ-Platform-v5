@@ -29,7 +29,7 @@ FAJ Personal Prediction Brain
           ↓
     SpecialForm
           ↓
-    GoalModel v2.1
+    GoalModel v3.1
           ↓
     home_xg / away_xg
           ↓
@@ -37,9 +37,9 @@ FAJ Personal Prediction Brain
           ↓
     ScorePredictor v2.2
           ↓
-    CornersModel v1.2
+    CornersModel v1.3
           ↓
-    CardsModel v1.2
+    CardsModel v1.3
 
 ВАЖНО:
     Этот модуль НЕ:
@@ -57,7 +57,7 @@ FAJ Personal Prediction Brain
     None НЕ превращается в 0.
 
 Версия:
-    FAJ-BRAIN-1.0
+    FAJ-BRAIN-1.1
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ from app.core.cards_model import CardsModel
 # VERSION
 # ============================================================
 
-BRAIN_VERSION = "FAJ-BRAIN-1.0"
+BRAIN_VERSION = "FAJ-BRAIN-1.1"
 
 MIN_MATCHES = 1
 EXTENDED_ANALYSIS_MATCHES = 3
@@ -228,9 +228,15 @@ def _weighted_mean(
 
 
 def _probability(
-    value: float,
-) -> float:
-
+    value: Optional[float],
+) -> Optional[float]:
+    """
+    Перевод вероятности 0..1 в проценты 0..100.
+    None означает отсутствие расчёта
+    и никогда не превращается в 0.
+    """
+    if value is None:
+        return None
     return round(
         _clamp(value) * 100.0,
         1,
@@ -865,14 +871,14 @@ class BrainPrediction:
     home_team: str
     away_team: str
 
-    home_win_probability: float
-    draw_probability: float
-    away_win_probability: float
+    home_win_probability: Optional[float]
+    draw_probability: Optional[float]
+    away_win_probability: Optional[float]
 
-    btts_probability: float
+    btts_probability: Optional[float]
 
-    over25_probability: float
-    over35_probability: float
+    over25_probability: Optional[float]
+    over35_probability: Optional[float]
 
     home_xg: float
     away_xg: float
@@ -2097,7 +2103,7 @@ class FAJBrain:
         )
 
     # ========================================================
-    # EXPECTED GOALS (UPDATED: v1.0 — GoalModel v2.1)
+    # EXPECTED GOALS (GoalModel v3.1)
     # ========================================================
 
     def _calculate_expected_goals(
@@ -2610,7 +2616,7 @@ class FAJBrain:
     # ========================================================
     # ========================================================
     # FAJ MATHEMATICAL BRAIN BRIDGE
-    # v1.2
+    # v1.3
     #
     # RAW HISTORY
     #     ↓
@@ -2636,15 +2642,15 @@ class FAJBrain:
     #                ↓
     #           SpecialForm
     #                ↓
-    #           GoalModel v2.1
+    #           GoalModel v3.1
     #                ↓
     #           ProbabilityModel v1.1
     #                ↓
     #           ScorePredictor v2.2
     #                ↓
-    #           CornersModel v1.2
+    #           CornersModel v1.3
     #                ↓
-    #           CardsModel v1.2
+    #           CardsModel v1.3
     #                ↓
     #              BRAIN
     # ============================================================
@@ -3435,7 +3441,7 @@ class FAJBrain:
         )
 
         # ========================================================
-        # GOAL MODEL v2.1
+        # GOAL MODEL v3.1
         #
         # FormModel
         #     +
@@ -3580,14 +3586,28 @@ class FAJBrain:
         # 6. TOTALS
         # ====================================================
 
-        btts = probability_result.btts
-        over25 = probability_result.over_25
-        over35 = probability_result.over_35
-
         totals = {
-            "btts": _probability(btts) if btts is not None else None,
-            "over25": _probability(over25) if over25 is not None else None,
-            "over35": _probability(over35) if over35 is not None else None,
+            "btts": _probability(
+                probability_result.btts
+            ),
+            "over15": _probability(
+                probability_result.over_15
+            ),
+            "under15": _probability(
+                probability_result.under_15
+            ),
+            "over25": _probability(
+                probability_result.over_25
+            ),
+            "under25": _probability(
+                probability_result.under_25
+            ),
+            "over35": _probability(
+                probability_result.over_35
+            ),
+            "under35": _probability(
+                probability_result.under_35
+            ),
         }
 
         # ====================================================
@@ -3681,24 +3701,18 @@ class FAJBrain:
         result = BrainPrediction(
             home_team=home_team,
             away_team=away_team,
-            home_win_probability=(
-                _probability(probabilities["home"])
-                if probabilities["home"] is not None
-                else 0.0
+            home_win_probability=_probability(
+                probabilities["home"]
             ),
-            draw_probability=(
-                _probability(probabilities["draw"])
-                if probabilities["draw"] is not None
-                else 0.0
+            draw_probability=_probability(
+                probabilities["draw"]
             ),
-            away_win_probability=(
-                _probability(probabilities["away"])
-                if probabilities["away"] is not None
-                else 0.0
+            away_win_probability=_probability(
+                probabilities["away"]
             ),
-            btts_probability=totals["btts"] if totals["btts"] is not None else 0.0,
-            over25_probability=totals["over25"] if totals["over25"] is not None else 0.0,
-            over35_probability=totals["over35"] if totals["over35"] is not None else 0.0,
+            btts_probability=totals["btts"],
+            over25_probability=totals["over25"],
+            over35_probability=totals["over35"],
             home_xg=home_xg,
             away_xg=away_xg,
             most_likely_score=score_result.predicted_score if score_result.predicted_score is not None else "-",
@@ -3775,6 +3789,14 @@ class FAJBrain:
                 "goal_model": self._json_safe(goal_result),
                 "probability_model": self._json_safe(probability_result),
                 "score_predictor": self._json_safe(score_result),
+                "score_forecast": {
+                    "predicted_score": score_result.predicted_score,
+                    "second_score": score_result.second_score,
+                    "third_score": score_result.third_score,
+                    "top_scores": self._json_safe(
+                        top_scores
+                    ),
+                },
                 "corners_result": self._json_safe(corners_result),
                 "cards_result": self._json_safe(cards_result),
                 "method": (
@@ -3784,18 +3806,18 @@ class FAJBrain:
                     "FormControl v1.1 + "
                     "FormAnomaly v1.0 + "
                     "SpecialForm v1.0 + "
-                    "GoalModel v2.1 + "
+                    "GoalModel v3.1 + "
                     "ProbabilityModel v1.1 + "
                     "ScorePredictor v2.2 + "
-                    "CornersModel v1.2 + "
-                    "CardsModel v1.2"
+                    "CornersModel v1.3 + "
+                    "CardsModel v1.3"
                 ),
                 "xg_internal": {"home": home_xg, "away": away_xg},
                 "note": (
-                    "FAJ-BRAIN-1.0. "
-                    "GoalModel v2.1: FormModel + FormControl + SpecialForm. "
+                    "FAJ-BRAIN-1.1. "
+                    "GoalModel v3.1: FormModel + FormControl + SpecialForm. "
                     "ScorePredictor v2.2: только ProbabilityModel. "
-                    "Corners v1.2 и Cards v1.2 с recent3 + trend."
+                    "Corners v1.3 и Cards v1.3 с recent3 + trend."
                 ),
             },
         )
