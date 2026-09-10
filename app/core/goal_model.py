@@ -4,128 +4,89 @@
 """
 ============================================================
 FAJ Platform v12.1
-GOAL MODEL v3.2
+GOAL MODEL v4.0
 ============================================================
 
 Назначение
 ----------
-GoalModel v3.2 меняет роль одного узла:
+GoalModel v4.0 меняет механизм генерации голов.
 
-  - BASE xG определяется напрямую через Fundamental
-    Attack × opponent Defence;
-  - Current Form — bounded state modifier (±15%);
-  - Home Advantage — небольшой venue modifier (×1.06);
-  - Sigmoid Goal Allocation (из v3.1) УДАЛЁН.
+Ключевое изменение:
 
-Причина изменения v3.1 → v3.2:
-
-    В v3.1 базовый matchup HB/AB фактически выбрасывался,
-    потому что финальные λ получались как:
-
-        total = HB + AB
-        share = sigmoid(SHARE_SLOPE × match_gap)
+    v3.x:
+        Home attack × Away defence → base_H
+        Away attack × Home defence → base_A
+        total = base_H + base_A
+        share = sigmoid(strength_gap)
         λH = total × share
         λA = total × (1 - share)
 
-    То есть базовое соотношение Attack × Defence
-    перезаписывалось одним match_gap.
+    v4.0:
+        Home attack × Away defence → λH
+        Away attack × Home defence → λA
 
-    В v3.2 мы возвращаем λH/λA напрямую из BASE_H/BASE_A
-    и применяем только bounded-модификаторы формы
-    и домашнего преимущества.
+То есть каждая команда получает собственный
+голевой потенциал, независимо от соперника.
 
-Architecture:
+Больше нет:
+    - shared total xG;
+    - redistribution through strength_gap;
+    - доли от общего пирога.
 
-    FormModel
-        │
-        ├── Fundamental Strength
-        ├── Current Form
-        ├── Regime Change
-        └── Opponent Quality
-        │
-        ▼
-    GoalModel v3.2
-        │
-        ├── Fundamental Attack/Defence
-        ├── Base Matchup xG
-        ├── Form Modifier (±15%)
-        ├── Home Advantage (×1.06)
-        └── Final λH / λA
-        │
-        ▼
-    lambda_home / lambda_away
+Форма:
+    Вместо перераспределения общего xG
+    форма корректирует собственный атакующий λ:
+        λH = base_H × (1 + 0.15 × form_H)
+        λA = base_A × (1 + 0.15 × form_A)
+
+    Максимум ±15% собственного λ.
+    Хорошая форма не уменьшает λ соперника.
+
+Home advantage:
+    Не используется как отдельный multiplier.
+    Venue уже учтён в фундаментальной истории.
 
 ------------------------------------------------------------
-КЛЮЧЕВЫЕ ПРИНЦИПЫ
+ПРИНЦИП
 ------------------------------------------------------------
 
-1. Fundamental Strength:
-   - Долгосрочное качество команды
-   - Сезонные xG/xGA
-   - Логарифмическое масштабирование
-   - Вес: 60% xG, 40% xGA
+    Каждая команда имеет собственный
+    атакующий потенциал:
 
-2. Base Matchup xG:
-   - BASE_H = (FA_H + FD_A) / 2
-   - BASE_A = (FA_A + FD_H) / 2
-   - Ограничение снизу: MIN_XG_BASELINE
+        λH = (Attack_H + Defence_A) / 2
+        λA = (Attack_A + Defence_H) / 2
 
-3. Current Form:
-   - Bounded state modifier
-   - Максимальное влияние ±15%
-   - Не заменяет фундаментальный класс
-   - Не перераспределяет total xG
+    Total xG больше не является управляющей величиной.
 
-4. Home Advantage:
-   - Умножает только λ home
-   - Не влияет на λ away
-   - HOME_XG_MULTIPLIER = 1.06
-
-5. Regime Change:
-   - Требует согласованного сигнала нескольких метрик
-   - Не активируется одной случайной победой
-
-6. Sigmoid Goal Allocation:
-   - УДАЛЕНО
-   - Больше не перезаписывает BASE_H/BASE_A
+    Сила (strength_gap) остаётся только для 1X2,
+    но НЕ перераспределяет xG.
 
 ------------------------------------------------------------
-ЧТО УДАЛЕНО ИЗ v3.1
+ЧТО ИЗМЕНЕНО В V4.0
 ------------------------------------------------------------
 
-- ALLOCATION_BASE_WEIGHT
-- ALLOCATION_CONTEXT_WEIGHT
-- SHARE_SLOPE
-- MIN_SHARE
-- MAX_SHARE
-- Goal Allocation через sigmoid(match_gap)
-- Пересчёт total = HB + AB с последующим распределением
-
-Что это даёт:
-  - BASE_H/BASE_A больше не выбрасываются;
-  - λH/λA отражают фундаментальный matchup;
-  - форма и home advantage — только bounded corrections;
-  - ProbabilityModel продолжает отвечать за вероятности.
+- Убран shared total xG;
+- Убран sigmoid goal allocation;
+- Убран redistribution through strength_gap;
+- Форма корректирует собственный λ (не общий);
+- MIN_MATCHUP_XG снижен до 0.15 (было 0.50);
+- Home advantage не multiplier (venue уже в истории).
 
 ------------------------------------------------------------
-ИЗМЕНЕНИЯ V3.2
+ИЗМЕНЕНИЯ ВЕРСИЙ
 ------------------------------------------------------------
 
-V3.1:
-    BASE_SHARE = HB / (HB + AB)
-    CONTEXT_SHARE = sigmoid(SHARE_SLOPE × match_gap)
-    FINAL_SHARE = 0.70 × BASE_SHARE + 0.30 × CONTEXT_SHARE
-    λH = total × FINAL_SHARE
-    λA = total × (1 − FINAL_SHARE)
-
-V3.2:
+v3.2:
     λH = BASE_H × form_modifier_H × home_multiplier
     λA = BASE_A × form_modifier_A
 
-где:
-    form_modifier_H ∈ [0.85, 1.15]
-    form_modifier_A ∈ [0.85, 1.15]
-    home_multiplier = 1.06 (только если venue == "HOME")
+v4.0:
+    λH = BASE_H × (1 + 0.15 × form_H)
+    λA = BASE_A × (1 + 0.15 × form_A)
+
+    где form_H, form_A ∈ [-1, +1]
+    base_H = (Attack_H + Defence_A) / 2
+    base_A = (Attack_A + Defence_H) / 2
 
 ============================================================
 """
@@ -141,7 +102,7 @@ import math
 # VERSION / STATUS
 # ============================================================
 
-GOAL_MODEL_VERSION = "3.2"
+GOAL_MODEL_VERSION = "4.0"
 FORMULA_STATUS = "RESEARCH_FORMULA"
 
 
@@ -149,7 +110,9 @@ FORMULA_STATUS = "RESEARCH_FORMULA"
 # BASE PARAMETERS
 # ============================================================
 
-MIN_XG_BASELINE = 0.50
+# v4.0: сниженный минимум matchup
+MIN_MATCHUP_XG = 0.15
+MIN_XG_BASELINE = 0.50  # оставлен для совместимости
 MIN_LAMBDA = 0.15
 MAX_LAMBDA = 4.50
 
@@ -172,36 +135,17 @@ FORM_SOT_WEIGHT = 0.15
 FORM_SHOTS_WEIGHT = 0.10
 FORM_POINTS_WEIGHT = 0.05
 
-# Максимальное исходное влияние формы (для промежуточной
-# диагностики в effective_strength).
-FORM_MAX_EFFECT = 0.75
-
-# Масштаб proximity gate (для диагностики).
+# Диагностический масштаб proximity gate
 FORM_GAP_SCALE = 0.90
 
 # ------------------------------------------------------------
-# v3.2 FORM MODIFIER
+# v4.0 FORM INFLUENCE
 # ------------------------------------------------------------
 #
-# Максимальное влияние формы на λ:
+# Максимальное влияние формы на СВОЙ λ:
 #     ±15%
 #
-# Применяется как множитель:
-#     λ = BASE × (1 + FORM_XG_EFFECT × form_strength)
-#
-# form_strength ∈ [-1, +1]
-# ⇒ множитель ∈ [0.85, 1.15]
-#
-FORM_XG_EFFECT = 0.15
-
-# ------------------------------------------------------------
-# v3.2 HOME ADVANTAGE
-# ------------------------------------------------------------
-#
-# Применяется ТОЛЬКО к λ home.
-# Away λ остаётся без изменений.
-#
-HOME_XG_MULTIPLIER = 1.06
+FORM_XG_INFLUENCE = 0.15
 
 
 # ============================================================
@@ -251,7 +195,7 @@ WINNER_MAX_SHARE_SHIFT = 0.18
 @dataclass
 class GoalModelResult:
     """
-    Результат GoalModel v3.2.
+    Результат GoalModel v4.0.
 
     Старые поля сохранены ради совместимости
     с FAJBrain и остальным pipeline.
@@ -290,35 +234,28 @@ class GoalModelResult:
 
 
 # ============================================================
-# GOAL MODEL v3.2
+# GOAL MODEL v4.0
 # ============================================================
 
 class GoalModel:
     """
-    FAJ GoalModel v3.2.
+    FAJ GoalModel v4.0.
 
     Основная идея:
 
-        FUNDAMENTAL STRENGTH
-                 +
-            CURRENT FORM
-                 +
-          MATCH CONTEXT
-                 ↓
-             BASE xG
-                 ↓
-          BOUNDED FORM MODIFIER
-                 ↓
-          HOME ADVANTAGE
-                 ↓
-             λH / λA
+        HOME ATTACK + AWAY DEFENCE
+                    ↓
+                   λH
 
-    При этом:
+        AWAY ATTACK + HOME DEFENCE
+                    ↓
+                   λA
 
-        BASE_H и BASE_A не выбрасываются;
-        форма не перераспределяет total xG;
-        форма только мягко корректирует каждую λ;
-        home advantage — небольшой множитель λ home.
+    Каждая команда генерирует голы независимо.
+
+    Сила (strength_gap) используется только
+    для диагностики и оценки фаворита,
+    но НЕ перераспределяет xG.
     """
 
     def __init__(self) -> None:
@@ -344,14 +281,11 @@ class GoalModel:
         """
         Рассчитать ожидаемые голы.
 
-        v3.2:
-        - Fundamental Strength
-        - Current Form (bounded modifier)
-        - Regime Change
-        - Proximity Gate
-        - Direct Base Matchup xG
-        - Home Advantage
-        - Final λH / λA
+        v4.0:
+        - Independent goal generation
+        - Form modifies own λ only
+        - No shared total
+        - No sigmoid allocation
         """
 
         # ----------------------------------------------------
@@ -397,7 +331,10 @@ class GoalModel:
         afs = self._form_strength(aform, ac, areg)
 
         # ----------------------------------------------------
-        # 7. DIAGNOSTIC: PROXIMITY GATE
+        # 7. DIAGNOSTIC: strength gap и match gap
+        #
+        # Используется ТОЛЬКО для diagnostics.
+        # λ больше не зависит от этих величин.
         # ----------------------------------------------------
 
         strength_gap = hf["score"] - af["score"]
@@ -408,29 +345,14 @@ class GoalModel:
 
         form_gap = (hfs - afs) * proximity
 
-        # ----------------------------------------------------
-        # 8. DIAGNOSTIC: MATCH GAP
-        #
-        # Используется только для diagnostics.
-        # В v3.2 больше не участвует в распределении λ.
-        # ----------------------------------------------------
+        effective_gap = strength_gap + form_gap
+        match_gap = effective_gap
 
-        effective_gap = strength_gap + FORM_MAX_EFFECT * form_gap
+        # ====================================================
+        # GOAL GENERATION v4.0
+        # Independent attacking potential
+        # ====================================================
 
-        match_gap = effective_gap + 0.12
-
-        # ----------------------------------------------------
-        # 9. GOAL ENGINE v3.2
-        # ----------------------------------------------------
-        #
-        # Base xG comes directly from attack-vs-defence matchup.
-        # Current form is a bounded state modifier.
-        # Home advantage is a small venue modifier.
-        #
-        # IMPORTANT:
-        # We do NOT redistribute total xG through sigmoid(match_gap).
-        # ProbabilityModel remains responsible for probabilities.
-        # ========================================================
         ha = self._fundamental_attack(h)
         aa = self._fundamental_attack(a)
 
@@ -438,70 +360,58 @@ class GoalModel:
         ad = self._fundamental_defence(a)
 
         # ----------------------------------------------------
-        # 9.1 Fundamental matchup
-        # ----------------------------------------------------
-
-        hb = self._matchup(ha, ad)
-        ab = self._matchup(aa, hd)
-
-        # ----------------------------------------------------
-        # 9.2 Form modifier
+        # 8. Independent matchup xG
         #
-        # Form is a state modifier, NOT a replacement for strength.
-        # Maximum direct influence: ±15%.
-        # ----------------------------------------------------
-
-        home_form_modifier = (
-            1.0 + FORM_XG_EFFECT * hfs
-            if hfs is not None
-            else 1.0
-        )
-
-        away_form_modifier = (
-            1.0 + FORM_XG_EFFECT * afs
-            if afs is not None
-            else 1.0
-        )
-
-        home_form_modifier = self._clamp(
-            home_form_modifier,
-            1.0 - FORM_XG_EFFECT,
-            1.0 + FORM_XG_EFFECT,
-        )
-
-        away_form_modifier = self._clamp(
-            away_form_modifier,
-            1.0 - FORM_XG_EFFECT,
-            1.0 + FORM_XG_EFFECT,
-        )
-
-        # ----------------------------------------------------
-        # 9.3 Home advantage
+        # Home attack vs Away defence
+        # Away attack vs Home defence
         #
-        # Small explicit venue effect.
-        # Affects only the home team's expected goals.
+        # IMPORTANT:
+        # No shared total xG.
+        # No redistribution through strength_gap.
         # ----------------------------------------------------
 
-        if venue == "HOME":
-            home_venue_multiplier = HOME_XG_MULTIPLIER
+        hb = self._independent_matchup(ha, ad)
+        ab = self._independent_matchup(aa, hd)
+
+        # ----------------------------------------------------
+        # 9. Current form modifies OWN attacking potential only
+        # ----------------------------------------------------
+
+        home_form_effect = self._clamp(
+            hform["score"] * hc,
+            -1.0,
+            1.0,
+        )
+
+        away_form_effect = self._clamp(
+            aform["score"] * ac,
+            -1.0,
+            1.0,
+        )
+
+        if hb is not None:
+            hx = hb * (
+                1.0 + FORM_XG_INFLUENCE * home_form_effect
+            )
         else:
-            home_venue_multiplier = 1.0
-
-        # ----------------------------------------------------
-        # 9.4 Final expected goals
-        # ----------------------------------------------------
-
-        if hb is None or ab is None:
             hx = None
-            ax = None
+
+        if ab is not None:
+            ax = ab * (
+                1.0 + FORM_XG_INFLUENCE * away_form_effect
+            )
         else:
-            hx = hb * home_form_modifier * home_venue_multiplier
-            ax = ab * away_form_modifier
-            hx = self._clip(hx)
-            ax = self._clip(ax)
+            ax = None
 
         # ----------------------------------------------------
-        # 10. TOTALS (diagnostics)
+        # 10. Final safety bounds
+        # ----------------------------------------------------
+
+        hx = self._clip(hx)
+        ax = self._clip(ax)
+
+        # ----------------------------------------------------
+        # 11. TOTALS (diagnostics)
         # ----------------------------------------------------
 
         total_base = (
@@ -517,7 +427,7 @@ class GoalModel:
         )
 
         # ----------------------------------------------------
-        # 11. DIAGNOSTICS
+        # 12. DIAGNOSTICS
         # ----------------------------------------------------
 
         diagnostics = {
@@ -528,12 +438,12 @@ class GoalModel:
             "architecture": {
                 "fundamental_strength": True,
                 "current_form": True,
-                "contextual_form_gate": True,
                 "regime_change": True,
                 "opponent_adjustment": True,
-                "home_advantage": True,
-                "direct_matchup_xg": True,
+                "independent_goal_generation": True,
+                "shared_total_used": False,
                 "sigmoid_goal_allocation": False,
+                "strength_gap_controls_xg_share": False,
                 "probability_model": False,
                 "score_model": False,
             },
@@ -561,8 +471,7 @@ class GoalModel:
                 "form_strength_home": hfs,
                 "form_strength_away": afs,
 
-                "proximity_adjusted_gap": form_gap,
-
+                "proximity_gate": proximity,
                 "effective_gap": effective_gap,
                 "match_gap": match_gap,
             },
@@ -572,18 +481,20 @@ class GoalModel:
             # ------------------------------------------------
 
             "form_impact": {
-                "proximity_gate": proximity,
+                "direct_xg_influence": FORM_XG_INFLUENCE,
 
-                "home_form_strength": hfs,
-                "away_form_strength": afs,
+                "home_form_effect": home_form_effect,
+                "away_form_effect": away_form_effect,
 
-                "direct_xg_effect": FORM_XG_EFFECT,
-
-                "home_modifier": home_form_modifier,
-                "away_modifier": away_form_modifier,
+                "home_modifier": (
+                    1.0 + FORM_XG_INFLUENCE * home_form_effect
+                ),
+                "away_modifier": (
+                    1.0 + FORM_XG_INFLUENCE * away_form_effect
+                ),
 
                 "principle": (
-                    "form_is_bounded_state_modifier_not_strength_replacement"
+                    "form_modifies_own_lambda_not_opponent"
                 ),
             },
 
@@ -597,23 +508,6 @@ class GoalModel:
                 "principle": (
                     "process_evidence_required_before_strength_shift"
                 ),
-            },
-
-            # ------------------------------------------------
-            # EFFECTIVE STRENGTH (diagnostic)
-            # ------------------------------------------------
-
-            "effective_strength": {
-                "home": (
-                    hf["score"]
-                    + FORM_MAX_EFFECT * hfs * proximity
-                ),
-                "away": (
-                    af["score"]
-                    + FORM_MAX_EFFECT * afs * proximity
-                ),
-                "gap_before_home_advantage": effective_gap,
-                "match_gap": match_gap,
             },
 
             # ------------------------------------------------
@@ -648,42 +542,55 @@ class GoalModel:
                 "home": hb,
                 "away": ab,
                 "total": total_base,
-                "source": (
-                    "fundamental_attack_defence_matchup"
-                ),
+                "source": "independent_attack_defence_matchup",
             },
 
             # ------------------------------------------------
-            # GOAL ENGINE v3.2
+            # GOAL GENERATION v4.0
             # ------------------------------------------------
 
-            "goal_engine_v32": {
-                "form_xg_effect": FORM_XG_EFFECT,
+            "goal_generation": {
+                "version": "4.0",
+                "mode": "INDEPENDENT",
 
-                "home_venue_multiplier": home_venue_multiplier,
+                "home": {
+                    "attack": ha,
+                    "opponent_defence": ad,
+                    "base_xg": hb,
+                    "form_effect": home_form_effect,
+                    "form_multiplier": (
+                        1.0 + FORM_XG_INFLUENCE * home_form_effect
+                    ),
+                    "final_xg": hx,
+                },
 
-                "home_xg_before_form": hb,
-                "away_xg_before_form": ab,
+                "away": {
+                    "attack": aa,
+                    "opponent_defence": hd,
+                    "base_xg": ab,
+                    "form_effect": away_form_effect,
+                    "form_multiplier": (
+                        1.0 + FORM_XG_INFLUENCE * away_form_effect
+                    ),
+                    "final_xg": ax,
+                },
 
-                "home_xg_after_form": (
-                    None
-                    if hb is None
-                    else hb * home_form_modifier
-                ),
+                "shared_total_used": False,
+                "strength_gap_used_for_xg_allocation": False,
+                "form_used_for_own_xg": True,
+            },
 
-                "away_xg_after_form": (
-                    None
-                    if ab is None
-                    else ab * away_form_modifier
-                ),
+            # ------------------------------------------------
+            # GOAL ALLOCATION (удалено)
+            # ------------------------------------------------
 
-                "home_final_xg": hx,
-                "away_final_xg": ax,
-
-                "total_base_xg": total_base,
-                "total_final_xg": total_final,
-
-                "sigmoid_allocation_used": False,
+            "goal_allocation": {
+                "mode": "INDEPENDENT",
+                "home_share": None,
+                "away_share": None,
+                "shared_total": None,
+                "affects_total_xg": False,
+                "strength_gap_controls_xg_share": False,
             },
 
             # ------------------------------------------------
@@ -699,6 +606,9 @@ class GoalModel:
 
                 "min": MIN_LAMBDA,
                 "max": MAX_LAMBDA,
+
+                "total_base": total_base,
+                "total_final": total_final,
             },
 
             # ------------------------------------------------
@@ -734,12 +644,12 @@ class GoalModel:
                 "corners_used": False,
                 "cards_used": False,
                 "prediction_result_leakage": False,
-                "venue_multiplier_used": venue == "HOME",
+                "venue_multiplier_used": False,
             },
         }
 
         # ----------------------------------------------------
-        # 12. RESULT
+        # 13. RESULT
         # ----------------------------------------------------
 
         return GoalModelResult(
@@ -1327,7 +1237,34 @@ class GoalModel:
         )
 
     # ========================================================
-    # MATCHUP
+    # INDEPENDENT MATCHUP (v4.0)
+    # ========================================================
+
+    @staticmethod
+    def _independent_matchup(
+        attack: Optional[float],
+        opponent_defence: Optional[float],
+    ) -> Optional[float]:
+        """
+        GoalModel v4.0
+        Independent goal generation.
+
+        Team attack and opponent defensive vulnerability
+        determine the team's own expected goals.
+
+        No shared-total redistribution.
+
+        Сниженный минимум: MIN_MATCHUP_XG = 0.15.
+        """
+        if attack is None or opponent_defence is None:
+            return None
+
+        value = (attack + opponent_defence) / 2.0
+
+        return max(MIN_MATCHUP_XG, float(value))
+
+    # ========================================================
+    # LEGACY MATCHUP (для совместимости)
     # ========================================================
 
     @staticmethod
@@ -1336,27 +1273,12 @@ class GoalModel:
         opponent_defence_level: Optional[float],
     ) -> Optional[float]:
         """
-        Базовый matchup:
-
-            lambda =
-                (Attack + OpponentDefence) / 2
-
-        Высокий xGA соперника означает более слабую
-        оборону и поэтому повышает ожидаемые голы.
+        Легаси-совместимость.
+        Делегирует в _independent_matchup.
         """
-
-        if (
-            attack_level is None
-            or opponent_defence_level is None
-        ):
-            return None
-
-        return max(
-            MIN_XG_BASELINE,
-            (
-                attack_level
-                + opponent_defence_level
-            ) / 2,
+        return GoalModel._independent_matchup(
+            attack_level,
+            opponent_defence_level,
         )
 
     # ========================================================
@@ -1595,8 +1517,8 @@ __all__ = [
     "SPECIAL_MAX_INFLUENCE",
     "MAX_TOTAL_ADJUSTMENT",
 
-    "FORM_XG_EFFECT",
-    "HOME_XG_MULTIPLIER",
+    "MIN_MATCHUP_XG",
+    "FORM_XG_INFLUENCE",
 
     "GoalModel",
     "GoalModelResult",
