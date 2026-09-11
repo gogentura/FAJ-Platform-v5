@@ -22,7 +22,7 @@ FAJ PREDICTOR — NEW ANALYTICAL INTERFACE
         ↓
     Defence
         ↓
-    GoalModel
+    GoalModel v6.0
         ↓
     Poisson
         ↓
@@ -31,6 +31,8 @@ FAJ PREDICTOR — NEW ANALYTICAL INTERFACE
     CornersModel
         ↓
     CardsModel
+        ↓
+    Pair Rating + Winner Signal
         ↓
     FINAL ANALYSIS
 
@@ -76,6 +78,10 @@ from app.core.defence import Defence
 from app.core.goal_model import GoalModel
 from app.core.corners_model import CornersModel
 from app.core.cards_model import CardsModel
+
+from app.core.pair_rating import calculate_pair_rating
+
+from app.faj_club_ratings import get_team_rating
 
 
 # ============================================================
@@ -1475,6 +1481,8 @@ def calculate_prediction(
     away_team: str,
     home_records: List[Dict[str, Any]],
     away_records: List[Dict[str, Any]],
+    home_pair_rating: int = 80,
+    away_pair_rating: int = 80,
 ) -> Dict[str, Any]:
 
     home_context = build_form_context(
@@ -1909,6 +1917,92 @@ def calculate_prediction(
         factors
     )
 
+    # ========================================================
+    # PAIR RATING
+    # ========================================================
+
+    try:
+
+        pair_rating = calculate_pair_rating(
+            home_rating=int(home_pair_rating),
+            away_rating=int(away_pair_rating),
+            home_team=home_team,
+            away_team=away_team,
+        )
+
+        pair_rating_dict = pair_rating.to_dict()
+
+        pair_direction = pair_rating.winner_direction
+        pair_team = pair_rating.direction_team
+        pair_strength = pair_rating.direction_strength
+
+    except Exception:
+
+        pair_rating = None
+        pair_rating_dict = None
+
+        pair_direction = None
+        pair_team = None
+        pair_strength = None
+
+    # ========================================================
+    # WINNER SIGNAL
+    # ========================================================
+
+    if pair_rating is None:
+
+        agreement = "MODEL_ONLY"
+        final_winner = favorite
+
+    elif pair_rating.winner_direction == "NEUTRAL":
+
+        agreement = "PAIR_NEUTRAL"
+        final_winner = favorite
+
+    elif pair_rating.direction_team == favorite:
+
+        agreement = "AGREE"
+        final_winner = favorite
+
+    else:
+
+        agreement = "CONFLICT"
+        final_winner = "CONFLICT"
+
+    winner_signal = {
+
+        "model_favorite":
+            favorite,
+
+        "pair_direction":
+            pair_direction,
+
+        "pair_team":
+            pair_team,
+
+        "pair_strength":
+            pair_strength,
+
+        "agreement":
+            agreement,
+
+        "final_winner":
+            final_winner,
+    }
+
+    # ========================================================
+    # CLUB RATING (display only)
+    # ========================================================
+
+    club_rating = {
+
+        "home":
+            get_team_rating(home_team),
+
+        "away":
+            get_team_rating(away_team),
+    }
+
     return {
 
         "version":
@@ -2028,6 +2122,15 @@ def calculate_prediction(
         "favorite":
             favorite,
 
+        "pair_rating":
+            pair_rating_dict,
+
+        "winner_signal":
+            winner_signal,
+
+        "club_rating":
+            club_rating,
+
         "conclusion":
             conclusion,
 
@@ -2129,6 +2232,92 @@ with right:
         "Гости",
         placeholder="Краснодар",
         key="faj_away_team",
+    )
+
+
+# ============================================================
+# FAJ CLUB RATING + FAJ PAIR RATING
+# ============================================================
+
+_home_club_rating = (
+    get_team_rating(home_team.strip())
+    if home_team.strip()
+    else None
+)
+
+_away_club_rating = (
+    get_team_rating(away_team.strip())
+    if away_team.strip()
+    else None
+)
+
+st.markdown(
+    '<div class="section-title">FAJ Club Rating</div>',
+    unsafe_allow_html=True,
+)
+
+club_c1, club_c2 = st.columns(2, gap="small")
+
+with club_c1:
+
+    st.markdown(
+        f"""
+        <div class="metric">
+            <div class="metric-value">
+                {_home_club_rating if _home_club_rating is not None else "—"}
+            </div>
+            <div class="metric-label">
+                {home_team or "Хозяева"}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+with club_c2:
+
+    st.markdown(
+        f"""
+        <div class="metric">
+            <div class="metric-value">
+                {_away_club_rating if _away_club_rating is not None else "—"}
+            </div>
+            <div class="metric-label">
+                {away_team or "Гости"}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+st.markdown(
+    '<div class="section-title">FAJ Pair Rating</div>',
+    unsafe_allow_html=True,
+)
+
+pair_c1, pair_c2 = st.columns(2, gap="small")
+
+with pair_c1:
+
+    home_pair_rating = st.number_input(
+        f"{home_team or 'Хозяева'} — рейтинг",
+        min_value=60,
+        max_value=100,
+        value=80,
+        step=1,
+        key="faj_home_pair_rating",
+    )
+
+with pair_c2:
+
+    away_pair_rating = st.number_input(
+        f"{away_team or 'Гости'} — рейтинг",
+        min_value=60,
+        max_value=100,
+        value=80,
+        step=1,
+        key="faj_away_pair_rating",
     )
 
 
@@ -2306,6 +2495,8 @@ if predict_clicked:
             away_team.strip(),
             home_records,
             away_records,
+            home_pair_rating=home_pair_rating,
+            away_pair_rating=away_pair_rating,
         )
 
     except Exception as exc:
@@ -2951,6 +3142,81 @@ st.markdown(
 
 
 # ============================================================
+# WINNER SIGNAL
+# ============================================================
+
+_winner_signal = prediction.get("winner_signal") or {}
+
+if _winner_signal:
+
+    st.markdown(
+        '<div class="section-title">Winner Signal</div>',
+        unsafe_allow_html=True,
+    )
+
+    _ws1, _ws2 = st.columns(2, gap="small")
+
+    with _ws1:
+
+        st.markdown(
+            f"""
+            <div class="metric">
+                <div class="metric-value">
+                    {_winner_signal.get("model_favorite", "—")}
+                </div>
+                <div class="metric-label">
+                    MODEL FAVORITE
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with _ws2:
+
+        _pair_team_val = _winner_signal.get("pair_team") or "—"
+
+        st.markdown(
+            f"""
+            <div class="metric">
+                <div class="metric-value">
+                    {_pair_team_val}
+                </div>
+                <div class="metric-label">
+                    PAIR DIRECTION
+                    ({_winner_signal.get("pair_strength", "—")})
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    _agreement = _winner_signal.get("agreement", "—")
+
+    _agreement_color = {
+        "AGREE": "rgba(46,160,67,.20)",
+        "PAIR_NEUTRAL": "rgba(128,128,128,.10)",
+        "CONFLICT": "rgba(210,80,80,.20)",
+        "MODEL_ONLY": "rgba(128,128,128,.10)",
+    }.get(_agreement, "rgba(128,128,128,.10)")
+
+    st.markdown(
+        f"""
+        <div class="result-card"
+             style="background:{_agreement_color};">
+            <div class="result-main">
+                {_winner_signal.get("final_winner", "—")}
+            </div>
+            <div class="result-caption">
+                AGREEMENT: {_agreement}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ============================================================
 # FACT HISTORY
 # ============================================================
 
@@ -3058,71 +3324,43 @@ with st.expander(
 
 
 # ============================================================
-# 🔬 GOALMODEL DIAGNOSTICS — BRUTE FORCE OUTPUT
-# ============================================================
-#
-# Отладочный блок.
-#
-# Пытаемся достать diagnostics из goal_result напрямую
-# и вывести их как обычный JSON через st.json().
-#
-# Это гарантирует, что мы увидим реальную структуру
-# diagnostics, даже если предыдущий UI-блок диагностики
-# по какой-то причине не отображается.
-#
+# 🔬 GOALMODEL v6.0 DIAGNOSTICS
 # ============================================================
 
 st.markdown(
-    '<div class="section-title">🔬 GoalModel Diagnostics (raw)</div>',
+    '<div class="section-title">🔬 GoalModel v6.0 Diagnostics</div>',
     unsafe_allow_html=True,
 )
 
 _goal_result = prediction.get("goal_result")
 
 if _goal_result is None:
+
     st.error("❌ goal_result отсутствует в prediction")
 
 else:
-    st.success("✅ goal_result найден")
 
     _diagnostics = value(
         _goal_result,
         "diagnostics",
     )
 
-    if _diagnostics is None:
-        st.error("❌ diagnostics = None внутри goal_result")
+    if _diagnostics is None or not isinstance(_diagnostics, dict):
 
-    elif not isinstance(_diagnostics, dict):
-        st.warning(
-            f"⚠️ diagnostics имеет тип "
-            f"{type(_diagnostics).__name__}, а не dict"
-        )
-        st.write(_diagnostics)
-
-    elif len(_diagnostics) == 0:
-        st.error("❌ diagnostics пуст (dict без ключей)")
+        st.error("❌ diagnostics отсутствует или не dict")
 
     else:
+
         st.success(
-            f"✅ diagnostics найден: "
-            f"{len(_diagnostics)} ключей"
+            f"✅ diagnostics найден: {len(_diagnostics)} ключей"
         )
 
-        with st.expander(
-            "📋 Полный diagnostics (JSON)",
-            expanded=True,
-        ):
-            st.json(_diagnostics)
-
         # ------------------------------------------------
-        # Дублируем ключевые поля для удобства
+        # Ключевые поля
         # ------------------------------------------------
-
-        st.markdown("#### Ключевые поля")
 
         _version_val = _diagnostics.get("version", "—")
-        _status_val = _diagnostics.get("formula_status", "—")
+        _status_val = _diagnostics.get("status", "—")
 
         st.write(
             f"**Version:** {_version_val}  ·  "
@@ -3130,181 +3368,211 @@ else:
         )
 
         # ------------------------------------------------
-        # BASE LAMBDA
+        # HOME
         # ------------------------------------------------
 
-        _base_lambda = _diagnostics.get("base_lambda", {}) or {}
+        _home_diag = _diagnostics.get("home", {}) or {}
 
-        if _base_lambda:
-            st.markdown("**Base Lambda**")
-            _bl1, _bl2, _bl3 = st.columns(3)
-            with _bl1:
+        if _home_diag:
+
+            st.markdown("**Home**")
+
+            _h1, _h2, _h3 = st.columns(3)
+
+            with _h1:
                 st.metric(
-                    "HB",
-                    f"{safe_float(_base_lambda.get('home')):.3f}"
-                    if safe_float(_base_lambda.get("home")) is not None
-                    else "—",
-                )
-            with _bl2:
-                st.metric(
-                    "AB",
-                    f"{safe_float(_base_lambda.get('away')):.3f}"
-                    if safe_float(_base_lambda.get("away")) is not None
-                    else "—",
-                )
-            with _bl3:
-                st.metric(
-                    "TOTAL",
-                    f"{safe_float(_base_lambda.get('total')):.3f}"
-                    if safe_float(_base_lambda.get("total")) is not None
+                    "Structural Attack",
+                    f"{safe_float(_home_diag.get('structural_attack')):.3f}"
+                    if safe_float(_home_diag.get("structural_attack")) is not None
                     else "—",
                 )
 
-        # ------------------------------------------------
-        # GOAL ALLOCATION
-        # ------------------------------------------------
-
-        _goal_alloc = _diagnostics.get("goal_allocation", {}) or {}
-
-        if _goal_alloc:
-            st.markdown("**Goal Allocation**")
-            _ga1, _ga2 = st.columns(2)
-            with _ga1:
+            with _h2:
                 st.metric(
-                    "Base Share",
-                    f"{safe_float(_goal_alloc.get('base_share')) * 100:.1f}%"
-                    if safe_float(_goal_alloc.get("base_share")) is not None
-                    else "—",
-                )
-            with _ga2:
-                st.metric(
-                    "Context Share",
-                    f"{safe_float(_goal_alloc.get('context_share')) * 100:.1f}%"
-                    if safe_float(_goal_alloc.get("context_share")) is not None
+                    "Recent Attack",
+                    f"{safe_float(_home_diag.get('recent_attack')):.3f}"
+                    if safe_float(_home_diag.get("recent_attack")) is not None
                     else "—",
                 )
 
-            _ga3, _ga4 = st.columns(2)
-            with _ga3:
+            with _h3:
                 st.metric(
-                    "Final Home Share",
-                    f"{safe_float(_goal_alloc.get('home_share')) * 100:.1f}%"
-                    if safe_float(_goal_alloc.get("home_share")) is not None
+                    "Effective Attack",
+                    f"{safe_float(_home_diag.get('effective_attack')):.3f}"
+                    if safe_float(_home_diag.get("effective_attack")) is not None
                     else "—",
                 )
-            with _ga4:
+
+            _h4, _h5, _h6 = st.columns(3)
+
+            with _h4:
                 st.metric(
-                    "Final Away Share",
-                    f"{safe_float(_goal_alloc.get('away_share')) * 100:.1f}%"
-                    if safe_float(_goal_alloc.get("away_share")) is not None
+                    "Match Attack",
+                    f"{safe_float(_home_diag.get('match_attack')):.3f}"
+                    if safe_float(_home_diag.get("match_attack")) is not None
+                    else "—",
+                )
+
+            with _h5:
+                st.metric(
+                    "Venue Attack xG",
+                    f"{safe_float(_home_diag.get('venue_attack_xg')):.3f}"
+                    if safe_float(_home_diag.get("venue_attack_xg")) is not None
+                    else "—",
+                )
+
+            with _h6:
+                st.metric(
+                    "Effective xGA",
+                    f"{safe_float(_home_diag.get('effective_xga')):.3f}"
+                    if safe_float(_home_diag.get("effective_xga")) is not None
                     else "—",
                 )
 
         # ------------------------------------------------
-        # FUNDAMENTAL STRENGTH
+        # AWAY
         # ------------------------------------------------
 
-        _fundamental = _diagnostics.get("fundamental_strength", {}) or {}
+        _away_diag = _diagnostics.get("away", {}) or {}
 
-        if _fundamental:
-            st.markdown("**Fundamental Strength**")
-            _fs1, _fs2 = st.columns(2)
-            with _fs1:
+        if _away_diag:
+
+            st.markdown("**Away**")
+
+            _a1, _a2, _a3 = st.columns(3)
+
+            with _a1:
                 st.metric(
-                    "Strength Gap",
-                    f"{safe_float(_fundamental.get('gap')):+.3f}"
-                    if safe_float(_fundamental.get("gap")) is not None
+                    "Structural Attack",
+                    f"{safe_float(_away_diag.get('structural_attack')):.3f}"
+                    if safe_float(_away_diag.get("structural_attack")) is not None
                     else "—",
                 )
 
-        # ------------------------------------------------
-        # CURRENT FORM
-        # ------------------------------------------------
-
-        _current_form = _diagnostics.get("current_form", {}) or {}
-
-        if _current_form:
-            st.markdown("**Current Form**")
-
-            _cf1, _cf2, _cf3 = st.columns(3)
-            with _cf1:
+            with _a2:
                 st.metric(
-                    "Raw Form Effect",
-                    f"{safe_float(_current_form.get('raw_form_effect')):+.3f}"
-                    if safe_float(_current_form.get("raw_form_effect")) is not None
-                    else "—",
-                )
-            with _cf2:
-                st.metric(
-                    "Protected Effect",
-                    f"{safe_float(_current_form.get('protected_form_effect')):+.3f}"
-                    if safe_float(_current_form.get("protected_form_effect")) is not None
-                    else "—",
-                )
-            with _cf3:
-                st.metric(
-                    "Protection Limit",
-                    f"{safe_float(_current_form.get('protection_limit')):.3f}"
-                    if safe_float(_current_form.get("protection_limit")) is not None
+                    "Recent Attack",
+                    f"{safe_float(_away_diag.get('recent_attack')):.3f}"
+                    if safe_float(_away_diag.get("recent_attack")) is not None
                     else "—",
                 )
 
-            _cf4, _cf5 = st.columns(2)
-            with _cf4:
+            with _a3:
                 st.metric(
-                    "Effective Gap",
-                    f"{safe_float(_current_form.get('effective_gap')):+.3f}"
-                    if safe_float(_current_form.get("effective_gap")) is not None
+                    "Effective Attack",
+                    f"{safe_float(_away_diag.get('effective_attack')):.3f}"
+                    if safe_float(_away_diag.get("effective_attack")) is not None
                     else "—",
                 )
-            with _cf5:
+
+            _a4, _a5, _a6 = st.columns(3)
+
+            with _a4:
                 st.metric(
-                    "Match Gap",
-                    f"{safe_float(_current_form.get('match_gap')):+.3f}"
-                    if safe_float(_current_form.get("match_gap")) is not None
+                    "Match Attack",
+                    f"{safe_float(_away_diag.get('match_attack')):.3f}"
+                    if safe_float(_away_diag.get("match_attack")) is not None
+                    else "—",
+                )
+
+            with _a5:
+                st.metric(
+                    "Venue Attack xG",
+                    f"{safe_float(_away_diag.get('venue_attack_xg')):.3f}"
+                    if safe_float(_away_diag.get("venue_attack_xg")) is not None
+                    else "—",
+                )
+
+            with _a6:
+                st.metric(
+                    "Effective xGA",
+                    f"{safe_float(_away_diag.get('effective_xga')):.3f}"
+                    if safe_float(_away_diag.get("effective_xga")) is not None
                     else "—",
                 )
 
         # ------------------------------------------------
-        # FINAL LAMBDA
+        # VENUE
+        # ------------------------------------------------
+
+        _venue_diag = _diagnostics.get("venue", {}) or {}
+
+        if _venue_diag:
+
+            st.markdown("**Venue**")
+
+            _v1, _v2, _v3 = st.columns(3)
+
+            with _v1:
+                st.metric(
+                    "Split Available",
+                    "YES" if _venue_diag.get("venue_split_available") else "NO",
+                )
+
+            with _v2:
+                st.metric(
+                    "HA Applied",
+                    "YES" if _venue_diag.get("home_advantage_applied") else "NO",
+                )
+
+            with _v3:
+                st.metric(
+                    "HA Fallback",
+                    f"{safe_float(_venue_diag.get('home_advantage_fallback')):.3f}"
+                    if safe_float(_venue_diag.get("home_advantage_fallback")) is not None
+                    else "—",
+                )
+
+        # ------------------------------------------------
+        # LAMBDA
         # ------------------------------------------------
 
         _lambda_data = _diagnostics.get("lambda", {}) or {}
 
         if _lambda_data:
+
             st.markdown("**Final Lambda**")
+
             _l1, _l2, _l3 = st.columns(3)
+
             with _l1:
                 st.metric(
                     "λ Home",
-                    f"{safe_float(_lambda_data.get('home_final')):.3f}"
-                    if safe_float(_lambda_data.get("home_final")) is not None
+                    f"{safe_float(_lambda_data.get('home')):.3f}"
+                    if safe_float(_lambda_data.get("home")) is not None
                     else "—",
                 )
+
             with _l2:
                 st.metric(
                     "λ Away",
-                    f"{safe_float(_lambda_data.get('away_final')):.3f}"
-                    if safe_float(_lambda_data.get("away_final")) is not None
+                    f"{safe_float(_lambda_data.get('away')):.3f}"
+                    if safe_float(_lambda_data.get("away")) is not None
                     else "—",
                 )
+
             with _l3:
-                _lh = safe_float(_lambda_data.get("home_final"))
-                _la = safe_float(_lambda_data.get("away_final"))
                 st.metric(
                     "λ Total",
-                    f"{_lh + _la:.3f}"
-                    if _lh is not None and _la is not None
+                    f"{safe_float(_lambda_data.get('total')):.3f}"
+                    if safe_float(_lambda_data.get("total")) is not None
                     else "—",
                 )
+
+        # ------------------------------------------------
+        # FULL JSON
+        # ------------------------------------------------
+
+        with st.expander("📋 Полный diagnostics (JSON)", expanded=False):
+            st.json(_diagnostics)
 
         # ------------------------------------------------
         # COPY BUTTON
         # ------------------------------------------------
 
         _report_lines = []
-        _report_lines.append("FAJ GOALMODEL DIAGNOSTICS")
-        _report_lines.append("==========================")
+        _report_lines.append("FAJ GOALMODEL v6.0 DIAGNOSTICS")
+        _report_lines.append("================================")
         _report_lines.append(
             f"Match: {prediction['home_team']} — {prediction['away_team']}"
         )
@@ -3313,98 +3581,58 @@ else:
         )
         _report_lines.append("")
 
-        _bl_home = safe_float(_base_lambda.get("home"))
-        _bl_away = safe_float(_base_lambda.get("away"))
-        _bl_total = safe_float(_base_lambda.get("total"))
-
-        _report_lines.append("BASE LAMBDA")
+        _report_lines.append("HOME")
         _report_lines.append(
-            f"HB:    {_bl_home:.3f}" if _bl_home is not None else "HB:    —"
+            f"Structural Attack: {safe_float(_home_diag.get('structural_attack')):.3f}"
+            if safe_float(_home_diag.get("structural_attack")) is not None
+            else "Structural Attack: —"
         )
         _report_lines.append(
-            f"AB:    {_bl_away:.3f}" if _bl_away is not None else "AB:    —"
+            f"Recent Attack:     {safe_float(_home_diag.get('recent_attack')):.3f}"
+            if safe_float(_home_diag.get("recent_attack")) is not None
+            else "Recent Attack:     —"
         )
         _report_lines.append(
-            f"TOTAL: {_bl_total:.3f}" if _bl_total is not None else "TOTAL: —"
-        )
-        _report_lines.append("")
-
-        _bs = safe_float(_goal_alloc.get("base_share"))
-        _cs = safe_float(_goal_alloc.get("context_share"))
-        _hs = safe_float(_goal_alloc.get("home_share"))
-        _aws = safe_float(_goal_alloc.get("away_share"))
-
-        _report_lines.append("ALLOCATION")
-        _report_lines.append(
-            f"Base Share:    {_bs * 100:.1f}%" if _bs is not None else "Base Share:    —"
-        )
-        _report_lines.append(
-            f"Context Share: {_cs * 100:.1f}%" if _cs is not None else "Context Share: —"
-        )
-        _report_lines.append(
-            f"Final Home:    {_hs * 100:.1f}%" if _hs is not None else "Final Home:    —"
-        )
-        _report_lines.append(
-            f"Final Away:    {_aws * 100:.1f}%" if _aws is not None else "Final Away:    —"
+            f"Effective Attack:  {safe_float(_home_diag.get('effective_attack')):.3f}"
+            if safe_float(_home_diag.get("effective_attack")) is not None
+            else "Effective Attack:  —"
         )
         _report_lines.append("")
 
-        _sg = safe_float(_fundamental.get("gap"))
-        _prox = safe_float(_diagnostics.get("form_impact", {}).get("proximity_gate"))
-
-        _report_lines.append("STRENGTH")
+        _report_lines.append("AWAY")
         _report_lines.append(
-            f"Strength Gap: {_sg:+.3f}" if _sg is not None else "Strength Gap: —"
+            f"Structural Attack: {safe_float(_away_diag.get('structural_attack')):.3f}"
+            if safe_float(_away_diag.get("structural_attack")) is not None
+            else "Structural Attack: —"
         )
         _report_lines.append(
-            f"Proximity:    {_prox:.3f}" if _prox is not None else "Proximity:    —"
-        )
-        _report_lines.append("")
-
-        _rf = safe_float(_current_form.get("raw_form_effect"))
-        _pf = safe_float(_current_form.get("protected_form_effect"))
-        _fl = safe_float(_current_form.get("protection_limit"))
-
-        _report_lines.append("FORM")
-        _report_lines.append(
-            f"Raw Form Effect:       {_rf:+.3f}" if _rf is not None else "Raw Form Effect:       —"
+            f"Recent Attack:     {safe_float(_away_diag.get('recent_attack')):.3f}"
+            if safe_float(_away_diag.get("recent_attack")) is not None
+            else "Recent Attack:     —"
         )
         _report_lines.append(
-            f"Protected Form Effect: {_pf:+.3f}" if _pf is not None else "Protected Form Effect: —"
-        )
-        _report_lines.append(
-            f"Protection Limit:      {_fl:.3f}" if _fl is not None else "Protection Limit:      —"
+            f"Effective Attack:  {safe_float(_away_diag.get('effective_attack')):.3f}"
+            if safe_float(_away_diag.get("effective_attack")) is not None
+            else "Effective Attack:  —"
         )
         _report_lines.append("")
 
-        _eg = safe_float(_current_form.get("effective_gap"))
-        _mg = safe_float(_current_form.get("match_gap"))
-
-        _report_lines.append("MATCH STATE")
+        _report_lines.append("LAMBDA")
         _report_lines.append(
-            f"Effective Gap: {_eg:+.3f}" if _eg is not None else "Effective Gap: —"
+            f"λ Home:  {safe_float(_lambda_data.get('home')):.3f}"
+            if safe_float(_lambda_data.get("home")) is not None
+            else "λ Home:  —"
         )
         _report_lines.append(
-            f"Match Gap:     {_mg:+.3f}" if _mg is not None else "Match Gap:     —"
-        )
-        _report_lines.append("")
-
-        _lfh = safe_float(_lambda_data.get("home_final"))
-        _lfa = safe_float(_lambda_data.get("away_final"))
-
-        _report_lines.append("FINAL XG")
-        _report_lines.append(
-            f"Home λ:  {_lfh:.3f}" if _lfh is not None else "Home λ:  —"
+            f"λ Away:  {safe_float(_lambda_data.get('away')):.3f}"
+            if safe_float(_lambda_data.get("away")) is not None
+            else "λ Away:  —"
         )
         _report_lines.append(
-            f"Away λ:  {_lfa:.3f}" if _lfa is not None else "Away λ:  —"
+            f"λ Total: {safe_float(_lambda_data.get('total')):.3f}"
+            if safe_float(_lambda_data.get("total")) is not None
+            else "λ Total: —"
         )
-        _report_lines.append(
-            f"Total λ: {_lfh + _lfa:.3f}"
-            if _lfh is not None and _lfa is not None
-            else "Total λ: —"
-        )
-        _report_lines.append("")
 
         _report_text = "\n".join(_report_lines)
 
