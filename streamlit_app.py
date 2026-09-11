@@ -129,7 +129,7 @@ def pct(value: Optional[float]) -> str:
         return "—"
 
     try:
-        return f"{float(value) * 100:.1f}%"
+        return f"{float(value):.1f}%"
     except (TypeError, ValueError):
         return "—"
 
@@ -2156,7 +2156,7 @@ def render_prediction_card(
                 "ДА"
                 if (
                     btts is not None
-                    and btts >= 0.5
+                    and btts >= 50
                 )
                 else "НЕТ"
             ),
@@ -2175,7 +2175,7 @@ def render_prediction_card(
                 "ДА"
                 if (
                     over25 is not None
-                    and over25 >= 0.5
+                    and over25 >= 50
                 )
                 else "НЕТ"
             ),
@@ -2194,7 +2194,7 @@ def render_prediction_card(
                 "ДА"
                 if (
                     over35 is not None
-                    and over35 >= 0.5
+                    and over35 >= 50
                 )
                 else "НЕТ"
             ),
