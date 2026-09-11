@@ -36,12 +36,9 @@ MAX_RATING = 100
 class PairRating:
     home_rating: int
     away_rating: int
-
     rating_gap: int
-
     winner_direction: str
     direction_team: Optional[str]
-
     direction_strength: str
 
     def to_dict(self) -> dict:
@@ -86,9 +83,11 @@ def calculate_pair_rating(
     if gap > 0:
         direction = "HOME"
         direction_team = home_team
+
     elif gap < 0:
         direction = "AWAY"
         direction_team = away_team
+
     else:
         direction = "NEUTRAL"
         direction_team = None
@@ -97,12 +96,16 @@ def calculate_pair_rating(
 
     if absolute_gap == 0:
         strength = "NEUTRAL"
+
     elif absolute_gap <= 3:
         strength = "SLIGHT"
+
     elif absolute_gap <= 7:
         strength = "MODERATE"
+
     elif absolute_gap <= 12:
         strength = "STRONG"
+
     else:
         strength = "VERY_STRONG"
 
