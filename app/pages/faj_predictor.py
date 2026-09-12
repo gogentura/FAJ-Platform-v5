@@ -83,6 +83,12 @@ from app.core.pair_rating import calculate_pair_rating
 
 from app.faj_club_ratings import get_team_rating
 
+# ============================================================
+# FOOTBALL DATA API (независимый дополнительный источник)
+# ============================================================
+
+from app.api.football_data import get_team_matches
+
 
 # ============================================================
 # VERSION
@@ -2364,6 +2370,91 @@ predict_clicked = st.button(
     type="primary",
     use_container_width=True,
 )
+
+
+# ============================================================
+# FOOTBALL DATA API — ДОПОЛНИТЕЛЬНЫЙ ИСТОЧНИК
+# ============================================================
+#
+# Независимый Scout/Context источник.
+#
+# НЕ влияет на:
+#   - GoalModel
+#   - ProbabilityModel
+#   - ScorePredictor
+#   - FAJ Brain
+#
+# Данные сохраняются ТОЛЬКО в st.session_state
+# и только отображаются.
+#
+# ============================================================
+
+st.divider()
+st.subheader("⚽ Дополнительный источник")
+
+if st.button(
+    "⚽ Загрузить из Football Data API",
+    key="load_football_data_api",
+    use_container_width=True,
+):
+    try:
+        home_api_matches = get_team_matches(home_team, limit=6)
+        away_api_matches = get_team_matches(away_team, limit=6)
+
+        st.session_state["football_data_api_home"] = home_api_matches
+        st.session_state["football_data_api_away"] = away_api_matches
+
+        st.success(
+            f"Football Data API: загружено "
+            f"{len(home_api_matches)} матчей {home_team} и "
+            f"{len(away_api_matches)} матчей {away_team}."
+        )
+
+    except Exception as exc:
+        st.error(f"❌ Football Data API: {exc}")
+
+
+# ============================================================
+# FOOTBALL DATA API — ОТОБРАЖЕНИЕ РЕЗУЛЬТАТА
+# ============================================================
+
+api_home = st.session_state.get("football_data_api_home", [])
+api_away = st.session_state.get("football_data_api_away", [])
+
+if api_home or api_away:
+    left_api, right_api = st.columns(2)
+
+    with left_api:
+        st.markdown(f"**{home_team} — Football Data API**")
+        for match in api_home:
+            hs = match.get("home_score")
+            aws = match.get("away_score")
+            score = (
+                f"{hs}:{aws}"
+                if hs is not None and aws is not None
+                else "—"
+            )
+            st.caption(
+                f"{match.get('date', '—')} · "
+                f"{match.get('home', '—')} — {match.get('away', '—')} · "
+                f"{score}"
+            )
+
+    with right_api:
+        st.markdown(f"**{away_team} — Football Data API**")
+        for match in api_away:
+            hs = match.get("home_score")
+            aws = match.get("away_score")
+            score = (
+                f"{hs}:{aws}"
+                if hs is not None and aws is not None
+                else "—"
+            )
+            st.caption(
+                f"{match.get('date', '—')} · "
+                f"{match.get('home', '—')} — {match.get('away', '—')} · "
+                f"{score}"
+            )
 
 
 # ============================================================
