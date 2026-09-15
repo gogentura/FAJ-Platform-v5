@@ -2,3993 +2,2137 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ Personal Prediction Brain
-=============================
+============================================================
+FAJ PLATFORM v12.1
+FAJ BRAIN — FINAL ORCHESTRATOR
+============================================================
 
-Новый независимый прогнозный мозг FAJ.
+ROLE
+----
+FAJBrain is an orchestration layer.
 
-Архитектура:
+It does NOT contain an independent mathematical prediction model.
 
-    historical data
-          ↓
-    normalize input
-          ↓
+Canonical prediction chain:
+
+    6 historical matches
+            ↓
     FormContext
-          ↓
+            ↓
     FormModel
-          ↓
-    FormModelResult
-          ↓
-    FormWin
-          ↓
-    Defence
-          ↓
-    FormControl
-          ↓
-    FormAnomaly
-          ↓
-    SpecialForm
-          ↓
+            ↓
     GoalModel v6.0
-          ↓
-    home_xg / away_xg
-          ↓
+            ↓
+        λ Home/Away
+            ↓
     ProbabilityModel v1.1
-          ↓
+            ↓
+    score_distribution
+            ↓
     ScorePredictor v2.2
-          ↓
-    Winner Synthesis
-          ↓
-    CornersModel v1.3
-          ↓
-    CardsModel v1.3
+            ↓
+    FINAL PREDICTION
 
-ВАЖНО:
-    Этот модуль НЕ:
-        - работает с SQLite напрямую;
-        - получает данные из Soccer365;
-        - занимается UI;
-        - занимается API;
-        - обучается автоматически;
-        - изменяет параметры базы;
-        - использует букмекерские коэффициенты;
-        - зависит от старого FAJ Core.
 
-Принцип:
-    отсутствующие данные остаются None.
-    None НЕ превращается в 0.
+DIAGNOSTIC ORGANS
+-----------------
+These organs may be calculated for analytical diagnostics:
 
-PAIR RATING CONTRACT:
-    Pair Rating — исследовательский сигнал КОНКРЕТНОЙ
-    пары. Он НЕ меняет:
-        - xG
-        - GoalModel
-        - ProbabilityModel
-        - Poisson
-        - BTTS
-        - totals
-        - score distribution
+    FormWin
+    Defence
+    FormControl
+    FormAnomaly
+    SpecialForm
 
-    Он используется ТОЛЬКО в Winner Synthesis как
-    структурный сигнал.
+They MUST NOT modify:
 
-    Источники Pair Rating:
-        1. manual                — оба рейтинга переданы вручную;
-        2. club_rating_fallback  — авто из get_team_rating();
-        3. None                  — ни один источник не сработал.
+    GoalModel λ
+    ProbabilityModel probabilities
+    ScorePredictor ranking
 
-    Источник фиксируется в calculation_meta["pair_rating_source"].
 
-Версия:
-    FAJ-BRAIN-1.3
+HARD RULES
+----------
+- exactly 6 historical matches per team
+- history order is M1 -> M6
+- M1 = oldest
+- M6 = newest
+- Brain never reverses history
+- Missing != 0
+- Prediction != Fact
+- no bookmaker odds
+- no future data
+- no Winner Synthesis
+- no second Poisson implementation
+- no second xG model
+- no score recalculation inside Brain
+- no probability recalculation inside Brain
+- database.py is never touched
+
+
+MATHEMATICAL OWNERSHIP
+----------------------
+FormModel:
+    interprets historical form.
+
+GoalModel v6.0:
+    owns λH / λA.
+
+ProbabilityModel v1.1:
+    owns Poisson / 1X2 / BTTS / totals /
+    joint score distribution.
+
+ScorePredictor v2.2:
+    owns exact-score ranking.
+
+
+Brain:
+    connects them.
+============================================================
 """
 
 from __future__ import annotations
 
-import math
-from dataclasses import asdict, dataclass, field
-from types import SimpleNamespace
-from typing import Any, Dict, Iterable, List, Optional
+from dataclasses import asdict, is_dataclass
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 # ============================================================
-# IMPORTS
+# CORE IMPORTS
 # ============================================================
 
-from app.core.form_context import build_form_context
-from app.core.brain_contract import (
-    FormContext as BrainFormContext,
-    MatchRecord,
-)
-from app.core.form_model import FormModel
-from app.core.form_win import FormWin
-from app.core.defence import Defence
-from app.core.form_control import FormControl
-from app.core.form_anomaly import FormAnomaly
-from app.core.special_form import FormSpecial
-from app.core.goal_model import GoalModel
-from app.core.probability_model import ProbabilityModel
-from app.core.score_predictor import ScorePredictor
-from app.core.corners_model import CornersModel
-from app.core.cards_model import CardsModel
+from .form_context import build_form_context
+from .form_model import FormModel
+from .goal_model import GoalModel
+from .probability_model import ProbabilityModel
+from .score_predictor import ScorePredictor
 
-from app.core.pair_rating import calculate_pair_rating
-from app.faj_club_ratings import get_team_rating
+
+# ============================================================
+# DIAGNOSTIC ORGANS
+# ============================================================
+
+try:
+    from .form_win import FormWin
+except ImportError:
+    FormWin = None
+
+
+try:
+    from .defence import Defence
+except ImportError:
+    Defence = None
+
+
+try:
+    from .form_control import FormControl
+except ImportError:
+    FormControl = None
+
+
+try:
+    from .form_anomaly import FormAnomaly
+except ImportError:
+    FormAnomaly = None
+
+
+try:
+    from .special_form import SpecialForm
+except ImportError:
+    SpecialForm = None
 
 
 # ============================================================
 # VERSION
 # ============================================================
 
-BRAIN_VERSION = "FAJ-BRAIN-1.3"
+BRAIN_VERSION = "FAJ-BRAIN-FINAL-1.0"
 
-MIN_MATCHES = 1
-EXTENDED_ANALYSIS_MATCHES = 3
-PREFERRED_MATCHES = 6
-MAX_RECOMMENDED_MATCHES = 10
+CONTRACT_VERSION = "3.2"
 
-
-# ============================================================
-# PAIR RATING SOURCE
-# ============================================================
-
-PAIR_RATING_SOURCE_MANUAL = "manual"
-PAIR_RATING_SOURCE_FALLBACK = "club_rating_fallback"
+HISTORY_SIZE = 6
 
 
 # ============================================================
-# HELPERS
+# GENERIC HELPERS
 # ============================================================
 
-def _float(
-    value: Any,
-    default: Optional[float] = None,
-) -> Optional[float]:
+def _safe_float(value: Any) -> Optional[float]:
     """
-    Безопасное преобразование значения в float.
+    Safe numeric conversion.
 
-    None и пустые значения остаются None.
-    Отсутствие данных никогда не превращается в 0.
+    None stays None.
+    Invalid values stay None.
     """
 
     if value is None:
-        return default
+        return None
 
     if isinstance(value, bool):
-        return float(value)
+        return None
 
-    if isinstance(value, (int, float)):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
 
-        if math.isfinite(float(value)):
-            return float(value)
+    if not (-float("inf") < number < float("inf")):
+        return None
 
-        return default
+    return number
 
-    if isinstance(value, str):
 
-        value = value.strip().replace(",", ".")
+def _safe_int(value: Any) -> Optional[int]:
+    """
+    Safe integer conversion.
+    """
 
-        if not value:
-            return default
+    if value is None:
+        return None
+
+    if isinstance(value, bool):
+        return None
+
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _get_value(
+    obj: Any,
+    *names: str,
+) -> Any:
+    """
+    Unified access for:
+
+        dict
+        sqlite3.Row
+        dataclass
+        regular object
+    """
+
+    if obj is None:
+        return None
+
+    for name in names:
+
+        if isinstance(obj, dict):
+
+            if name in obj:
+                return obj[name]
 
         try:
+            keys = obj.keys()
 
-            result = float(value)
+            if name in keys:
+                return obj[name]
 
-            if math.isfinite(result):
-                return result
-
-        except (TypeError, ValueError):
+        except (AttributeError, TypeError):
             pass
+
+        try:
+            return getattr(obj, name)
+
+        except AttributeError:
+            pass
+
+    return None
+
+
+def _to_dict(
+    value: Any,
+) -> Dict[str, Any]:
+    """
+    Convert a model result to a dictionary.
+
+    Supports:
+        dict
+        dataclass
+        objects with to_dict()
+        regular objects
+    """
+
+    if value is None:
+        return {}
+
+    if isinstance(value, dict):
+        return dict(value)
+
+    to_dict = getattr(value, "to_dict", None)
+
+    if callable(to_dict):
+
+        try:
+            result = to_dict()
+
+            if isinstance(result, dict):
+                return dict(result)
+
+        except Exception:
+            pass
+
+    if is_dataclass(value):
+
+        try:
+            return asdict(value)
+
+        except Exception:
+            pass
+
+    try:
+        return dict(vars(value))
+
+    except Exception:
+        return {}
+
+
+def _first(
+    data: Dict[str, Any],
+    *names: str,
+    default: Any = None,
+) -> Any:
+    """
+    Return first existing key.
+
+    Important:
+        existing None is returned as None.
+        None is not converted to default.
+    """
+
+    for name in names:
+
+        if name in data:
+            return data[name]
 
     return default
 
 
-def _int(
-    value: Any,
-    default: Optional[int] = None,
-) -> Optional[int]:
+# ============================================================
+# HISTORY NORMALIZATION
+# ============================================================
 
-    result = _float(value)
-
-    if result is None:
-        return default
-
-    return int(round(result))
-
-
-def _clamp(
-    value: float,
-    low: float = 0.0,
-    high: float = 1.0,
-) -> float:
-
-    return max(
-        low,
-        min(high, value),
-    )
-
-
-def _mean(
-    values: Iterable[Optional[float]],
-) -> Optional[float]:
-
-    clean = [
-        float(value)
-        for value in values
-        if value is not None
-    ]
-
-    if not clean:
-        return None
-
-    return sum(clean) / len(clean)
-
-
-def _weighted_mean(
-    values: Iterable[Optional[float]],
-) -> Optional[float]:
-
-    clean = [
-        float(value)
-        for value in values
-        if value is not None
-    ]
-
-    if not clean:
-        return None
-
-    # Последние матчи имеют больший вес.
-    #
-    # M1 = 1
-    # M2 = 2
-    # ...
-    # M6 = 6
-
-    weights = list(
-        range(
-            1,
-            len(clean) + 1,
-        )
-    )
-
-    return sum(
-        value * weight
-        for value, weight in zip(
-            clean,
-            weights,
-        )
-    ) / sum(weights)
-
-
-def _probability(
-    value: Optional[float],
-) -> Optional[float]:
+def _normalize_history(
+    matches: Iterable[Any],
+    team_name: Optional[str] = None,
+) -> List[Any]:
     """
-    Перевод вероятности 0..1 в проценты 0..100.
-    None означает отсутствие расчёта
-    и никогда не превращается в 0.
+    Normalize history without changing chronological order.
+
+    Contract:
+
+        M1 -> M2 -> M3 -> M4 -> M5 -> M6
+
+    M1:
+        oldest
+
+    M6:
+        newest
+
+    Brain does NOT sort and does NOT reverse.
+
+    The upstream Predictor is responsible for providing
+    canonical chronological history.
+
+    team_name:
+        Optional. Retained for call-site compatibility.
+        Does NOT affect ordering or content.
     """
-    if value is None:
-        return None
-    return round(
-        _clamp(value) * 100.0,
-        1,
+
+    history = list(matches)
+
+    if len(history) != HISTORY_SIZE:
+
+        raise ValueError(
+            "FAJBrain requires exactly "
+            f"{HISTORY_SIZE} historical matches; "
+            f"received {len(history)}."
+        )
+
+    return history
+
+
+# ============================================================
+# MATCH -> BRAIN RECORD
+# ============================================================
+
+def _build_brain_record(
+    record: Any,
+) -> Dict[str, Any]:
+    """
+    Normalize an external historical record into the common
+    factual structure expected by FormContext / Brain.
+
+    Missing values remain None.
+    """
+
+    home_team = _get_value(
+        record,
+        "home_team",
+        "home_name",
+        "home",
     )
 
-
-# ============================================================
-# DATA STRUCTURES
-# ============================================================
-
-@dataclass
-class HistoricalMatch:
-
-    team: str
-    opponent: Optional[str] = None
-
-    is_home: Optional[bool] = None
-
-    goals_for: Optional[float] = None
-    goals_against: Optional[float] = None
-
-    shots: Optional[float] = None
-    shots_on_target: Optional[float] = None
-
-    possession: Optional[float] = None
-
-    corners: Optional[float] = None
-
-    yellow_cards: Optional[float] = None
-    red_cards: Optional[float] = None
-
-    xg: Optional[float] = None
-
-    big_chances: Optional[float] = None
-
-    competition: Optional[str] = None
-    match_date: Optional[str] = None
-
-    extra: Dict[str, Any] = field(
-        default_factory=dict
+    away_team = _get_value(
+        record,
+        "away_team",
+        "away_name",
+        "away",
     )
 
-    # ========================================================
-    # FROM DICT
-    # ========================================================
-
-    @classmethod
-    def from_dict(
-        cls,
-        data: Dict[str, Any],
-        team: Optional[str] = None,
-    ) -> "HistoricalMatch":
-
-        # ====================================================
-        # BASIC IDENTITY
-        # ====================================================
-
-        home_team = data.get("home_team")
-        away_team = data.get("away_team")
-
-        current_team = (
-            team
-            or data.get("team")
-            or data.get("team_name")
-            or ""
-        )
-
-        # ====================================================
-        # DETERMINE SIDE
-        # ====================================================
-
-        if data.get("is_home") is True:
-
-            is_home = True
-
-        elif data.get("is_home") is False:
-
-            is_home = False
-
-        elif home_team and current_team == home_team:
-
-            is_home = True
-
-        elif away_team and current_team == away_team:
-
-            is_home = False
-
-        else:
-
-            is_home = data.get("is_home")
-
-        # ====================================================
-        # OPPONENT
-        # ====================================================
-
-        opponent = (
-            data.get("opponent")
-            or data.get("opponent_name")
-        )
-
-        if opponent is None:
-
-            if is_home is True:
-                opponent = away_team
-
-            elif is_home is False:
-                opponent = home_team
-
-        # ====================================================
-        # COPY EXTRA
-        # ====================================================
-
-        source_extra = data.get("extra")
-
-        if isinstance(source_extra, dict):
-
-            extra = dict(source_extra)
-
-        else:
-
-            extra = {}
-
-        # ====================================================
-        # HELPER:
-        # EXTRACT TEAM / OPPONENT VALUES
-        # ====================================================
-
-        def extract_pair(
-            direct_key: str,
-            nested_key: Optional[str] = None,
-        ) -> tuple[
-            Optional[float],
-            Optional[float],
-        ]:
-
-            key = nested_key or direct_key
-
-            raw = data.get(key)
-
-            # ----------------------------------------------
-            # Nested structure:
-            #
-            # {
-            #     "home": 12,
-            #     "away": 8
-            # }
-            # ----------------------------------------------
-
-            if isinstance(raw, dict):
-
-                home_value = _float(
-                    raw.get("home")
-                )
-
-                away_value = _float(
-                    raw.get("away")
-                )
-
-                if is_home is True:
-
-                    return (
-                        home_value,
-                        away_value,
-                    )
-
-                if is_home is False:
-
-                    return (
-                        away_value,
-                        home_value,
-                    )
-
-                return (
-                    None,
-                    None,
-                )
-
-            # ----------------------------------------------
-            # Direct team value
-            # ----------------------------------------------
-
-            own_value = _float(raw)
-
-            opponent_value = None
-
-            # ----------------------------------------------
-            # Explicit opponent value
-            # ----------------------------------------------
-
-            opponent_keys = [
-                f"opponent_{direct_key}",
-                f"opponent_{key}",
-            ]
-
-            for opponent_key in opponent_keys:
-
-                if opponent_key in data:
-
-                    opponent_value = _float(
-                        data.get(opponent_key)
-                    )
-
-                    if opponent_value is not None:
-                        break
-
-            return (
-                own_value,
-                opponent_value,
-            )
-
-        # ====================================================
-        # XG
-        # ====================================================
-
-        raw_xg = data.get("xg")
-
-        own_xg = None
-        opponent_xg = None
-
-        if isinstance(raw_xg, dict):
-
-            home_xg = _float(
-                raw_xg.get("home")
-            )
-
-            away_xg = _float(
-                raw_xg.get("away")
-            )
-
-            if is_home is True:
-
-                own_xg = home_xg
-                opponent_xg = away_xg
-
-            elif is_home is False:
-
-                own_xg = away_xg
-                opponent_xg = home_xg
-
-        else:
-
-            own_xg = _float(raw_xg)
-
-            opponent_xg = _float(
-                data.get("opponent_xg")
-            )
-
-            if opponent_xg is None:
-
-                opponent_xg = _float(
-                    extra.get("opponent_xg")
-                )
-
-        # ====================================================
-        # SHOTS
-        # ====================================================
-
-        (
-            shots_value,
-            opponent_shots_value,
-        ) = extract_pair(
-            "shots"
-        )
-
-        # ====================================================
-        # SHOTS ON TARGET
-        # ====================================================
-
-        (
-            sot_value,
-            opponent_sot_value,
-        ) = extract_pair(
-            "shots_on_target"
-        )
-
-        # ====================================================
-        # BLOCKED SHOTS
-        # ====================================================
-
-        (
-            blocked_shots_value,
-            opponent_blocked_shots_value,
-        ) = extract_pair(
-            "blocked_shots"
-        )
-
-        # ====================================================
-        # BIG CHANCES
-        # ====================================================
-
-        (
-            big_chances_value,
-            opponent_big_chances_value,
-        ) = extract_pair(
-            "big_chances"
-        )
-
-        # ====================================================
-        # POSSESSION
-        # ====================================================
-
-        (
-            possession_value,
-            opponent_possession_value,
-        ) = extract_pair(
-            "possession"
-        )
-
-        # ====================================================
-        # PASSES
-        # ====================================================
-
-        (
-            passes_value,
-            opponent_passes_value,
-        ) = extract_pair(
-            "passes"
-        )
-
-        # ====================================================
-        # PASS ACCURACY
-        # ====================================================
-
-        (
-            pass_accuracy_value,
-            opponent_pass_accuracy_value,
-        ) = extract_pair(
-            "pass_accuracy"
-        )
-
-        # ====================================================
-        # CORNERS
-        # ====================================================
-
-        (
-            corners_value,
-            opponent_corners_value,
-        ) = extract_pair(
-            "corners"
-        )
-
-        # ====================================================
-        # YELLOW CARDS
-        # ====================================================
-
-        (
-            yellow_cards_value,
-            opponent_yellow_cards_value,
-        ) = extract_pair(
-            "yellow_cards"
-        )
-
-        # Также поддерживаем старую структуру cards.
-        if yellow_cards_value is None:
-
-            (
-                yellow_cards_value,
-                opponent_yellow_cards_value,
-            ) = extract_pair(
-                "yellow_cards",
-                "cards",
-            )
-
-        # ====================================================
-        # RED CARDS
-        # ====================================================
-
-        (
-            red_cards_value,
-            opponent_red_cards_value,
-        ) = extract_pair(
-            "red_cards"
-        )
-
-        # ====================================================
-        # FOULS
-        # ====================================================
-
-        (
-            fouls_value,
-            opponent_fouls_value,
-        ) = extract_pair(
-            "fouls"
-        )
-
-        # ====================================================
-        # OFFSIDES
-        # ====================================================
-
-        (
-            offsides_value,
-            opponent_offsides_value,
-        ) = extract_pair(
-            "offsides"
-        )
-
-        # ====================================================
-        # SAVE OWN VALUES INTO EXTRA
-        #
-        # Это КЛЮЧЕВАЯ правка.
-        #
-        # FormWin / Defence получают данные из extra,
-        # поэтому собственные факты тоже должны находиться
-        # там.
-        # ====================================================
-
-        own_extra_values = {
-
-            "xg": own_xg,
-
-            "shots": shots_value,
-
-            "shots_on_target":
-                sot_value,
-
-            "blocked_shots":
-                blocked_shots_value,
-
-            "big_chances":
-                big_chances_value,
-
-            "possession":
-                possession_value,
-
-            "passes":
-                passes_value,
-
-            "pass_accuracy":
-                pass_accuracy_value,
-
-            "corners":
-                corners_value,
-
-            "yellow_cards":
-                yellow_cards_value,
-
-            "red_cards":
-                red_cards_value,
-
-            "fouls":
-                fouls_value,
-
-            "offsides":
-                offsides_value,
-        }
-
-        for key, value in own_extra_values.items():
-
-            if value is not None:
-
-                extra[key] = value
-
-        # ====================================================
-        # SAVE OPPONENT VALUES INTO EXTRA
-        # ====================================================
-
-        opponent_extra_values = {
-
-            "opponent_xg":
-                opponent_xg,
-
-            "opponent_shots":
-                opponent_shots_value,
-
-            "opponent_shots_on_target":
-                opponent_sot_value,
-
-            "opponent_blocked_shots":
-                opponent_blocked_shots_value,
-
-            "opponent_big_chances":
-                opponent_big_chances_value,
-
-            "opponent_possession":
-                opponent_possession_value,
-
-            "opponent_passes":
-                opponent_passes_value,
-
-            "opponent_pass_accuracy":
-                opponent_pass_accuracy_value,
-
-            "opponent_corners":
-                opponent_corners_value,
-
-            "opponent_yellow_cards":
-                opponent_yellow_cards_value,
-
-            "opponent_red_cards":
-                opponent_red_cards_value,
-
-            "opponent_fouls":
-                opponent_fouls_value,
-
-            "opponent_offsides":
-                opponent_offsides_value,
-        }
-
-        for key, value in opponent_extra_values.items():
-
-            if value is not None:
-
-                extra[key] = value
-
-        # ====================================================
-        # GOALS
-        # ====================================================
-
-        goals_for = _float(
-            data.get("goals_for")
-        )
-
-        if goals_for is None:
-
-            goals_for = _float(
-                data.get("goals")
-            )
-
-        goals_against = _float(
-            data.get("goals_against")
-        )
-
-        # Если пришёл общий домашний/гостевой счёт.
-        if (
-            goals_for is None
-            and "home_goals" in data
-            and "away_goals" in data
-        ):
-
-            home_goals = _float(
-                data.get("home_goals")
-            )
-
-            away_goals = _float(
-                data.get("away_goals")
-            )
-
-            if is_home is True:
-
-                goals_for = home_goals
-                goals_against = away_goals
-
-            elif is_home is False:
-
-                goals_for = away_goals
-                goals_against = home_goals
-
-        # ====================================================
-        # RETURN
-        # ====================================================
-
-        return cls(
-
-            team=current_team,
-
-            opponent=opponent,
-
-            is_home=is_home,
-
-            goals_for=goals_for,
-
-            goals_against=goals_against,
-
-            shots=shots_value,
-
-            shots_on_target=sot_value,
-
-            possession=possession_value,
-
-            corners=corners_value,
-
-            yellow_cards=yellow_cards_value,
-
-            red_cards=red_cards_value,
-
-            xg=own_xg,
-
-            big_chances=big_chances_value,
-
-            competition=data.get(
-                "competition"
-            ),
-
-            match_date=data.get(
-                "match_date"
-            ),
-
-            extra=extra,
-        )
-
-
-# ============================================================
-# TEAM PROFILE (LEGACY)
-# ============================================================
-
-@dataclass
-class TeamProfile:
-
-    name: str
-
-    matches: int
-
-    goals_for: Optional[float]
-    goals_against: Optional[float]
-
-    attack: float
-    defence: float
-
-    home_attack: Optional[float] = None
-    away_attack: Optional[float] = None
-
-    corners: Optional[float] = None
-    cards: Optional[float] = None
-
-    shots: Optional[float] = None
-    shots_on_target: Optional[float] = None
-
-    xg: Optional[float] = None
-
-    form_points: Optional[float] = None
-
-    data_quality: float = 0.0
-
-
-# ============================================================
-# BRAIN PREDICTION
-# ============================================================
-
-@dataclass
-class BrainPrediction:
-
-    home_team: str
-    away_team: str
-
-    home_win_probability: Optional[float]
-    draw_probability: Optional[float]
-    away_win_probability: Optional[float]
-
-    btts_probability: Optional[float]
-
-    over25_probability: Optional[float]
-    over35_probability: Optional[float]
-
-    home_xg: float
-    away_xg: float
-
-    most_likely_score: str
-    second_likely_score: str
-    third_likely_score: str
-
-    corners_expected: Optional[float]
-
-    home_corners_expected: Optional[float]
-    away_corners_expected: Optional[float]
-
-    over75_corners_probability: Optional[float]
-    over85_corners_probability: Optional[float]
-    over95_corners_probability: Optional[float]
-    over105_corners_probability: Optional[float]
-
-    cards_expected: Optional[float]
-
-    home_cards_expected: Optional[float]
-    away_cards_expected: Optional[float]
-
-    over25_cards_probability: Optional[float]
-    over35_cards_probability: Optional[float]
-    over45_cards_probability: Optional[float]
-
-    confidence: Optional[float]
-    risk: str
-
-    analysis_mode: str
-    data_quality: float
-
-    conclusion: str
-
-    factors: List[str] = field(
-        default_factory=list
+    match_date = _get_value(
+        record,
+        "match_date",
+        "date",
+        "match_date_str",
     )
 
-    calculation_meta: Dict[str, Any] = field(
-        default_factory=dict
+    home_goals = _safe_int(
+        _get_value(
+            record,
+            "home_goals",
+        )
     )
 
-    def to_dict(self) -> Dict[str, Any]:
-
-        return {
-
-            "brain_version":
-                BRAIN_VERSION,
-
-            "home_team":
-                self.home_team,
-
-            "away_team":
-                self.away_team,
-
-            "home_win_probability":
-                self.home_win_probability,
-
-            "draw_probability":
-                self.draw_probability,
-
-            "away_win_probability":
-                self.away_win_probability,
-
-            "btts_probability":
-                self.btts_probability,
-
-            "over25_probability":
-                self.over25_probability,
-
-            "over35_probability":
-                self.over35_probability,
-
-            "home_xg":
-                self.home_xg,
-
-            "away_xg":
-                self.away_xg,
-
-            "most_likely_score":
-                self.most_likely_score,
-
-            "second_likely_score":
-                self.second_likely_score,
-
-            "third_likely_score":
-                self.third_likely_score,
-
-            "corners_expected":
-                self.corners_expected,
-
-            "home_corners_expected":
-                self.home_corners_expected,
-
-            "away_corners_expected":
-                self.away_corners_expected,
-
-            "over75_corners_probability":
-                self.over75_corners_probability,
-
-            "over85_corners_probability":
-                self.over85_corners_probability,
-
-            "over95_corners_probability":
-                self.over95_corners_probability,
-
-            "over105_corners_probability":
-                self.over105_corners_probability,
-
-            "cards_expected":
-                self.cards_expected,
-
-            "home_cards_expected":
-                self.home_cards_expected,
-
-            "away_cards_expected":
-                self.away_cards_expected,
-
-            "over25_cards_probability":
-                self.over25_cards_probability,
-
-            "over35_cards_probability":
-                self.over35_cards_probability,
-
-            "over45_cards_probability":
-                self.over45_cards_probability,
-
-            "confidence":
-                self.confidence,
-
-            "risk":
-                self.risk,
-
-            "analysis_mode":
-                self.analysis_mode,
-
-            "data_quality":
-                self.data_quality,
-
-            "conclusion":
-                self.conclusion,
-
-            "factors":
-                self.factors,
-
-            "calculation_meta":
-                self.calculation_meta,
-        }
-
-
-# ============================================================
-# POISSON (LEGACY - сохраняется для совместимости)
-# ============================================================
-
-def poisson_probability(
-    goals: int,
-    expected: float,
-) -> float:
-
-    if expected is None or expected < 0:
-
-        return 0.0
-
-    return (
-        math.exp(-expected)
-        * (expected ** goals)
-        / math.factorial(goals)
+    away_goals = _safe_int(
+        _get_value(
+            record,
+            "away_goals",
+        )
     )
 
+    score = _get_value(
+        record,
+        "score",
+    )
 
-def score_distribution(
-    home_xg: float,
-    away_xg: float,
-    max_goals: int = 7,
-) -> List[Dict[str, Any]]:
-
-    scores = []
-
-    for home_goals in range(
-        max_goals + 1
+    if (
+        home_goals is None
+        or away_goals is None
     ):
 
-        home_probability = (
-            poisson_probability(
-                home_goals,
-                home_xg,
+        if score:
+
+            text = str(score)
+
+            parts = text.replace(
+                "-",
+                ":",
+            ).split(":")
+
+            if len(parts) >= 2:
+
+                home_goals = _safe_int(
+                    parts[0].strip()
+                )
+
+                away_goals = _safe_int(
+                    parts[1].strip()
+                )
+
+    # --------------------------------------------------------
+    # xG
+    # --------------------------------------------------------
+
+    xg = _get_value(
+        record,
+        "xg",
+    )
+
+    home_xg = None
+    away_xg = None
+
+    if isinstance(xg, dict):
+
+        home_xg = _safe_float(
+            xg.get("home")
+        )
+
+        away_xg = _safe_float(
+            xg.get("away")
+        )
+
+    else:
+
+        home_xg = _safe_float(
+            _get_value(
+                record,
+                "home_xg",
             )
         )
 
-        for away_goals in range(
-            max_goals + 1
-        ):
-
-            away_probability = (
-                poisson_probability(
-                    away_goals,
-                    away_xg,
-                )
+        away_xg = _safe_float(
+            _get_value(
+                record,
+                "away_xg",
             )
+        )
 
-            probability = (
-                home_probability
-                * away_probability
-            )
+    # --------------------------------------------------------
+    # Statistics
+    # --------------------------------------------------------
 
-            scores.append({
+    def field(
+        name: str,
+        home_name: Optional[str] = None,
+        away_name: Optional[str] = None,
+    ) -> Tuple[Any, Any]:
 
-                "home":
-                    home_goals,
+        home_key = (
+            home_name
+            or f"home_{name}"
+        )
 
-                "away":
-                    away_goals,
+        away_key = (
+            away_name
+            or f"away_{name}"
+        )
 
-                "probability":
-                    probability,
-            })
+        return (
+            _get_value(
+                record,
+                home_key,
+            ),
+            _get_value(
+                record,
+                away_key,
+            ),
+        )
 
-    scores.sort(
-        key=lambda item:
-            item["probability"],
-        reverse=True,
+    home_shots, away_shots = field(
+        "shots"
     )
 
-    return scores
+    home_sot, away_sot = field(
+        "shots_on_target"
+    )
+
+    home_possession, away_possession = field(
+        "possession"
+    )
+
+    home_corners, away_corners = field(
+        "corners"
+    )
+
+    home_cards, away_cards = field(
+        "yellow_cards"
+    )
+
+    if home_cards is None:
+        home_cards = _get_value(
+            record,
+            "home_cards",
+        )
+
+    if away_cards is None:
+        away_cards = _get_value(
+            record,
+            "away_cards",
+        )
+
+    home_fouls, away_fouls = field(
+        "fouls"
+    )
+
+    home_big_chances, away_big_chances = field(
+        "big_chances"
+    )
+
+    home_passes, away_passes = field(
+        "passes"
+    )
+
+    home_pass_accuracy, away_pass_accuracy = field(
+        "pass_accuracy"
+    )
+
+    return {
+        "home_team": home_team,
+        "away_team": away_team,
+        "match_date": match_date,
+        "home_goals": home_goals,
+        "away_goals": away_goals,
+        "xg": {
+            "home": home_xg,
+            "away": away_xg,
+        },
+        "home_shots": _safe_int(home_shots),
+        "away_shots": _safe_int(away_shots),
+        "home_shots_on_target": _safe_int(home_sot),
+        "away_shots_on_target": _safe_int(away_sot),
+        "home_possession": _safe_float(home_possession),
+        "away_possession": _safe_float(away_possession),
+        "home_corners": _safe_int(home_corners),
+        "away_corners": _safe_int(away_corners),
+        "home_yellow_cards": _safe_int(home_cards),
+        "away_yellow_cards": _safe_int(away_cards),
+        "home_fouls": _safe_int(home_fouls),
+        "away_fouls": _safe_int(away_fouls),
+        "home_big_chances": _safe_int(home_big_chances),
+        "away_big_chances": _safe_int(away_big_chances),
+        "home_passes": _safe_int(home_passes),
+        "away_passes": _safe_int(away_passes),
+        "home_pass_accuracy": _safe_float(
+            home_pass_accuracy
+        ),
+        "away_pass_accuracy": _safe_float(
+            away_pass_accuracy
+        ),
+    }
 
 
 # ============================================================
-# FAJ BRAIN
+# FORM CONTEXT
+# ============================================================
+
+def _build_form(
+    team: str,
+    history: Sequence[Any],
+) -> Dict[str, Any]:
+    """
+    Build canonical FormContext dictionary.
+
+    The history is already M1 -> M6.
+    """
+
+    records = [
+        _build_brain_record(record)
+        for record in history
+    ]
+
+    context = build_form_context(
+        team_name=team,
+        records=records,
+        limit=HISTORY_SIZE,
+    )
+
+    if not isinstance(context, dict):
+
+        context = _to_dict(context)
+
+    return context
+
+
+# ============================================================
+# FAJ BRAIN — FINAL ORCHESTRATOR
 # ============================================================
 
 class FAJBrain:
 
     """
-    Новый основной математический мозг FAJ.
+    FAJ Brain — Final Orchestrator.
+
+    Brain is not a mathematical model.
+
+    It:
+
+        1. normalizes 6+6 historical matches;
+        2. builds canonical FormContext;
+        3. runs FormModel;
+        4. runs diagnostic organs (side-channel);
+        5. runs the canonical mathematical chain:
+               GoalModel → ProbabilityModel → ScorePredictor
+        6. adapts the result to the Predictor / UI contract.
+
+    Brain never:
+
+        - recalculates λ
+        - recalculates Poisson
+        - recalculates probabilities
+        - recalculates score ranking
+        - modifies FormContext ordering
     """
 
-    def __init__(self):
+    VERSION = BRAIN_VERSION
 
-        # ====================================================
-        # ALL MODELS ARE INSTANTIATED ON DEMAND
-        # ====================================================
+    def __init__(self) -> None:
 
         self.version = BRAIN_VERSION
 
-        # ====================================================
-        # DIAGNOSTIC MODELS (Corners/Cards)
-        # ====================================================
-
-        self.corners_model = CornersModel()
-        self.cards_model = CardsModel()
-
     # ========================================================
-    # NORMALIZATION (LEGACY)
+    # MODEL EXECUTION
     # ========================================================
 
-    def _normalize_matches(
-        self,
-        matches: Iterable[Any],
-        team_name: str,
-    ) -> List[HistoricalMatch]:
-
-        result = []
-
-        for match in matches or []:
-
-            if isinstance(
-                match,
-                HistoricalMatch,
-            ):
-
-                result.append(match)
-
-            elif isinstance(
-                match,
-                dict,
-            ):
-
-                result.append(
-                    HistoricalMatch.from_dict(
-                        match,
-                        team=team_name,
-                    )
-                )
-
-        return result
-
-    # ========================================================
-    # BUILD FORM CONTEXT (LEGACY)
-    # ========================================================
-
-    def _build_form_context_for_model(
-        self,
-        team_name: str,
-        matches: List[HistoricalMatch],
-    ) -> Dict[str, Any]:
-
-        from app.core.form_context import (
-            build_form_context
-        )
-
-        records = []
-
-        for match in matches:
-
-            if match.is_home:
-
-                home_team = match.team
-                away_team = (
-                    match.opponent
-                    or ""
-                )
-
-                home_goals = (
-                    match.goals_for
-                )
-
-                away_goals = (
-                    match.goals_against
-                )
-
-                home_corners = (
-                    match.corners
-                )
-
-                away_corners = (
-                    match.extra.get(
-                        "opponent_corners"
-                    )
-                )
-
-                home_cards = (
-                    match.yellow_cards
-                )
-
-                away_cards = (
-                    match.extra.get(
-                        "opponent_yellow_cards"
-                    )
-                )
-
-            else:
-
-                home_team = (
-                    match.opponent
-                    or ""
-                )
-
-                away_team = match.team
-
-                home_goals = (
-                    match.goals_against
-                )
-
-                away_goals = (
-                    match.goals_for
-                )
-
-                home_corners = (
-                    match.extra.get(
-                        "opponent_corners"
-                    )
-                )
-
-                away_corners = (
-                    match.corners
-                )
-
-                home_cards = (
-                    match.extra.get(
-                        "opponent_yellow_cards"
-                    )
-                )
-
-                away_cards = (
-                    match.yellow_cards
-                )
-
-            record = {
-
-                "home_team":
-                    home_team,
-
-                "away_team":
-                    away_team,
-
-                "home_goals":
-                    home_goals,
-
-                "away_goals":
-                    away_goals,
-
-                "xg": {
-
-                    "home":
-                        (
-                            match.xg
-                            if match.is_home
-                            else match.extra.get(
-                                "opponent_xg"
-                            )
-                        ),
-
-                    "away":
-                        (
-                            match.xg
-                            if not match.is_home
-                            else match.extra.get(
-                                "opponent_xg"
-                            )
-                        ),
-                },
-
-                "home_corners":
-                    home_corners,
-
-                "away_corners":
-                    away_corners,
-
-                "home_yellow_cards":
-                    home_cards,
-
-                "away_yellow_cards":
-                    away_cards,
-
-                "match_date":
-                    match.match_date,
-
-                "is_home":
-                    match.is_home,
-
-                "opponent":
-                    match.opponent,
-            }
-
-            records.append(record)
-
-        return build_form_context(
-            team_name=team_name,
-            records=records,
-            limit=PREFERRED_MATCHES,
-        )
-
-    # ========================================================
-    # ENRICH FORM CONTEXT (LEGACY)
-    # ========================================================
-
-    def _enrich_form_context(
+    def _run_form_model(
         self,
         form_context: Any,
-        matches: List[HistoricalMatch],
-    ) -> Dict[str, Any]:
+    ) -> Any:
+
         """
-        Передаёт все доступные исторические факты
-        математическим органам.
+        FormModel оценивает состояние формы.
 
-        None сохраняется как None.
+        ВАЖНО:
+            FormModel не изменяет историю и не является GoalModel.
         """
 
-        # ----------------------------------------------------
-        # Base context
-        # ----------------------------------------------------
-
-        if isinstance(
-            form_context,
-            dict,
-        ):
-
-            context = dict(
-                form_context
-            )
-
-        else:
-
-            context = {}
-
-            if hasattr(
-                form_context,
-                "__dataclass_fields__",
-            ):
-
-                context.update(
-                    asdict(
-                        form_context
-                    )
-                )
-
-            elif hasattr(
-                form_context,
-                "__dict__",
-            ):
-
-                context.update(
-                    vars(
-                        form_context
-                    )
-                )
-
-        # ====================================================
-        # XG
-        # ====================================================
-
-        context["team_xg_history"] = [
-            match.xg
-            for match in matches
-        ]
-
-        context["opponent_xg_history"] = [
-            match.extra.get(
-                "opponent_xg"
-            )
-            for match in matches
-        ]
-
-        context["recent_xg"] = [
-            match.xg
-            for match in matches
-        ]
-
-        context["recent_xga"] = [
-            match.extra.get(
-                "opponent_xg"
-            )
-            for match in matches
-        ]
-
-        # ====================================================
-        # SHOTS
-        # ====================================================
-
-        context["shots_history"] = [
-            match.shots
-            for match in matches
-        ]
-
-        context["shots_conceded_history"] = [
-            match.extra.get(
-                "opponent_shots"
-            )
-            for match in matches
-        ]
-
-        # ====================================================
-        # SOT
-        # ====================================================
-
-        context["shots_on_target_history"] = [
-            match.shots_on_target
-            for match in matches
-        ]
-
-        context["sot_conceded_history"] = [
-            match.extra.get(
-                "opponent_shots_on_target"
-            )
-            for match in matches
-        ]
-
-        # ====================================================
-        # BLOCKED SHOTS
-        # ====================================================
-
-        context["blocked_shots_history"] = [
-            match.extra.get(
-                "blocked_shots"
-            )
-            for match in matches
-        ]
-
-        context["blocked_shots_conceded_history"] = [
-            match.extra.get(
-                "opponent_blocked_shots"
-            )
-            for match in matches
-        ]
-
-        # ====================================================
-        # BIG CHANCES
-        # ====================================================
-
-        context["big_chances_history"] = [
-            match.big_chances
-            for match in matches
-        ]
-
-        context["big_chances_against_history"] = [
-            match.extra.get(
-                "opponent_big_chances"
-            )
-            for match in matches
-        ]
-
-        # ====================================================
-        # POSSESSION
-        # ====================================================
-
-        context["possession_history"] = [
-            match.possession
-            for match in matches
-        ]
-
-        context["opponent_possession_history"] = [
-            match.extra.get(
-                "opponent_possession"
-            )
-            for match in matches
-        ]
-
-        # ====================================================
-        # CORNERS
-        # ====================================================
-
-        context["corners_for_history"] = [
-            match.corners
-            for match in matches
-        ]
-
-        context["corners_against_history"] = [
-            match.extra.get(
-                "opponent_corners"
-            )
-            for match in matches
-        ]
-
-        # ====================================================
-        # GOALS
-        # ====================================================
-
-        context["goals_for_history"] = [
-            match.goals_for
-            for match in matches
-        ]
-
-        context["goals_against_history"] = [
-            match.goals_against
-            for match in matches
-        ]
-
-        # ====================================================
-        # VENUE
-        # ====================================================
-
-        context["venue_history"] = [
-
-            "home"
-            if match.is_home is True
-
-            else "away"
-            if match.is_home is False
-
-            else None
-
-            for match in matches
-        ]
-
-        # ====================================================
-        # RESULTS
-        # ====================================================
-
-        context["results_history"] = [
-
-            self._historical_result(
-                match
-            )
-
-            for match in matches
-        ]
-
-        # ====================================================
-        # PASSES
-        # ====================================================
-
-        context["passes_history"] = [
-
-            match.extra.get(
-                "passes"
-            )
-
-            for match in matches
-        ]
-
-        context["opponent_passes_history"] = [
-
-            match.extra.get(
-                "opponent_passes"
-            )
-
-            for match in matches
-        ]
-
-        # ====================================================
-        # PASS ACCURACY
-        # ====================================================
-
-        context["pass_accuracy_history"] = [
-
-            match.extra.get(
-                "pass_accuracy"
-            )
-
-            for match in matches
-        ]
-
-        context["opponent_pass_accuracy_history"] = [
-
-            match.extra.get(
-                "opponent_pass_accuracy"
-            )
-
-            for match in matches
-        ]
-
-        # ====================================================
-        # FOULS
-        # ====================================================
-
-        context["fouls_history"] = [
-
-            match.extra.get(
-                "fouls"
-            )
-
-            for match in matches
-        ]
-
-        context["opponent_fouls_history"] = [
-
-            match.extra.get(
-                "opponent_fouls"
-            )
-
-            for match in matches
-        ]
-
-        # ====================================================
-        # OFFSIDES
-        # ====================================================
-
-        context["offsides_history"] = [
-
-            match.extra.get(
-                "offsides"
-            )
-
-            for match in matches
-        ]
-
-        context["opponent_offsides_history"] = [
-
-            match.extra.get(
-                "opponent_offsides"
-            )
-
-            for match in matches
-        ]
-
-        # ====================================================
-        # YELLOW CARDS
-        # ====================================================
-
-        context["team_cards_history"] = [
-
-            match.yellow_cards
-            for match in matches
-        ]
-
-        context["opponent_cards_history"] = [
-
-            match.extra.get(
-                "opponent_yellow_cards"
-            )
-
-            for match in matches
-        ]
-
-        # ====================================================
-        # RED CARDS
-        # ====================================================
-
-        context["red_cards_history"] = [
-
-            match.red_cards
-            for match in matches
-        ]
-
-        context["opponent_red_cards_history"] = [
-
-            match.extra.get(
-                "opponent_red_cards"
-            )
-
-            for match in matches
-        ]
-
-        return context
-
-    # ========================================================
-    # HISTORICAL RESULT (LEGACY)
-    # ========================================================
-
-    @staticmethod
-    def _historical_result(
-        match: HistoricalMatch,
-    ) -> Optional[str]:
-
-        if (
-            match.goals_for is None
-            or match.goals_against is None
-        ):
-
+        if form_context is None:
             return None
 
-        if (
-            match.goals_for
-            > match.goals_against
-        ):
+        model = FormModel()
 
-            return "W"
+        # Основной ожидаемый API
+        analyze = getattr(model, "analyze", None)
 
-        if (
-            match.goals_for
-            < match.goals_against
-        ):
+        if callable(analyze):
+            return analyze(form_context)
 
-            return "L"
+        # Совместимость, если текущая реализация использует calculate()
+        calculate = getattr(model, "calculate", None)
 
-        return "D"
+        if callable(calculate):
+            return calculate(form_context)
 
-    # ========================================================
-    # OLD PROFILE (LEGACY)
-    # ========================================================
+        raise AttributeError(
+            "FormModel does not expose analyze() or calculate()"
+        )
 
-    def build_profile(
+    def _run_diagnostic_organ(
         self,
+        organ_class: Any,
+        form_context: Any,
+        history: Any,
         team_name: str,
-        matches: Iterable[Any],
-    ) -> TeamProfile:
+    ) -> Any:
 
-        normalized = (
-            self._normalize_matches(
-                matches,
-                team_name,
-            )
-        )
+        """
+        Универсальный запуск диагностического органа.
 
-        count = len(
-            normalized
-        )
+        Диагностические органы:
 
-        if count == 0:
+            FormWin
+            Defence
+            FormControl
+            FormAnomaly
+            SpecialForm
 
-            return TeamProfile(
+        Их результат сохраняется только в diagnostics.
 
-                name=team_name,
+        Никаких:
 
-                matches=0,
+            lambda *= ...
+            probability *= ...
+            score *= ...
+        """
 
-                goals_for=None,
+        if organ_class is None:
+            return None
 
-                goals_against=None,
+        organ = organ_class()
 
-                attack=1.0,
+        # ----------------------------------------------------
+        # Основной вариант: analyze(...)
+        # ----------------------------------------------------
 
-                defence=1.0,
+        analyze = getattr(organ, "analyze", None)
 
-                data_quality=0.0,
-            )
+        if callable(analyze):
 
-        # ====================================================
-        # GOALS
-        # ====================================================
-
-        goals_for = _weighted_mean(
-
-            match.goals_for
-
-            for match in normalized
-        )
-
-        goals_against = _weighted_mean(
-
-            match.goals_against
-
-            for match in normalized
-        )
-
-        # ====================================================
-        # CORNERS
-        # ====================================================
-
-        corners = _weighted_mean(
-
-            match.corners
-
-            for match in normalized
-        )
-
-        # ====================================================
-        # CARDS
-        # ====================================================
-
-        card_values = []
-
-        for match in normalized:
-
-            if (
-                match.yellow_cards
-                is not None
-                or match.red_cards
-                is not None
-            ):
-
-                yellow = (
-                    match.yellow_cards
-                    if match.yellow_cards
-                    is not None
-                    else 0.0
-                )
-
-                red = (
-                    match.red_cards
-                    if match.red_cards
-                    is not None
-                    else 0.0
-                )
-
-                card_values.append(
-                    yellow + red
-                )
-
-        cards = _weighted_mean(
-            card_values
-        )
-
-        # ====================================================
-        # SHOTS
-        # ====================================================
-
-        shots = _weighted_mean(
-
-            match.shots
-
-            for match in normalized
-        )
-
-        # ====================================================
-        # SOT
-        # ====================================================
-
-        shots_on_target = _weighted_mean(
-
-            match.shots_on_target
-
-            for match in normalized
-        )
-
-        # ====================================================
-        # XG
-        # ====================================================
-
-        xg = _weighted_mean(
-
-            match.xg
-
-            for match in normalized
-        )
-
-        # ====================================================
-        # ATTACK
-        # ====================================================
-
-        attack_components = []
-
-        if goals_for is not None:
-
-            attack_components.append(
-                goals_for
+            attempts = (
+                {
+                    "form_context": form_context,
+                    "history": history,
+                    "team_name": team_name,
+                },
+                {
+                    "form_context": form_context,
+                    "history": history,
+                },
+                {
+                    "form_context": form_context,
+                },
+                {
+                    "history": history,
+                },
             )
 
-        if xg is not None:
+            last_error = None
 
-            attack_components.append(
-                xg
+            for kwargs in attempts:
+
+                try:
+                    return analyze(**kwargs)
+
+                except TypeError as exc:
+                    last_error = exc
+
+            if last_error is not None:
+                raise last_error
+
+        # ----------------------------------------------------
+        # Совместимость: calculate(...)
+        # ----------------------------------------------------
+
+        calculate = getattr(organ, "calculate", None)
+
+        if callable(calculate):
+
+            attempts = (
+                {
+                    "form_context": form_context,
+                    "history": history,
+                    "team_name": team_name,
+                },
+                {
+                    "form_context": form_context,
+                    "history": history,
+                },
+                {
+                    "form_context": form_context,
+                },
+                {
+                    "history": history,
+                },
             )
 
-        if shots_on_target is not None:
+            last_error = None
 
-            attack_components.append(
-                shots_on_target * 0.35
-            )
+            for kwargs in attempts:
 
-        attack = (
+                try:
+                    return calculate(**kwargs)
 
-            _mean(
-                attack_components
-            )
+                except TypeError as exc:
+                    last_error = exc
 
-            if attack_components
+            if last_error is not None:
+                raise last_error
 
-            else 1.0
+        raise AttributeError(
+            f"{organ_class.__name__} does not expose analyze() or calculate()"
         )
 
-        # ====================================================
-        # DEFENCE
-        # ====================================================
-
-        if goals_against is not None:
-
-            defence = 1.0 / (
-                1.0
-                + max(
-                    0.0,
-                    goals_against,
-                )
-            )
-
-        else:
-
-            defence = 0.5
-
-        # ====================================================
-        # HOME / AWAY
-        # ====================================================
-
-        home_matches = [
-
-            match
-
-            for match in normalized
-
-            if match.is_home is True
-        ]
-
-        away_matches = [
-
-            match
-
-            for match in normalized
-
-            if match.is_home is False
-        ]
-
-        home_attack = _weighted_mean(
-
-            match.goals_for
-
-            for match in home_matches
-        )
-
-        away_attack = _weighted_mean(
-
-            match.goals_for
-
-            for match in away_matches
-        )
-
-        # ====================================================
-        # FORM
-        # ====================================================
-
-        points = []
-
-        for match in normalized:
-
-            if match.goals_for is None:
-                continue
-
-            if match.goals_against is None:
-                continue
-
-            if (
-                match.goals_for
-                > match.goals_against
-            ):
-
-                points.append(3)
-
-            elif (
-                match.goals_for
-                == match.goals_against
-            ):
-
-                points.append(1)
-
-            else:
-
-                points.append(0)
-
-        form_points = (
-
-            _weighted_mean(
-                points
-            )
-
-            if points
-
-            else None
-        )
-
-        # ====================================================
-        # DATA QUALITY
-        # ====================================================
-
-        quality = (
-            self._calculate_data_quality(
-                normalized
-            )
-        )
-
-        return TeamProfile(
-
-            name=team_name,
-
-            matches=count,
-
-            goals_for=goals_for,
-
-            goals_against=goals_against,
-
-            attack=float(
-                attack or 1.0
-            ),
-
-            defence=float(
-                defence
-            ),
-
-            home_attack=home_attack,
-
-            away_attack=away_attack,
-
-            corners=corners,
-
-            cards=cards,
-
-            shots=shots,
-
-            shots_on_target=(
-                shots_on_target
-            ),
-
-            xg=xg,
-
-            form_points=form_points,
-
-            data_quality=quality,
-        )
-
-    # ========================================================
-    # DATA QUALITY (LEGACY)
-    # ========================================================
-
-    def _calculate_data_quality(
+    def _run_diagnostics(
         self,
-        matches: List[HistoricalMatch],
-    ) -> float:
-
-        if not matches:
-
-            return 0.0
-
-        count_factor = min(
-
-            len(matches)
-            / PREFERRED_MATCHES,
-
-            1.0,
-        )
-
-        fields = [
-
-            "goals_for",
-
-            "goals_against",
-
-            "shots",
-
-            "shots_on_target",
-
-            "corners",
-
-            "yellow_cards",
-
-        ]
-
-        available = 0
-
-        total = (
-            len(matches)
-            * len(fields)
-        )
-
-        for match in matches:
-
-            for field_name in fields:
-
-                if getattr(
-                    match,
-                    field_name,
-                ) is not None:
-
-                    available += 1
-
-        completeness = (
-
-            available / total
-
-            if total
-
-            else 0.0
-        )
-
-        return round(
-
-            100.0
-            * (
-                0.65 * count_factor
-                + 0.35 * completeness
-            ),
-
-            1,
-        )
-
-    # ========================================================
-    # EXPECTED GOALS (GoalModel v6.0)
-    # ========================================================
-
-    def _calculate_expected_goals(
-        self,
-        home_form_result: Any,
-        away_form_result: Any,
-        home_control: Any,
-        away_control: Any,
-        home_special: Any,
-        away_special: Any,
+        home_form_context: Any,
+        away_form_context: Any,
+        home_history: Any,
+        away_history: Any,
         home_team: str,
         away_team: str,
-        home_history: Optional[List[Any]] = None,
-        away_history: Optional[List[Any]] = None,
-    ) -> tuple[
-        Optional[float],
-        Optional[float],
-        Any,
-    ]:
+    ) -> Dict[str, Any]:
 
-        goal_model = GoalModel()
-        goal_result = goal_model.analyze(
-            home_form=home_form_result,
-            away_form=away_form_result,
-            home_history=home_history,
-            away_history=away_history,
+        """
+        Запуск диагностического слоя FAJ Brain.
+
+        Архитектурное правило:
+
+            DIAGNOSTICS
+                ↓
+            analysis
+                ↓
+            output
+
+        но НЕ:
+
+            diagnostics → lambda
+            diagnostics → probability
+            diagnostics → score ranking
+        """
+
+        diagnostics: Dict[str, Any] = {
+            "home": {},
+            "away": {},
+            "contract": {
+                "prediction_impact": "none",
+                "lambda_influence": False,
+                "probability_influence": False,
+                "score_ranking_influence": False,
+            },
+        }
+
+        # ----------------------------------------------------
+        # FormWin
+        # ----------------------------------------------------
+
+        if FormWin is not None:
+
+            diagnostics["home"]["form_win"] = (
+                self._run_diagnostic_organ(
+                    FormWin,
+                    home_form_context,
+                    home_history,
+                    home_team,
+                )
+            )
+
+            diagnostics["away"]["form_win"] = (
+                self._run_diagnostic_organ(
+                    FormWin,
+                    away_form_context,
+                    away_history,
+                    away_team,
+                )
+            )
+
+        # ----------------------------------------------------
+        # Defence
+        # ----------------------------------------------------
+
+        if Defence is not None:
+
+            diagnostics["home"]["defence"] = (
+                self._run_diagnostic_organ(
+                    Defence,
+                    home_form_context,
+                    home_history,
+                    home_team,
+                )
+            )
+
+            diagnostics["away"]["defence"] = (
+                self._run_diagnostic_organ(
+                    Defence,
+                    away_form_context,
+                    away_history,
+                    away_team,
+                )
+            )
+
+        # ----------------------------------------------------
+        # FormControl
+        # ----------------------------------------------------
+
+        if FormControl is not None:
+
+            diagnostics["home"]["control"] = (
+                self._run_diagnostic_organ(
+                    FormControl,
+                    home_form_context,
+                    home_history,
+                    home_team,
+                )
+            )
+
+            diagnostics["away"]["control"] = (
+                self._run_diagnostic_organ(
+                    FormControl,
+                    away_form_context,
+                    away_history,
+                    away_team,
+                )
+            )
+
+        # ----------------------------------------------------
+        # FormAnomaly
+        # ----------------------------------------------------
+
+        if FormAnomaly is not None:
+
+            diagnostics["home"]["anomaly"] = (
+                self._run_diagnostic_organ(
+                    FormAnomaly,
+                    home_form_context,
+                    home_history,
+                    home_team,
+                )
+            )
+
+            diagnostics["away"]["anomaly"] = (
+                self._run_diagnostic_organ(
+                    FormAnomaly,
+                    away_form_context,
+                    away_history,
+                    away_team,
+                )
+            )
+
+        # ----------------------------------------------------
+        # SpecialForm
+        # ----------------------------------------------------
+
+        if SpecialForm is not None:
+
+            diagnostics["home"]["special_form"] = (
+                self._run_diagnostic_organ(
+                    SpecialForm,
+                    home_form_context,
+                    home_history,
+                    home_team,
+                )
+            )
+
+            diagnostics["away"]["special_form"] = (
+                self._run_diagnostic_organ(
+                    SpecialForm,
+                    away_form_context,
+                    away_history,
+                    away_team,
+                )
+            )
+
+        return diagnostics
+
+    def _run_goal_model(
+        self,
+        home_form_model: Any,
+        away_form_model: Any,
+        home_team: str,
+        away_team: str,
+        home_history: Any,
+        away_history: Any,
+        diagnostics: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+
+        """
+        GoalModel v6.0.
+
+        Единственная задача:
+
+            history/form state
+                    ↓
+                λH / λA
+
+        Никаких:
+
+            - Poisson
+            - 1X2
+            - BTTS
+            - totals
+            - exact score
+            - score ranking
+        """
+
+        model = GoalModel()
+
+        # ----------------------------------------------------
+        # Получаем диагностические control/special только для
+        # API compatibility.
+        #
+        # GoalModel v6.0 НЕ использует их для изменения λ.
+        # ----------------------------------------------------
+
+        home_control = None
+        away_control = None
+        home_special = None
+        away_special = None
+
+        if diagnostics:
+
+            home_control = diagnostics["home"].get("control")
+            away_control = diagnostics["away"].get("control")
+            home_special = diagnostics["home"].get("special_form")
+            away_special = diagnostics["away"].get("special_form")
+
+        # ----------------------------------------------------
+        # Авторитетный вызов GoalModel v6.0
+        # ----------------------------------------------------
+
+        result = model.analyze(
+            home_form=home_form_model,
+            away_form=away_form_model,
+            home_team=home_team,
+            away_team=away_team,
             home_control=home_control,
             away_control=away_control,
             home_special=home_special,
             away_special=away_special,
-            home_team=home_team,
-            away_team=away_team,
-            venue="HOME",
+            home_history=home_history,
+            away_history=away_history,
         )
 
-        return (
-            goal_result.home_xg,
-            goal_result.away_xg,
-            goal_result,
-        )
+        if result is None:
+            raise RuntimeError(
+                "GoalModel returned None"
+            )
 
-    # ========================================================
-    # RESULT PROBABILITIES (LEGACY)
-    # ========================================================
+        return result
 
-    def _result_probabilities(
+    def _extract_goal_data(
         self,
-        home_xg: float,
-        away_xg: float,
-    ) -> Dict[str, float]:
-
-        distribution = (
-            score_distribution(
-                home_xg,
-                away_xg,
-            )
-        )
-
-        home_win = 0.0
-        draw = 0.0
-        away_win = 0.0
-
-        for score in distribution:
-
-            if (
-                score["home"]
-                > score["away"]
-            ):
-
-                home_win += (
-                    score["probability"]
-                )
-
-            elif (
-                score["home"]
-                == score["away"]
-            ):
-
-                draw += (
-                    score["probability"]
-                )
-
-            else:
-
-                away_win += (
-                    score["probability"]
-                )
-
-        total = (
-            home_win
-            + draw
-            + away_win
-        )
-
-        if total <= 0:
-
-            return {
-
-                "home":
-                    1 / 3,
-
-                "draw":
-                    1 / 3,
-
-                "away":
-                    1 / 3,
-            }
-
-        return {
-
-            "home":
-                home_win / total,
-
-            "draw":
-                draw / total,
-
-            "away":
-                away_win / total,
-        }
-
-    # ========================================================
-    # TOTALS (LEGACY)
-    # ========================================================
-
-    def _totals(
-        self,
-        home_xg: float,
-        away_xg: float,
-    ) -> Dict[str, float]:
-
-        distribution = (
-            score_distribution(
-                home_xg,
-                away_xg,
-            )
-        )
-
-        btts = 0.0
-
-        over25 = 0.0
-
-        over35 = 0.0
-
-        for score in distribution:
-
-            home = score["home"]
-
-            away = score["away"]
-
-            probability = (
-                score["probability"]
-            )
-
-            if (
-                home >= 1
-                and away >= 1
-            ):
-
-                btts += probability
-
-            if (
-                home + away >= 3
-            ):
-
-                over25 += probability
-
-            if (
-                home + away >= 4
-            ):
-
-                over35 += probability
-
-        return {
-
-            "btts":
-                _probability(btts),
-
-            "over25":
-                _probability(over25),
-
-            "over35":
-                _probability(over35),
-        }
-
-    # ========================================================
-    # SIMPLE POISSON TOTAL (LEGACY)
-    # ========================================================
-
-    def _over_probability(
-        self,
-        expected: Optional[float],
-        line: float,
-    ) -> Optional[float]:
-
-        if expected is None:
-
-            return None
-
-        probability_under = 0.0
-
-        max_goals = 12
-
-        for goals in range(
-            0,
-            max_goals + 1,
-        ):
-
-            if goals <= math.floor(
-                line
-            ):
-
-                probability_under += (
-                    poisson_probability(
-                        goals,
-                        expected,
-                    )
-                )
-
-        return round(
-
-            _clamp(
-                1.0
-                - probability_under
-            )
-            * 100.0,
-
-            1,
-        )
-
-    # ========================================================
-    # CONFIDENCE (LEGACY)
-    #
-    # NOTE:
-    #     Не используется в основном пути predict().
-    #     Основной confidence теперь берётся из Winner
-    #     Synthesis. Метод сохранён для обратной
-    #     совместимости внешних вызовов.
-    # ========================================================
-
-    def _confidence(
-        self,
-        home: TeamProfile,
-        away: TeamProfile,
-        probabilities: Dict[str, float],
-    ) -> float:
-
-        quality = (
-
-            home.data_quality
-            + away.data_quality
-
-        ) / 2.0
-
-        ordered = sorted(
-
-            probabilities.values(),
-
-            reverse=True,
-        )
-
-        separation = (
-
-            ordered[0]
-            - ordered[1]
-        )
-
-        separation_score = (
-            _clamp(
-                separation / 0.45
-            )
-            * 100.0
-        )
-
-        confidence = (
-
-            0.55 * quality
-            + 0.45 * separation_score
-        )
-
-        return round(
-
-            _clamp(
-                confidence / 100.0
-            )
-            * 100.0,
-
-            1,
-        )
-
-    # ========================================================
-    # RISK
-    #
-    # Принимает confidence из Winner Synthesis.
-    #
-    # confidence == None  → "UNKNOWN"
-    # confidence >= 0.75  → "LOW"
-    # confidence >= 0.60  → "MEDIUM"
-    # иначе               → "HIGH"
-    #
-    # home / away profiles сохранены в сигнатуре
-    # для обратной совместимости вызовов.
-    # ========================================================
-
-    def _risk(
-        self,
-        confidence: Optional[float],
-        home: Any,
-        away: Any,
-    ) -> str:
-
-        if confidence is None:
-            return "UNKNOWN"
-
-        try:
-            value = float(confidence)
-        except (TypeError, ValueError):
-            return "UNKNOWN"
-
-        if value != value:  # NaN guard
-            return "UNKNOWN"
-
-        if value >= 0.75:
-            return "LOW"
-
-        if value >= 0.60:
-            return "MEDIUM"
-
-        return "HIGH"
-
-    # ========================================================
-    # CONCLUSION (LEGACY)
-    # ========================================================
-
-    def _conclusion(
-        self,
-        home: TeamProfile,
-        away: TeamProfile,
-        probabilities: Dict[str, float],
-        totals: Dict[str, float],
-    ) -> tuple[
-        str,
-        List[str],
-    ]:
-
-        factors = []
-
-        # ====================================================
-        # WINNER
-        # ====================================================
-
-        if probabilities["home"] >= max(
-
-            probabilities["draw"],
-
-            probabilities["away"],
-        ):
-
-            winner_text = (
-                f"преимущество "
-                f"{home.name}"
-            )
-
-            factors.append(
-                "Модель видит "
-                "преимущество хозяев."
-            )
-
-        elif probabilities["away"] >= max(
-
-            probabilities["home"],
-
-            probabilities["draw"],
-        ):
-
-            winner_text = (
-                f"преимущество "
-                f"{away.name}"
-            )
-
-            factors.append(
-                "Модель видит "
-                "преимущество гостей."
-            )
-
-        else:
-
-            winner_text = (
-                "равновесие сил"
-            )
-
-            factors.append(
-                "Модель не видит "
-                "явного фаворита."
-            )
-
-        # ====================================================
-        # BTTS
-        # ====================================================
-
-        if totals["btts"] >= 60:
-
-            factors.append(
-                "Вероятность обмена "
-                "голами повышена."
-            )
-
-        elif totals["btts"] <= 40:
-
-            factors.append(
-                "Модель не ожидает "
-                "высокой вероятности "
-                "обмена голами."
-            )
-
-        # ====================================================
-        # TOTALS
-        # ====================================================
-
-        if totals["over25"] >= 60:
-
-            factors.append(
-                "Сценарий с 3+ голами "
-                "выглядит вероятным."
-            )
-
-        elif totals["over25"] <= 40:
-
-            factors.append(
-                "Модель скорее склоняется "
-                "к умеренной результативности."
-            )
-
-        conclusion = (
-
-            f"FAJ: {winner_text}. "
-            f"{' '.join(factors)}"
-        )
-
-        return (
-            conclusion,
-            factors,
-        )
-
-    # ========================================================
-    # JSON SAFE (LEGACY)
-    # ========================================================
-
-    def _json_safe(
-        self,
-        value: Any,
-    ) -> Any:
-
-        if value is None:
-
-            return None
-
-        if hasattr(
-            value,
-            "to_dict",
-        ):
-
-            return self._json_safe(
-                value.to_dict()
-            )
-
-        if hasattr(
-            value,
-            "__dataclass_fields__",
-        ):
-
-            return {
-
-                key:
-                    self._json_safe(
-                        item
-                    )
-
-                for key, item
-                in asdict(
-                    value
-                ).items()
-            }
-
-        if isinstance(
-            value,
-            dict,
-        ):
-
-            return {
-
-                key:
-                    self._json_safe(
-                        item
-                    )
-
-                for key, item
-                in value.items()
-            }
-
-        if isinstance(
-            value,
-            (list, tuple),
-        ):
-
-            return [
-
-                self._json_safe(
-                    item
-                )
-
-                for item in value
-            ]
-
-        if isinstance(
-            value,
-            (
-                str,
-                int,
-                float,
-                bool,
-            ),
-        ):
-
-            return value
-
-        return str(value)
-
-    # ========================================================
-    # ========================================================
-    # FAJ WINNER SYNTHESIS v1
-    # ========================================================
-    #
-    # Независимые сигналы:
-    #   1. ProbabilityModel (Poisson)   — primary, не меняется
-    #   2. PairRating                   — структурный сигнал
-    #   3. FormWinComparison            — форма
-    #   4. Defence (individual scores)  — оборона
-    #
-    # Правила:
-    #   - Poisson winner не подменяется;
-    #   - Rating/FormWin/Defence только подтверждают или
-    #     конфликтуют;
-    #   - NEUTRAL ≠ CONFLICT;
-    #   - confidence — диагностическая величина,
-    #     не передаётся обратно в ProbabilityModel.
-    # ========================================================
-
-    def _build_winner_synthesis(
-        self,
-        probability_result: Any,
-        pair_rating: Optional[Any] = None,
-        form_win_comparison: Optional[Any] = None,
-        home_defence: Optional[Any] = None,
-        away_defence: Optional[Any] = None,
+        goal_result: Any,
     ) -> Dict[str, Any]:
 
-        # ---------------------------------------------------------
-        # POISSON PRIMARY
-        # ---------------------------------------------------------
-        home_prob = float(
-            getattr(probability_result, "home_win", 0.0) or 0.0
-        )
-        draw_prob = float(
-            getattr(probability_result, "draw", 0.0) or 0.0
-        )
-        away_prob = float(
-            getattr(probability_result, "away_win", 0.0) or 0.0
-        )
+        """
+        Нормализует GoalModelResult в минимальный Brain-контракт.
 
-        probabilities = {
-            "HOME": home_prob,
-            "DRAW": draw_prob,
-            "AWAY": away_prob,
-        }
+        Brain не пересчитывает xG.
+        Brain только извлекает результат GoalModel.
+        """
 
-        poisson_winner = max(
-            probabilities,
-            key=probabilities.get,
+        data = _to_dict(goal_result)
+
+        home_xg = _first(
+            data,
+            "home_xg",
+            "lambda_home",
+            "home_lambda",
         )
 
-        evidence: List[Dict[str, Any]] = []
-
-        agreements = 0
-        conflicts = 0
-
-        # ---------------------------------------------------------
-        # 1. PROBABILITY MODEL (PRIMARY)
-        # ---------------------------------------------------------
-        evidence.append(
-            {
-                "source": "ProbabilityModel",
-                "direction": poisson_winner,
-                "value": round(probabilities[poisson_winner], 4),
-                "type": "PRIMARY",
-            }
+        away_xg = _first(
+            data,
+            "away_xg",
+            "lambda_away",
+            "away_lambda",
         )
 
-        # ---------------------------------------------------------
-        # 2. PAIR RATING (STRUCTURAL)
-        # ---------------------------------------------------------
-        rating_direction: Optional[str] = None
-        rating_strength: Optional[str] = None
-        rating_no_opinion = False
-
-        if pair_rating is not None:
-            rating_direction = getattr(
-                pair_rating,
-                "winner_direction",
-                None,
-            )
-            rating_strength = getattr(
-                pair_rating,
-                "direction_strength",
-                None,
+        if home_xg is None:
+            raise ValueError(
+                "GoalModel did not return home_xg"
             )
 
-            if rating_direction in ("HOME", "AWAY"):
-                evidence.append(
-                    {
-                        "source": "PairRating",
-                        "direction": rating_direction,
-                        "value": rating_strength,
-                        "type": "STRUCTURAL",
-                    }
-                )
-
-                if rating_direction == poisson_winner:
-                    agreements += 1
-                elif poisson_winner in ("HOME", "AWAY"):
-                    conflicts += 1
-
-            elif rating_direction == "NEUTRAL":
-                rating_no_opinion = True
-                evidence.append(
-                    {
-                        "source": "PairRating",
-                        "direction": "NEUTRAL",
-                        "value": rating_strength,
-                        "type": "STRUCTURAL",
-                        "note": "no_directional_opinion",
-                    }
-                )
-
-        # ---------------------------------------------------------
-        # 3. FORM WIN (COMPARISON)
-        # ---------------------------------------------------------
-        form_advantage: Optional[float] = None
-        form_direction: Optional[str] = None
-
-        if form_win_comparison is not None:
-            raw_form_advantage = getattr(
-                form_win_comparison,
-                "relative_advantage",
-                None,
+        if away_xg is None:
+            raise ValueError(
+                "GoalModel did not return away_xg"
             )
 
-            if raw_form_advantage is not None:
-                try:
-                    form_advantage = float(raw_form_advantage)
-                except (TypeError, ValueError):
-                    form_advantage = None
+        home_xg = _safe_float(home_xg)
+        away_xg = _safe_float(away_xg)
 
-        if form_advantage is not None:
-            if form_advantage > 0:
-                form_direction = "HOME"
-            elif form_advantage < 0:
-                form_direction = "AWAY"
-            else:
-                form_direction = "DRAW"
-
-            evidence.append(
-                {
-                    "source": "FormWin",
-                    "direction": form_direction,
-                    "value": round(form_advantage, 4),
-                    "type": "FORM",
-                }
+        if home_xg is None:
+            raise ValueError(
+                "GoalModel home_xg is not numeric"
             )
 
-            if form_direction == poisson_winner:
-                agreements += 1
-            elif form_direction != "DRAW":
-                conflicts += 1
-
-        # ---------------------------------------------------------
-        # 4. DEFENCE (INDIVIDUAL SCORES)
-        # ---------------------------------------------------------
-        defence_home: Optional[float] = None
-        defence_away: Optional[float] = None
-        defence_direction: Optional[str] = None
-
-        if home_defence is not None:
-            raw_def_home = getattr(
-                home_defence,
-                "defence_score",
-                None,
+        if away_xg is None:
+            raise ValueError(
+                "GoalModel away_xg is not numeric"
             )
-            try:
-                defence_home = (
-                    float(raw_def_home)
-                    if raw_def_home is not None
-                    else None
-                )
-            except (TypeError, ValueError):
-                defence_home = None
-
-        if away_defence is not None:
-            raw_def_away = getattr(
-                away_defence,
-                "defence_score",
-                None,
-            )
-            try:
-                defence_away = (
-                    float(raw_def_away)
-                    if raw_def_away is not None
-                    else None
-                )
-            except (TypeError, ValueError):
-                defence_away = None
-
-        if (
-            defence_home is not None
-            and defence_away is not None
-        ):
-            if defence_home > defence_away:
-                defence_direction = "HOME"
-            elif defence_away > defence_home:
-                defence_direction = "AWAY"
-            else:
-                defence_direction = "DRAW"
-
-            evidence.append(
-                {
-                    "source": "Defence",
-                    "direction": defence_direction,
-                    "home": round(defence_home, 4),
-                    "away": round(defence_away, 4),
-                    "type": "DEFENCE",
-                }
-            )
-
-            if defence_direction == poisson_winner:
-                agreements += 1
-            elif defence_direction != "DRAW":
-                conflicts += 1
-
-        # ---------------------------------------------------------
-        # 5. FINAL SYNTHESIS
-        # ---------------------------------------------------------
-        final_winner = poisson_winner
-
-        if poisson_winner in ("HOME", "AWAY"):
-            if conflicts == 0 and agreements >= 2:
-                synthesis = "STRONG_CONSENSUS"
-            elif agreements >= 1 and conflicts == 0:
-                synthesis = "CONSENSUS"
-            elif conflicts > agreements:
-                synthesis = "CONFLICT"
-            else:
-                synthesis = "WEAK_CONSENSUS"
-        else:
-            synthesis = "DRAW_PRIMARY"
-
-        # ---------------------------------------------------------
-        # CONFIDENCE (diagnostic only)
-        # ---------------------------------------------------------
-        base_confidence = probabilities[poisson_winner]
-
-        if synthesis == "STRONG_CONSENSUS":
-            confidence = min(0.95, base_confidence + 0.08)
-        elif synthesis == "CONSENSUS":
-            confidence = min(0.95, base_confidence + 0.04)
-        elif synthesis == "CONFLICT":
-            confidence = max(0.35, base_confidence - 0.08)
-        else:
-            confidence = base_confidence
 
         return {
-            "winner": final_winner,
-            "poisson_winner": poisson_winner,
-            "home_probability": home_prob,
-            "draw_probability": draw_prob,
-            "away_probability": away_prob,
-            "pair_rating_direction": rating_direction,
-            "pair_rating_strength": rating_strength,
-            "rating_no_opinion": rating_no_opinion,
-            "form_advantage": form_advantage,
-            "form_direction": form_direction,
-            "defence_home": defence_home,
-            "defence_away": defence_away,
-            "defence_direction": defence_direction,
-            "agreements": agreements,
-            "conflicts": conflicts,
-            "synthesis": synthesis,
-            "confidence": round(confidence, 4),
-            "evidence": evidence,
+            "home_xg": home_xg,
+            "away_xg": away_xg,
+            "home_base_xg": _first(
+                data,
+                "home_base_xg",
+            ),
+            "away_base_xg": _first(
+                data,
+                "away_base_xg",
+            ),
+            "home_attack": _first(
+                data,
+                "home_attack",
+            ),
+            "away_attack": _first(
+                data,
+                "away_attack",
+            ),
+            "home_defence": _first(
+                data,
+                "home_defence",
+            ),
+            "away_defence": _first(
+                data,
+                "away_defence",
+            ),
+            "home_form_effect": _first(
+                data,
+                "home_form_effect",
+            ),
+            "away_form_effect": _first(
+                data,
+                "away_form_effect",
+            ),
+            "confidence": _first(
+                data,
+                "confidence",
+            ),
+            "finishing_delta_home": _first(
+                data,
+                "finishing_delta_home",
+                "home_finishing_delta",
+            ),
+            "finishing_delta_away": _first(
+                data,
+                "finishing_delta_away",
+                "away_finishing_delta",
+            ),
+            "diagnostics": _first(
+                data,
+                "diagnostics",
+            ),
+            "model_version": _first(
+                data,
+                "model_version",
+                "version",
+            ),
+            "model_status": _first(
+                data,
+                "model_status",
+                "status",
+            ),
+        }
+
+    def _validate_lambda(
+        self,
+        home_xg: Optional[float],
+        away_xg: Optional[float],
+    ) -> None:
+
+        """
+        Brain-level integrity check.
+
+        Это НЕ новая математическая формула.
+        Проверяется только результат GoalModel.
+
+        GoalModel v6.0:
+            0.0 <= λ <= 4.50
+        """
+
+        if home_xg is None or away_xg is None:
+            raise ValueError(
+                "Lambda cannot be None"
+            )
+
+        if home_xg < 0.0 or home_xg > 4.50:
+            raise ValueError(
+                f"Invalid home lambda: {home_xg}"
+            )
+
+        if away_xg < 0.0 or away_xg > 4.50:
+            raise ValueError(
+                f"Invalid away lambda: {away_xg}"
+            )
+
+    def _build_model_stage(
+        self,
+        home_form_context: Any,
+        away_form_context: Any,
+        home_form_model: Any,
+        away_form_model: Any,
+        goal_data: Dict[str, Any],
+        diagnostics: Dict[str, Any],
+    ) -> Dict[str, Any]:
+
+        """
+        Служебный snapshot математической цепочки.
+
+        Не участвует в расчётах.
+        Нужен для audit/debug.
+        """
+
+        return {
+            "history": {
+                "home_count": len(
+                    home_form_context.get("results", [])
+                ),
+                "away_count": len(
+                    away_form_context.get("results", [])
+                ),
+            },
+            "form_model": {
+                "home": _to_dict(home_form_model),
+                "away": _to_dict(away_form_model),
+            },
+            "goal_model": {
+                "version": goal_data.get("model_version"),
+                "status": goal_data.get("model_status"),
+                "home_xg": goal_data["home_xg"],
+                "away_xg": goal_data["away_xg"],
+                "home_base_xg": goal_data.get(
+                    "home_base_xg"
+                ),
+                "away_base_xg": goal_data.get(
+                    "away_base_xg"
+                ),
+            },
+            "diagnostics": diagnostics,
         }
 
     # ========================================================
+    # PROBABILITY + SCORE
     # ========================================================
-    # FAJ MATHEMATICAL BRAIN BRIDGE
-    # v1.3
-    #
-    # RAW HISTORY
-    #     ↓
-    # build_form_context() → runtime dict
-    #     ↓
-    # ┌──────────────────────────────────┐
-    # │ Brain Context Adapter            │
-    # ├──────────────────────────────────┤
-    # │ - FormModel context              │
-    # │ - Control adapter                │
-    # │ - BrainContract adapter          │
-    # └──────────────┬───────────────────┘
-    #                ↓
-    #           FormModel
-    #                ↓
-    #           FormWin
-    #                ↓
-    #           Defence
-    #                ↓
-    #           FormControl
-    #                ↓
-    #           FormAnomaly
-    #                ↓
-    #           SpecialForm
-    #                ↓
-    #           GoalModel v6.0
-    #                ↓
-    #           ProbabilityModel v1.1
-    #                ↓
-    #           ScorePredictor v2.2
-    #                ↓
-    #           Winner Synthesis
-    #                ↓
-    #           CornersModel v1.3
-    #                ↓
-    #           CardsModel v1.3
-    #                ↓
-    #              BRAIN
-    # ============================================================
 
-    # ------------------------------------------------------------
-    # HELPERS
-    # ------------------------------------------------------------
-
-    def _value(
+    def _run_probability_model(
         self,
-        obj: Any,
-        *names: str,
+        home_xg: float,
+        away_xg: float,
     ) -> Any:
+
         """
-        Унифицированное получение значения
-        из dict / sqlite3.Row / object.
+        ProbabilityModel v1.1.
+
+        Вход:
+            λH
+            λA
+
+        Выход:
+            единая joint score matrix
+            1X2
+            BTTS
+            totals
+            score_distribution
+
+        Brain НЕ пересчитывает Poisson.
+        Brain НЕ изменяет λ.
         """
-        if obj is None:
-            return None
 
-        for name in names:
-            if isinstance(obj, dict):
-                if name in obj:
-                    return obj[name]
+        if home_xg is None or away_xg is None:
+            raise ValueError(
+                "ProbabilityModel requires both home_xg and away_xg"
+            )
 
-            try:
-                keys = obj.keys()
-                if name in keys:
-                    return obj[name]
-            except (AttributeError, TypeError):
-                pass
+        model = ProbabilityModel()
 
-            try:
-                return getattr(
-                    obj,
-                    name,
-                )
-            except AttributeError:
-                pass
+        result = model.calculate(
+            home_xg=home_xg,
+            away_xg=away_xg,
+        )
 
-        return None
+        if result is None:
+            raise RuntimeError(
+                "ProbabilityModel returned None"
+            )
 
-    def _safe_float(
+        return result
+
+    def _extract_probability_data(
         self,
-        value: Any,
-    ) -> Optional[float]:
-        if value is None:
-            return None
+        probability_result: Any,
+    ) -> Dict[str, Any]:
 
-        if isinstance(value, bool):
+        """
+        Извлекает результат ProbabilityModel v1.1.
+
+        Никаких новых математических расчётов.
+        """
+
+        data = _to_dict(probability_result)
+
+        score_distribution = _first(
+            data,
+            "score_distribution",
+            "score_probabilities",
+            "distribution",
+        )
+
+        if score_distribution is None:
+            raise ValueError(
+                "ProbabilityModel did not return score_distribution"
+            )
+
+        return {
+            "home_win": _first(
+                data,
+                "home_win",
+                "home_win_probability",
+                "prob_home_win",
+            ),
+            "draw": _first(
+                data,
+                "draw",
+                "draw_probability",
+                "prob_draw",
+            ),
+            "away_win": _first(
+                data,
+                "away_win",
+                "away_win_probability",
+                "prob_away_win",
+            ),
+            "btts": _first(
+                data,
+                "btts",
+                "btts_probability",
+            ),
+            "over25": _first(
+                data,
+                "over25",
+                "over_25",
+                "over25_probability",
+                "over_25_probability",
+            ),
+            "over35": _first(
+                data,
+                "over35",
+                "over_35",
+                "over35_probability",
+                "over_35_probability",
+            ),
+            "under25": _first(
+                data,
+                "under25",
+                "under_25",
+                "under25_probability",
+                "under_25_probability",
+            ),
+            "under35": _first(
+                data,
+                "under35",
+                "under_35",
+                "under35_probability",
+                "under_35_probability",
+            ),
+            "score_distribution": score_distribution,
+            "total_goals_distribution": _first(
+                data,
+                "total_goals_distribution",
+                "totals_distribution",
+            ),
+            "model_version": _first(
+                data,
+                "model_version",
+                "version",
+            ),
+            "calibration_status": _first(
+                data,
+                "calibration_status",
+            ),
+            "diagnostics": _first(
+                data,
+                "diagnostics",
+            ),
+        }
+
+    def _run_score_predictor(
+        self,
+        score_distribution: Any,
+        home_xg: float,
+        away_xg: float,
+        probability_result: Any,
+    ) -> Any:
+
+        """
+        ScorePredictor v2.2.
+
+        Критически важно:
+
+            ProbabilityModel
+                    ↓
+            score_distribution
+                    ↓
+            ScorePredictor
+                    ↓
+            ranking scores
+
+        ScorePredictor не создаёт вторую вероятность.
+        """
+
+        if score_distribution is None:
+            raise ValueError(
+                "ScorePredictor requires score_distribution"
+            )
+
+        model = ScorePredictor()
+
+        result = model.predict(
+            score_probabilities=score_distribution,
+            home_xg=home_xg,
+            away_xg=away_xg,
+            probability_result=probability_result,
+        )
+
+        if result is None:
+            raise RuntimeError(
+                "ScorePredictor returned None"
+            )
+
+        return result
+
+    def _extract_score_data(
+        self,
+        score_result: Any,
+        probability_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+
+        """
+        Нормализует ScorePredictor v2.2.
+
+        ScorePredictor является источником:
+
+            - predicted_score
+            - likely_score
+            - top_scores
+            - top_3_scores
+        """
+
+        data = _to_dict(score_result)
+
+        predicted_score = _first(
+            data,
+            "predicted_score",
+            "likely_score",
+        )
+
+        likely_score = _first(
+            data,
+            "likely_score",
+            "predicted_score",
+        )
+
+        top_scores = _first(
+            data,
+            "top_scores",
+            "top_10_scores",
+            "ranked_scores",
+        )
+
+        top_3_scores = _first(
+            data,
+            "top_3_scores",
+            "top3_scores",
+        )
+
+        # Если ScorePredictor возвращает только top_scores,
+        # Brain берёт первые три без пересчёта.
+
+        if top_3_scores is None and top_scores is not None:
+
+            try:
+                top_3_scores = list(top_scores)[:3]
+
+            except (TypeError, ValueError):
+                top_3_scores = None
+
+        score_distribution = _first(
+            data,
+            "score_distribution",
+            "score_probabilities",
+        )
+
+        if score_distribution is None:
+            score_distribution = probability_data.get(
+                "score_distribution"
+            )
+
+        return {
+            "predicted_score": predicted_score,
+            "likely_score": likely_score,
+            "top_scores": top_scores,
+            "top_3_scores": top_3_scores,
+            "score_distribution": score_distribution,
+            "model_version": _first(
+                data,
+                "model_version",
+                "version",
+            ),
+            "formula_status": _first(
+                data,
+                "formula_status",
+                "status",
+            ),
+            "diagnostics": _first(
+                data,
+                "diagnostics",
+            ),
+        }
+
+    def _build_probability_score_stage(
+        self,
+        goal_data: Dict[str, Any],
+        probability_result: Any,
+        probability_data: Dict[str, Any],
+        score_result: Any,
+        score_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+
+        """
+        Полный audit snapshot математической цепочки.
+
+        Ничего из этого блока не используется для повторного расчёта.
+        """
+
+        return {
+            "goal_model": {
+                "version": goal_data.get(
+                    "model_version"
+                ),
+                "status": goal_data.get(
+                    "model_status"
+                ),
+                "lambda_home": goal_data.get(
+                    "home_xg"
+                ),
+                "lambda_away": goal_data.get(
+                    "away_xg"
+                ),
+            },
+            "probability_model": {
+                "version": probability_data.get(
+                    "model_version"
+                ),
+                "calibration_status": probability_data.get(
+                    "calibration_status"
+                ),
+                "home_win": probability_data.get(
+                    "home_win"
+                ),
+                "draw": probability_data.get(
+                    "draw"
+                ),
+                "away_win": probability_data.get(
+                    "away_win"
+                ),
+                "btts": probability_data.get(
+                    "btts"
+                ),
+                "over25": probability_data.get(
+                    "over25"
+                ),
+                "over35": probability_data.get(
+                    "over35"
+                ),
+            },
+            "score_predictor": {
+                "version": score_data.get(
+                    "model_version"
+                ),
+                "formula_status": score_data.get(
+                    "formula_status"
+                ),
+                "predicted_score": score_data.get(
+                    "predicted_score"
+                ),
+                "likely_score": score_data.get(
+                    "likely_score"
+                ),
+                "top_scores": score_data.get(
+                    "top_scores"
+                ),
+                "top_3_scores": score_data.get(
+                    "top_3_scores"
+                ),
+            },
+            "contract": {
+                "goal_model_to_probability": True,
+                "probability_to_score_predictor": True,
+                "second_poisson_model": False,
+                "lambda_recalculation": False,
+                "probability_recalculation": False,
+                "score_recalculation": False,
+            },
+        }
+
+    def _run_core_prediction(
+        self,
+        home_form_model: Any,
+        away_form_model: Any,
+        home_team: str,
+        away_team: str,
+        home_history: Any,
+        away_history: Any,
+        diagnostics: Dict[str, Any],
+    ) -> Dict[str, Any]:
+
+        """
+        Выполняет исключительно авторитетную математическую цепочку:
+
+            FormModel
+                ↓
+            GoalModel v6.0
+                ↓
+                λH / λA
+                ↓
+            ProbabilityModel v1.1
+                ↓
+            score_distribution
+                ↓
+            ScorePredictor v2.2
+        """
+
+        # ====================================================
+        # 1. GoalModel
+        # ====================================================
+
+        goal_result = self._run_goal_model(
+            home_form_model=home_form_model,
+            away_form_model=away_form_model,
+            home_team=home_team,
+            away_team=away_team,
+            home_history=home_history,
+            away_history=away_history,
+            diagnostics=diagnostics,
+        )
+
+        goal_data = self._extract_goal_data(
+            goal_result
+        )
+
+        self._validate_lambda(
+            goal_data["home_xg"],
+            goal_data["away_xg"],
+        )
+
+        # ====================================================
+        # 2. ProbabilityModel
+        # ====================================================
+
+        probability_result = self._run_probability_model(
+            home_xg=goal_data["home_xg"],
+            away_xg=goal_data["away_xg"],
+        )
+
+        probability_data = self._extract_probability_data(
+            probability_result
+        )
+
+        # ====================================================
+        # 3. ScorePredictor
+        # ====================================================
+
+        score_result = self._run_score_predictor(
+            score_distribution=(
+                probability_data["score_distribution"]
+            ),
+            home_xg=goal_data["home_xg"],
+            away_xg=goal_data["away_xg"],
+            probability_result=probability_result,
+        )
+
+        score_data = self._extract_score_data(
+            score_result=score_result,
+            probability_data=probability_data,
+        )
+
+        # ====================================================
+        # 4. Audit snapshot
+        # ====================================================
+
+        stage = self._build_probability_score_stage(
+            goal_data=goal_data,
+            probability_result=probability_result,
+            probability_data=probability_data,
+            score_result=score_result,
+            score_data=score_data,
+        )
+
+        return {
+            "goal_result": goal_result,
+            "goal_data": goal_data,
+            "probability_result": probability_result,
+            "probability_data": probability_data,
+            "score_result": score_result,
+            "score_data": score_data,
+            "stage": stage,
+        }
+
+    # ========================================================
+    # FINAL OUTPUT ADAPTER
+    # ========================================================
+
+    @staticmethod
+    def _normalize_probability(value: Any) -> Optional[float]:
+
+        """
+        Приводит probability к диапазону 0..1.
+
+        Это только форматирование выходного значения.
+        Никакого изменения математической модели.
+        """
+
+        if value is None:
             return None
 
         try:
             value = float(value)
-            if value != value:
-                return None
-            return value
-        except (
-            TypeError,
-            ValueError,
-        ):
+
+        except (TypeError, ValueError):
             return None
 
-    def _safe_int(
-        self,
-        value: Any,
-    ) -> Optional[int]:
-        value = self._safe_float(value)
-        if value is None:
-            return None
-        return int(round(value))
+        if value > 1.0:
+            value /= 100.0
 
-    # ------------------------------------------------------------
-    # PAIR RATING RESOLUTION
-    # ------------------------------------------------------------
+        return max(0.0, min(1.0, value))
 
-    def _resolve_pair_rating(
+    @staticmethod
+    def _normalize_binary_probability(value: Any) -> Optional[float]:
+
+        """
+        Для полей BTTS / totals сохраняет None.
+        """
+
+        return FAJBrain._normalize_probability(value)
+
+    def _build_analysis(
         self,
         home_team: str,
         away_team: str,
-        home_pair_rating: Optional[Any],
-        away_pair_rating: Optional[Any],
-    ) -> tuple[
-        Optional[Any],
-        Optional[str],
-    ]:
-        """
-        Возвращает (pair_rating, pair_rating_source).
-
-        Приоритет:
-            1. manual                — оба рейтинга переданы вручную;
-            2. club_rating_fallback  — авто из get_team_rating();
-            3. None                  — ни один источник не сработал.
-
-        Никаких side effects.
-        """
-
-        # ----------------------------------------------------
-        # 1. MANUAL
-        # ----------------------------------------------------
-
-        if (
-            home_pair_rating is not None
-            and away_pair_rating is not None
-        ):
-
-            try:
-                home_value = int(home_pair_rating)
-                away_value = int(away_pair_rating)
-
-                if (
-                    60 <= home_value <= 100
-                    and 60 <= away_value <= 100
-                ):
-                    pair_rating = calculate_pair_rating(
-                        home_rating=home_value,
-                        away_rating=away_value,
-                        home_team=home_team,
-                        away_team=away_team,
-                    )
-                    return (
-                        pair_rating,
-                        PAIR_RATING_SOURCE_MANUAL,
-                    )
-            except (TypeError, ValueError):
-                pass
-
-        # ----------------------------------------------------
-        # 2. CLUB RATING FALLBACK
-        # ----------------------------------------------------
-
-        home_rating = None
-        away_rating = None
-
-        try:
-            home_rating = get_team_rating(home_team)
-        except Exception:
-            home_rating = None
-
-        try:
-            away_rating = get_team_rating(away_team)
-        except Exception:
-            away_rating = None
-
-        if home_rating is not None and away_rating is not None:
-            try:
-                home_rating_value = int(home_rating)
-                away_rating_value = int(away_rating)
-
-                if (
-                    60 <= home_rating_value <= 100
-                    and 60 <= away_rating_value <= 100
-                ):
-                    pair_rating = calculate_pair_rating(
-                        home_rating=home_rating_value,
-                        away_rating=away_rating_value,
-                        home_team=home_team,
-                        away_team=away_team,
-                    )
-                    return (
-                        pair_rating,
-                        PAIR_RATING_SOURCE_FALLBACK,
-                    )
-            except (TypeError, ValueError):
-                pass
-
-        # ----------------------------------------------------
-        # 3. NONE
-        # ----------------------------------------------------
-
-        return None, None
-
-    # ------------------------------------------------------------
-    # CONTROL CONTEXT ADAPTER
-    # ------------------------------------------------------------
-
-    def _build_control_context(
-        self,
-        matches: List[Any],
+        goal_data: Dict[str, Any],
+        probability_data: Dict[str, Any],
+        score_data: Dict[str, Any],
     ) -> Dict[str, Any]:
+
         """
-        Создаёт именно тот слой истории,
-        который ожидает FormControl v1.1.
+        Чистое аналитическое описание результата.
 
-        Источник — исходные historical records.
-        Никаких новых значений не придумываем.
-        None остаётся None.
-
-        Порядок:
-            M1 → M6
-            старый → новый
+        Здесь НЕТ дополнительной математики.
         """
-        context = {
-            "possession_history": [],
-            "opponent_possession_history": [],
-            "passes_history": [],
-            "opponent_passes_history": [],
-            "pass_accuracy_history": [],
-            "opponent_pass_accuracy_history": [],
-            "crosses_history": [],
-            "opponent_crosses_history": [],
-            "throw_ins_history": [],
-            "opponent_throw_ins_history": [],
-            "offsides_history": [],
-            "opponent_offsides_history": [],
-            "shots_history": [],
-            "shots_conceded_history": [],
-            "big_chances_history": [],
-            "big_chances_against_history": [],
-            "corners_for_history": [],
-            "corners_against_history": [],
-        }
 
-        for record in list(matches or [])[:6]:
-            stats = self._value(
-                record,
-                "stats",
-                "statistics",
-            )
+        home_xg = goal_data.get("home_xg")
+        away_xg = goal_data.get("away_xg")
 
-            if not isinstance(
-                stats,
-                dict,
-            ):
-                stats = {}
-
-            def stat(
-                *names: str,
-            ) -> Any:
-                value = self._value(
-                    record,
-                    *names,
-                )
-                if value is not None:
-                    return value
-                return self._value(
-                    stats,
-                    *names,
-                )
-
-            # ----------------------------------------------------
-            # Определяем сторону
-            # ----------------------------------------------------
-            home_team = self._value(
-                record,
-                "home_team",
-                "home_name",
-                "home",
-            )
-            away_team = self._value(
-                record,
-                "away_team",
-                "away_name",
-                "away",
-            )
-            team_name = self._value(
-                record,
-                "team",
-                "team_name",
-            )
-
-            is_home = (
-                team_name is not None
-                and home_team is not None
-                and str(team_name).strip().lower()
-                == str(home_team).strip().lower()
-            )
-
-            is_away = (
-                team_name is not None
-                and away_team is not None
-                and str(team_name).strip().lower()
-                == str(away_team).strip().lower()
-            )
-
-            # ----------------------------------------------------
-            # Универсальный side extractor
-            # ----------------------------------------------------
-            def side_value(
-                metric: str,
-            ) -> Any:
-                if is_home:
-                    return stat(
-                        f"home_{metric}",
-                        f"{metric}_home",
-                    )
-                if is_away:
-                    return stat(
-                        f"away_{metric}",
-                        f"{metric}_away",
-                    )
-                return stat(
-                    f"team_{metric}",
-                    metric,
-                )
-
-            def opponent_value(
-                metric: str,
-            ) -> Any:
-                if is_home:
-                    return stat(
-                        f"away_{metric}",
-                        f"{metric}_away",
-                    )
-                if is_away:
-                    return stat(
-                        f"home_{metric}",
-                        f"{metric}_home",
-                    )
-                return stat(
-                    f"opponent_{metric}",
-                )
-
-            # ----------------------------------------------------
-            # CONTROL
-            # ----------------------------------------------------
-            context[
-                "possession_history"
-            ].append(
-                self._safe_float(
-                    side_value("possession")
-                )
-            )
-
-            context[
-                "opponent_possession_history"
-            ].append(
-                self._safe_float(
-                    opponent_value("possession")
-                )
-            )
-
-            context[
-                "passes_history"
-            ].append(
-                self._safe_float(
-                    side_value("passes")
-                )
-            )
-
-            context[
-                "opponent_passes_history"
-            ].append(
-                self._safe_float(
-                    opponent_value("passes")
-                )
-            )
-
-            context[
-                "pass_accuracy_history"
-            ].append(
-                self._safe_float(
-                    side_value(
-                        "pass_accuracy"
-                    )
-                )
-            )
-
-            context[
-                "opponent_pass_accuracy_history"
-            ].append(
-                self._safe_float(
-                    opponent_value(
-                        "pass_accuracy"
-                    )
-                )
-            )
-
-            # ----------------------------------------------------
-            # PROGRESSION
-            # ----------------------------------------------------
-            context[
-                "crosses_history"
-            ].append(
-                self._safe_float(
-                    side_value("crosses")
-                )
-            )
-
-            context[
-                "opponent_crosses_history"
-            ].append(
-                self._safe_float(
-                    opponent_value("crosses")
-                )
-            )
-
-            context[
-                "throw_ins_history"
-            ].append(
-                self._safe_float(
-                    side_value("throw_ins")
-                )
-            )
-
-            context[
-                "opponent_throw_ins_history"
-            ].append(
-                self._safe_float(
-                    opponent_value("throw_ins")
-                )
-            )
-
-            context[
-                "offsides_history"
-            ].append(
-                self._safe_float(
-                    side_value("offsides")
-                )
-            )
-
-            context[
-                "opponent_offsides_history"
-            ].append(
-                self._safe_float(
-                    opponent_value("offsides")
-                )
-            )
-
-            # ----------------------------------------------------
-            # PRESSURE
-            # ----------------------------------------------------
-            context[
-                "shots_history"
-            ].append(
-                self._safe_float(
-                    side_value("shots")
-                )
-            )
-
-            context[
-                "shots_conceded_history"
-            ].append(
-                self._safe_float(
-                    opponent_value("shots")
-                )
-            )
-
-            context[
-                "big_chances_history"
-            ].append(
-                self._safe_float(
-                    side_value("big_chances")
-                )
-            )
-
-            context[
-                "big_chances_against_history"
-            ].append(
-                self._safe_float(
-                    opponent_value("big_chances")
-                )
-            )
-
-            # ----------------------------------------------------
-            # CORNERS
-            # ----------------------------------------------------
-            context[
-                "corners_for_history"
-            ].append(
-                self._safe_float(
-                    side_value("corners")
-                )
-            )
-
-            context[
-                "corners_against_history"
-            ].append(
-                self._safe_float(
-                    opponent_value("corners")
-                )
-            )
-
-        return context
-
-    # ------------------------------------------------------------
-    # BRAIN CONTRACT ADAPTER
-    # ------------------------------------------------------------
-
-    def _build_brain_form_context(
-        self,
-        team_name: str,
-        matches: List[Any],
-        runtime_context: Dict[str, Any],
-    ) -> BrainFormContext:
-        """
-        Runtime FormContext
-                ↓
-        brain_contract.FormContext
-
-        Только адаптация.
-        Никаких прогнозов.
-        """
-        results = []
-        for match in runtime_context.get(
-            "matches",
-            [],
-        ):
-            result = match.get(
-                "result"
-            )
-            if result in (
-                "W",
-                "D",
-                "L",
-            ):
-                results.append(result)
-
-        wins = results.count("W")
-        draws = results.count("D")
-        losses = results.count("L")
-        points = (
-            wins * 3
-            + draws
+        predicted_score = score_data.get(
+            "predicted_score"
         )
 
-        # --------------------------------------------------------
-        # Goals
-        # --------------------------------------------------------
-        goals_for = []
-        goals_against = []
-
-        for match in runtime_context.get(
-            "matches",
-            [],
-        ):
-            gf = self._safe_float(
-                match.get("team_goals")
-            )
-            ga = self._safe_float(
-                match.get("opponent_goals")
-            )
-
-            if gf is not None:
-                goals_for.append(gf)
-            if ga is not None:
-                goals_against.append(ga)
-
-        goals_for_avg = (
-            sum(goals_for) / len(goals_for)
-            if goals_for
-            else None
+        home_win = self._normalize_probability(
+            probability_data.get("home_win")
         )
 
-        goals_against_avg = (
-            sum(goals_against)
-            / len(goals_against)
-            if goals_against
-            else None
+        draw = self._normalize_probability(
+            probability_data.get("draw")
         )
 
-        # --------------------------------------------------------
-        # xG
-        # --------------------------------------------------------
-        xg_values = [
-            value
-            for value in runtime_context.get(
-                "recent_xg",
-                ()
-            )
-            if value is not None
-        ]
-
-        xga_values = [
-            value
-            for value in runtime_context.get(
-                "recent_xga",
-                ()
-            )
-            if value is not None
-        ]
-
-        xg_avg = (
-            sum(xg_values)
-            / len(xg_values)
-            if xg_values
-            else None
-        )
-
-        xga_avg = (
-            sum(xga_values)
-            / len(xga_values)
-            if xga_values
-            else None
-        )
-
-        # --------------------------------------------------------
-        # Home / Away
-        # --------------------------------------------------------
-        home = runtime_context.get(
-            "home",
-            {},
-        )
-        away = runtime_context.get(
-            "away",
-            {},
-        )
-
-        # --------------------------------------------------------
-        # Derived flags
-        # --------------------------------------------------------
-        consecutive_wins = 0
-        for result in reversed(results):
-            if result == "W":
-                consecutive_wins += 1
-            else:
-                break
-
-        home_unbeaten = 0
-        for match in reversed(
-            runtime_context.get(
-                "matches",
-                [],
-            )
-        ):
-            if match.get("venue") != "дома":
-                continue
-            if match.get("result") in (
-                "W",
-                "D",
-            ):
-                home_unbeaten += 1
-            else:
-                break
-
-        away_wins_recent = 0
-        for match in reversed(
-            runtime_context.get(
-                "matches",
-                [],
-            )
-        ):
-            if match.get("venue") != "гости":
-                continue
-            if match.get("result") == "W":
-                away_wins_recent += 1
-            else:
-                break
-
-        consecutive_away = 0
-        for match in reversed(
-            runtime_context.get(
-                "matches",
-                [],
-            )
-        ):
-            if match.get("venue") == "гости":
-                consecutive_away += 1
-            else:
-                break
-
-        return BrainFormContext(
-            team=team_name,
-            results=tuple(results),
-            wins=wins,
-            draws=draws,
-            losses=losses,
-            points=points,
-
-            home_wins=int(
-                home.get("wins", 0)
-            ),
-            home_draws=int(
-                home.get("draws", 0)
-            ),
-            home_losses=int(
-                home.get("losses", 0)
-            ),
-            away_wins=int(
-                away.get("wins", 0)
-            ),
-            away_draws=int(
-                away.get("draws", 0)
-            ),
-            away_losses=int(
-                away.get("losses", 0)
-            ),
-
-            goals_for_avg=goals_for_avg,
-            goals_against_avg=goals_against_avg,
-
-            xg_avg=xg_avg,
-            xga_avg=xga_avg,
-
-            corners_for_avg=None,
-            corners_against_avg=None,
-            possession_avg=None,
-            cards_avg=None,
-            fouls_avg=None,
-
-            difficulty=tuple(
-                runtime_context.get(
-                    "difficulty",
-                    []
-                )
-            ),
-
-            consecutive_away_matches=(
-                consecutive_away
-            ),
-            consecutive_wins=(
-                consecutive_wins
-            ),
-            home_unbeaten_count=(
-                home_unbeaten
-            ),
-            away_wins_recent=(
-                away_wins_recent
-            ),
-        )
-
-    # ------------------------------------------------------------
-    # MAIN MATH CONTEXT
-    # ------------------------------------------------------------
-
-    def _build_math_context(
-        self,
-        team_name: str,
-        matches: List[Any],
-        venue: str,
-    ) -> Dict[str, Any]:
-        runtime_context = build_form_context(
-            team_name,
-            matches,
-            limit=6,
-        )
-
-        if not isinstance(
-            runtime_context,
-            dict,
-        ):
-            runtime_context = dict(
-                runtime_context
-            )
-
-        runtime_context["team_name"] = team_name
-        runtime_context["venue"] = venue
-
-        # --------------------------------------------------------
-        # FormControl adapter
-        # --------------------------------------------------------
-        control_context = self._build_control_context(
-            matches
-        )
-        runtime_context.update(
-            control_context
-        )
-
-        # --------------------------------------------------------
-        # Strict Brain Contract
-        # --------------------------------------------------------
-        runtime_context[
-            "brain_contract"
-        ] = self._build_brain_form_context(
-            team_name=team_name,
-            matches=matches,
-            runtime_context=runtime_context,
-        )
-
-        return runtime_context
-
-    # ------------------------------------------------------------
-    # FORM PIPELINE
-    # ------------------------------------------------------------
-
-    def _run_form_pipeline(
-        self,
-        team_name: str,
-        opponent_name: str,
-        matches: List[Any],
-        venue: str,
-    ) -> Dict[str, Any]:
-        context = self._build_math_context(
-            team_name=team_name,
-            matches=matches,
-            venue=venue,
-        )
-
-        # ========================================================
-        # 1. FORM MODEL
-        # ========================================================
-        form_model = FormModel()
-        form_result = form_model.analyze(
-            context,
-            next_venue=venue,
-        )
-
-        # ========================================================
-        # 2. FORM WIN
-        # ========================================================
-        form_win = FormWin()
-        form_win_result = form_win.analyze(
-            context,
-            next_venue=venue,
-        )
-
-        # ========================================================
-        # 3. DEFENCE
-        # ========================================================
-        defence = Defence()
-        defence_result = defence.calculate(
-            context,
-            team_name=team_name,
-        )
-
-        # ========================================================
-        # 4. FORM CONTROL
-        # ========================================================
-        form_control = FormControl()
-        control_result = form_control.analyze(
-            context=context,
-            target_team=team_name,
-            opponent_team=opponent_name,
-            venue=venue,
-        )
-
-        # ========================================================
-        # 5. ANOMALY
-        # ========================================================
-        anomaly = FormAnomaly()
-        anomaly_result = anomaly.analyze(
-            context
-        )
-
-        # ========================================================
-        # 6. SPECIAL FORM
-        # ========================================================
-        special_context = SimpleNamespace(
-            **context
-        )
-        special_form = FormSpecial()
-        special_result = special_form.analyze(
-            special_context,
-            team_name=team_name,
-        )
-
-        # ========================================================
-        # 7. STRICT BRAIN CONTRACT
-        # ========================================================
-        brain_context = context.get(
-            "brain_contract"
+        away_win = self._normalize_probability(
+            probability_data.get("away_win")
         )
 
         return {
-            "team": team_name,
-            "opponent": opponent_name,
-            "venue": venue,
-            "context": context,
-            "brain_context": brain_context,
-            "form_model": form_result,
-            "form_win": form_win_result,
-            "defence": defence_result,
-            "form_control": control_result,
-            "form_anomaly": anomaly_result,
-            "special_form": special_result,
-        }
-
-    # ------------------------------------------------------------
-    # MATCH PIPELINE
-    # ------------------------------------------------------------
-
-    def _run_match_math_pipeline(
-        self,
-        home_team: str,
-        away_team: str,
-        home_matches: List[Any],
-        away_matches: List[Any],
-        home_pair_rating: Optional[Any] = None,
-        away_pair_rating: Optional[Any] = None,
-    ) -> Dict[str, Any]:
-
-        # ========================================================
-        # HOME
-        # ========================================================
-        home_state = self._run_form_pipeline(
-            team_name=home_team,
-            opponent_name=away_team,
-            matches=home_matches,
-            venue="home",
-        )
-
-        # ========================================================
-        # AWAY
-        # ========================================================
-        away_state = self._run_form_pipeline(
-            team_name=away_team,
-            opponent_name=home_team,
-            matches=away_matches,
-            venue="away",
-        )
-
-        # ========================================================
-        # FORM WIN COMPARISON
-        # ========================================================
-        form_win_comparison = None
-        try:
-            form_win_comparison = FormWin().compare(
-                home_state["context"],
-                away_state["context"],
-            )
-        except Exception:
-            form_win_comparison = None
-
-        # ========================================================
-        # GOAL MODEL v6.0
-        #
-        # FormModel
-        #     +
-        # FormControl
-        #     +
-        # SpecialForm
-        #     +
-        # history (venue-aware)
-        #     ↓
-        # GoalModel
-        # ========================================================
-        goal_model = GoalModel()
-        goal_result = goal_model.analyze(
-            home_form=home_state["form_model"],
-            away_form=away_state["form_model"],
-            home_history=home_matches,
-            away_history=away_matches,
-            home_control=home_state["form_control"],
-            away_control=away_state["form_control"],
-            home_special=home_state["special_form"],
-            away_special=away_state["special_form"],
-            home_team=home_team,
-            away_team=away_team,
-            venue="HOME",
-        )
-
-        # ========================================================
-        # PAIR RATING
-        #
-        # MANUAL  → оба рейтинга переданы явно;
-        # FALLBACK → авто из get_team_rating();
-        # None    → ни один источник не сработал.
-        #
-        # Pair Rating — диагностический сигнал Winner Synthesis.
-        # Он НЕ влияет на xG / GoalModel / ProbabilityModel /
-        # ScorePredictor / Corners / Cards.
-        # ========================================================
-        pair_rating, pair_rating_source = self._resolve_pair_rating(
-            home_team=home_team,
-            away_team=away_team,
-            home_pair_rating=home_pair_rating,
-            away_pair_rating=away_pair_rating,
-        )
-
-        # ========================================================
-        # PROBABILITY MODEL (v1.1)
-        # ========================================================
-        probability_model = ProbabilityModel()
-        probability_result = probability_model.calculate(
-            home_xg=goal_result.home_xg,
-            away_xg=goal_result.away_xg,
-        )
-
-        # ========================================================
-        # WINNER SYNTHESIS
-        # ========================================================
-        winner_synthesis = self._build_winner_synthesis(
-            probability_result=probability_result,
-            pair_rating=pair_rating,
-            form_win_comparison=form_win_comparison,
-            home_defence=home_state.get("defence"),
-            away_defence=away_state.get("defence"),
-        )
-
-        # ========================================================
-        # SCORE PREDICTOR (v2.2)
-        # ========================================================
-        score_predictor = ScorePredictor()
-        score_result = score_predictor.predict(
-            score_probabilities=probability_result.score_distribution,
-            home_xg=goal_result.home_xg,
-            away_xg=goal_result.away_xg,
-            probability_result=probability_result,
-        )
-
-        # ========================================================
-        # RESULT
-        # ========================================================
-        return {
-            "home": home_state,
-            "away": away_state,
-            "form_win_comparison": form_win_comparison,
-            "goal_model": goal_result,
-            "probability_model": probability_result,
-            "score_predictor": score_result,
-            "pair_rating": (
-                pair_rating.__dict__
-                if hasattr(pair_rating, "__dict__")
-                else pair_rating
-            ),
-            "pair_rating_source": pair_rating_source,
-            "winner_synthesis": winner_synthesis,
-            "diagnostics": {
-                "home_team": home_team,
-                "away_team": away_team,
-                "home_matches": len(home_matches or []),
-                "away_matches": len(away_matches or []),
-                "home_xg": goal_result.home_xg,
-                "away_xg": goal_result.away_xg,
-                "pair_rating_available": pair_rating is not None,
-                "pair_rating_source": pair_rating_source,
-                "winner_synthesis_available": winner_synthesis is not None,
+            "home_team": home_team,
+            "away_team": away_team,
+            "xg": {
+                "home": home_xg,
+                "away": away_xg,
+            },
+            "probabilities": {
+                "home_win": home_win,
+                "draw": draw,
+                "away_win": away_win,
+                "btts": self._normalize_binary_probability(
+                    probability_data.get("btts")
+                ),
+                "over25": self._normalize_binary_probability(
+                    probability_data.get("over25")
+                ),
+                "over35": self._normalize_binary_probability(
+                    probability_data.get("over35")
+                ),
+            },
+            "score": {
+                "predicted": predicted_score,
+                "likely": score_data.get(
+                    "likely_score"
+                ),
+                "top_scores": score_data.get(
+                    "top_scores"
+                ),
             },
         }
 
+    def _build_final_output(
+        self,
+        home_team: str,
+        away_team: str,
+        home_form_context: Any,
+        away_form_context: Any,
+        home_form_model: Any,
+        away_form_model: Any,
+        diagnostics: Dict[str, Any],
+        core: Dict[str, Any],
+    ) -> Dict[str, Any]:
+
+        """
+        Финальный публичный Brain output.
+
+        Сохраняет контракт faj_predictor.py.
+        """
+
+        goal_data = core["goal_data"]
+        probability_data = core["probability_data"]
+        score_data = core["score_data"]
+
+        home_win = self._normalize_probability(
+            probability_data.get("home_win")
+        )
+
+        draw = self._normalize_probability(
+            probability_data.get("draw")
+        )
+
+        away_win = self._normalize_probability(
+            probability_data.get("away_win")
+        )
+
+        btts_probability = (
+            self._normalize_probability(
+                probability_data.get("btts")
+            )
+        )
+
+        over25_probability = (
+            self._normalize_probability(
+                probability_data.get("over25")
+            )
+        )
+
+        over35_probability = (
+            self._normalize_probability(
+                probability_data.get("over35")
+            )
+        )
+
+        # ----------------------------------------------------
+        # Confidence
+        #
+        # Это descriptive output.
+        # Оно НЕ возвращается в GoalModel.
+        # Оно НЕ изменяет probabilities.
+        # ----------------------------------------------------
+
+        confidence = goal_data.get(
+            "confidence"
+        )
+
+        if confidence is None:
+            confidence = probability_data.get(
+                "confidence"
+            )
+
+        confidence = self._normalize_probability(
+            confidence
+        )
+
+        # ----------------------------------------------------
+        # Risk
+        #
+        # Только аналитическое поле.
+        # Никакого влияния на модель.
+        # ----------------------------------------------------
+
+        risk = probability_data.get("risk")
+
+        if risk is None:
+            risk = goal_data.get("risk")
+
+        # ----------------------------------------------------
+        # Analysis
+        # ----------------------------------------------------
+
+        analysis = self._build_analysis(
+            home_team=home_team,
+            away_team=away_team,
+            goal_data=goal_data,
+            probability_data=probability_data,
+            score_data=score_data,
+        )
+
+        # ----------------------------------------------------
+        # Corners / Cards
+        #
+        # Ядро прогноза их не использует.
+        # Стабильные поля сохраняем для UI.
+        # ----------------------------------------------------
+
+        corners = None
+        cards = None
+
+        # ----------------------------------------------------
+        # Brain result — полный audit object
+        # ----------------------------------------------------
+
+        brain_result = {
+            "brain_version": BRAIN_VERSION,
+            "contract_version": CONTRACT_VERSION,
+            "teams": {
+                "home": home_team,
+                "away": away_team,
+            },
+            "history": {
+                "home": home_form_context,
+                "away": away_form_context,
+            },
+            "form_model": {
+                "home": _to_dict(home_form_model),
+                "away": _to_dict(away_form_model),
+            },
+            "diagnostics": diagnostics,
+            "goal_model": core["goal_data"],
+            "probability_model": core[
+                "probability_data"
+            ],
+            "score_predictor": core[
+                "score_data"
+            ],
+            "stages": {
+                "form": {
+                    "home": _to_dict(
+                        home_form_model
+                    ),
+                    "away": _to_dict(
+                        away_form_model
+                    ),
+                },
+                "probability_score": core[
+                    "stage"
+                ],
+            },
+            "analysis": analysis,
+        }
+
+        # ----------------------------------------------------
+        # Public Predictor/UI contract
+        # ----------------------------------------------------
+
+        return {
+
+            # =================================================
+            # TEAMS
+            # =================================================
+
+            "home_team": home_team,
+            "away_team": away_team,
+
+            # =================================================
+            # 1X2
+            # =================================================
+
+            "home_win_probability": home_win,
+            "draw_probability": draw,
+            "away_win_probability": away_win,
+
+            "home_win": home_win,
+            "draw": draw,
+            "away_win": away_win,
+
+            # =================================================
+            # BTTS
+            # =================================================
+
+            "btts": (
+                btts_probability >= 0.5
+                if btts_probability is not None
+                else None
+            ),
+            "btts_probability": btts_probability,
+
+            # =================================================
+            # TOTALS
+            # =================================================
+
+            "over25": (
+                over25_probability >= 0.5
+                if over25_probability is not None
+                else None
+            ),
+            "over25_probability": (
+                over25_probability
+            ),
+
+            "over35": (
+                over35_probability >= 0.5
+                if over35_probability is not None
+                else None
+            ),
+            "over35_probability": (
+                over35_probability
+            ),
+
+            # =================================================
+            # XG
+            # =================================================
+
+            "home_xg_internal": goal_data[
+                "home_xg"
+            ],
+            "away_xg_internal": goal_data[
+                "away_xg"
+            ],
+
+            "home_xg": goal_data[
+                "home_xg"
+            ],
+            "away_xg": goal_data[
+                "away_xg"
+            ],
+
+            # =================================================
+            # SCORE
+            # =================================================
+
+            "predicted_score": score_data.get(
+                "predicted_score"
+            ),
+            "likely_score": score_data.get(
+                "likely_score"
+            ),
+            "top_scores": score_data.get(
+                "top_scores"
+            ),
+            "top_3_scores": score_data.get(
+                "top_3_scores"
+            ),
+
+            # =================================================
+            # ANALYTICS
+            # =================================================
+
+            "confidence": confidence,
+            "risk": risk,
+            "analysis": analysis,
+
+            # =================================================
+            # PARALLEL ORGANS
+            # =================================================
+
+            "corners": corners,
+            "cards": cards,
+
+            # =================================================
+            # FORM CONTEXT
+            # =================================================
+
+            "home_form_context": (
+                home_form_context
+            ),
+            "away_form_context": (
+                away_form_context
+            ),
+
+            # =================================================
+            # DATA
+            # =================================================
+
+            "data": {
+                "home": {
+                    "form_context": home_form_context,
+                    "form_model": _to_dict(
+                        home_form_model
+                    ),
+                },
+                "away": {
+                    "form_context": away_form_context,
+                    "form_model": _to_dict(
+                        away_form_model
+                    ),
+                },
+                "goal_model": goal_data,
+                "probability_model": probability_data,
+                "score_predictor": score_data,
+            },
+
+            # =================================================
+            # FULL BRAIN RESULT
+            # =================================================
+
+            "brain_result": brain_result,
+
+            "calculation_meta": {
+                "brain_version": BRAIN_VERSION,
+                "contract_version": CONTRACT_VERSION,
+                "goal_model_version": goal_data.get(
+                    "model_version"
+                ),
+                "probability_model_version": (
+                    probability_data.get(
+                        "model_version"
+                    )
+                ),
+                "score_predictor_version": (
+                    score_data.get(
+                        "model_version"
+                    )
+                ),
+                "probability_calibration": (
+                    probability_data.get(
+                        "calibration_status"
+                    )
+                ),
+                "formula_status": (
+                    score_data.get(
+                        "formula_status"
+                    )
+                ),
+                "diagnostics_prediction_impact": (
+                    "none"
+                ),
+            },
+
+            "diagnostics": diagnostics,
+        }
+
     # ========================================================
-    # PUBLIC PREDICTION
+    # PUBLIC API
     # ========================================================
 
     def predict(
@@ -3997,505 +2141,124 @@ class FAJBrain:
         away_team: str,
         home_matches: Iterable[Any],
         away_matches: Iterable[Any],
-        home_form_context: Optional[Any] = None,
-        away_form_context: Optional[Any] = None,
-        home_pair_rating: Optional[Any] = None,
-        away_pair_rating: Optional[Any] = None,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
 
+        """
+        PUBLIC FAJ BRAIN API.
+
+        Ожидает ровно шесть исторических матчей каждой команды.
+
+        Порядок:
+            M1 oldest ... M6 newest
+
+        Brain НЕ сортирует историю.
+        """
+
         # ====================================================
-        # 1. NORMALIZE (LEGACY - для совместимости)
+        # 1. Normalize history
         # ====================================================
 
-        home_history = self._normalize_matches(
+        home_history = self._normalize_history(
             home_matches,
             home_team,
         )
 
-        away_history = self._normalize_matches(
+        away_history = self._normalize_history(
             away_matches,
             away_team,
         )
 
-        if not home_history:
-            raise ValueError(f"Нет исторических данных для {home_team}.")
-
-        if not away_history:
-            raise ValueError(f"Нет исторических данных для {away_team}.")
-
         # ====================================================
-        # 2. NEW FAJ MATHEMATICAL BRAIN
+        # 2. Canonical FormContext
         # ====================================================
 
-        math_pipeline = self._run_match_math_pipeline(
-            home_team=home_team,
-            away_team=away_team,
-            home_matches=home_matches,
-            away_matches=away_matches,
-            home_pair_rating=home_pair_rating,
-            away_pair_rating=away_pair_rating,
+        home_form_context = self._build_form(
+            home_team,
+            home_history,
         )
 
-        home_math = math_pipeline["home"]
-        away_math = math_pipeline["away"]
-        goal_result = math_pipeline["goal_model"]
-        probability_result = math_pipeline["probability_model"]
-        score_result = math_pipeline["score_predictor"]
+        away_form_context = self._build_form(
+            away_team,
+            away_history,
+        )
 
-        # ====================================================
-        # 3. EXTRACT XG FROM GOAL MODEL
-        # ====================================================
+        if home_form_context is None:
+            raise RuntimeError(
+                f"Failed to build FormContext for "
+                f"{home_team}"
+            )
 
-        home_xg = goal_result.home_xg
-        away_xg = goal_result.away_xg
-
-        # ====================================================
-        # 4. NONE PROTECTION
-        # ====================================================
-
-        if home_xg is None or away_xg is None:
-            raise ValueError(
-                "GoalModel не смог рассчитать xG: "
-                "для одной или обеих команд отсутствует "
-                "необходимый xG/xGA компонент в FormModelResult."
+        if away_form_context is None:
+            raise RuntimeError(
+                f"Failed to build FormContext for "
+                f"{away_team}"
             )
 
         # ====================================================
-        # 5. RESULT PROBABILITIES
+        # 3. FormModel
         # ====================================================
 
-        probabilities = {
-            "home": probability_result.home_win,
-            "draw": probability_result.draw,
-            "away": probability_result.away_win,
-        }
-
-        # ====================================================
-        # 6. TOTALS
-        # ====================================================
-
-        totals = {
-            "btts": _probability(
-                probability_result.btts
-            ),
-            "over15": _probability(
-                probability_result.over_15
-            ),
-            "under15": _probability(
-                probability_result.under_15
-            ),
-            "over25": _probability(
-                probability_result.over_25
-            ),
-            "under25": _probability(
-                probability_result.under_25
-            ),
-            "over35": _probability(
-                probability_result.over_35
-            ),
-            "under35": _probability(
-                probability_result.under_35
-            ),
-        }
-
-        # ====================================================
-        # 7. SCORE DISTRIBUTION
-        # ====================================================
-
-        top_scores = score_result.top_scores
-
-        score_strings = [
-            item["score"] for item in top_scores[:3]
-        ]
-
-        while len(score_strings) < 3:
-            score_strings.append("-")
-
-        # ====================================================
-        # 8. CORNERS
-        # ====================================================
-
-        corners_result = self.corners_model.synthesize_match(
-            home_math["context"],
-            away_math["context"],
+        home_form_model = self._run_form_model(
+            home_form_context
         )
 
-        corner_total = corners_result.get("total_expected_corners")
-        home_corners_expected = corners_result.get("home", {}).get("home_corners_expected")
-        away_corners_expected = corners_result.get("away", {}).get("away_corners_expected")
-
-        # ====================================================
-        # 9. CARDS
-        # ====================================================
-
-        cards_result = self.cards_model.synthesize_match(
-            home_math["context"],
-            away_math["context"],
+        away_form_model = self._run_form_model(
+            away_form_context
         )
 
-        card_total = cards_result.get("total_expected_cards")
-        home_cards_expected = cards_result.get("home", {}).get("home_cards_expected")
-        away_cards_expected = cards_result.get("away", {}).get("away_cards_expected")
+        if home_form_model is None:
+            raise RuntimeError(
+                f"FormModel returned None for "
+                f"{home_team}"
+            )
+
+        if away_form_model is None:
+            raise RuntimeError(
+                f"FormModel returned None for "
+                f"{away_team}"
+            )
 
         # ====================================================
-        # 10. WINNER SYNTHESIS CONFIDENCE
-        #
-        # Основной confidence теперь берётся из Winner
-        # Synthesis. Это диагностический выходной слой;
-        # он не возвращается обратно в ProbabilityModel
-        # и не меняет λ / вероятности / счёт.
-        #
-        # Если Winner Synthesis недоступен — confidence
-        # остаётся None, а risk становится "UNKNOWN".
+        # 4. Diagnostic organs
         # ====================================================
 
-        home_profile = self.build_profile(home_team, home_history)
-        away_profile = self.build_profile(away_team, away_history)
-
-        winner_synthesis = math_pipeline.get("winner_synthesis")
-
-        if winner_synthesis is not None:
-            confidence = winner_synthesis.get("confidence")
-        else:
-            confidence = None
-
-        risk = self._risk(
-            confidence,
-            home_profile,
-            away_profile,
-        )
-
-        # ====================================================
-        # 11. CONCLUSION (LEGACY)
-        # ====================================================
-
-        conclusion, factors = self._conclusion(
-            home_profile,
-            away_profile,
-            probabilities,
-            totals,
-        )
-
-        # ====================================================
-        # 12. ANALYSIS MODE
-        # ====================================================
-
-        min_matches = min(len(home_history), len(away_history))
-
-        if min_matches >= PREFERRED_MATCHES:
-            analysis_mode = "Расширенный"
-        elif min_matches >= EXTENDED_ANALYSIS_MATCHES:
-            analysis_mode = "Базовый+"
-        elif min_matches >= 2:
-            analysis_mode = "Базовый"
-        else:
-            analysis_mode = "Экспресс"
-
-        # ====================================================
-        # 13. OUTPUT
-        # ====================================================
-
-        pair_rating = math_pipeline.get("pair_rating")
-        pair_rating_source = math_pipeline.get("pair_rating_source")
-
-        result = BrainPrediction(
+        diagnostics = self._run_diagnostics(
+            home_form_context=home_form_context,
+            away_form_context=away_form_context,
+            home_history=home_history,
+            away_history=away_history,
             home_team=home_team,
             away_team=away_team,
-            home_win_probability=_probability(
-                probabilities["home"]
-            ),
-            draw_probability=_probability(
-                probabilities["draw"]
-            ),
-            away_win_probability=_probability(
-                probabilities["away"]
-            ),
-            btts_probability=totals["btts"],
-            over25_probability=totals["over25"],
-            over35_probability=totals["over35"],
-            home_xg=home_xg,
-            away_xg=away_xg,
-            most_likely_score=score_result.predicted_score if score_result.predicted_score is not None else "-",
-            second_likely_score=score_result.second_score if score_result.second_score is not None else "-",
-            third_likely_score=score_result.third_score if score_result.third_score is not None else "-",
-            corners_expected=corner_total,
-            home_corners_expected=home_corners_expected,
-            away_corners_expected=away_corners_expected,
-            over75_corners_probability=(
-                self._over_probability(corner_total, 7.5)
-                if corner_total is not None
-                else None
-            ),
-            over85_corners_probability=(
-                self._over_probability(corner_total, 8.5)
-                if corner_total is not None
-                else None
-            ),
-            over95_corners_probability=(
-                self._over_probability(corner_total, 9.5)
-                if corner_total is not None
-                else None
-            ),
-            over105_corners_probability=(
-                self._over_probability(corner_total, 10.5)
-                if corner_total is not None
-                else None
-            ),
-            cards_expected=card_total,
-            home_cards_expected=home_cards_expected,
-            away_cards_expected=away_cards_expected,
-            over25_cards_probability=(
-                self._over_probability(card_total, 2.5)
-                if card_total is not None
-                else None
-            ),
-            over35_cards_probability=(
-                self._over_probability(card_total, 3.5)
-                if card_total is not None
-                else None
-            ),
-            over45_cards_probability=(
-                self._over_probability(card_total, 4.5)
-                if card_total is not None
-                else None
-            ),
-            confidence=confidence,
-            risk=risk,
-            analysis_mode=analysis_mode,
-            data_quality=round(
-                (home_profile.data_quality + away_profile.data_quality) / 2.0,
-                1,
-            ),
-            conclusion=conclusion,
-            factors=factors,
-            calculation_meta={
-                "brain_version": BRAIN_VERSION,
-                "home_matches": len(home_history),
-                "away_matches": len(away_history),
-                "home_profile": home_profile.__dict__,
-                "away_profile": away_profile.__dict__,
-                "home_form_result": self._json_safe(home_math["form_model"]),
-                "away_form_result": self._json_safe(away_math["form_model"]),
-                "home_form_win": self._json_safe(home_math["form_win"]),
-                "away_form_win": self._json_safe(away_math["form_win"]),
-                "home_defence": self._json_safe(home_math["defence"]),
-                "away_defence": self._json_safe(away_math["defence"]),
-                "home_form_control": self._json_safe(home_math["form_control"]),
-                "away_form_control": self._json_safe(away_math["form_control"]),
-                "home_form_anomaly": self._json_safe(home_math["form_anomaly"]),
-                "away_form_anomaly": self._json_safe(away_math["form_anomaly"]),
-                "home_special_form": self._json_safe(home_math["special_form"]),
-                "away_special_form": self._json_safe(away_math["special_form"]),
-                "form_win_comparison": self._json_safe(
-                    math_pipeline.get("form_win_comparison")
-                ),
-                "goal_model": self._json_safe(goal_result),
-                "probability_model": self._json_safe(probability_result),
-                "score_predictor": self._json_safe(score_result),
-                "pair_rating": pair_rating,
-                "pair_rating_source": pair_rating_source,
-                "winner_synthesis": winner_synthesis,
-                "score_forecast": {
-                    "predicted_score": score_result.predicted_score,
-                    "second_score": score_result.second_score,
-                    "third_score": score_result.third_score,
-                    "top_scores": self._json_safe(
-                        top_scores
-                    ),
-                },
-                "corners_result": self._json_safe(corners_result),
-                "cards_result": self._json_safe(cards_result),
-                "method": (
-                    "FormModel v1.2 + "
-                    "FormWin v1.2 + "
-                    "Defence v1.1 + "
-                    "FormControl v1.1 + "
-                    "FormAnomaly v1.0 + "
-                    "SpecialForm v1.0 + "
-                    "GoalModel v6.0 + "
-                    "ProbabilityModel v1.1 + "
-                    "ScorePredictor v2.2 + "
-                    "Winner Synthesis v1 + "
-                    "CornersModel v1.3 + "
-                    "CardsModel v1.3"
-                ),
-                "xg_internal": {"home": home_xg, "away": away_xg},
-                "note": (
-                    "FAJ-BRAIN-1.3. "
-                    "GoalModel v6.0: FormModel + FormControl + SpecialForm + history. "
-                    "Winner Synthesis v1: Poisson primary + PairRating + FormWin + Defence. "
-                    "NEUTRAL != CONFLICT. "
-                    "Pair Rating source: manual / club_rating_fallback / None. "
-                    "confidence берётся из Winner Synthesis, "
-                    "risk = LOW / MEDIUM / HIGH / UNKNOWN. "
-                    "ScorePredictor v2.2: только ProbabilityModel. "
-                    "Corners v1.3 и Cards v1.3 с recent3 + trend."
-                ),
-            },
         )
 
-        return result.to_dict()
+        # ====================================================
+        # 5. CORE MATHEMATICAL CHAIN
+        # ====================================================
 
+        core = self._run_core_prediction(
+            home_form_model=home_form_model,
+            away_form_model=away_form_model,
+            home_team=home_team,
+            away_team=away_team,
+            home_history=home_history,
+            away_history=away_history,
+            diagnostics=diagnostics,
+        )
 
-# ============================================================
-# CONVENIENCE FUNCTION
-# ============================================================
+        # ====================================================
+        # 6. FINAL OUTPUT
+        # ====================================================
 
-def predict_match(
-    home_team: str,
-    away_team: str,
-    home_matches: Iterable[Any],
-    away_matches: Iterable[Any],
-    home_form_context: Optional[Any] = None,
-    away_form_context: Optional[Any] = None,
-    home_pair_rating: Optional[Any] = None,
-    away_pair_rating: Optional[Any] = None,
-) -> Dict[str, Any]:
+        result = self._build_final_output(
+            home_team=home_team,
+            away_team=away_team,
+            home_form_context=home_form_context,
+            away_form_context=away_form_context,
+            home_form_model=home_form_model,
+            away_form_model=away_form_model,
+            diagnostics=diagnostics,
+            core=core,
+        )
 
-    brain = FAJBrain()
-
-    return brain.predict(
-        home_team=home_team,
-        away_team=away_team,
-        home_matches=home_matches,
-        away_matches=away_matches,
-        home_form_context=home_form_context,
-        away_form_context=away_form_context,
-        home_pair_rating=home_pair_rating,
-        away_pair_rating=away_pair_rating,
-    )
-
-
-# ============================================================
-# SELF TEST
-# ============================================================
-
-if __name__ == "__main__":
-
-    home = [
-        {
-            "goals_for": 3,
-            "goals_against": 0,
-            "shots": 18,
-            "shots_on_target": 8,
-            "blocked_shots": 3,
-            "big_chances": 4,
-            "possession": 61,
-            "passes": 520,
-            "pass_accuracy": 86,
-            "corners": 7,
-            "yellow_cards": 1,
-            "red_cards": 0,
-            "fouls": 8,
-            "offsides": 1,
-            "xg": 2.2,
-            "is_home": True,
-        },
-        {
-            "goals_for": 2,
-            "goals_against": 1,
-            "shots": 15,
-            "shots_on_target": 6,
-            "blocked_shots": 2,
-            "big_chances": 3,
-            "possession": 55,
-            "passes": 470,
-            "pass_accuracy": 82,
-            "corners": 6,
-            "yellow_cards": 2,
-            "red_cards": 0,
-            "fouls": 10,
-            "offsides": 2,
-            "xg": 1.8,
-            "is_home": False,
-        },
-        {
-            "goals_for": 1,
-            "goals_against": 1,
-            "shots": 13,
-            "shots_on_target": 5,
-            "blocked_shots": 1,
-            "big_chances": 2,
-            "possession": 58,
-            "passes": 490,
-            "pass_accuracy": 84,
-            "corners": 5,
-            "yellow_cards": 2,
-            "red_cards": 0,
-            "fouls": 9,
-            "offsides": 1,
-            "xg": 1.4,
-            "is_home": True,
-        },
-    ]
-
-    away = [
-        {
-            "goals_for": 1,
-            "goals_against": 2,
-            "shots": 11,
-            "shots_on_target": 4,
-            "blocked_shots": 2,
-            "big_chances": 1,
-            "possession": 48,
-            "passes": 390,
-            "pass_accuracy": 77,
-            "corners": 4,
-            "yellow_cards": 3,
-            "red_cards": 0,
-            "fouls": 12,
-            "offsides": 2,
-            "xg": 1.1,
-            "is_home": False,
-        },
-        {
-            "goals_for": 2,
-            "goals_against": 2,
-            "shots": 12,
-            "shots_on_target": 5,
-            "blocked_shots": 3,
-            "big_chances": 2,
-            "possession": 52,
-            "passes": 410,
-            "pass_accuracy": 79,
-            "corners": 5,
-            "yellow_cards": 2,
-            "red_cards": 0,
-            "fouls": 11,
-            "offsides": 1,
-            "xg": 1.5,
-            "is_home": True,
-        },
-        {
-            "goals_for": 0,
-            "goals_against": 1,
-            "shots": 9,
-            "shots_on_target": 3,
-            "blocked_shots": 1,
-            "big_chances": 1,
-            "possession": 44,
-            "passes": 350,
-            "pass_accuracy": 74,
-            "corners": 3,
-            "yellow_cards": 4,
-            "red_cards": 0,
-            "fouls": 14,
-            "offsides": 3,
-            "xg": 0.8,
-            "is_home": False,
-        },
-    ]
-
-    prediction = predict_match(
-        "Liverpool",
-        "Nottingham Forest",
-        home,
-        away,
-    )
-
-    print("=" * 70)
-    print("FAJ BRAIN SELF TEST")
-    print("=" * 70)
-
-    for key, value in prediction.items():
-        print(f"{key}: {value}")
+        return result
