@@ -911,7 +911,7 @@ class BrainPrediction:
     over35_cards_probability: Optional[float]
     over45_cards_probability: Optional[float]
 
-    confidence: float
+    confidence: Optional[float]
     risk: str
 
     analysis_mode: str
@@ -2340,6 +2340,12 @@ class FAJBrain:
 
     # ========================================================
     # CONFIDENCE (LEGACY)
+    #
+    # NOTE:
+    #     Не используется в основном пути predict().
+    #     Основной confidence теперь берётся из Winner
+    #     Synthesis. Метод сохранён для обратной
+    #     совместимости внешних вызовов.
     # ========================================================
 
     def _confidence(
@@ -2393,36 +2399,44 @@ class FAJBrain:
         )
 
     # ========================================================
-    # RISK (LEGACY)
+    # RISK
+    #
+    # Принимает confidence из Winner Synthesis.
+    #
+    # confidence == None  → "UNKNOWN"
+    # confidence >= 0.75  → "LOW"
+    # confidence >= 0.60  → "MEDIUM"
+    # иначе               → "HIGH"
+    #
+    # home / away profiles сохранены в сигнатуре
+    # для обратной совместимости вызовов.
     # ========================================================
 
     def _risk(
         self,
-        confidence: float,
-        home: TeamProfile,
-        away: TeamProfile,
+        confidence: Optional[float],
+        home: Any,
+        away: Any,
     ) -> str:
 
-        quality = (
+        if confidence is None:
+            return "UNKNOWN"
 
-            home.data_quality
-            + away.data_quality
+        try:
+            value = float(confidence)
+        except (TypeError, ValueError):
+            return "UNKNOWN"
 
-        ) / 2.0
+        if value != value:  # NaN guard
+            return "UNKNOWN"
 
-        if quality < 35:
+        if value >= 0.75:
+            return "LOW"
 
-            return "Высокий"
+        if value >= 0.60:
+            return "MEDIUM"
 
-        if confidence < 45:
-
-            return "Высокий"
-
-        if confidence < 65:
-
-            return "Средний"
-
-        return "Низкий"
+        return "HIGH"
 
     # ========================================================
     # CONCLUSION (LEGACY)
@@ -4004,17 +4018,26 @@ class FAJBrain:
         away_cards_expected = cards_result.get("away", {}).get("away_cards_expected")
 
         # ====================================================
-        # 10. CONFIDENCE (LEGACY - требует доработки)
+        # 10. WINNER SYNTHESIS CONFIDENCE
+        #
+        # Основной confidence теперь берётся из Winner
+        # Synthesis. Это диагностический выходной слой;
+        # он не возвращается обратно в ProbabilityModel
+        # и не меняет λ / вероятности / счёт.
+        #
+        # Если Winner Synthesis недоступен — confidence
+        # остаётся None, а risk становится "UNKNOWN".
         # ====================================================
 
         home_profile = self.build_profile(home_team, home_history)
         away_profile = self.build_profile(away_team, away_history)
 
-        confidence = self._confidence(
-            home_profile,
-            away_profile,
-            probabilities,
-        )
+        winner_synthesis = math_pipeline.get("winner_synthesis")
+
+        if winner_synthesis is not None:
+            confidence = winner_synthesis.get("confidence")
+        else:
+            confidence = None
 
         risk = self._risk(
             confidence,
@@ -4052,7 +4075,6 @@ class FAJBrain:
         # 13. OUTPUT
         # ====================================================
 
-        winner_synthesis = math_pipeline.get("winner_synthesis")
         pair_rating = math_pipeline.get("pair_rating")
 
         result = BrainPrediction(
@@ -4181,6 +4203,8 @@ class FAJBrain:
                     "GoalModel v6.0: FormModel + FormControl + SpecialForm + history. "
                     "Winner Synthesis v1: Poisson primary + PairRating + FormWin + Defence. "
                     "NEUTRAL != CONFLICT. "
+                    "confidence берётся из Winner Synthesis, "
+                    "risk = LOW / MEDIUM / HIGH / UNKNOWN. "
                     "ScorePredictor v2.2: только ProbabilityModel. "
                     "Corners v1.3 и Cards v1.3 с recent3 + trend."
                 ),
