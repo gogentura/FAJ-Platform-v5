@@ -36,13 +36,13 @@ Canonical prediction chain:
 
 DIAGNOSTIC ORGANS
 -----------------
-These organs may be calculated for analytical diagnostics:
+These organs are calculated for analytical diagnostics only:
 
     FormWin
     Defence
     FormControl
     FormAnomaly
-    SpecialForm
+    FormSpecial
 
 They MUST NOT modify:
 
@@ -85,9 +85,30 @@ ProbabilityModel v1.1:
 ScorePredictor v2.2:
     owns exact-score ranking.
 
-
 Brain:
     connects them.
+
+UI ADAPTER
+----------
+The public output preserves the contract expected by
+faj_predictor.py / streamlit_app.py:
+
+    - 1X2 probabilities
+    - xG (λ from GoalModel)
+    - BTTS / over25 / over35
+    - top scores
+    - most/second/third likely score
+    - analysis_mode
+    - home_matches / away_matches
+    - data_quality
+    - conclusion
+    - factors
+    - calculation_meta with goal_model diagnostics
+    - calculation_meta["score_forecast"]["top_scores"]
+
+Corners and Cards are not computed here yet.
+They remain None until CornersModel / CardsModel are
+plugged in as parallel side-channels.
 ============================================================
 """
 
@@ -137,18 +158,18 @@ except ImportError:
 
 
 try:
-    from .special_form import SpecialForm
+    from .special_form import FormSpecial
 except ImportError:
-    SpecialForm = None
+    FormSpecial = None
 
 
 # ============================================================
 # VERSION
 # ============================================================
 
-BRAIN_VERSION = "FAJ-BRAIN-FINAL-1.0"
+BRAIN_VERSION = "FAJ-BRAIN-FINAL-2.0"
 
-CONTRACT_VERSION = "3.2"
+CONTRACT_VERSION = "3.3"
 
 HISTORY_SIZE = 6
 
@@ -651,19 +672,24 @@ class FAJBrain:
         self.version = BRAIN_VERSION
 
     # ========================================================
-    # MODEL EXECUTION
+    # FORM MODEL
     # ========================================================
 
     def _run_form_model(
         self,
         form_context: Any,
+        next_venue: str,
     ) -> Any:
 
         """
-        FormModel оценивает состояние формы.
+        FormModel v1.2.
 
-        ВАЖНО:
-            FormModel не изменяет историю и не является GoalModel.
+        Input:
+            FormContext
+            next_venue ("home" or "away")
+
+        Output:
+            FormModelResult
         """
 
         if form_context is None:
@@ -671,163 +697,34 @@ class FAJBrain:
 
         model = FormModel()
 
-        # Основной ожидаемый API
-        analyze = getattr(model, "analyze", None)
-
-        if callable(analyze):
-            return analyze(form_context)
-
-        # Совместимость, если текущая реализация использует calculate()
-        calculate = getattr(model, "calculate", None)
-
-        if callable(calculate):
-            return calculate(form_context)
-
-        raise AttributeError(
-            "FormModel does not expose analyze() or calculate()"
+        return model.analyze(
+            form_context=form_context,
+            next_venue=next_venue,
         )
 
-    def _run_diagnostic_organ(
-        self,
-        organ_class: Any,
-        form_context: Any,
-        history: Any,
-        team_name: str,
-    ) -> Any:
-
-        """
-        Универсальный запуск диагностического органа.
-
-        Диагностические органы:
-
-            FormWin
-            Defence
-            FormControl
-            FormAnomaly
-            SpecialForm
-
-        Их результат сохраняется только в diagnostics.
-
-        Никаких:
-
-            lambda *= ...
-            probability *= ...
-            score *= ...
-        """
-
-        if organ_class is None:
-            return None
-
-        organ = organ_class()
-
-        # ----------------------------------------------------
-        # Основной вариант: analyze(...)
-        # ----------------------------------------------------
-
-        analyze = getattr(organ, "analyze", None)
-
-        if callable(analyze):
-
-            attempts = (
-                {
-                    "form_context": form_context,
-                    "history": history,
-                    "team_name": team_name,
-                },
-                {
-                    "form_context": form_context,
-                    "history": history,
-                },
-                {
-                    "form_context": form_context,
-                },
-                {
-                    "history": history,
-                },
-            )
-
-            last_error = None
-
-            for kwargs in attempts:
-
-                try:
-                    return analyze(**kwargs)
-
-                except TypeError as exc:
-                    last_error = exc
-
-            if last_error is not None:
-                raise last_error
-
-        # ----------------------------------------------------
-        # Совместимость: calculate(...)
-        # ----------------------------------------------------
-
-        calculate = getattr(organ, "calculate", None)
-
-        if callable(calculate):
-
-            attempts = (
-                {
-                    "form_context": form_context,
-                    "history": history,
-                    "team_name": team_name,
-                },
-                {
-                    "form_context": form_context,
-                    "history": history,
-                },
-                {
-                    "form_context": form_context,
-                },
-                {
-                    "history": history,
-                },
-            )
-
-            last_error = None
-
-            for kwargs in attempts:
-
-                try:
-                    return calculate(**kwargs)
-
-                except TypeError as exc:
-                    last_error = exc
-
-            if last_error is not None:
-                raise last_error
-
-        raise AttributeError(
-            f"{organ_class.__name__} does not expose analyze() or calculate()"
-        )
+    # ========================================================
+    # DIAGNOSTIC ORGANS
+    # ========================================================
 
     def _run_diagnostics(
         self,
         home_form_context: Any,
         away_form_context: Any,
-        home_history: Any,
-        away_history: Any,
         home_team: str,
         away_team: str,
     ) -> Dict[str, Any]:
 
         """
-        Запуск диагностического слоя FAJ Brain.
+        Side-channel diagnostics.
 
-        Архитектурное правило:
+        Each organ is executed independently and wrapped in
+        its own try/except.
 
-            DIAGNOSTICS
-                ↓
-            analysis
-                ↓
-            output
+        Failure of one organ never breaks the mathematical
+        chain.
 
-        но НЕ:
-
-            diagnostics → lambda
-            diagnostics → probability
-            diagnostics → score ranking
+        The organs have different signatures and are called
+        explicitly.
         """
 
         diagnostics: Dict[str, Any] = {
@@ -842,52 +739,56 @@ class FAJBrain:
         }
 
         # ----------------------------------------------------
-        # FormWin
-        # ----------------------------------------------------
-
-        if FormWin is not None:
-
-            diagnostics["home"]["form_win"] = (
-                self._run_diagnostic_organ(
-                    FormWin,
-                    home_form_context,
-                    home_history,
-                    home_team,
-                )
-            )
-
-            diagnostics["away"]["form_win"] = (
-                self._run_diagnostic_organ(
-                    FormWin,
-                    away_form_context,
-                    away_history,
-                    away_team,
-                )
-            )
-
-        # ----------------------------------------------------
         # Defence
         # ----------------------------------------------------
 
         if Defence is not None:
 
-            diagnostics["home"]["defence"] = (
-                self._run_diagnostic_organ(
-                    Defence,
-                    home_form_context,
-                    home_history,
-                    home_team,
+            try:
+                diagnostics["home"]["defence"] = (
+                    Defence().calculate(
+                        context=home_form_context,
+                        team_name=home_team,
+                    )
                 )
-            )
+            except Exception:
+                diagnostics["home"]["defence"] = None
 
-            diagnostics["away"]["defence"] = (
-                self._run_diagnostic_organ(
-                    Defence,
-                    away_form_context,
-                    away_history,
-                    away_team,
+            try:
+                diagnostics["away"]["defence"] = (
+                    Defence().calculate(
+                        context=away_form_context,
+                        team_name=away_team,
+                    )
                 )
-            )
+            except Exception:
+                diagnostics["away"]["defence"] = None
+
+        # ----------------------------------------------------
+        # FormWin
+        # ----------------------------------------------------
+
+        if FormWin is not None:
+
+            try:
+                diagnostics["home"]["form_win"] = (
+                    FormWin().analyze(
+                        form_context=home_form_context,
+                        next_venue="home",
+                    )
+                )
+            except Exception:
+                diagnostics["home"]["form_win"] = None
+
+            try:
+                diagnostics["away"]["form_win"] = (
+                    FormWin().analyze(
+                        form_context=away_form_context,
+                        next_venue="away",
+                    )
+                )
+            except Exception:
+                diagnostics["away"]["form_win"] = None
 
         # ----------------------------------------------------
         # FormControl
@@ -895,23 +796,29 @@ class FAJBrain:
 
         if FormControl is not None:
 
-            diagnostics["home"]["control"] = (
-                self._run_diagnostic_organ(
-                    FormControl,
-                    home_form_context,
-                    home_history,
-                    home_team,
+            try:
+                diagnostics["home"]["control"] = (
+                    FormControl().analyze(
+                        context=home_form_context,
+                        target_team=home_team,
+                        opponent_team=away_team,
+                        venue="home",
+                    )
                 )
-            )
+            except Exception:
+                diagnostics["home"]["control"] = None
 
-            diagnostics["away"]["control"] = (
-                self._run_diagnostic_organ(
-                    FormControl,
-                    away_form_context,
-                    away_history,
-                    away_team,
+            try:
+                diagnostics["away"]["control"] = (
+                    FormControl().analyze(
+                        context=away_form_context,
+                        target_team=away_team,
+                        opponent_team=home_team,
+                        venue="away",
+                    )
                 )
-            )
+            except Exception:
+                diagnostics["away"]["control"] = None
 
         # ----------------------------------------------------
         # FormAnomaly
@@ -919,49 +826,55 @@ class FAJBrain:
 
         if FormAnomaly is not None:
 
-            diagnostics["home"]["anomaly"] = (
-                self._run_diagnostic_organ(
-                    FormAnomaly,
-                    home_form_context,
-                    home_history,
-                    home_team,
+            try:
+                diagnostics["home"]["anomaly"] = (
+                    FormAnomaly().analyze(
+                        context=home_form_context,
+                    )
                 )
-            )
+            except Exception:
+                diagnostics["home"]["anomaly"] = None
 
-            diagnostics["away"]["anomaly"] = (
-                self._run_diagnostic_organ(
-                    FormAnomaly,
-                    away_form_context,
-                    away_history,
-                    away_team,
+            try:
+                diagnostics["away"]["anomaly"] = (
+                    FormAnomaly().analyze(
+                        context=away_form_context,
+                    )
                 )
-            )
+            except Exception:
+                diagnostics["away"]["anomaly"] = None
 
         # ----------------------------------------------------
-        # SpecialForm
+        # FormSpecial
         # ----------------------------------------------------
 
-        if SpecialForm is not None:
+        if FormSpecial is not None:
 
-            diagnostics["home"]["special_form"] = (
-                self._run_diagnostic_organ(
-                    SpecialForm,
-                    home_form_context,
-                    home_history,
-                    home_team,
+            try:
+                diagnostics["home"]["special_form"] = (
+                    FormSpecial().analyze(
+                        context=home_form_context,
+                        team_name=home_team,
+                    )
                 )
-            )
+            except Exception:
+                diagnostics["home"]["special_form"] = None
 
-            diagnostics["away"]["special_form"] = (
-                self._run_diagnostic_organ(
-                    SpecialForm,
-                    away_form_context,
-                    away_history,
-                    away_team,
+            try:
+                diagnostics["away"]["special_form"] = (
+                    FormSpecial().analyze(
+                        context=away_form_context,
+                        team_name=away_team,
+                    )
                 )
-            )
+            except Exception:
+                diagnostics["away"]["special_form"] = None
 
         return diagnostics
+
+    # ========================================================
+    # GOAL MODEL
+    # ========================================================
 
     def _run_goal_model(
         self,
@@ -977,13 +890,13 @@ class FAJBrain:
         """
         GoalModel v6.0.
 
-        Единственная задача:
+        Sole responsibility:
 
-            history/form state
-                    ↓
-                λH / λA
+            history / form state
+                ↓
+            λH / λA
 
-        Никаких:
+        It does NOT calculate:
 
             - Poisson
             - 1X2
@@ -995,34 +908,23 @@ class FAJBrain:
 
         model = GoalModel()
 
-        # ----------------------------------------------------
-        # Получаем диагностические control/special только для
-        # API compatibility.
-        #
-        # GoalModel v6.0 НЕ использует их для изменения λ.
-        # ----------------------------------------------------
-
         home_control = None
         away_control = None
         home_special = None
         away_special = None
 
         if diagnostics:
-
             home_control = diagnostics["home"].get("control")
             away_control = diagnostics["away"].get("control")
             home_special = diagnostics["home"].get("special_form")
             away_special = diagnostics["away"].get("special_form")
-
-        # ----------------------------------------------------
-        # Авторитетный вызов GoalModel v6.0
-        # ----------------------------------------------------
 
         result = model.analyze(
             home_form=home_form_model,
             away_form=away_form_model,
             home_team=home_team,
             away_team=away_team,
+            venue="HOME",
             home_control=home_control,
             away_control=away_control,
             home_special=home_special,
@@ -1044,10 +946,10 @@ class FAJBrain:
     ) -> Dict[str, Any]:
 
         """
-        Нормализует GoalModelResult в минимальный Brain-контракт.
+        Normalize GoalModelResult into the Brain contract.
 
-        Brain не пересчитывает xG.
-        Brain только извлекает результат GoalModel.
+        Brain does NOT recalculate xG.
+        Brain only extracts GoalModel output.
         """
 
         data = _to_dict(goal_result)
@@ -1163,10 +1065,10 @@ class FAJBrain:
         """
         Brain-level integrity check.
 
-        Это НЕ новая математическая формула.
-        Проверяется только результат GoalModel.
+        This is NOT a new mathematical formula.
 
-        GoalModel v6.0:
+        Only GoalModel result is validated:
+
             0.0 <= λ <= 4.50
         """
 
@@ -1185,53 +1087,8 @@ class FAJBrain:
                 f"Invalid away lambda: {away_xg}"
             )
 
-    def _build_model_stage(
-        self,
-        home_form_context: Any,
-        away_form_context: Any,
-        home_form_model: Any,
-        away_form_model: Any,
-        goal_data: Dict[str, Any],
-        diagnostics: Dict[str, Any],
-    ) -> Dict[str, Any]:
-
-        """
-        Служебный snapshot математической цепочки.
-
-        Не участвует в расчётах.
-        Нужен для audit/debug.
-        """
-
-        return {
-            "history": {
-                "home_count": len(
-                    home_form_context.get("results", [])
-                ),
-                "away_count": len(
-                    away_form_context.get("results", [])
-                ),
-            },
-            "form_model": {
-                "home": _to_dict(home_form_model),
-                "away": _to_dict(away_form_model),
-            },
-            "goal_model": {
-                "version": goal_data.get("model_version"),
-                "status": goal_data.get("model_status"),
-                "home_xg": goal_data["home_xg"],
-                "away_xg": goal_data["away_xg"],
-                "home_base_xg": goal_data.get(
-                    "home_base_xg"
-                ),
-                "away_base_xg": goal_data.get(
-                    "away_base_xg"
-                ),
-            },
-            "diagnostics": diagnostics,
-        }
-
     # ========================================================
-    # PROBABILITY + SCORE
+    # PROBABILITY MODEL
     # ========================================================
 
     def _run_probability_model(
@@ -1243,19 +1100,20 @@ class FAJBrain:
         """
         ProbabilityModel v1.1.
 
-        Вход:
+        Input:
             λH
             λA
 
-        Выход:
-            единая joint score matrix
+        Output:
+            joint score matrix
             1X2
             BTTS
             totals
             score_distribution
+            top_scores
 
-        Brain НЕ пересчитывает Poisson.
-        Brain НЕ изменяет λ.
+        Brain does NOT recalculate Poisson.
+        Brain does NOT modify λ.
         """
 
         if home_xg is None or away_xg is None:
@@ -1283,9 +1141,9 @@ class FAJBrain:
     ) -> Dict[str, Any]:
 
         """
-        Извлекает результат ProbabilityModel v1.1.
+        Extract ProbabilityModel v1.1 result.
 
-        Никаких новых математических расчётов.
+        No new mathematical calculations.
         """
 
         data = _to_dict(probability_result)
@@ -1326,6 +1184,13 @@ class FAJBrain:
                 "btts",
                 "btts_probability",
             ),
+            "over15": _first(
+                data,
+                "over15",
+                "over_15",
+                "over15_probability",
+                "over_15_probability",
+            ),
             "over25": _first(
                 data,
                 "over25",
@@ -1360,6 +1225,10 @@ class FAJBrain:
                 "total_goals_distribution",
                 "totals_distribution",
             ),
+            "top_scores": _first(
+                data,
+                "top_scores",
+            ),
             "model_version": _first(
                 data,
                 "model_version",
@@ -1375,6 +1244,10 @@ class FAJBrain:
             ),
         }
 
+    # ========================================================
+    # SCORE PREDICTOR
+    # ========================================================
+
     def _run_score_predictor(
         self,
         score_distribution: Any,
@@ -1386,7 +1259,7 @@ class FAJBrain:
         """
         ScorePredictor v2.2.
 
-        Критически важно:
+        Critical:
 
             ProbabilityModel
                     ↓
@@ -1396,7 +1269,7 @@ class FAJBrain:
                     ↓
             ranking scores
 
-        ScorePredictor не создаёт вторую вероятность.
+        ScorePredictor does not create a second probability.
         """
 
         if score_distribution is None:
@@ -1427,14 +1300,18 @@ class FAJBrain:
     ) -> Dict[str, Any]:
 
         """
-        Нормализует ScorePredictor v2.2.
+        Normalize ScorePredictor v2.2.
 
-        ScorePredictor является источником:
+        ScorePredictor is the source of:
 
             - predicted_score
             - likely_score
+            - second_score
+            - third_score
             - top_scores
-            - top_3_scores
+            - primary_score_value
+            - second_score_value
+            - third_score_value
         """
 
         data = _to_dict(score_result)
@@ -1451,6 +1328,16 @@ class FAJBrain:
             "predicted_score",
         )
 
+        second_score = _first(
+            data,
+            "second_score",
+        )
+
+        third_score = _first(
+            data,
+            "third_score",
+        )
+
         top_scores = _first(
             data,
             "top_scores",
@@ -1463,9 +1350,6 @@ class FAJBrain:
             "top_3_scores",
             "top3_scores",
         )
-
-        # Если ScorePredictor возвращает только top_scores,
-        # Brain берёт первые три без пересчёта.
 
         if top_3_scores is None and top_scores is not None:
 
@@ -1489,8 +1373,26 @@ class FAJBrain:
         return {
             "predicted_score": predicted_score,
             "likely_score": likely_score,
+            "second_score": second_score,
+            "third_score": third_score,
             "top_scores": top_scores,
             "top_3_scores": top_3_scores,
+            "primary_score_value": _first(
+                data,
+                "primary_score_value",
+            ),
+            "second_score_value": _first(
+                data,
+                "second_score_value",
+            ),
+            "third_score_value": _first(
+                data,
+                "third_score_value",
+            ),
+            "probability_score": _first(
+                data,
+                "probability_score",
+            ),
             "score_distribution": score_distribution,
             "model_version": _first(
                 data,
@@ -1508,91 +1410,9 @@ class FAJBrain:
             ),
         }
 
-    def _build_probability_score_stage(
-        self,
-        goal_data: Dict[str, Any],
-        probability_result: Any,
-        probability_data: Dict[str, Any],
-        score_result: Any,
-        score_data: Dict[str, Any],
-    ) -> Dict[str, Any]:
-
-        """
-        Полный audit snapshot математической цепочки.
-
-        Ничего из этого блока не используется для повторного расчёта.
-        """
-
-        return {
-            "goal_model": {
-                "version": goal_data.get(
-                    "model_version"
-                ),
-                "status": goal_data.get(
-                    "model_status"
-                ),
-                "lambda_home": goal_data.get(
-                    "home_xg"
-                ),
-                "lambda_away": goal_data.get(
-                    "away_xg"
-                ),
-            },
-            "probability_model": {
-                "version": probability_data.get(
-                    "model_version"
-                ),
-                "calibration_status": probability_data.get(
-                    "calibration_status"
-                ),
-                "home_win": probability_data.get(
-                    "home_win"
-                ),
-                "draw": probability_data.get(
-                    "draw"
-                ),
-                "away_win": probability_data.get(
-                    "away_win"
-                ),
-                "btts": probability_data.get(
-                    "btts"
-                ),
-                "over25": probability_data.get(
-                    "over25"
-                ),
-                "over35": probability_data.get(
-                    "over35"
-                ),
-            },
-            "score_predictor": {
-                "version": score_data.get(
-                    "model_version"
-                ),
-                "formula_status": score_data.get(
-                    "formula_status"
-                ),
-                "predicted_score": score_data.get(
-                    "predicted_score"
-                ),
-                "likely_score": score_data.get(
-                    "likely_score"
-                ),
-                "top_scores": score_data.get(
-                    "top_scores"
-                ),
-                "top_3_scores": score_data.get(
-                    "top_3_scores"
-                ),
-            },
-            "contract": {
-                "goal_model_to_probability": True,
-                "probability_to_score_predictor": True,
-                "second_poisson_model": False,
-                "lambda_recalculation": False,
-                "probability_recalculation": False,
-                "score_recalculation": False,
-            },
-        }
+    # ========================================================
+    # CORE PREDICTION
+    # ========================================================
 
     def _run_core_prediction(
         self,
@@ -1606,7 +1426,7 @@ class FAJBrain:
     ) -> Dict[str, Any]:
 
         """
-        Выполняет исключительно авторитетную математическую цепочку:
+        Authoritative mathematical chain:
 
             FormModel
                 ↓
@@ -1679,13 +1499,79 @@ class FAJBrain:
         # 4. Audit snapshot
         # ====================================================
 
-        stage = self._build_probability_score_stage(
-            goal_data=goal_data,
-            probability_result=probability_result,
-            probability_data=probability_data,
-            score_result=score_result,
-            score_data=score_data,
-        )
+        stage = {
+            "goal_model": {
+                "version": goal_data.get(
+                    "model_version"
+                ),
+                "status": goal_data.get(
+                    "model_status"
+                ),
+                "lambda_home": goal_data.get(
+                    "home_xg"
+                ),
+                "lambda_away": goal_data.get(
+                    "away_xg"
+                ),
+            },
+            "probability_model": {
+                "version": probability_data.get(
+                    "model_version"
+                ),
+                "calibration_status": probability_data.get(
+                    "calibration_status"
+                ),
+                "home_win": probability_data.get(
+                    "home_win"
+                ),
+                "draw": probability_data.get(
+                    "draw"
+                ),
+                "away_win": probability_data.get(
+                    "away_win"
+                ),
+                "btts": probability_data.get(
+                    "btts"
+                ),
+                "over25": probability_data.get(
+                    "over25"
+                ),
+                "over35": probability_data.get(
+                    "over35"
+                ),
+            },
+            "score_predictor": {
+                "version": score_data.get(
+                    "model_version"
+                ),
+                "formula_status": score_data.get(
+                    "formula_status"
+                ),
+                "predicted_score": score_data.get(
+                    "predicted_score"
+                ),
+                "likely_score": score_data.get(
+                    "likely_score"
+                ),
+                "second_score": score_data.get(
+                    "second_score"
+                ),
+                "third_score": score_data.get(
+                    "third_score"
+                ),
+                "top_scores": score_data.get(
+                    "top_scores"
+                ),
+            },
+            "contract": {
+                "goal_model_to_probability": True,
+                "probability_to_score_predictor": True,
+                "second_poisson_model": False,
+                "lambda_recalculation": False,
+                "probability_recalculation": False,
+                "score_recalculation": False,
+            },
+        }
 
         return {
             "goal_result": goal_result,
@@ -1698,17 +1584,16 @@ class FAJBrain:
         }
 
     # ========================================================
-    # FINAL OUTPUT ADAPTER
+    # UI ADAPTER: PROBABILITY NORMALIZATION
     # ========================================================
 
     @staticmethod
     def _normalize_probability(value: Any) -> Optional[float]:
-
         """
-        Приводит probability к диапазону 0..1.
+        Bring a probability to the 0..1 range.
 
-        Это только форматирование выходного значения.
-        Никакого изменения математической модели.
+        This is output formatting only.
+        It does not modify any mathematical model.
         """
 
         if value is None:
@@ -1716,7 +1601,6 @@ class FAJBrain:
 
         try:
             value = float(value)
-
         except (TypeError, ValueError):
             return None
 
@@ -1725,85 +1609,203 @@ class FAJBrain:
 
         return max(0.0, min(1.0, value))
 
+    # ========================================================
+    # UI ADAPTER: ANALYSIS MODE
+    # ========================================================
+
     @staticmethod
-    def _normalize_binary_probability(value: Any) -> Optional[float]:
-
+    def _build_analysis_mode(
+        home_matches: int,
+        away_matches: int,
+    ) -> str:
         """
-        Для полей BTTS / totals сохраняет None.
+        Descriptive label based on the number of matches.
         """
 
-        return FAJBrain._normalize_probability(value)
+        minimum = min(
+            home_matches,
+            away_matches,
+        )
 
-    def _build_analysis(
-        self,
+        if minimum >= 6:
+            return "Расширенный"
+
+        if minimum >= 3:
+            return "Базовый+"
+
+        if minimum >= 2:
+            return "Базовый"
+
+        return "Экспресс"
+
+    # ========================================================
+    # UI ADAPTER: DATA QUALITY
+    # ========================================================
+
+    @staticmethod
+    def _build_data_quality(
+        home_form_context: Any,
+        away_form_context: Any,
+    ) -> Optional[float]:
+        """
+        Rough factual completeness measure.
+
+        Not a model confidence.
+        """
+
+        values: List[float] = []
+
+        for context in (
+            home_form_context,
+            away_form_context,
+        ):
+
+            if not isinstance(context, dict):
+                continue
+
+            matches = context.get(
+                "matches",
+                [],
+            )
+
+            if not matches:
+                continue
+
+            fields = (
+                "goals_for",
+                "goals_against",
+                "xg",
+                "xga",
+            )
+
+            available = 0
+            total = 0
+
+            for match in matches:
+
+                for name in fields:
+
+                    total += 1
+
+                    if _get_value(
+                        match,
+                        name,
+                    ) is not None:
+                        available += 1
+
+            if total > 0:
+                values.append(
+                    available / total
+                )
+
+        if not values:
+            return None
+
+        return round(
+            100.0
+            * (
+                sum(values)
+                / len(values)
+            ),
+            1,
+        )
+
+    # ========================================================
+    # UI ADAPTER: CONCLUSION
+    # ========================================================
+
+    @staticmethod
+    def _build_conclusion(
         home_team: str,
         away_team: str,
-        goal_data: Dict[str, Any],
-        probability_data: Dict[str, Any],
-        score_data: Dict[str, Any],
-    ) -> Dict[str, Any]:
-
+        home_win: Optional[float],
+        draw: Optional[float],
+        away_win: Optional[float],
+        btts: Optional[float],
+        over25: Optional[float],
+    ) -> Tuple[str, List[str]]:
         """
-        Чистое аналитическое описание результата.
+        Descriptive conclusion based on 1X2 / BTTS / totals.
 
-        Здесь НЕТ дополнительной математики.
+        No additional mathematics.
         """
 
-        home_xg = goal_data.get("home_xg")
-        away_xg = goal_data.get("away_xg")
+        factors: List[str] = []
 
-        predicted_score = score_data.get(
-            "predicted_score"
-        )
-
-        home_win = self._normalize_probability(
-            probability_data.get("home_win")
-        )
-
-        draw = self._normalize_probability(
-            probability_data.get("draw")
-        )
-
-        away_win = self._normalize_probability(
-            probability_data.get("away_win")
-        )
-
-        return {
-            "home_team": home_team,
-            "away_team": away_team,
-            "xg": {
-                "home": home_xg,
-                "away": away_xg,
-            },
-            "probabilities": {
-                "home_win": home_win,
-                "draw": draw,
-                "away_win": away_win,
-                "btts": self._normalize_binary_probability(
-                    probability_data.get("btts")
-                ),
-                "over25": self._normalize_binary_probability(
-                    probability_data.get("over25")
-                ),
-                "over35": self._normalize_binary_probability(
-                    probability_data.get("over35")
-                ),
-            },
-            "score": {
-                "predicted": predicted_score,
-                "likely": score_data.get(
-                    "likely_score"
-                ),
-                "top_scores": score_data.get(
-                    "top_scores"
-                ),
-            },
+        probabilities = {
+            home_team: home_win,
+            "DRAW": draw,
+            away_team: away_win,
         }
+
+        available = {
+            key: value
+            for key, value in probabilities.items()
+            if value is not None
+        }
+
+        if available:
+
+            favorite = max(
+                available,
+                key=available.get,
+            )
+
+            if favorite == "DRAW":
+                factors.append(
+                    "Модель не видит явного фаворита."
+                )
+                winner_text = "равновесие сил"
+            else:
+                factors.append(
+                    f"Модель видит преимущество {favorite}."
+                )
+                winner_text = f"преимущество {favorite}"
+
+        else:
+
+            winner_text = "недостаточно данных"
+            factors.append(
+                "Модель не смогла определить фаворита."
+            )
+
+        if btts is not None:
+            if btts >= 0.60:
+                factors.append(
+                    "Вероятность обмена голами повышена."
+                )
+            elif btts <= 0.40:
+                factors.append(
+                    "Модель не ожидает высокой вероятности обмена голами."
+                )
+
+        if over25 is not None:
+            if over25 >= 0.60:
+                factors.append(
+                    "Сценарий с 3+ голами выглядит вероятным."
+                )
+            elif over25 <= 0.40:
+                factors.append(
+                    "Модель скорее склоняется к умеренной результативности."
+                )
+
+        conclusion = (
+            f"FAJ: {winner_text}. "
+            + " ".join(factors)
+        )
+
+        return conclusion, factors
+
+    # ========================================================
+    # FINAL OUTPUT ADAPTER
+    # ========================================================
 
     def _build_final_output(
         self,
         home_team: str,
         away_team: str,
+        home_history: Sequence[Any],
+        away_history: Sequence[Any],
         home_form_context: Any,
         away_form_context: Any,
         home_form_model: Any,
@@ -1813,14 +1815,19 @@ class FAJBrain:
     ) -> Dict[str, Any]:
 
         """
-        Финальный публичный Brain output.
+        Final public Brain output.
 
-        Сохраняет контракт faj_predictor.py.
+        Preserves the UI contract expected by
+        faj_predictor.py 1.2.
         """
 
         goal_data = core["goal_data"]
         probability_data = core["probability_data"]
         score_data = core["score_data"]
+
+        # ----------------------------------------------------
+        # Probabilities (0..1 for UI)
+        # ----------------------------------------------------
 
         home_win = self._normalize_probability(
             probability_data.get("home_win")
@@ -1834,124 +1841,173 @@ class FAJBrain:
             probability_data.get("away_win")
         )
 
-        btts_probability = (
-            self._normalize_probability(
-                probability_data.get("btts")
-            )
+        btts_probability = self._normalize_probability(
+            probability_data.get("btts")
         )
 
-        over25_probability = (
-            self._normalize_probability(
-                probability_data.get("over25")
-            )
+        over15_probability = self._normalize_probability(
+            probability_data.get("over15")
         )
 
-        over35_probability = (
-            self._normalize_probability(
-                probability_data.get("over35")
-            )
+        over25_probability = self._normalize_probability(
+            probability_data.get("over25")
+        )
+
+        over35_probability = self._normalize_probability(
+            probability_data.get("over35")
         )
 
         # ----------------------------------------------------
-        # Confidence
-        #
-        # Это descriptive output.
-        # Оно НЕ возвращается в GoalModel.
-        # Оно НЕ изменяет probabilities.
+        # Confidence (descriptive only, does not affect λ)
         # ----------------------------------------------------
-
-        confidence = goal_data.get(
-            "confidence"
-        )
-
-        if confidence is None:
-            confidence = probability_data.get(
-                "confidence"
-            )
 
         confidence = self._normalize_probability(
-            confidence
+            goal_data.get("confidence")
         )
 
         # ----------------------------------------------------
-        # Risk
-        #
-        # Только аналитическое поле.
-        # Никакого влияния на модель.
+        # Risk (descriptive only)
         # ----------------------------------------------------
 
-        risk = probability_data.get("risk")
+        risk: Optional[str] = None
 
-        if risk is None:
-            risk = goal_data.get("risk")
+        if confidence is not None:
+
+            if confidence >= 0.75:
+                risk = "LOW"
+            elif confidence >= 0.60:
+                risk = "MEDIUM"
+            else:
+                risk = "HIGH"
 
         # ----------------------------------------------------
-        # Analysis
+        # Top scores (top-3 in UI format)
         # ----------------------------------------------------
 
-        analysis = self._build_analysis(
+        top_scores = score_data.get(
+            "top_scores"
+        ) or []
+
+        top_3_scores = score_data.get(
+            "top_3_scores"
+        ) or []
+
+        likely_score = score_data.get(
+            "likely_score"
+        )
+
+        second_score = score_data.get(
+            "second_score"
+        )
+
+        third_score = score_data.get(
+            "third_score"
+        )
+
+        # ----------------------------------------------------
+        # Descriptive mode / quality / conclusion / factors
+        # ----------------------------------------------------
+
+        home_matches = len(home_history)
+        away_matches = len(away_history)
+
+        analysis_mode = self._build_analysis_mode(
+            home_matches=home_matches,
+            away_matches=away_matches,
+        )
+
+        data_quality = self._build_data_quality(
+            home_form_context,
+            away_form_context,
+        )
+
+        conclusion, factors = self._build_conclusion(
             home_team=home_team,
             away_team=away_team,
-            goal_data=goal_data,
-            probability_data=probability_data,
-            score_data=score_data,
+            home_win=home_win,
+            draw=draw,
+            away_win=away_win,
+            btts=btts_probability,
+            over25=over25_probability,
         )
 
         # ----------------------------------------------------
-        # Corners / Cards
-        #
-        # Ядро прогноза их не использует.
-        # Стабильные поля сохраняем для UI.
+        # score_forecast (for UI)
         # ----------------------------------------------------
 
-        corners = None
-        cards = None
-
-        # ----------------------------------------------------
-        # Brain result — полный audit object
-        # ----------------------------------------------------
-
-        brain_result = {
-            "brain_version": BRAIN_VERSION,
-            "contract_version": CONTRACT_VERSION,
-            "teams": {
-                "home": home_team,
-                "away": away_team,
-            },
-            "history": {
-                "home": home_form_context,
-                "away": away_form_context,
-            },
-            "form_model": {
-                "home": _to_dict(home_form_model),
-                "away": _to_dict(away_form_model),
-            },
-            "diagnostics": diagnostics,
-            "goal_model": core["goal_data"],
-            "probability_model": core[
-                "probability_data"
-            ],
-            "score_predictor": core[
-                "score_data"
-            ],
-            "stages": {
-                "form": {
-                    "home": _to_dict(
-                        home_form_model
-                    ),
-                    "away": _to_dict(
-                        away_form_model
-                    ),
-                },
-                "probability_score": core[
-                    "stage"
-                ],
-            },
-            "analysis": analysis,
+        score_forecast = {
+            "predicted_score": score_data.get(
+                "predicted_score"
+            ),
+            "likely_score": likely_score,
+            "second_score": second_score,
+            "third_score": third_score,
+            "top_scores": top_scores,
+            "top_3_scores": top_3_scores,
+            "primary_score_value": score_data.get(
+                "primary_score_value"
+            ),
+            "second_score_value": score_data.get(
+                "second_score_value"
+            ),
+            "third_score_value": score_data.get(
+                "third_score_value"
+            ),
         }
 
         # ----------------------------------------------------
-        # Public Predictor/UI contract
+        # calculation_meta
+        # ----------------------------------------------------
+
+        calculation_meta = {
+            "brain_version": BRAIN_VERSION,
+            "contract_version": CONTRACT_VERSION,
+            "goal_model_version": goal_data.get(
+                "model_version"
+            ),
+            "probability_model_version": (
+                probability_data.get(
+                    "model_version"
+                )
+            ),
+            "score_predictor_version": (
+                score_data.get(
+                    "model_version"
+                )
+            ),
+            "probability_calibration": (
+                probability_data.get(
+                    "calibration_status"
+                )
+            ),
+            "formula_status": (
+                score_data.get(
+                    "formula_status"
+                )
+            ),
+            "diagnostics_prediction_impact": "none",
+            "goal_model": _to_dict(
+                core.get("goal_result")
+            ),
+            "probability_model": _to_dict(
+                core.get("probability_result")
+            ),
+            "score_predictor": _to_dict(
+                core.get("score_result")
+            ),
+            "score_forecast": score_forecast,
+            "home_form_model": _to_dict(
+                home_form_model
+            ),
+            "away_form_model": _to_dict(
+                away_form_model
+            ),
+            "home_matches": home_matches,
+            "away_matches": away_matches,
+        }
+
+        # ----------------------------------------------------
+        # Public output
         # ----------------------------------------------------
 
         return {
@@ -1962,6 +2018,20 @@ class FAJBrain:
 
             "home_team": home_team,
             "away_team": away_team,
+
+            # =================================================
+            # MATCH COUNTS (for UI)
+            # =================================================
+
+            "home_matches": home_matches,
+            "away_matches": away_matches,
+
+            # =================================================
+            # ANALYSIS MODE / DATA QUALITY
+            # =================================================
+
+            "analysis_mode": analysis_mode,
+            "data_quality": data_quality,
 
             # =================================================
             # 1X2
@@ -1976,7 +2046,7 @@ class FAJBrain:
             "away_win": away_win,
 
             # =================================================
-            # BTTS
+            # BTTS / TOTALS
             # =================================================
 
             "btts": (
@@ -1986,92 +2056,77 @@ class FAJBrain:
             ),
             "btts_probability": btts_probability,
 
-            # =================================================
-            # TOTALS
-            # =================================================
-
             "over25": (
                 over25_probability >= 0.5
                 if over25_probability is not None
                 else None
             ),
-            "over25_probability": (
-                over25_probability
-            ),
+            "over25_probability": over25_probability,
 
             "over35": (
                 over35_probability >= 0.5
                 if over35_probability is not None
                 else None
             ),
-            "over35_probability": (
-                over35_probability
-            ),
+            "over35_probability": over35_probability,
+
+            "over15_probability": over15_probability,
 
             # =================================================
-            # XG
+            # xG (λ from GoalModel)
             # =================================================
 
-            "home_xg_internal": goal_data[
-                "home_xg"
-            ],
-            "away_xg_internal": goal_data[
-                "away_xg"
-            ],
+            "home_xg": goal_data["home_xg"],
+            "away_xg": goal_data["away_xg"],
 
-            "home_xg": goal_data[
-                "home_xg"
-            ],
-            "away_xg": goal_data[
-                "away_xg"
-            ],
+            "home_xg_internal": goal_data["home_xg"],
+            "away_xg_internal": goal_data["away_xg"],
 
             # =================================================
-            # SCORE
+            # SCORE (UI + Brain)
             # =================================================
 
             "predicted_score": score_data.get(
                 "predicted_score"
             ),
-            "likely_score": score_data.get(
-                "likely_score"
-            ),
-            "top_scores": score_data.get(
-                "top_scores"
-            ),
-            "top_3_scores": score_data.get(
-                "top_3_scores"
-            ),
+            "likely_score": likely_score,
+            "second_score": second_score,
+            "third_score": third_score,
+
+            "top_scores": top_scores,
+            "top_3_scores": top_3_scores,
+
+            # ---------------------------------------------
+            # UI compat aliases
+            # ---------------------------------------------
+
+            "most_likely_score": likely_score,
+            "second_likely_score": second_score,
+            "third_likely_score": third_score,
 
             # =================================================
-            # ANALYTICS
+            # DIAGNOSTIC SUMMARY
             # =================================================
 
             "confidence": confidence,
             "risk": risk,
-            "analysis": analysis,
+
+            "conclusion": conclusion,
+            "factors": factors,
 
             # =================================================
-            # PARALLEL ORGANS
+            # PARALLEL ORGANS (not yet wired)
             # =================================================
 
-            "corners": corners,
-            "cards": cards,
+            "corners": None,
+            "cards": None,
 
             # =================================================
-            # FORM CONTEXT
+            # RAW CHAIN OUTPUTS
             # =================================================
 
-            "home_form_context": (
-                home_form_context
-            ),
-            "away_form_context": (
-                away_form_context
-            ),
-
-            # =================================================
-            # DATA
-            # =================================================
+            "home_form_context": home_form_context,
+            "away_form_context": away_form_context,
 
             "data": {
                 "home": {
@@ -2091,42 +2146,45 @@ class FAJBrain:
                 "score_predictor": score_data,
             },
 
-            # =================================================
-            # FULL BRAIN RESULT
-            # =================================================
-
-            "brain_result": brain_result,
-
-            "calculation_meta": {
+            "brain_result": {
                 "brain_version": BRAIN_VERSION,
                 "contract_version": CONTRACT_VERSION,
-                "goal_model_version": goal_data.get(
-                    "model_version"
-                ),
-                "probability_model_version": (
-                    probability_data.get(
-                        "model_version"
-                    )
-                ),
-                "score_predictor_version": (
-                    score_data.get(
-                        "model_version"
-                    )
-                ),
-                "probability_calibration": (
-                    probability_data.get(
-                        "calibration_status"
-                    )
-                ),
-                "formula_status": (
-                    score_data.get(
-                        "formula_status"
-                    )
-                ),
-                "diagnostics_prediction_impact": (
-                    "none"
-                ),
+                "teams": {
+                    "home": home_team,
+                    "away": away_team,
+                },
+                "history": {
+                    "home": home_form_context,
+                    "away": away_form_context,
+                },
+                "form_model": {
+                    "home": _to_dict(
+                        home_form_model
+                    ),
+                    "away": _to_dict(
+                        away_form_model
+                    ),
+                },
+                "diagnostics": diagnostics,
+                "goal_model": goal_data,
+                "probability_model": probability_data,
+                "score_predictor": score_data,
+                "stages": {
+                    "form": {
+                        "home": _to_dict(
+                            home_form_model
+                        ),
+                        "away": _to_dict(
+                            away_form_model
+                        ),
+                    },
+                    "probability_score": core.get(
+                        "stage"
+                    ),
+                },
             },
+
+            "calculation_meta": calculation_meta,
 
             "diagnostics": diagnostics,
         }
@@ -2147,12 +2205,13 @@ class FAJBrain:
         """
         PUBLIC FAJ BRAIN API.
 
-        Ожидает ровно шесть исторических матчей каждой команды.
+        Requires exactly six historical matches per team.
 
-        Порядок:
+        Order:
+
             M1 oldest ... M6 newest
 
-        Brain НЕ сортирует историю.
+        Brain does NOT sort history.
         """
 
         # ====================================================
@@ -2200,11 +2259,13 @@ class FAJBrain:
         # ====================================================
 
         home_form_model = self._run_form_model(
-            home_form_context
+            home_form_context,
+            next_venue="home",
         )
 
         away_form_model = self._run_form_model(
-            away_form_context
+            away_form_context,
+            next_venue="away",
         )
 
         if home_form_model is None:
@@ -2226,14 +2287,12 @@ class FAJBrain:
         diagnostics = self._run_diagnostics(
             home_form_context=home_form_context,
             away_form_context=away_form_context,
-            home_history=home_history,
-            away_history=away_history,
             home_team=home_team,
             away_team=away_team,
         )
 
         # ====================================================
-        # 5. CORE MATHEMATICAL CHAIN
+        # 5. Core mathematical chain
         # ====================================================
 
         core = self._run_core_prediction(
@@ -2247,12 +2306,14 @@ class FAJBrain:
         )
 
         # ====================================================
-        # 6. FINAL OUTPUT
+        # 6. Final output
         # ====================================================
 
-        result = self._build_final_output(
+        return self._build_final_output(
             home_team=home_team,
             away_team=away_team,
+            home_history=home_history,
+            away_history=away_history,
             home_form_context=home_form_context,
             away_form_context=away_form_context,
             home_form_model=home_form_model,
@@ -2261,4 +2322,26 @@ class FAJBrain:
             core=core,
         )
 
-        return result
+
+# ============================================================
+# CONVENIENCE FUNCTION
+# ============================================================
+
+def predict_match(
+    home_team: str,
+    away_team: str,
+    home_matches: Iterable[Any],
+    away_matches: Iterable[Any],
+) -> Dict[str, Any]:
+    """
+    Convenience API.
+    """
+
+    brain = FAJBrain()
+
+    return brain.predict(
+        home_team=home_team,
+        away_team=away_team,
+        home_matches=home_matches,
+        away_matches=away_matches,
+    )
