@@ -308,42 +308,32 @@ class GoalModel:
         )
 
         # ----------------------------------------------------
-        # MATCH-SPECIFIC ATTACK
+        # MATCH-SPECIFIC STATE
         # ----------------------------------------------------
         #
-        # Venue-specific value replaces the generic effective
-        # state. It is NOT multiplied into it.
+        # Venue применяется только целиком.
         #
-        # This prevents double counting venue.
+        # Если хотя бы одного из четырёх venue-показателей
+        # нет, полностью возвращаемся к generic effective state.
+        #
+        # Это запрещает частичный venue + fallback одновременно.
         # ----------------------------------------------------
 
-        home_attack_match = (
-            home_venue["attack_xg"]
-            if home_venue["attack_xg"] is not None
-            else home_attack_eff
-        )
+        if venue_split_available:
 
-        away_attack_match = (
-            away_venue["attack_xg"]
-            if away_venue["attack_xg"] is not None
-            else away_attack_eff
-        )
+            home_attack_match = home_venue["attack_xg"]
+            away_attack_match = away_venue["attack_xg"]
 
-        # ----------------------------------------------------
-        # MATCH-SPECIFIC DEFENSIVE EXPOSURE
-        # ----------------------------------------------------
+            home_defence_match = home_venue["defence_xga"]
+            away_defence_match = away_venue["defence_xga"]
 
-        home_defence_match = (
-            home_venue["defence_xga"]
-            if home_venue["defence_xga"] is not None
-            else home_defence_eff
-        )
+        else:
 
-        away_defence_match = (
-            away_venue["defence_xga"]
-            if away_venue["defence_xga"] is not None
-            else away_defence_eff
-        )
+            home_attack_match = home_attack_eff
+            away_attack_match = away_attack_eff
+
+            home_defence_match = home_defence_eff
+            away_defence_match = away_defence_eff
 
         # ----------------------------------------------------
         # INDEPENDENT MATCHUP
