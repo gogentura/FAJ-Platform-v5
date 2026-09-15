@@ -15,20 +15,28 @@ Multi-match interface for FAJ Personal Prediction Brain.
         ↓
     factual history
         ↓
-    FAJBrain
+    FAJBrain.predict()
         ↓
-    FormModel
-    FormWin
-    Defence
-    GoalModel
-    ProbabilityModel
-    ScorePredictor
-    CornersModel
-    CardsModel
+    BrainPrediction
         ↓
-    Winner Signal
-        ↑
-    Pair Rating
+    ТОЛЬКО ОТОБРАЖЕНИЕ
+
+Streamlit НЕ считает:
+
+    ❌ xG
+    ❌ Poisson
+    ❌ 1X2
+    ❌ BTTS
+    ❌ totals
+    ❌ exact scores
+    ❌ Pair Rating
+    ❌ Winner Signal / Synthesis
+    ❌ confidence
+    ❌ risk
+    ❌ corners
+    ❌ cards
+
+Всё приходит из FAJBrain через calculation_meta.
 
 ВАЖНО:
 
@@ -37,27 +45,8 @@ Multi-match interface for FAJ Personal Prediction Brain.
     Команды берутся из:
         app/faj_club_ratings.py
 
-    Это устраняет старый путь:
-        db.get_teams()
-        → teams.active
-        → sqlite3.OperationalError
-
     Club Rating:
         только отображается.
-
-    Pair Rating:
-        60..100
-        отдельный сигнал текущей пары.
-
-    Pair Rating НЕ изменяет:
-        - xG
-        - GoalModel
-        - Poisson
-        - BTTS
-        - totals
-        - score distribution
-
-    Pair Rating используется только Winner Signal.
 """
 
 from __future__ import annotations
@@ -72,18 +61,11 @@ import streamlit as st
 from app.parsers.soccer365_parser import Soccer365Parser
 from app.core.faj_brain import FAJBrain
 from app.core.form_context import build_form_context
-from app.core.pair_rating import calculate_pair_rating
 from app.faj_club_ratings import (
     get_all_tournaments,
     get_all_teams,
     get_team_rating,
 )
-
-# ============================================================
-# FOOTBALL DATA API (независимый дополнительный источник)
-# ============================================================
-
-from app.api.football_data import get_team_matches
 
 
 # ============================================================
@@ -270,9 +252,6 @@ def create_match_slot() -> Dict[str, Any]:
         "home_name": None,
         "away_name": None,
         "match_date": date.today().isoformat(),
-
-        "home_pair_rating": 80,
-        "away_pair_rating": 80,
 
         "urls_home": [""] * MAX_HISTORY_MATCHES,
         "urls_away": [""] * MAX_HISTORY_MATCHES,
@@ -888,195 +867,6 @@ def make_form_context(
 
 
 # ============================================================
-# WINNER SIGNAL
-# ============================================================
-
-def calculate_winner_signal(
-    home_team: str,
-    away_team: str,
-    home_probability: Optional[float],
-    away_probability: Optional[float],
-    draw_probability: Optional[float],
-    pair: Optional[Any],
-) -> Dict[str, Any]:
-
-    # --------------------------------------------------------
-    # MODEL FAVORITE
-    # HOME → AWAY → DRAW
-    # --------------------------------------------------------
-
-    if (
-        home_probability is not None
-        and
-        away_probability is not None
-        and
-        draw_probability is not None
-    ):
-
-        if (
-            home_probability
-            >= away_probability
-            and
-            home_probability
-            >= draw_probability
-        ):
-
-            model_favorite = home_team
-
-        elif (
-            away_probability
-            >= home_probability
-            and
-            away_probability
-            >= draw_probability
-        ):
-
-            model_favorite = away_team
-
-        else:
-
-            model_favorite = "DRAW"
-
-    else:
-
-        model_favorite = "DRAW"
-
-    # --------------------------------------------------------
-    # NO PAIR RATING
-    # --------------------------------------------------------
-
-    if pair is None:
-
-        return {
-            "model_favorite":
-                model_favorite,
-
-            "pair_direction":
-                None,
-
-            "pair_team":
-                None,
-
-            "pair_strength":
-                None,
-
-            "agreement":
-                "MODEL_ONLY",
-
-            "final_winner":
-                model_favorite,
-        }
-
-    # --------------------------------------------------------
-    # MODEL DRAW
-    # --------------------------------------------------------
-
-    if model_favorite == "DRAW":
-
-        return {
-            "model_favorite":
-                model_favorite,
-
-            "pair_direction":
-                pair.winner_direction,
-
-            "pair_team":
-                pair.direction_team,
-
-            "pair_strength":
-                pair.direction_strength,
-
-            "agreement":
-                "MODEL_ONLY",
-
-            "final_winner":
-                "DRAW",
-        }
-
-    # --------------------------------------------------------
-    # PAIR NEUTRAL
-    # --------------------------------------------------------
-
-    if (
-        pair.winner_direction
-        == "NEUTRAL"
-    ):
-
-        return {
-            "model_favorite":
-                model_favorite,
-
-            "pair_direction":
-                pair.winner_direction,
-
-            "pair_team":
-                pair.direction_team,
-
-            "pair_strength":
-                pair.direction_strength,
-
-            "agreement":
-                "PAIR_NEUTRAL",
-
-            "final_winner":
-                model_favorite,
-        }
-
-    # --------------------------------------------------------
-    # AGREE
-    # --------------------------------------------------------
-
-    if (
-        pair.direction_team
-        == model_favorite
-    ):
-
-        return {
-            "model_favorite":
-                model_favorite,
-
-            "pair_direction":
-                pair.winner_direction,
-
-            "pair_team":
-                pair.direction_team,
-
-            "pair_strength":
-                pair.direction_strength,
-
-            "agreement":
-                "AGREE",
-
-            "final_winner":
-                model_favorite,
-        }
-
-    # --------------------------------------------------------
-    # CONFLICT
-    # --------------------------------------------------------
-
-    return {
-        "model_favorite":
-            model_favorite,
-
-        "pair_direction":
-            pair.winner_direction,
-
-        "pair_team":
-            pair.direction_team,
-
-        "pair_strength":
-            pair.direction_strength,
-
-        "agreement":
-            "CONFLICT",
-
-        "final_winner":
-            "CONFLICT",
-    }
-
-
-# ============================================================
 # BUILD PREDICTION
 # ============================================================
 
@@ -1085,25 +875,28 @@ def build_prediction(
     away_team: str,
     history_home: List[Dict[str, Any]],
     history_away: List[Dict[str, Any]],
-    home_pair_rating: Optional[int] = None,
-    away_pair_rating: Optional[int] = None,
 ) -> Dict[str, Any]:
+    """
+    Единственная математическая точка страницы.
+
+    Streamlit НЕ считает:
+    - xG
+    - Poisson
+    - 1X2
+    - BTTS
+    - totals
+    - exact scores
+    - Pair Rating
+    - Winner Synthesis
+    - confidence
+    - risk
+    - corners
+    - cards
+
+    Всё приходит из FAJBrain.
+    """
 
     brain = get_faj_brain()
-
-    # ========================================================
-    # IMPORTANT:
-    # Current FAJBrain contract:
-    #
-    # predict(
-    #     home_team,
-    #     away_team,
-    #     home_matches,
-    #     away_matches,
-    # )
-    #
-    # FormContext is built internally by Brain.
-    # ========================================================
 
     result = brain.predict(
         home_team=home_team,
@@ -1112,189 +905,25 @@ def build_prediction(
         away_matches=history_away,
     )
 
-    if hasattr(
-        result,
-        "to_dict",
-    ):
-
+    if hasattr(result, "to_dict"):
         prediction = result.to_dict()
 
-    elif isinstance(
-        result,
-        dict,
-    ):
-
+    elif isinstance(result, dict):
         prediction = dict(result)
 
     else:
-
         raise TypeError(
             "FAJBrain.predict() "
             "вернул неподдерживаемый тип."
         )
 
-    # ========================================================
-    # PAIR RATING
-    # ========================================================
-
-    pair = None
-
-    if (
-        home_pair_rating is not None
-        and
-        away_pair_rating is not None
+    if not isinstance(
+        prediction.get("calculation_meta"),
+        dict,
     ):
-
-        pair = calculate_pair_rating(
-            home_rating=int(
-                home_pair_rating
-            ),
-            away_rating=int(
-                away_pair_rating
-            ),
-            home_team=home_team,
-            away_team=away_team,
+        raise ValueError(
+            "FAJBrain не вернул calculation_meta."
         )
-
-    # ========================================================
-    # WINNER SIGNAL
-    # ========================================================
-
-    winner_signal = (
-        calculate_winner_signal(
-            home_team=home_team,
-            away_team=away_team,
-            home_probability=prediction.get(
-                "home_win_probability"
-            ),
-            away_probability=prediction.get(
-                "away_win_probability"
-            ),
-            draw_probability=prediction.get(
-                "draw_probability"
-            ),
-            pair=pair,
-        )
-    )
-
-    prediction[
-        "pair_rating"
-    ] = (
-        pair.to_dict()
-        if pair
-        else None
-    )
-
-    prediction[
-        "winner_signal"
-    ] = winner_signal
-
-    # ========================================================
-    # SCORE LIST
-    # ========================================================
-
-    scores = []
-
-    score_fields = [
-        "most_likely_score",
-        "second_likely_score",
-        "third_likely_score",
-    ]
-
-    for field_name in score_fields:
-
-        value = prediction.get(
-            field_name
-        )
-
-        if value:
-
-            scores.append(
-                {
-                    "score":
-                        value,
-                    "probability":
-                        None,
-                }
-            )
-
-    prediction["scores"] = scores
-
-    # ========================================================
-    # CORNER PROBABILITIES
-    # ========================================================
-
-    prediction[
-        "corners_lines"
-    ] = {
-
-        "7.5":
-            prediction.get(
-                "over75_corners_probability"
-            ),
-
-        "8.5":
-            prediction.get(
-                "over85_corners_probability"
-            ),
-
-        "9.5":
-            prediction.get(
-                "over95_corners_probability"
-            ),
-
-        "10.5":
-            prediction.get(
-                "over105_corners_probability"
-            ),
-    }
-
-    # ========================================================
-    # CARD PROBABILITIES
-    # ========================================================
-
-    prediction[
-        "cards_lines"
-    ] = {
-
-        "2.5":
-            prediction.get(
-                "over25_cards_probability"
-            ),
-
-        "3.5":
-            prediction.get(
-                "over35_cards_probability"
-            ),
-
-        "4.5":
-            prediction.get(
-                "over45_cards_probability"
-            ),
-    }
-
-    # ========================================================
-    # COMPATIBILITY DISPLAY
-    # ========================================================
-
-    prediction.setdefault(
-        "corners_range",
-        "—",
-    )
-
-    prediction.setdefault(
-        "cards_range",
-        "—",
-    )
-
-    prediction.setdefault(
-        "analysis",
-        prediction.get(
-            "conclusion",
-            "Аналитический вывод FAJ "
-            "пока недоступен.",
-        ),
-    )
 
     return prediction
 
@@ -1524,12 +1153,6 @@ def generate_prediction(
                 away_team=away_team,
                 history_home=history_home,
                 history_away=history_away,
-                home_pair_rating=match.get(
-                    "home_pair_rating"
-                ),
-                away_pair_rating=match.get(
-                    "away_pair_rating"
-                ),
             )
 
         except Exception as exc:
@@ -1869,68 +1492,76 @@ def render_prediction_card(
     )
 
     # ========================================================
-    # WINNER SIGNAL
+    # META — ЕДИНСТВЕННЫЙ ИСТОЧНИК ИСТИНЫ
     # ========================================================
 
-    st.subheader(
-        "🧠 Winner Signal"
-    )
+    meta = prediction.get(
+        "calculation_meta",
+        {},
+    ) or {}
 
-    winner_signal = (
-        prediction.get(
-            "winner_signal",
-            {},
-        )
+    winner_synthesis = (
+        meta.get("winner_synthesis")
         or {}
     )
 
     pair_rating = (
-        prediction.get(
-            "pair_rating",
-            {},
-        )
+        meta.get("pair_rating")
         or {}
     )
 
+    score_forecast = (
+        meta.get("score_forecast")
+        or {}
+    )
+
+    # ========================================================
+    # WINNER SYNTHESIS
+    # ========================================================
+
+    st.subheader(
+        "🧠 Winner Synthesis"
+    )
+
     model_favorite = (
-        winner_signal.get(
-            "model_favorite",
+        winner_synthesis.get(
+            "winner",
             "—",
         )
     )
 
     pair_direction = (
-        winner_signal.get(
-            "pair_direction",
+        winner_synthesis.get(
+            "pair_rating_direction",
             "—",
         )
-    )
-
-    pair_team = (
-        winner_signal.get(
-            "pair_team"
-        )
-        or "—"
     )
 
     pair_strength = (
-        winner_signal.get(
-            "pair_strength",
+        winner_synthesis.get(
+            "pair_rating_strength",
             "—",
         )
     )
 
-    agreement = (
-        winner_signal.get(
-            "agreement",
+    synthesis = (
+        winner_synthesis.get(
+            "synthesis",
             "—",
         )
     )
 
-    final_winner = (
-        winner_signal.get(
-            "final_winner",
-            "—",
+    agreements = (
+        winner_synthesis.get(
+            "agreements",
+            0,
+        )
+    )
+
+    conflicts = (
+        winner_synthesis.get(
+            "conflicts",
+            0,
         )
     )
 
@@ -1947,7 +1578,7 @@ def render_prediction_card(
 
         st.metric(
             "Pair direction",
-            pair_team,
+            pair_direction,
         )
 
     c1, c2 = st.columns(2)
@@ -1962,9 +1593,14 @@ def render_prediction_card(
     with c2:
 
         st.metric(
-            "Agreement",
-            agreement,
+            "Synthesis",
+            synthesis,
         )
+
+    st.caption(
+        f"agreements: {agreements} · "
+        f"conflicts: {conflicts}"
+    )
 
     if pair_rating:
 
@@ -2006,40 +1642,46 @@ def render_prediction_card(
             f"(gap {gap_text})"
         )
 
-    if agreement == "AGREE":
+    if synthesis == "STRONG_CONSENSUS":
 
         st.success(
-            "PAIR RATING и "
-            "математическая модель "
-            "смотрят в одну сторону."
+            "Winner Synthesis: "
+            "STRONG_CONSENSUS — "
+            "модель и Pair Rating согласованы."
         )
 
-    elif agreement == "CONFLICT":
+    elif synthesis == "CONSENSUS":
+
+        st.success(
+            "Winner Synthesis: "
+            "CONSENSUS."
+        )
+
+    elif synthesis == "CONFLICT":
 
         st.error(
-            "⚠️ PAIR RATING и "
-            "математическая модель "
-            "конфликтуют."
+            "⚠️ Winner Synthesis: "
+            "CONFLICT — "
+            "Pair Rating и модель расходятся."
         )
 
-    elif agreement == "PAIR_NEUTRAL":
+    elif synthesis == "WEAK_CONSENSUS":
 
         st.info(
-            "PAIR RATING нейтрален — "
-            "направление берётся "
-            "от математической модели."
+            "Winner Synthesis: "
+            "WEAK_CONSENSUS."
         )
 
-    else:
+    elif synthesis == "DRAW_PRIMARY":
 
         st.info(
-            "Направление определено "
-            "математической моделью."
+            "Winner Synthesis: "
+            "DRAW_PRIMARY."
         )
 
     st.markdown(
         f"### Итоговое направление: "
-        f"{final_winner}"
+        f"{winner_synthesis.get('winner', model_favorite)}"
     )
 
     # ========================================================
@@ -2089,13 +1731,19 @@ def render_prediction_card(
 
     with c1:
 
+        confidence_raw = safe_float(
+            prediction.get("confidence")
+        )
+
+        confidence_pct = (
+            confidence_raw * 100.0
+            if confidence_raw is not None
+            else None
+        )
+
         st.metric(
             "Уверенность FAJ",
-            pct(
-                prediction.get(
-                    "confidence"
-                )
-            ),
+            pct(confidence_pct),
         )
 
     with c2:
@@ -2212,7 +1860,7 @@ def render_prediction_card(
         )
 
     # ========================================================
-    # 3. SCORES
+    # 3. SCORES — из calculation_meta["score_forecast"]["top_scores"]
     # ========================================================
 
     st.subheader(
@@ -2220,27 +1868,34 @@ def render_prediction_card(
         "точные счета"
     )
 
-    scores = prediction.get(
-        "scores",
-        [],
+    top_scores = (
+        score_forecast.get(
+            "top_scores",
+            [],
+        )
+        or []
     )
 
-    if scores:
+    if top_scores:
 
         cols = st.columns(
-            len(scores)
+            len(top_scores[:3])
         )
 
         for idx, item in enumerate(
-            scores
+            top_scores[:3]
         ):
 
-            with cols[idx]:
+            score_value = (
+                item.get("score")
+                if isinstance(item, dict)
+                else None
+            )
 
-                st.markdown(
-                    f"### "
-                    f"{item.get('score', '—')}"
-                )
+            st.markdown(
+                f"### "
+                f"{score_value or '—'}"
+            )
 
     else:
 
@@ -2289,35 +1944,48 @@ def render_prediction_card(
             ),
         )
 
-    corner_lines = (
-        prediction.get(
-            "corners_lines",
-            {},
-        )
-        or {}
-    )
+    corner_lines = [
+        (
+            "7.5",
+            prediction.get(
+                "over75_corners_probability"
+            ),
+        ),
+        (
+            "8.5",
+            prediction.get(
+                "over85_corners_probability"
+            ),
+        ),
+        (
+            "9.5",
+            prediction.get(
+                "over95_corners_probability"
+            ),
+        ),
+        (
+            "10.5",
+            prediction.get(
+                "over105_corners_probability"
+            ),
+        ),
+    ]
 
     cols = st.columns(4)
 
-    for col, line in zip(
+    for col, (
+        line,
+        prob,
+    ) in zip(
         cols,
-        [
-            "7.5",
-            "8.5",
-            "9.5",
-            "10.5",
-        ],
+        corner_lines,
     ):
 
         with col:
 
             st.metric(
                 f"ТБ {line}",
-                pct(
-                    corner_lines.get(
-                        line
-                    )
-                ),
+                pct(prob),
             )
 
     # ========================================================
@@ -2363,34 +2031,42 @@ def render_prediction_card(
             ),
         )
 
-    card_lines = (
-        prediction.get(
-            "cards_lines",
-            {},
-        )
-        or {}
-    )
+    card_lines = [
+        (
+            "2.5",
+            prediction.get(
+                "over25_cards_probability"
+            ),
+        ),
+        (
+            "3.5",
+            prediction.get(
+                "over35_cards_probability"
+            ),
+        ),
+        (
+            "4.5",
+            prediction.get(
+                "over45_cards_probability"
+            ),
+        ),
+    ]
 
     cols = st.columns(3)
 
-    for col, line in zip(
+    for col, (
+        line,
+        prob,
+    ) in zip(
         cols,
-        [
-            "2.5",
-            "3.5",
-            "4.5",
-        ],
+        card_lines,
     ):
 
         with col:
 
             st.metric(
                 f"ТБ {line}",
-                pct(
-                    card_lines.get(
-                        line
-                    )
-                ),
+                pct(prob),
             )
 
     # ========================================================
@@ -2403,12 +2079,9 @@ def render_prediction_card(
 
     st.info(
         prediction.get(
-            "analysis",
-            prediction.get(
-                "conclusion",
-                "Аналитический вывод "
-                "пока недоступен.",
-            ),
+            "conclusion",
+            "Аналитический вывод "
+            "пока недоступен.",
         )
     )
 
@@ -2572,90 +2245,6 @@ def render_match_setup(
     )
 
     # ========================================================
-    # PAIR RATING
-    # ========================================================
-
-    st.markdown(
-        "#### 🧠 FAJ Pair Rating"
-    )
-
-    pair_c1, pair_c2 = (
-        st.columns(2)
-    )
-
-    with pair_c1:
-
-        home_pair = st.number_input(
-            f"{selected_home} — "
-            f"рейтинг пары",
-            min_value=60,
-            max_value=100,
-            value=int(
-                match.get(
-                    "home_pair_rating",
-                    80,
-                )
-            ),
-            step=1,
-            key=f"home_pair_{index}",
-        )
-
-    with pair_c2:
-
-        away_pair = st.number_input(
-            f"{selected_away} — "
-            f"рейтинг пары",
-            min_value=60,
-            max_value=100,
-            value=int(
-                match.get(
-                    "away_pair_rating",
-                    80,
-                )
-            ),
-            step=1,
-            key=f"away_pair_{index}",
-        )
-
-    match[
-        "home_pair_rating"
-    ] = home_pair
-
-    match[
-        "away_pair_rating"
-    ] = away_pair
-
-    pair_preview = (
-        calculate_pair_rating(
-            home_rating=int(
-                home_pair
-            ),
-            away_rating=int(
-                away_pair
-            ),
-            home_team=selected_home,
-            away_team=selected_away,
-        )
-    )
-
-    if (
-        pair_preview.winner_direction
-        == "NEUTRAL"
-    ):
-
-        st.info(
-            "Pair Rating: NEUTRAL"
-        )
-
-    else:
-
-        st.caption(
-            f"Направление пары: "
-            f"{pair_preview.direction_team} "
-            f"({pair_preview.direction_strength})"
-        )
-
-    # ========================================================
     # DATE
     # ========================================================
 
@@ -2785,94 +2374,6 @@ def render_match_setup(
                 index,
                 match,
             )
-
-    # ========================================================
-    # FOOTBALL DATA API — ДОПОЛНИТЕЛЬНЫЙ ИСТОЧНИК
-    # ========================================================
-    #
-    # Независимый Scout/Context источник.
-    #
-    # НЕ влияет на:
-    #   - FAJ Brain
-    #   - GoalModel
-    #   - ProbabilityModel
-    #   - ScorePredictor
-    #
-    # Данные сохраняются ТОЛЬКО в st.session_state
-    # и только отображаются.
-    #
-    # ========================================================
-
-    st.divider()
-    st.markdown("#### ⚽ Дополнительный источник")
-
-    _api_home_key = f"football_data_api_home_{index}"
-    _api_away_key = f"football_data_api_away_{index}"
-
-    if st.button(
-        "⚽ Загрузить из Football Data API",
-        key=f"load_football_data_api_{index}",
-        width="stretch",
-    ):
-        try:
-            _api_home_matches = get_team_matches(
-                selected_home,
-                limit=6,
-            )
-            _api_away_matches = get_team_matches(
-                selected_away,
-                limit=6,
-            )
-
-            st.session_state[_api_home_key] = _api_home_matches
-            st.session_state[_api_away_key] = _api_away_matches
-
-            st.success(
-                f"Football Data API: загружено "
-                f"{len(_api_home_matches)} матчей {selected_home} и "
-                f"{len(_api_away_matches)} матчей {selected_away}."
-            )
-
-        except Exception as exc:
-            st.error(f"❌ Football Data API: {exc}")
-
-    _api_home = st.session_state.get(_api_home_key, [])
-    _api_away = st.session_state.get(_api_away_key, [])
-
-    if _api_home or _api_away:
-        _api_c1, _api_c2 = st.columns(2)
-
-        with _api_c1:
-            st.markdown(f"**{selected_home} — Football Data API**")
-            for _m in _api_home:
-                _hs = _m.get("home_score")
-                _aws = _m.get("away_score")
-                _score = (
-                    f"{_hs}:{_aws}"
-                    if _hs is not None and _aws is not None
-                    else "—"
-                )
-                st.caption(
-                    f"{_m.get('date', '—')} · "
-                    f"{_m.get('home', '—')} — {_m.get('away', '—')} · "
-                    f"{_score}"
-                )
-
-        with _api_c2:
-            st.markdown(f"**{selected_away} — Football Data API**")
-            for _m in _api_away:
-                _hs = _m.get("home_score")
-                _aws = _m.get("away_score")
-                _score = (
-                    f"{_hs}:{_aws}"
-                    if _hs is not None and _aws is not None
-                    else "—"
-                )
-                st.caption(
-                    f"{_m.get('date', '—')} · "
-                    f"{_m.get('home', '—')} — {_m.get('away', '—')} · "
-                    f"{_score}"
-                )
 
     # ========================================================
     # STATUS
