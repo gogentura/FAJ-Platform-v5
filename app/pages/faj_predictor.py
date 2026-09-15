@@ -42,6 +42,18 @@ FAJ PREDICTOR — NEW ANALYTICAL INTERFACE
 Единственный источник математического результата —
 FAJ Brain.
 
+FAJ Club Rating:
+    только отображается.
+
+FAJ Pair Rating:
+    только отображается.
+    Источник — calculation_meta["pair_rating"]
+    из FAJBrain.
+
+Winner Synthesis:
+    показывает Pair Rating как один
+    из подтверждающих сигналов.
+
 НЕ ИСПОЛЬЗУЕТ:
 
     ETC
@@ -91,7 +103,7 @@ from app.faj_club_ratings import get_team_rating
 # VERSION
 # ============================================================
 
-PREDICTOR_VERSION = "FAJ-PREDICTOR-1.1"
+PREDICTOR_VERSION = "FAJ-PREDICTOR-1.2"
 
 HISTORY_SIZE = 6
 
@@ -1128,6 +1140,118 @@ with club_c2:
 
 
 # ============================================================
+# FAJ PAIR RATING (display only)
+#
+# Источник — calculation_meta["pair_rating"] и
+# calculation_meta["winner_synthesis"] из FAJBrain.
+#
+# Никакого ручного ввода.
+# Никакого расчёта на странице.
+# До первого прогноза — прочерк и подсказка.
+# ============================================================
+
+st.markdown(
+    '<div class="section-title">🧠 FAJ Pair Rating</div>',
+    unsafe_allow_html=True,
+)
+
+_pair_prediction = st.session_state.get("faj_prediction")
+
+if not isinstance(_pair_prediction, dict):
+
+    st.caption(
+        "Pair Rating появится после расчёта прогноза."
+    )
+
+else:
+
+    _pair_meta = (
+        _pair_prediction.get("calculation_meta")
+        or {}
+    )
+
+    _pair_rating = (
+        _pair_meta.get("pair_rating")
+        or {}
+    )
+
+    _pair_ws = (
+        _pair_meta.get("winner_synthesis")
+        or {}
+    )
+
+    _pair_home_rating = _pair_rating.get("home_rating")
+    _pair_away_rating = _pair_rating.get("away_rating")
+    _pair_gap = _pair_rating.get("rating_gap")
+
+    _pair_direction = (
+        _pair_rating.get("winner_direction")
+        or _pair_ws.get("pair_rating_direction")
+        or "—"
+    )
+
+    _pair_strength = (
+        _pair_rating.get("direction_strength")
+        or _pair_ws.get("pair_rating_strength")
+        or "—"
+    )
+
+    _pair_team = (
+        _pair_rating.get("direction_team")
+        or "—"
+    )
+
+    pair_c1, pair_c2 = st.columns(2, gap="small")
+
+    with pair_c1:
+
+        st.markdown(
+            f"""
+            <div class="metric">
+                <div class="metric-value">
+                    {_pair_home_rating if _pair_home_rating is not None else "—"}
+                </div>
+                <div class="metric-label">
+                    {home_team or "Хозяева"}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with pair_c2:
+
+        st.markdown(
+            f"""
+            <div class="metric">
+                <div class="metric-value">
+                    {_pair_away_rating if _pair_away_rating is not None else "—"}
+                </div>
+                <div class="metric-label">
+                    {away_team or "Гости"}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    _pair_gap_text = "—"
+
+    if _pair_gap is not None:
+
+        try:
+            _pair_gap_text = f"{int(_pair_gap):+d}"
+        except (TypeError, ValueError):
+            _pair_gap_text = "—"
+
+    st.caption(
+        f"Направление: {_pair_team} "
+        f"({_pair_direction} / {_pair_strength}) "
+        f"· gap {_pair_gap_text}"
+    )
+
+
+# ============================================================
 # HISTORY INPUT
 # ============================================================
 
@@ -1586,12 +1710,6 @@ score_cols = st.columns(
     3,
     gap="small",
 )
-
-# top_scores ожидается в формате:
-#     [{"score": "1:0", "probability": 0.123}, ...]
-#
-# Источник — calculation_meta["score_forecast"]["top_scores"]
-# от Brain (ScorePredictor v2.2). Ничего не пересчитываем.
 
 for column, item, index in zip(
     score_cols,
@@ -2091,6 +2209,30 @@ if _winner_synthesis:
         unsafe_allow_html=True,
     )
 
+    # --------------------------------------------------------
+    # Pair Rating — как часть Winner Synthesis
+    # --------------------------------------------------------
+
+    if _pair_rating:
+
+        _pr_home = _pair_rating.get("home_rating")
+        _pr_away = _pair_rating.get("away_rating")
+        _pr_gap = _pair_rating.get("rating_gap")
+
+        _pr_gap_text = "—"
+
+        if _pr_gap is not None:
+
+            try:
+                _pr_gap_text = f"{int(_pr_gap):+d}"
+            except (TypeError, ValueError):
+                _pr_gap_text = "—"
+
+        st.caption(
+            f"Pair Rating: 🏠 {_pr_home} — ✈️ {_pr_away} "
+            f"(gap {_pr_gap_text})"
+        )
+
 
 # ============================================================
 # FAJ BRAIN DIAGNOSTICS
@@ -2273,9 +2415,6 @@ with st.expander(
 
 # ============================================================
 # 🔬 GOALMODEL v6.0 DIAGNOSTICS
-#
-# Источник: calculation_meta["goal_model"] (Brain).
-# Никакой математики — только чтение готового JSON.
 # ============================================================
 
 st.markdown(
@@ -2648,7 +2787,7 @@ st.markdown(
     font-size:10px;
     padding-top:15px;
 ">
-    FAJ Predictor 1.1 · Single source of truth: FAJ Brain ·
+    FAJ Predictor 1.2 · Single source of truth: FAJ Brain ·
     No ETC · No Learning · No bookmaker odds · No Football Data API
 </div>
 """,
