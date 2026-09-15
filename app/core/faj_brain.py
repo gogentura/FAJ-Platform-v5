@@ -2159,12 +2159,12 @@ class FAJBrain:
         # 1. Normalize history
         # ====================================================
 
-        home_history = self._normalize_history(
+        home_history = _normalize_history(
             home_matches,
             home_team,
         )
 
-        away_history = self._normalize_history(
+        away_history = _normalize_history(
             away_matches,
             away_team,
         )
