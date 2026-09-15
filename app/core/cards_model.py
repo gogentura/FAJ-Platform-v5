@@ -47,6 +47,8 @@ CHANGES IN V1.3
 - Trend коэффициент увеличен: 0.05 → 0.08
 - Добавлен context_factor = 1.08 для мягкого повышения
 - Diagnostics обновлены
+- Отсутствующий trend сохраняется как None и не
+  превращается в "наблюдение 0"
 
 ============================================================
 CHANGES IN V1.2
@@ -357,6 +359,23 @@ def _recent_points_rate(
     return weighted_points / (
         3.0 * weight_sum
     )
+
+
+def _trend_or_zero(
+    value: Optional[float],
+) -> float:
+    """
+    Безопасное сложение trend-компоненты.
+
+    Отсутствие тренда (None) означает отсутствие
+    trend-adjustment, а не "наблюдение 0".
+
+    На уровне математики это даёт тот же результат,
+    что и раньше, но теперь семантика корректна:
+    None != 0.
+    """
+
+    return 0.0 if value is None else value
 
 
 # ============================================================
@@ -673,6 +692,8 @@ class CardsModel:
             "aggression_signal":
                 None,
 
+            "missing_trend_is_none":
+                True,
         }
 
         return CardsModelResult(
@@ -817,6 +838,10 @@ class CardsModel:
         #     0.08 * trend
         #
         # capped at ±0.25.
+        #
+        # None (missing trend) остаётся None и НЕ превращается
+        # в наблюдение 0. Отсутствие trend-adjustment
+        # обрабатывается через _trend_or_zero() при сложении.
         # ----------------------------------------------------
 
         home_team_trend = (
@@ -828,7 +853,7 @@ class CardsModel:
                 ),
             )
             if home.team_cards_trend is not None
-            else 0.0
+            else None
         )
 
         away_opponent_trend = (
@@ -840,7 +865,7 @@ class CardsModel:
                 ),
             )
             if away.opponent_cards_trend is not None
-            else 0.0
+            else None
         )
 
         away_team_trend = (
@@ -852,7 +877,7 @@ class CardsModel:
                 ),
             )
             if away.team_cards_trend is not None
-            else 0.0
+            else None
         )
 
         home_opponent_trend = (
@@ -864,7 +889,7 @@ class CardsModel:
                 ),
             )
             if home.opponent_cards_trend is not None
-            else 0.0
+            else None
         )
 
         # ----------------------------------------------------
@@ -889,8 +914,8 @@ class CardsModel:
                 + away_opponent_level
             ) / 2.0
             home_expected += (
-                home_team_trend
-                + away_opponent_trend
+                _trend_or_zero(home_team_trend)
+                + _trend_or_zero(away_opponent_trend)
             )
 
         # ----------------------------------------------------
@@ -915,8 +940,8 @@ class CardsModel:
                 + home_opponent_level
             ) / 2.0
             away_expected += (
-                away_team_trend
-                + home_opponent_trend
+                _trend_or_zero(away_team_trend)
+                + _trend_or_zero(home_opponent_trend)
             )
 
         # ----------------------------------------------------
