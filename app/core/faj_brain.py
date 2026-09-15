@@ -58,8 +58,29 @@ FAJ Personal Prediction Brain
     отсутствующие данные остаются None.
     None НЕ превращается в 0.
 
+PAIR RATING CONTRACT:
+    Pair Rating — исследовательский сигнал КОНКРЕТНОЙ
+    пары. Он НЕ меняет:
+        - xG
+        - GoalModel
+        - ProbabilityModel
+        - Poisson
+        - BTTS
+        - totals
+        - score distribution
+
+    Он используется ТОЛЬКО в Winner Synthesis как
+    структурный сигнал.
+
+    Источники Pair Rating:
+        1. manual                — оба рейтинга переданы вручную;
+        2. club_rating_fallback  — авто из get_team_rating();
+        3. None                  — ни один источник не сработал.
+
+    Источник фиксируется в calculation_meta["pair_rating_source"].
+
 Версия:
-    FAJ-BRAIN-1.2
+    FAJ-BRAIN-1.3
 """
 
 from __future__ import annotations
@@ -99,12 +120,20 @@ from app.faj_club_ratings import get_team_rating
 # VERSION
 # ============================================================
 
-BRAIN_VERSION = "FAJ-BRAIN-1.2"
+BRAIN_VERSION = "FAJ-BRAIN-1.3"
 
 MIN_MATCHES = 1
 EXTENDED_ANALYSIS_MATCHES = 3
 PREFERRED_MATCHES = 6
 MAX_RECOMMENDED_MATCHES = 10
+
+
+# ============================================================
+# PAIR RATING SOURCE
+# ============================================================
+
+PAIR_RATING_SOURCE_MANUAL = "manual"
+PAIR_RATING_SOURCE_FALLBACK = "club_rating_fallback"
 
 
 # ============================================================
@@ -3021,6 +3050,106 @@ class FAJBrain:
         return int(round(value))
 
     # ------------------------------------------------------------
+    # PAIR RATING RESOLUTION
+    # ------------------------------------------------------------
+
+    def _resolve_pair_rating(
+        self,
+        home_team: str,
+        away_team: str,
+        home_pair_rating: Optional[Any],
+        away_pair_rating: Optional[Any],
+    ) -> tuple[
+        Optional[Any],
+        Optional[str],
+    ]:
+        """
+        Возвращает (pair_rating, pair_rating_source).
+
+        Приоритет:
+            1. manual                — оба рейтинга переданы вручную;
+            2. club_rating_fallback  — авто из get_team_rating();
+            3. None                  — ни один источник не сработал.
+
+        Никаких side effects.
+        """
+
+        # ----------------------------------------------------
+        # 1. MANUAL
+        # ----------------------------------------------------
+
+        if (
+            home_pair_rating is not None
+            and away_pair_rating is not None
+        ):
+
+            try:
+                home_value = int(home_pair_rating)
+                away_value = int(away_pair_rating)
+
+                if (
+                    60 <= home_value <= 100
+                    and 60 <= away_value <= 100
+                ):
+                    pair_rating = calculate_pair_rating(
+                        home_rating=home_value,
+                        away_rating=away_value,
+                        home_team=home_team,
+                        away_team=away_team,
+                    )
+                    return (
+                        pair_rating,
+                        PAIR_RATING_SOURCE_MANUAL,
+                    )
+            except (TypeError, ValueError):
+                pass
+
+        # ----------------------------------------------------
+        # 2. CLUB RATING FALLBACK
+        # ----------------------------------------------------
+
+        home_rating = None
+        away_rating = None
+
+        try:
+            home_rating = get_team_rating(home_team)
+        except Exception:
+            home_rating = None
+
+        try:
+            away_rating = get_team_rating(away_team)
+        except Exception:
+            away_rating = None
+
+        if home_rating is not None and away_rating is not None:
+            try:
+                home_rating_value = int(home_rating)
+                away_rating_value = int(away_rating)
+
+                if (
+                    60 <= home_rating_value <= 100
+                    and 60 <= away_rating_value <= 100
+                ):
+                    pair_rating = calculate_pair_rating(
+                        home_rating=home_rating_value,
+                        away_rating=away_rating_value,
+                        home_team=home_team,
+                        away_team=away_team,
+                    )
+                    return (
+                        pair_rating,
+                        PAIR_RATING_SOURCE_FALLBACK,
+                    )
+            except (TypeError, ValueError):
+                pass
+
+        # ----------------------------------------------------
+        # 3. NONE
+        # ----------------------------------------------------
+
+        return None, None
+
+    # ------------------------------------------------------------
     # CONTROL CONTEXT ADAPTER
     # ------------------------------------------------------------
 
@@ -3715,6 +3844,8 @@ class FAJBrain:
         away_team: str,
         home_matches: List[Any],
         away_matches: List[Any],
+        home_pair_rating: Optional[Any] = None,
+        away_pair_rating: Optional[Any] = None,
     ) -> Dict[str, Any]:
 
         # ========================================================
@@ -3778,39 +3909,22 @@ class FAJBrain:
         )
 
         # ========================================================
-        # FAJ CLUB RATING → PAIR RATING
+        # PAIR RATING
+        #
+        # MANUAL  → оба рейтинга переданы явно;
+        # FALLBACK → авто из get_team_rating();
+        # None    → ни один источник не сработал.
+        #
+        # Pair Rating — диагностический сигнал Winner Synthesis.
+        # Он НЕ влияет на xG / GoalModel / ProbabilityModel /
+        # ScorePredictor / Corners / Cards.
         # ========================================================
-        home_rating = None
-        away_rating = None
-        pair_rating = None
-
-        try:
-            home_rating = get_team_rating(home_team)
-        except Exception:
-            home_rating = None
-
-        try:
-            away_rating = get_team_rating(away_team)
-        except Exception:
-            away_rating = None
-
-        if home_rating is not None and away_rating is not None:
-            try:
-                home_rating_value = int(home_rating)
-                away_rating_value = int(away_rating)
-
-                if (
-                    60 <= home_rating_value <= 100
-                    and 60 <= away_rating_value <= 100
-                ):
-                    pair_rating = calculate_pair_rating(
-                        home_rating=home_rating_value,
-                        away_rating=away_rating_value,
-                        home_team=home_team,
-                        away_team=away_team,
-                    )
-            except (TypeError, ValueError):
-                pair_rating = None
+        pair_rating, pair_rating_source = self._resolve_pair_rating(
+            home_team=home_team,
+            away_team=away_team,
+            home_pair_rating=home_pair_rating,
+            away_pair_rating=away_pair_rating,
+        )
 
         # ========================================================
         # PROBABILITY MODEL (v1.1)
@@ -3858,6 +3972,7 @@ class FAJBrain:
                 if hasattr(pair_rating, "__dict__")
                 else pair_rating
             ),
+            "pair_rating_source": pair_rating_source,
             "winner_synthesis": winner_synthesis,
             "diagnostics": {
                 "home_team": home_team,
@@ -3867,6 +3982,7 @@ class FAJBrain:
                 "home_xg": goal_result.home_xg,
                 "away_xg": goal_result.away_xg,
                 "pair_rating_available": pair_rating is not None,
+                "pair_rating_source": pair_rating_source,
                 "winner_synthesis_available": winner_synthesis is not None,
             },
         }
@@ -3883,6 +3999,8 @@ class FAJBrain:
         away_matches: Iterable[Any],
         home_form_context: Optional[Any] = None,
         away_form_context: Optional[Any] = None,
+        home_pair_rating: Optional[Any] = None,
+        away_pair_rating: Optional[Any] = None,
     ) -> Dict[str, Any]:
 
         # ====================================================
@@ -3914,6 +4032,8 @@ class FAJBrain:
             away_team=away_team,
             home_matches=home_matches,
             away_matches=away_matches,
+            home_pair_rating=home_pair_rating,
+            away_pair_rating=away_pair_rating,
         )
 
         home_math = math_pipeline["home"]
@@ -4076,6 +4196,7 @@ class FAJBrain:
         # ====================================================
 
         pair_rating = math_pipeline.get("pair_rating")
+        pair_rating_source = math_pipeline.get("pair_rating_source")
 
         result = BrainPrediction(
             home_team=home_team,
@@ -4172,6 +4293,7 @@ class FAJBrain:
                 "probability_model": self._json_safe(probability_result),
                 "score_predictor": self._json_safe(score_result),
                 "pair_rating": pair_rating,
+                "pair_rating_source": pair_rating_source,
                 "winner_synthesis": winner_synthesis,
                 "score_forecast": {
                     "predicted_score": score_result.predicted_score,
@@ -4199,10 +4321,11 @@ class FAJBrain:
                 ),
                 "xg_internal": {"home": home_xg, "away": away_xg},
                 "note": (
-                    "FAJ-BRAIN-1.2. "
+                    "FAJ-BRAIN-1.3. "
                     "GoalModel v6.0: FormModel + FormControl + SpecialForm + history. "
                     "Winner Synthesis v1: Poisson primary + PairRating + FormWin + Defence. "
                     "NEUTRAL != CONFLICT. "
+                    "Pair Rating source: manual / club_rating_fallback / None. "
                     "confidence берётся из Winner Synthesis, "
                     "risk = LOW / MEDIUM / HIGH / UNKNOWN. "
                     "ScorePredictor v2.2: только ProbabilityModel. "
@@ -4225,6 +4348,8 @@ def predict_match(
     away_matches: Iterable[Any],
     home_form_context: Optional[Any] = None,
     away_form_context: Optional[Any] = None,
+    home_pair_rating: Optional[Any] = None,
+    away_pair_rating: Optional[Any] = None,
 ) -> Dict[str, Any]:
 
     brain = FAJBrain()
@@ -4236,6 +4361,8 @@ def predict_match(
         away_matches=away_matches,
         home_form_context=home_form_context,
         away_form_context=away_form_context,
+        home_pair_rating=home_pair_rating,
+        away_pair_rating=away_pair_rating,
     )
 
 
