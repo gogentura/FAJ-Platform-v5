@@ -47,6 +47,12 @@ Streamlit НЕ считает:
 
     Club Rating:
         только отображается.
+
+    Pair Rating:
+        только отображается.
+        Источник — calculation_meta["pair_rating"]
+        из FAJBrain.
+        Ручного ввода нет.
 """
 
 from __future__ import annotations
@@ -1860,7 +1866,7 @@ def render_prediction_card(
         )
 
     # ========================================================
-    # 3. SCORES — из calculation_meta["score_forecast"]["top_scores"]
+    # 3. SCORES
     # ========================================================
 
     st.subheader(
@@ -2243,6 +2249,131 @@ def render_match_setup(
         "рейтинг FAJ. В текущей версии "
         "только отображается."
     )
+
+    # ========================================================
+    # FAJ PAIR RATING (display only)
+    #
+    # Источник — calculation_meta["pair_rating"] и
+    # calculation_meta["winner_synthesis"] из FAJBrain.
+    #
+    # Никакого ручного ввода.
+    # Никакого расчёта на странице.
+    # До первого прогноза — прочерк и подсказка.
+    # ========================================================
+
+    st.markdown(
+        "#### 🧠 FAJ Pair Rating"
+    )
+
+    _pair_prediction = (
+        st.session_state
+        .faj_predictions
+        .get(index)
+    )
+
+    if not isinstance(_pair_prediction, dict):
+
+        st.caption(
+            "Pair Rating появится после расчёта прогноза."
+        )
+
+    else:
+
+        _pair_meta = (
+            _pair_prediction.get(
+                "calculation_meta"
+            )
+            or {}
+        )
+
+        _pair_rating = (
+            _pair_meta.get("pair_rating")
+            or {}
+        )
+
+        _pair_ws = (
+            _pair_meta.get("winner_synthesis")
+            or {}
+        )
+
+        _pair_home_rating = _pair_rating.get(
+            "home_rating"
+        )
+
+        _pair_away_rating = _pair_rating.get(
+            "away_rating"
+        )
+
+        _pair_gap = _pair_rating.get(
+            "rating_gap"
+        )
+
+        _pair_direction = (
+            _pair_rating.get("winner_direction")
+            or _pair_ws.get("pair_rating_direction")
+            or "—"
+        )
+
+        _pair_strength = (
+            _pair_rating.get("direction_strength")
+            or _pair_ws.get("pair_rating_strength")
+            or "—"
+        )
+
+        _pair_team = (
+            _pair_rating.get("direction_team")
+            or "—"
+        )
+
+        _pair_pr_c1, _pair_pr_c2 = (
+            st.columns(2)
+        )
+
+        with _pair_pr_c1:
+
+            st.metric(
+                f"🏠 {selected_home}",
+                (
+                    _pair_home_rating
+                    if _pair_home_rating is not None
+                    else "—"
+                ),
+            )
+
+        with _pair_pr_c2:
+
+            st.metric(
+                f"✈️ {selected_away}",
+                (
+                    _pair_away_rating
+                    if _pair_away_rating is not None
+                    else "—"
+                ),
+            )
+
+        _pair_gap_text = "—"
+
+        if _pair_gap is not None:
+
+            try:
+
+                _pair_gap_text = (
+                    f"{int(_pair_gap):+d}"
+                )
+
+            except (
+                TypeError,
+                ValueError,
+            ):
+
+                _pair_gap_text = "—"
+
+        st.caption(
+            f"Направление: "
+            f"{_pair_team} "
+            f"({_pair_direction} / {_pair_strength}) "
+            f"· gap {_pair_gap_text}"
+        )
 
     # ========================================================
     # DATE
