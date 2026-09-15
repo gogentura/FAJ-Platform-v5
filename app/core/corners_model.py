@@ -48,6 +48,8 @@ CHANGES IN V1.3
 - Веса изменены: 0.80 * avg + 0.20 * recent3 (было 0.70/0.30)
 - Добавлен conservative_factor = 0.90 для сдерживания завышения
 - Diagnostics обновлены
+- Отсутствующий trend сохраняется как None и не
+  превращается в "наблюдение 0"
 
 ============================================================
 CHANGES IN V1.2
@@ -381,6 +383,23 @@ def _recent_points_rate(
     return weighted_points / (3.0 * weight_sum)
 
 
+def _trend_or_zero(
+    value: Optional[float],
+) -> float:
+    """
+    Безопасное сложение trend-компоненты.
+
+    Отсутствие тренда (None) означает отсутствие
+    trend-adjustment, а не "наблюдение 0".
+
+    На уровне математики это даёт тот же результат,
+    что и раньше, но теперь семантика корректна:
+    None != 0.
+    """
+
+    return 0.0 if value is None else value
+
+
 # ============================================================
 # RESULT
 # ============================================================
@@ -660,6 +679,7 @@ class CornersModel:
             "points_rate_affects_corners": False,
             "result_context_used": True,
             "result_context_changes_corners": False,
+            "missing_trend_is_none": True,
         }
 
         return CornersModelResult(
@@ -772,6 +792,10 @@ class CornersModel:
         #     0.10 * trend
         #
         # capped at ±0.50.
+        #
+        # None (missing trend) остаётся None и НЕ превращается
+        # в наблюдение 0. Отсутствие trend-adjustment
+        # обрабатывается через _trend_or_zero() при сложении.
         # ----------------------------------------------------
 
         home_for_trend = (
@@ -783,7 +807,7 @@ class CornersModel:
                 ),
             )
             if home.corners_for_trend is not None
-            else 0.0
+            else None
         )
 
         away_against_trend = (
@@ -795,7 +819,7 @@ class CornersModel:
                 ),
             )
             if away.corners_against_trend is not None
-            else 0.0
+            else None
         )
 
         away_for_trend = (
@@ -807,7 +831,7 @@ class CornersModel:
                 ),
             )
             if away.corners_for_trend is not None
-            else 0.0
+            else None
         )
 
         home_against_trend = (
@@ -819,7 +843,7 @@ class CornersModel:
                 ),
             )
             if home.corners_against_trend is not None
-            else 0.0
+            else None
         )
 
         # ----------------------------------------------------
@@ -844,8 +868,8 @@ class CornersModel:
                 + away_against_level
             ) / 2.0
             home_expected += (
-                home_for_trend
-                + away_against_trend
+                _trend_or_zero(home_for_trend)
+                + _trend_or_zero(away_against_trend)
             )
 
         # ----------------------------------------------------
@@ -870,8 +894,8 @@ class CornersModel:
                 + home_against_level
             ) / 2.0
             away_expected += (
-                away_for_trend
-                + home_against_trend
+                _trend_or_zero(away_for_trend)
+                + _trend_or_zero(home_against_trend)
             )
 
         # ----------------------------------------------------
