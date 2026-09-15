@@ -29,13 +29,15 @@ FAJ Personal Prediction Brain
           ↓
     SpecialForm
           ↓
-    GoalModel v3.1
+    GoalModel v6.0
           ↓
     home_xg / away_xg
           ↓
     ProbabilityModel v1.1
           ↓
     ScorePredictor v2.2
+          ↓
+    Winner Synthesis
           ↓
     CornersModel v1.3
           ↓
@@ -57,7 +59,7 @@ FAJ Personal Prediction Brain
     None НЕ превращается в 0.
 
 Версия:
-    FAJ-BRAIN-1.1
+    FAJ-BRAIN-1.2
 """
 
 from __future__ import annotations
@@ -89,12 +91,15 @@ from app.core.score_predictor import ScorePredictor
 from app.core.corners_model import CornersModel
 from app.core.cards_model import CardsModel
 
+from app.core.pair_rating import calculate_pair_rating
+from app.faj_club_ratings import get_team_rating
+
 
 # ============================================================
 # VERSION
 # ============================================================
 
-BRAIN_VERSION = "FAJ-BRAIN-1.1"
+BRAIN_VERSION = "FAJ-BRAIN-1.2"
 
 MIN_MATCHES = 1
 EXTENDED_ANALYSIS_MATCHES = 3
@@ -2103,7 +2108,7 @@ class FAJBrain:
         )
 
     # ========================================================
-    # EXPECTED GOALS (GoalModel v3.1)
+    # EXPECTED GOALS (GoalModel v6.0)
     # ========================================================
 
     def _calculate_expected_goals(
@@ -2116,6 +2121,8 @@ class FAJBrain:
         away_special: Any,
         home_team: str,
         away_team: str,
+        home_history: Optional[List[Any]] = None,
+        away_history: Optional[List[Any]] = None,
     ) -> tuple[
         Optional[float],
         Optional[float],
@@ -2126,6 +2133,8 @@ class FAJBrain:
         goal_result = goal_model.analyze(
             home_form=home_form_result,
             away_form=away_form_result,
+            home_history=home_history,
+            away_history=away_history,
             home_control=home_control,
             away_control=away_control,
             home_special=home_special,
@@ -2615,6 +2624,278 @@ class FAJBrain:
 
     # ========================================================
     # ========================================================
+    # FAJ WINNER SYNTHESIS v1
+    # ========================================================
+    #
+    # Независимые сигналы:
+    #   1. ProbabilityModel (Poisson)   — primary, не меняется
+    #   2. PairRating                   — структурный сигнал
+    #   3. FormWinComparison            — форма
+    #   4. Defence (individual scores)  — оборона
+    #
+    # Правила:
+    #   - Poisson winner не подменяется;
+    #   - Rating/FormWin/Defence только подтверждают или
+    #     конфликтуют;
+    #   - NEUTRAL ≠ CONFLICT;
+    #   - confidence — диагностическая величина,
+    #     не передаётся обратно в ProbabilityModel.
+    # ========================================================
+
+    def _build_winner_synthesis(
+        self,
+        probability_result: Any,
+        pair_rating: Optional[Any] = None,
+        form_win_comparison: Optional[Any] = None,
+        home_defence: Optional[Any] = None,
+        away_defence: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+
+        # ---------------------------------------------------------
+        # POISSON PRIMARY
+        # ---------------------------------------------------------
+        home_prob = float(
+            getattr(probability_result, "home_win", 0.0) or 0.0
+        )
+        draw_prob = float(
+            getattr(probability_result, "draw", 0.0) or 0.0
+        )
+        away_prob = float(
+            getattr(probability_result, "away_win", 0.0) or 0.0
+        )
+
+        probabilities = {
+            "HOME": home_prob,
+            "DRAW": draw_prob,
+            "AWAY": away_prob,
+        }
+
+        poisson_winner = max(
+            probabilities,
+            key=probabilities.get,
+        )
+
+        evidence: List[Dict[str, Any]] = []
+
+        agreements = 0
+        conflicts = 0
+
+        # ---------------------------------------------------------
+        # 1. PROBABILITY MODEL (PRIMARY)
+        # ---------------------------------------------------------
+        evidence.append(
+            {
+                "source": "ProbabilityModel",
+                "direction": poisson_winner,
+                "value": round(probabilities[poisson_winner], 4),
+                "type": "PRIMARY",
+            }
+        )
+
+        # ---------------------------------------------------------
+        # 2. PAIR RATING (STRUCTURAL)
+        # ---------------------------------------------------------
+        rating_direction: Optional[str] = None
+        rating_strength: Optional[str] = None
+        rating_no_opinion = False
+
+        if pair_rating is not None:
+            rating_direction = getattr(
+                pair_rating,
+                "winner_direction",
+                None,
+            )
+            rating_strength = getattr(
+                pair_rating,
+                "direction_strength",
+                None,
+            )
+
+            if rating_direction in ("HOME", "AWAY"):
+                evidence.append(
+                    {
+                        "source": "PairRating",
+                        "direction": rating_direction,
+                        "value": rating_strength,
+                        "type": "STRUCTURAL",
+                    }
+                )
+
+                if rating_direction == poisson_winner:
+                    agreements += 1
+                elif poisson_winner in ("HOME", "AWAY"):
+                    conflicts += 1
+
+            elif rating_direction == "NEUTRAL":
+                rating_no_opinion = True
+                evidence.append(
+                    {
+                        "source": "PairRating",
+                        "direction": "NEUTRAL",
+                        "value": rating_strength,
+                        "type": "STRUCTURAL",
+                        "note": "no_directional_opinion",
+                    }
+                )
+
+        # ---------------------------------------------------------
+        # 3. FORM WIN (COMPARISON)
+        # ---------------------------------------------------------
+        form_advantage: Optional[float] = None
+        form_direction: Optional[str] = None
+
+        if form_win_comparison is not None:
+            raw_form_advantage = getattr(
+                form_win_comparison,
+                "relative_advantage",
+                None,
+            )
+
+            if raw_form_advantage is not None:
+                try:
+                    form_advantage = float(raw_form_advantage)
+                except (TypeError, ValueError):
+                    form_advantage = None
+
+        if form_advantage is not None:
+            if form_advantage > 0:
+                form_direction = "HOME"
+            elif form_advantage < 0:
+                form_direction = "AWAY"
+            else:
+                form_direction = "DRAW"
+
+            evidence.append(
+                {
+                    "source": "FormWin",
+                    "direction": form_direction,
+                    "value": round(form_advantage, 4),
+                    "type": "FORM",
+                }
+            )
+
+            if form_direction == poisson_winner:
+                agreements += 1
+            elif form_direction != "DRAW":
+                conflicts += 1
+
+        # ---------------------------------------------------------
+        # 4. DEFENCE (INDIVIDUAL SCORES)
+        # ---------------------------------------------------------
+        defence_home: Optional[float] = None
+        defence_away: Optional[float] = None
+        defence_direction: Optional[str] = None
+
+        if home_defence is not None:
+            raw_def_home = getattr(
+                home_defence,
+                "defence_score",
+                None,
+            )
+            try:
+                defence_home = (
+                    float(raw_def_home)
+                    if raw_def_home is not None
+                    else None
+                )
+            except (TypeError, ValueError):
+                defence_home = None
+
+        if away_defence is not None:
+            raw_def_away = getattr(
+                away_defence,
+                "defence_score",
+                None,
+            )
+            try:
+                defence_away = (
+                    float(raw_def_away)
+                    if raw_def_away is not None
+                    else None
+                )
+            except (TypeError, ValueError):
+                defence_away = None
+
+        if (
+            defence_home is not None
+            and defence_away is not None
+        ):
+            if defence_home > defence_away:
+                defence_direction = "HOME"
+            elif defence_away > defence_home:
+                defence_direction = "AWAY"
+            else:
+                defence_direction = "DRAW"
+
+            evidence.append(
+                {
+                    "source": "Defence",
+                    "direction": defence_direction,
+                    "home": round(defence_home, 4),
+                    "away": round(defence_away, 4),
+                    "type": "DEFENCE",
+                }
+            )
+
+            if defence_direction == poisson_winner:
+                agreements += 1
+            elif defence_direction != "DRAW":
+                conflicts += 1
+
+        # ---------------------------------------------------------
+        # 5. FINAL SYNTHESIS
+        # ---------------------------------------------------------
+        final_winner = poisson_winner
+
+        if poisson_winner in ("HOME", "AWAY"):
+            if conflicts == 0 and agreements >= 2:
+                synthesis = "STRONG_CONSENSUS"
+            elif agreements >= 1 and conflicts == 0:
+                synthesis = "CONSENSUS"
+            elif conflicts > agreements:
+                synthesis = "CONFLICT"
+            else:
+                synthesis = "WEAK_CONSENSUS"
+        else:
+            synthesis = "DRAW_PRIMARY"
+
+        # ---------------------------------------------------------
+        # CONFIDENCE (diagnostic only)
+        # ---------------------------------------------------------
+        base_confidence = probabilities[poisson_winner]
+
+        if synthesis == "STRONG_CONSENSUS":
+            confidence = min(0.95, base_confidence + 0.08)
+        elif synthesis == "CONSENSUS":
+            confidence = min(0.95, base_confidence + 0.04)
+        elif synthesis == "CONFLICT":
+            confidence = max(0.35, base_confidence - 0.08)
+        else:
+            confidence = base_confidence
+
+        return {
+            "winner": final_winner,
+            "poisson_winner": poisson_winner,
+            "home_probability": home_prob,
+            "draw_probability": draw_prob,
+            "away_probability": away_prob,
+            "pair_rating_direction": rating_direction,
+            "pair_rating_strength": rating_strength,
+            "rating_no_opinion": rating_no_opinion,
+            "form_advantage": form_advantage,
+            "form_direction": form_direction,
+            "defence_home": defence_home,
+            "defence_away": defence_away,
+            "defence_direction": defence_direction,
+            "agreements": agreements,
+            "conflicts": conflicts,
+            "synthesis": synthesis,
+            "confidence": round(confidence, 4),
+            "evidence": evidence,
+        }
+
+    # ========================================================
+    # ========================================================
     # FAJ MATHEMATICAL BRAIN BRIDGE
     # v1.3
     #
@@ -2642,11 +2923,13 @@ class FAJBrain:
     #                ↓
     #           SpecialForm
     #                ↓
-    #           GoalModel v3.1
+    #           GoalModel v6.0
     #                ↓
     #           ProbabilityModel v1.1
     #                ↓
     #           ScorePredictor v2.2
+    #                ↓
+    #           Winner Synthesis
     #                ↓
     #           CornersModel v1.3
     #                ↓
@@ -3441,13 +3724,27 @@ class FAJBrain:
         )
 
         # ========================================================
-        # GOAL MODEL v3.1
+        # FORM WIN COMPARISON
+        # ========================================================
+        form_win_comparison = None
+        try:
+            form_win_comparison = FormWin().compare(
+                home_state["context"],
+                away_state["context"],
+            )
+        except Exception:
+            form_win_comparison = None
+
+        # ========================================================
+        # GOAL MODEL v6.0
         #
         # FormModel
         #     +
         # FormControl
         #     +
         # SpecialForm
+        #     +
+        # history (venue-aware)
         #     ↓
         # GoalModel
         # ========================================================
@@ -3455,6 +3752,8 @@ class FAJBrain:
         goal_result = goal_model.analyze(
             home_form=home_state["form_model"],
             away_form=away_state["form_model"],
+            home_history=home_matches,
+            away_history=away_matches,
             home_control=home_state["form_control"],
             away_control=away_state["form_control"],
             home_special=home_state["special_form"],
@@ -3465,12 +3764,58 @@ class FAJBrain:
         )
 
         # ========================================================
+        # FAJ CLUB RATING → PAIR RATING
+        # ========================================================
+        home_rating = None
+        away_rating = None
+        pair_rating = None
+
+        try:
+            home_rating = get_team_rating(home_team)
+        except Exception:
+            home_rating = None
+
+        try:
+            away_rating = get_team_rating(away_team)
+        except Exception:
+            away_rating = None
+
+        if home_rating is not None and away_rating is not None:
+            try:
+                home_rating_value = int(home_rating)
+                away_rating_value = int(away_rating)
+
+                if (
+                    60 <= home_rating_value <= 100
+                    and 60 <= away_rating_value <= 100
+                ):
+                    pair_rating = calculate_pair_rating(
+                        home_rating=home_rating_value,
+                        away_rating=away_rating_value,
+                        home_team=home_team,
+                        away_team=away_team,
+                    )
+            except (TypeError, ValueError):
+                pair_rating = None
+
+        # ========================================================
         # PROBABILITY MODEL (v1.1)
         # ========================================================
         probability_model = ProbabilityModel()
         probability_result = probability_model.calculate(
             home_xg=goal_result.home_xg,
             away_xg=goal_result.away_xg,
+        )
+
+        # ========================================================
+        # WINNER SYNTHESIS
+        # ========================================================
+        winner_synthesis = self._build_winner_synthesis(
+            probability_result=probability_result,
+            pair_rating=pair_rating,
+            form_win_comparison=form_win_comparison,
+            home_defence=home_state.get("defence"),
+            away_defence=away_state.get("defence"),
         )
 
         # ========================================================
@@ -3490,9 +3835,16 @@ class FAJBrain:
         return {
             "home": home_state,
             "away": away_state,
+            "form_win_comparison": form_win_comparison,
             "goal_model": goal_result,
             "probability_model": probability_result,
             "score_predictor": score_result,
+            "pair_rating": (
+                pair_rating.__dict__
+                if hasattr(pair_rating, "__dict__")
+                else pair_rating
+            ),
+            "winner_synthesis": winner_synthesis,
             "diagnostics": {
                 "home_team": home_team,
                 "away_team": away_team,
@@ -3500,6 +3852,8 @@ class FAJBrain:
                 "away_matches": len(away_matches or []),
                 "home_xg": goal_result.home_xg,
                 "away_xg": goal_result.away_xg,
+                "pair_rating_available": pair_rating is not None,
+                "winner_synthesis_available": winner_synthesis is not None,
             },
         }
 
@@ -3698,6 +4052,9 @@ class FAJBrain:
         # 13. OUTPUT
         # ====================================================
 
+        winner_synthesis = math_pipeline.get("winner_synthesis")
+        pair_rating = math_pipeline.get("pair_rating")
+
         result = BrainPrediction(
             home_team=home_team,
             away_team=away_team,
@@ -3786,9 +4143,14 @@ class FAJBrain:
                 "away_form_anomaly": self._json_safe(away_math["form_anomaly"]),
                 "home_special_form": self._json_safe(home_math["special_form"]),
                 "away_special_form": self._json_safe(away_math["special_form"]),
+                "form_win_comparison": self._json_safe(
+                    math_pipeline.get("form_win_comparison")
+                ),
                 "goal_model": self._json_safe(goal_result),
                 "probability_model": self._json_safe(probability_result),
                 "score_predictor": self._json_safe(score_result),
+                "pair_rating": pair_rating,
+                "winner_synthesis": winner_synthesis,
                 "score_forecast": {
                     "predicted_score": score_result.predicted_score,
                     "second_score": score_result.second_score,
@@ -3806,16 +4168,19 @@ class FAJBrain:
                     "FormControl v1.1 + "
                     "FormAnomaly v1.0 + "
                     "SpecialForm v1.0 + "
-                    "GoalModel v3.1 + "
+                    "GoalModel v6.0 + "
                     "ProbabilityModel v1.1 + "
                     "ScorePredictor v2.2 + "
+                    "Winner Synthesis v1 + "
                     "CornersModel v1.3 + "
                     "CardsModel v1.3"
                 ),
                 "xg_internal": {"home": home_xg, "away": away_xg},
                 "note": (
-                    "FAJ-BRAIN-1.1. "
-                    "GoalModel v3.1: FormModel + FormControl + SpecialForm. "
+                    "FAJ-BRAIN-1.2. "
+                    "GoalModel v6.0: FormModel + FormControl + SpecialForm + history. "
+                    "Winner Synthesis v1: Poisson primary + PairRating + FormWin + Defence. "
+                    "NEUTRAL != CONFLICT. "
                     "ScorePredictor v2.2: только ProbabilityModel. "
                     "Corners v1.3 и Cards v1.3 с recent3 + trend."
                 ),
