@@ -89,6 +89,11 @@ from app.faj_club_ratings import get_team_rating
 
 from app.api.football_data import get_team_matches
 
+# ============================================================
+# FAJ BRAIN (diagnostic-only bridge)
+# ============================================================
+
+from app.core.faj_brain import FAJBrain
 
 # ============================================================
 # VERSION
@@ -97,7 +102,6 @@ from app.api.football_data import get_team_matches
 PREDICTOR_VERSION = "FAJ-PREDICTOR-1.0"
 
 HISTORY_SIZE = 6
-
 
 # ============================================================
 # PAGE CONFIG
@@ -109,7 +113,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed",
 )
-
 
 # ============================================================
 # MOBILE CSS
@@ -143,7 +146,6 @@ st.markdown(
         visibility: hidden;
     }
 
-
     /* --------------------------------------------------------
        HEADER
     -------------------------------------------------------- */
@@ -168,7 +170,6 @@ st.markdown(
         margin-top: 4px;
     }
 
-
     /* --------------------------------------------------------
        TEAM CARD
     -------------------------------------------------------- */
@@ -191,7 +192,6 @@ st.markdown(
         opacity: .55;
         margin-top: 3px;
     }
-
 
     /* --------------------------------------------------------
        RESULT CARD
@@ -218,7 +218,6 @@ st.markdown(
         margin-top: 2px;
     }
 
-
     /* --------------------------------------------------------
        COMPACT METRIC
     -------------------------------------------------------- */
@@ -243,7 +242,6 @@ st.markdown(
         margin-top: 2px;
     }
 
-
     /* --------------------------------------------------------
        SCORE
     -------------------------------------------------------- */
@@ -266,7 +264,6 @@ st.markdown(
         opacity: .5;
     }
 
-
     /* --------------------------------------------------------
        SECTION
     -------------------------------------------------------- */
@@ -277,7 +274,6 @@ st.markdown(
         margin-top: 12px;
         margin-bottom: 7px;
     }
-
 
     /* --------------------------------------------------------
        CONCLUSION
@@ -291,7 +287,6 @@ st.markdown(
         font-size: 14px;
         line-height: 1.45;
     }
-
 
     /* --------------------------------------------------------
        FACT ROW
@@ -312,7 +307,6 @@ st.markdown(
     .fact-value {
         font-weight: 700;
     }
-
 
     /* --------------------------------------------------------
        DIAGNOSTICS BLOCK
@@ -336,7 +330,6 @@ st.markdown(
         margin-bottom: 8px;
         opacity: .85;
     }
-
 
     /* --------------------------------------------------------
        MOBILE
@@ -380,7 +373,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
 # ============================================================
 # HELPERS
 # ============================================================
@@ -405,7 +397,6 @@ def safe_float(value: Any) -> Optional[float]:
 
     return None
 
-
 def safe_int(value: Any) -> Optional[int]:
 
     value = safe_float(value)
@@ -414,7 +405,6 @@ def safe_int(value: Any) -> Optional[int]:
         return None
 
     return int(round(value))
-
 
 def probability(value: Optional[float]) -> Optional[float]:
 
@@ -425,7 +415,6 @@ def probability(value: Optional[float]) -> Optional[float]:
         max(0.0, min(1.0, float(value))) * 100.0,
         1,
     )
-
 
 def value(obj: Any, *names: str) -> Any:
 
@@ -457,7 +446,6 @@ def value(obj: Any, *names: str) -> Any:
 
     return None
 
-
 def nested(
     obj: Any,
     *names: str,
@@ -476,7 +464,6 @@ def nested(
             return None
 
     return current
-
 
 # ============================================================
 # SCORE
@@ -498,7 +485,6 @@ def poisson(
         * expected ** goals
         / math.factorial(goals)
     )
-
 
 def score_distribution(
     home_xg: float,
@@ -536,7 +522,6 @@ def score_distribution(
     )
 
     return scores
-
 
 def result_probabilities(
     home_xg: float,
@@ -580,7 +565,6 @@ def result_probabilities(
         "away": away / total,
     }
 
-
 def total_probabilities(
     home_xg: float,
     away_xg: float,
@@ -622,7 +606,6 @@ def total_probabilities(
         "over35": over35,
     }
 
-
 def over_probability(
     expected: Optional[float],
     line: float,
@@ -649,7 +632,6 @@ def over_probability(
             1.0 - under,
         ),
     )
-
 
 # ============================================================
 # PARSER → MATCH FACT
@@ -683,7 +665,6 @@ def parse_match(
     result["stats"] = stats
 
     return result
-
 
 # ============================================================
 # BUILD TEAM MATCH RECORD
@@ -1051,7 +1032,6 @@ def build_team_record(
             extra,
     }
 
-
 # ============================================================
 # BUILD FORM CONTEXT
 # ============================================================
@@ -1381,7 +1361,6 @@ def build_form_context(
 
     return context
 
-
 # ============================================================
 # COLLECT HISTORY
 # ============================================================
@@ -1476,7 +1455,6 @@ def collect_history(
         records,
         errors,
     )
-
 
 # ============================================================
 # MATHEMATICAL ENGINE
@@ -2180,7 +2158,6 @@ def calculate_prediction(
             away_context,
     }
 
-
 # ============================================================
 # SESSION STATE
 # ============================================================
@@ -2197,7 +2174,6 @@ if "faj_away_records" not in st.session_state:
 if "faj_collection_errors" not in st.session_state:
     st.session_state.faj_collection_errors = []
 
-
 # ============================================================
 # HEADER
 # ============================================================
@@ -2213,7 +2189,6 @@ st.markdown(
 """,
     unsafe_allow_html=True,
 )
-
 
 # ============================================================
 # MATCH INPUT
@@ -2239,7 +2214,6 @@ with right:
         placeholder="Краснодар",
         key="faj_away_team",
     )
-
 
 # ============================================================
 # FAJ CLUB RATING + FAJ PAIR RATING
@@ -2296,7 +2270,6 @@ with club_c2:
         unsafe_allow_html=True,
     )
 
-
 st.markdown(
     '<div class="section-title">FAJ Pair Rating</div>',
     unsafe_allow_html=True,
@@ -2326,7 +2299,6 @@ with pair_c2:
         key="faj_away_pair_rating",
     )
 
-
 st.markdown(
     '<div class="section-title">История хозяев — последние 6 матчей</div>',
     unsafe_allow_html=True,
@@ -2342,7 +2314,6 @@ home_url_text = st.text_area(
     key="faj_home_urls",
     label_visibility="collapsed",
 )
-
 
 st.markdown(
     '<div class="section-title">История гостей — последние 6 матчей</div>',
@@ -2360,7 +2331,6 @@ away_url_text = st.text_area(
     label_visibility="collapsed",
 )
 
-
 # ============================================================
 # ACTION
 # ============================================================
@@ -2370,7 +2340,6 @@ predict_clicked = st.button(
     type="primary",
     use_container_width=True,
 )
-
 
 # ============================================================
 # FOOTBALL DATA API — ДОПОЛНИТЕЛЬНЫЙ ИСТОЧНИК
@@ -2413,7 +2382,6 @@ if st.button(
     except Exception as exc:
         st.error(f"❌ Football Data API: {exc}")
 
-
 # ============================================================
 # FOOTBALL DATA API — ОТОБРАЖЕНИЕ РЕЗУЛЬТАТА
 # ============================================================
@@ -2455,7 +2423,6 @@ if api_home or api_away:
                 f"{match.get('home', '—')} — {match.get('away', '—')} · "
                 f"{score}"
             )
-
 
 # ============================================================
 # PREDICT
@@ -2590,6 +2557,44 @@ if predict_clicked:
             away_pair_rating=away_pair_rating,
         )
 
+        # --------------------------------------------------------
+        # FAJ BRAIN — DIAGNOSTIC ONLY
+        # --------------------------------------------------------
+        # The existing Predictor 1.0 remains the primary result.
+        # Brain failure must never break the existing prediction.
+        brain_result = None
+        brain_error = None
+
+        try:
+            brain = FAJBrain()
+            brain_result = brain.predict(
+                home_team=home_team.strip(),
+                away_team=away_team.strip(),
+                home_matches=home_records,
+                away_matches=away_records,
+            )
+        except Exception as brain_exc:
+            brain_error = f"{type(brain_exc).__name__}: {brain_exc}"
+
+        prediction["brain_result"] = brain_result
+        prediction["brain_error"] = brain_error
+
+        if isinstance(brain_result, dict):
+            _brain_meta = brain_result.get("calculation_meta") or {}
+            prediction["brain_calculation_meta"] = _brain_meta
+            prediction["brain_winner_synthesis"] = (
+                _brain_meta.get("winner_synthesis")
+                or brain_result.get("winner_synthesis")
+            )
+            prediction["brain_pair_rating"] = (
+                _brain_meta.get("pair_rating")
+                or brain_result.get("pair_rating")
+            )
+        else:
+            prediction["brain_calculation_meta"] = {}
+            prediction["brain_winner_synthesis"] = None
+            prediction["brain_pair_rating"] = None
+
     except Exception as exc:
 
         progress.empty()
@@ -2625,7 +2630,6 @@ if predict_clicked:
         all_errors
     )
 
-
 # ============================================================
 # RESULT
 # ============================================================
@@ -2633,7 +2637,6 @@ if predict_clicked:
 prediction = (
     st.session_state.faj_prediction
 )
-
 
 if prediction is None:
 
@@ -2643,7 +2646,6 @@ if prediction is None:
     )
 
     st.stop()
-
 
 # ============================================================
 # ERRORS / WARNINGS
@@ -2664,7 +2666,6 @@ if collection_errors:
             st.write(
                 f"• {error}"
             )
-
 
 # ============================================================
 # TOP MATCH CARD
@@ -2689,7 +2690,6 @@ st.markdown(
 """,
     unsafe_allow_html=True,
 )
-
 
 # ============================================================
 # 1X2
@@ -2753,7 +2753,6 @@ with c3:
         unsafe_allow_html=True,
     )
 
-
 # ============================================================
 # XG
 # ============================================================
@@ -2816,7 +2815,6 @@ with x3:
         unsafe_allow_html=True,
     )
 
-
 # ============================================================
 # SCORES
 # ============================================================
@@ -2861,7 +2859,6 @@ for column, item, index in zip(
             """,
             unsafe_allow_html=True,
         )
-
 
 # ============================================================
 # GOALS
@@ -2925,7 +2922,6 @@ with g3:
         unsafe_allow_html=True,
     )
 
-
 # ============================================================
 # CORNERS
 # ============================================================
@@ -2988,7 +2984,6 @@ with c3:
         unsafe_allow_html=True,
     )
 
-
 corner_cols = st.columns(
     4,
     gap="small",
@@ -3036,7 +3031,6 @@ for column, (
             """,
             unsafe_allow_html=True,
         )
-
 
 # ============================================================
 # CARDS
@@ -3100,7 +3094,6 @@ with card_cols[2]:
         unsafe_allow_html=True,
     )
 
-
 card_lines = [
     (
         "ТБ 2.5",
@@ -3144,7 +3137,6 @@ for column, (
             """,
             unsafe_allow_html=True,
         )
-
 
 # ============================================================
 # CONFIDENCE
@@ -3208,7 +3200,6 @@ with q3:
         unsafe_allow_html=True,
     )
 
-
 # ============================================================
 # CONCLUSION
 # ============================================================
@@ -3231,6 +3222,92 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# ============================================================
+# FAJ BRAIN v1.2 — DIAGNOSTIC
+# ============================================================
+
+_brain_result = prediction.get("brain_result")
+_brain_error = prediction.get("brain_error")
+
+if _brain_result is not None or _brain_error:
+
+    st.markdown(
+        '<div class="section-title">FAJ Brain v1.2 — Diagnostic</div>',
+        unsafe_allow_html=True,
+    )
+
+    if _brain_error:
+        st.warning(
+            f"FAJ Brain diagnostic unavailable: {_brain_error}. "
+            "Основной Predictor 1.0 продолжает работать."
+        )
+    else:
+        _bm = prediction.get("brain_calculation_meta") or {}
+        _bws = prediction.get("brain_winner_synthesis") or {}
+        _bpr = prediction.get("brain_pair_rating") or {}
+
+        _bc1, _bc2, _bc3, _bc4 = st.columns(4, gap="small")
+
+        with _bc1:
+            st.metric(
+                "Brain λ Home",
+                f"{safe_float(_brain_result.get('home_xg')):.3f}"
+                if safe_float(_brain_result.get("home_xg")) is not None
+                else "—",
+            )
+
+        with _bc2:
+            st.metric(
+                "Brain λ Away",
+                f"{safe_float(_brain_result.get('away_xg')):.3f}"
+                if safe_float(_brain_result.get("away_xg")) is not None
+                else "—",
+            )
+
+        with _bc3:
+            st.metric(
+                "Brain Winner",
+                str(_bws.get("winner") or "—"),
+            )
+
+        with _bc4:
+            st.metric(
+                "Brain Confidence",
+                f"{safe_float(_brain_result.get('confidence')):.1f}"
+                if safe_float(_brain_result.get("confidence")) is not None
+                else "—",
+            )
+
+        _bp_home = safe_float(_brain_result.get("home_win"))
+        _bp_draw = safe_float(_brain_result.get("draw"))
+        _bp_away = safe_float(_brain_result.get("away_win"))
+
+        _cmp1, _cmp2, _cmp3 = st.columns(3, gap="small")
+
+        with _cmp1:
+            st.metric(
+                "Brain Home",
+                f"{_bp_home * 100:.1f}%" if _bp_home is not None else "—",
+            )
+        with _cmp2:
+            st.metric(
+                "Brain Draw",
+                f"{_bp_draw * 100:.1f}%" if _bp_draw is not None else "—",
+            )
+        with _cmp3:
+            st.metric(
+                "Brain Away",
+                f"{_bp_away * 100:.1f}%" if _bp_away is not None else "—",
+            )
+
+        with st.expander("Brain calculation meta", expanded=False):
+            st.json(_bm)
+
+        with st.expander("Brain winner synthesis", expanded=False):
+            st.json(_bws)
+
+        with st.expander("Brain pair rating", expanded=False):
+            st.json(_bpr)
 
 # ============================================================
 # WINNER SIGNAL
@@ -3305,7 +3382,6 @@ if _winner_signal:
         """,
         unsafe_allow_html=True,
     )
-
 
 # ============================================================
 # FACT HISTORY
@@ -3412,7 +3488,6 @@ with st.expander(
             """,
             unsafe_allow_html=True,
         )
-
 
 # ============================================================
 # 🔬 GOALMODEL v6.0 DIAGNOSTICS
@@ -3789,7 +3864,6 @@ else:
             _copy_html,
             height=90,
         )
-
 
 # ============================================================
 # FOOTER
