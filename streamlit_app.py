@@ -40,22 +40,19 @@ Streamlit НЕ считает:
 
 Pair Rating:
     ручной исследовательский сигнал конкретной пары.
-    Он НЕ меняет xG / λ / Poisson / ScorePredictor.
-    Он используется ТОЛЬКО в Winner Synthesis
+    НЕ меняет xG / λ / Poisson / ScorePredictor.
+    Используется ТОЛЬКО в Winner Synthesis
     как структурный сигнал.
 
     Контракт:
         - оба поля заданы вручную (60..100)
-            → Brain считает calculate_pair_rating(...)
             → source = "manual"
-        - оба поля None (недоступны)
-            → Brain fallback на get_team_rating()
+        - оба поля None
             → source = "club_rating_fallback"
         - не удалось ни то, ни другое
             → source = None
 
-Club Rating:
-    справочный рейтинг FAJ, только отображается.
+    В UI Pair Rating — только display + manual input.
 """
 
 from __future__ import annotations
@@ -1505,6 +1502,234 @@ def render_form_context_card(
 
 
 # ============================================================
+# WINNER SYNTHESIS — DETAILED BREAKDOWN
+# ============================================================
+
+def _render_winner_synthesis_breakdown(
+    winner_synthesis: Dict[str, Any],
+    pair_rating: Dict[str, Any],
+    pair_rating_source: Optional[str],
+    winner_probability_map: Dict[str, Optional[float]],
+) -> None:
+    """
+    Разложение Winner Synthesis по источникам сигналов.
+
+    Только отображение уже посчитанных полей:
+        - PRIMARY (Poisson)
+        - PAIR RATING
+        - FORMWIN
+        - DEFENCE
+        - agreements / conflicts
+
+    Никакой математики.
+    """
+
+    poisson_winner = (
+        winner_synthesis.get("poisson_winner")
+        or "—"
+    )
+
+    primary_prob = winner_probability_map.get(
+        poisson_winner
+    )
+
+    primary_text = (
+        f"{poisson_winner}"
+        + (
+            f" ({primary_prob:.1f}%)"
+            if primary_prob is not None
+            else ""
+        )
+    )
+
+    # --------------------------------------------------------
+    # PAIR RATING
+    # --------------------------------------------------------
+
+    pr_direction = (
+        winner_synthesis.get("pair_rating_direction")
+        or "—"
+    )
+
+    pr_strength = (
+        winner_synthesis.get("pair_rating_strength")
+        or "—"
+    )
+
+    pr_home = pair_rating.get("home_rating")
+    pr_away = pair_rating.get("away_rating")
+    pr_gap = pair_rating.get("rating_gap")
+
+    pr_numbers_text = "—"
+
+    if pr_home is not None and pr_away is not None:
+
+        gap_text = "—"
+
+        if pr_gap is not None:
+
+            try:
+                gap_text = f"{int(pr_gap):+d}"
+            except (TypeError, ValueError):
+                gap_text = "—"
+
+        pr_numbers_text = (
+            f"{pr_home} vs {pr_away} — {pr_strength} — gap {gap_text}"
+        )
+
+        if pair_rating_source:
+            pr_numbers_text += f" — source: {pair_rating_source}"
+
+    # --------------------------------------------------------
+    # FORMWIN
+    # --------------------------------------------------------
+
+    form_direction = (
+        winner_synthesis.get("form_direction")
+        or "—"
+    )
+
+    form_advantage = winner_synthesis.get(
+        "form_advantage"
+    )
+
+    form_text = form_direction
+
+    if form_advantage is not None:
+
+        try:
+            form_text = (
+                f"{form_direction} "
+                f"({float(form_advantage):+.3f})"
+            )
+        except (TypeError, ValueError):
+            pass
+
+    # --------------------------------------------------------
+    # DEFENCE
+    # --------------------------------------------------------
+
+    defence_direction = (
+        winner_synthesis.get("defence_direction")
+        or "—"
+    )
+
+    defence_home = winner_synthesis.get("defence_home")
+    defence_away = winner_synthesis.get("defence_away")
+
+    defence_text = defence_direction
+
+    if (
+        defence_home is not None
+        and defence_away is not None
+    ):
+
+        try:
+            defence_text = (
+                f"{defence_direction} "
+                f"({float(defence_home):.3f} / "
+                f"{float(defence_away):.3f})"
+            )
+        except (TypeError, ValueError):
+            pass
+
+    # --------------------------------------------------------
+    # AGREEMENTS / CONFLICTS
+    # --------------------------------------------------------
+
+    agreements = winner_synthesis.get("agreements", 0)
+    conflicts = winner_synthesis.get("conflicts", 0)
+
+    st.markdown(
+        f"""
+**Winner Synthesis: {winner_synthesis.get("synthesis", "—")}**
+
+- PRIMARY MODEL: `{primary_text}`
+- PAIR RATING: `{pr_direction}` — `{pr_numbers_text}`
+- FORMWIN: `{form_text}`
+- DEFENCE: `{defence_text}`
+
+`{agreements} agreement(s) / {conflicts} conflict(s)`
+""",
+        unsafe_allow_html=False,
+    )
+
+
+# ============================================================
+# CONFIDENCE BREAKDOWN
+# ============================================================
+
+def _render_confidence_breakdown(
+    winner_synthesis: Dict[str, Any],
+    winner_probability_map: Dict[str, Optional[float]],
+) -> None:
+    """
+    Разложение confidence.
+
+    Base — вероятность poisson_winner.
+    Final — winner_synthesis["confidence"] (0..1).
+    Penalty — final − base (в %).
+
+    Все значения — уже существующие в winner_synthesis.
+    Никаких новых полей не создаём.
+    """
+
+    poisson_winner = winner_synthesis.get(
+        "poisson_winner"
+    )
+
+    base_prob = winner_probability_map.get(
+        poisson_winner
+    )
+
+    final_conf_raw = safe_float(
+        winner_synthesis.get("confidence")
+    )
+
+    base_pct = (
+        base_prob * 100.0
+        if base_prob is not None
+        else None
+    )
+
+    final_pct = (
+        final_conf_raw * 100.0
+        if final_conf_raw is not None
+        else None
+    )
+
+    delta_pct = None
+
+    if base_pct is not None and final_pct is not None:
+
+        delta_pct = final_pct - base_pct
+
+    c1, c2, c3 = st.columns(3, gap="small")
+
+    with c1:
+        st.metric(
+            "Base confidence",
+            pct(base_pct),
+        )
+
+    with c2:
+        st.metric(
+            "Synthesis penalty",
+            (
+                f"{delta_pct:+.1f}%"
+                if delta_pct is not None
+                else "—"
+            ),
+        )
+
+    with c3:
+        st.metric(
+            "Final confidence",
+            pct(final_pct),
+        )
+
+
+# ============================================================
 # PREDICTION CARD
 # ============================================================
 
@@ -1555,6 +1780,31 @@ def render_prediction_card(
         meta.get("score_forecast")
         or {}
     )
+
+    # ========================================================
+    # WINNER PROBABILITY MAP — для отображения PRIMARY и Base confidence
+    # ========================================================
+
+    winner_probability_map = {
+        "HOME": safe_float(
+            winner_synthesis.get("home_probability")
+        ),
+        "DRAW": safe_float(
+            winner_synthesis.get("draw_probability")
+        ),
+        "AWAY": safe_float(
+            winner_synthesis.get("away_probability")
+        ),
+    }
+
+    winner_probability_map_pct = {
+        key: (
+            value * 100.0
+            if value is not None
+            else None
+        )
+        for key, value in winner_probability_map.items()
+    }
 
     # ========================================================
     # WINNER SYNTHESIS
@@ -1643,6 +1893,10 @@ def render_prediction_card(
         f"conflicts: {conflicts}"
     )
 
+    # --------------------------------------------------------
+    # Pair Rating caption (как было)
+    # --------------------------------------------------------
+
     if pair_rating:
 
         home_rating = pair_rating.get(
@@ -1690,12 +1944,16 @@ def render_prediction_card(
             f"· source: {source_text}"
         )
 
+    # --------------------------------------------------------
+    # Синтез: цветовая плашка + разложение
+    # --------------------------------------------------------
+
     if synthesis == "STRONG_CONSENSUS":
 
         st.success(
             "Winner Synthesis: "
             "STRONG_CONSENSUS — "
-            "модель и Pair Rating согласованы."
+            "все сигналы согласованы."
         )
 
     elif synthesis == "CONSENSUS":
@@ -1708,9 +1966,7 @@ def render_prediction_card(
     elif synthesis == "CONFLICT":
 
         st.error(
-            "⚠️ Winner Synthesis: "
-            "CONFLICT — "
-            "Pair Rating и модель расходятся."
+            "⚠️ Winner Synthesis: CONFLICT"
         )
 
     elif synthesis == "WEAK_CONSENSUS":
@@ -1726,6 +1982,28 @@ def render_prediction_card(
             "Winner Synthesis: "
             "DRAW_PRIMARY."
         )
+
+    # --------------------------------------------------------
+    # Разложение Winner Synthesis
+    # --------------------------------------------------------
+
+    _render_winner_synthesis_breakdown(
+        winner_synthesis=winner_synthesis,
+        pair_rating=pair_rating,
+        pair_rating_source=pair_rating_source,
+        winner_probability_map=winner_probability_map_pct,
+    )
+
+    # --------------------------------------------------------
+    # Разложение confidence
+    # --------------------------------------------------------
+
+    st.markdown("**Confidence breakdown**")
+
+    _render_confidence_breakdown(
+        winner_synthesis=winner_synthesis,
+        winner_probability_map=winner_probability_map_pct,
+    )
 
     st.markdown(
         f"### Итоговое направление: "
@@ -2294,23 +2572,6 @@ def render_match_setup(
 
     # ========================================================
     # FAJ PAIR RATING (manual)
-    #
-    # Исследовательский сигнал КОНКРЕТНОЙ пары.
-    # Вводится вручную перед прогнозом.
-    #
-    # НЕ меняет:
-    #   - xG
-    #   - GoalModel
-    #   - ProbabilityModel
-    #   - Poisson
-    #   - BTTS
-    #   - totals
-    #   - score distribution
-    #
-    # Используется ТОЛЬКО в Winner Synthesis
-    # как структурный сигнал.
-    #
-    # Default = 80/80 (это manual, а не fallback).
     # ========================================================
 
     st.markdown(
