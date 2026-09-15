@@ -29,7 +29,7 @@ Streamlit НЕ считает:
     ❌ BTTS
     ❌ totals
     ❌ exact scores
-    ❌ Pair Rating
+    ❌ Pair Rating (расчёт)
     ❌ Winner Signal / Synthesis
     ❌ confidence
     ❌ risk
@@ -38,21 +38,24 @@ Streamlit НЕ считает:
 
 Всё приходит из FAJBrain через calculation_meta.
 
-ВАЖНО:
+Pair Rating:
+    ручной исследовательский сигнал конкретной пары.
+    Он НЕ меняет xG / λ / Poisson / ScorePredictor.
+    Он используется ТОЛЬКО в Winner Synthesis
+    как структурный сигнал.
 
-    database.py здесь НЕ используется для выбора команд.
+    Контракт:
+        - оба поля заданы вручную (60..100)
+            → Brain считает calculate_pair_rating(...)
+            → source = "manual"
+        - оба поля None (недоступны)
+            → Brain fallback на get_team_rating()
+            → source = "club_rating_fallback"
+        - не удалось ни то, ни другое
+            → source = None
 
-    Команды берутся из:
-        app/faj_club_ratings.py
-
-    Club Rating:
-        только отображается.
-
-    Pair Rating:
-        только отображается.
-        Источник — calculation_meta["pair_rating"]
-        из FAJBrain.
-        Ручного ввода нет.
+Club Rating:
+    справочный рейтинг FAJ, только отображается.
 """
 
 from __future__ import annotations
@@ -84,6 +87,10 @@ LAYOUT = "wide"
 
 MAX_HISTORY_MATCHES = 6
 MAX_ANALYSIS_MATCHES = 6
+
+PAIR_RATING_MIN = 60
+PAIR_RATING_MAX = 100
+PAIR_RATING_DEFAULT = 80
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +265,12 @@ def create_match_slot() -> Dict[str, Any]:
         "home_name": None,
         "away_name": None,
         "match_date": date.today().isoformat(),
+
+        # ------------------------------------------------
+        # Ручной Pair Rating для конкретной пары
+        # ------------------------------------------------
+        "home_pair_rating": PAIR_RATING_DEFAULT,
+        "away_pair_rating": PAIR_RATING_DEFAULT,
 
         "urls_home": [""] * MAX_HISTORY_MATCHES,
         "urls_away": [""] * MAX_HISTORY_MATCHES,
@@ -881,6 +894,8 @@ def build_prediction(
     away_team: str,
     history_home: List[Dict[str, Any]],
     history_away: List[Dict[str, Any]],
+    home_pair_rating: Optional[int] = None,
+    away_pair_rating: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Единственная математическая точка страницы.
@@ -900,6 +915,10 @@ def build_prediction(
     - cards
 
     Всё приходит из FAJBrain.
+
+    Pair Rating прокидывается как входные параметры:
+        - если оба заданы → manual;
+        - если оба None   → club_rating_fallback.
     """
 
     brain = get_faj_brain()
@@ -909,6 +928,8 @@ def build_prediction(
         away_team=away_team,
         home_matches=history_home,
         away_matches=history_away,
+        home_pair_rating=home_pair_rating,
+        away_pair_rating=away_pair_rating,
     )
 
     if hasattr(result, "to_dict"):
@@ -1148,6 +1169,14 @@ def generate_prediction(
 
         return
 
+    home_pair_rating = match.get(
+        "home_pair_rating"
+    )
+
+    away_pair_rating = match.get(
+        "away_pair_rating"
+    )
+
     with st.spinner(
         "FAJ Brain анализирует матч..."
     ):
@@ -1159,6 +1188,8 @@ def generate_prediction(
                 away_team=away_team,
                 history_home=history_home,
                 history_away=history_away,
+                home_pair_rating=home_pair_rating,
+                away_pair_rating=away_pair_rating,
             )
 
         except Exception as exc:
@@ -1516,6 +1547,10 @@ def render_prediction_card(
         or {}
     )
 
+    pair_rating_source = meta.get(
+        "pair_rating_source"
+    )
+
     score_forecast = (
         meta.get("score_forecast")
         or {}
@@ -1641,11 +1676,18 @@ def render_prediction_card(
 
             gap_text = "—"
 
+        source_text = (
+            pair_rating_source
+            if pair_rating_source is not None
+            else "—"
+        )
+
         st.caption(
             f"Pair Rating: "
             f"🏠 {home_rating} — "
             f"✈️ {away_rating} "
-            f"(gap {gap_text})"
+            f"(gap {gap_text}) "
+            f"· source: {source_text}"
         )
 
     if synthesis == "STRONG_CONSENSUS":
@@ -2205,7 +2247,7 @@ def render_match_setup(
     ] = selected_away
 
     # ========================================================
-    # CLUB RATING
+    # CLUB RATING (display only)
     # ========================================================
 
     st.markdown(
@@ -2245,135 +2287,109 @@ def render_match_setup(
         )
 
     st.caption(
-        "Club Rating — структурный "
-        "рейтинг FAJ. В текущей версии "
-        "только отображается."
+        "Club Rating — справочный "
+        "структурный рейтинг FAJ. "
+        "Только отображается."
     )
 
     # ========================================================
-    # FAJ PAIR RATING (display only)
+    # FAJ PAIR RATING (manual)
     #
-    # Источник — calculation_meta["pair_rating"] и
-    # calculation_meta["winner_synthesis"] из FAJBrain.
+    # Исследовательский сигнал КОНКРЕТНОЙ пары.
+    # Вводится вручную перед прогнозом.
     #
-    # Никакого ручного ввода.
-    # Никакого расчёта на странице.
-    # До первого прогноза — прочерк и подсказка.
+    # НЕ меняет:
+    #   - xG
+    #   - GoalModel
+    #   - ProbabilityModel
+    #   - Poisson
+    #   - BTTS
+    #   - totals
+    #   - score distribution
+    #
+    # Используется ТОЛЬКО в Winner Synthesis
+    # как структурный сигнал.
+    #
+    # Default = 80/80 (это manual, а не fallback).
     # ========================================================
 
     st.markdown(
         "#### 🧠 FAJ Pair Rating"
     )
 
-    _pair_prediction = (
-        st.session_state
-        .faj_predictions
-        .get(index)
+    _home_pr_default = int(
+        match.get(
+            "home_pair_rating",
+            PAIR_RATING_DEFAULT,
+        )
     )
 
-    if not isinstance(_pair_prediction, dict):
-
-        st.caption(
-            "Pair Rating появится после расчёта прогноза."
+    _away_pr_default = int(
+        match.get(
+            "away_pair_rating",
+            PAIR_RATING_DEFAULT,
         )
+    )
+
+    _home_pr_default = max(
+        PAIR_RATING_MIN,
+        min(PAIR_RATING_MAX, _home_pr_default),
+    )
+
+    _away_pr_default = max(
+        PAIR_RATING_MIN,
+        min(PAIR_RATING_MAX, _away_pr_default),
+    )
+
+    pair_c1, pair_c2 = st.columns(2)
+
+    with pair_c1:
+
+        home_pair_rating = st.number_input(
+            f"🏠 {selected_home} — рейтинг пары",
+            min_value=PAIR_RATING_MIN,
+            max_value=PAIR_RATING_MAX,
+            value=_home_pr_default,
+            step=1,
+            key=f"home_pair_rating_{index}",
+        )
+
+    with pair_c2:
+
+        away_pair_rating = st.number_input(
+            f"✈️ {selected_away} — рейтинг пары",
+            min_value=PAIR_RATING_MIN,
+            max_value=PAIR_RATING_MAX,
+            value=_away_pr_default,
+            step=1,
+            key=f"away_pair_rating_{index}",
+        )
+
+    match["home_pair_rating"] = int(home_pair_rating)
+    match["away_pair_rating"] = int(away_pair_rating)
+
+    _gap = int(home_pair_rating) - int(away_pair_rating)
+
+    if _gap > 0:
+
+        _dir = "HOME"
+        _team = selected_home
+
+    elif _gap < 0:
+
+        _dir = "AWAY"
+        _team = selected_away
 
     else:
 
-        _pair_meta = (
-            _pair_prediction.get(
-                "calculation_meta"
-            )
-            or {}
-        )
+        _dir = "NEUTRAL"
+        _team = "—"
 
-        _pair_rating = (
-            _pair_meta.get("pair_rating")
-            or {}
-        )
-
-        _pair_ws = (
-            _pair_meta.get("winner_synthesis")
-            or {}
-        )
-
-        _pair_home_rating = _pair_rating.get(
-            "home_rating"
-        )
-
-        _pair_away_rating = _pair_rating.get(
-            "away_rating"
-        )
-
-        _pair_gap = _pair_rating.get(
-            "rating_gap"
-        )
-
-        _pair_direction = (
-            _pair_rating.get("winner_direction")
-            or _pair_ws.get("pair_rating_direction")
-            or "—"
-        )
-
-        _pair_strength = (
-            _pair_rating.get("direction_strength")
-            or _pair_ws.get("pair_rating_strength")
-            or "—"
-        )
-
-        _pair_team = (
-            _pair_rating.get("direction_team")
-            or "—"
-        )
-
-        _pair_pr_c1, _pair_pr_c2 = (
-            st.columns(2)
-        )
-
-        with _pair_pr_c1:
-
-            st.metric(
-                f"🏠 {selected_home}",
-                (
-                    _pair_home_rating
-                    if _pair_home_rating is not None
-                    else "—"
-                ),
-            )
-
-        with _pair_pr_c2:
-
-            st.metric(
-                f"✈️ {selected_away}",
-                (
-                    _pair_away_rating
-                    if _pair_away_rating is not None
-                    else "—"
-                ),
-            )
-
-        _pair_gap_text = "—"
-
-        if _pair_gap is not None:
-
-            try:
-
-                _pair_gap_text = (
-                    f"{int(_pair_gap):+d}"
-                )
-
-            except (
-                TypeError,
-                ValueError,
-            ):
-
-                _pair_gap_text = "—"
-
-        st.caption(
-            f"Направление: "
-            f"{_pair_team} "
-            f"({_pair_direction} / {_pair_strength}) "
-            f"· gap {_pair_gap_text}"
-        )
+    st.caption(
+        f"Направление пары: {_team} "
+        f"({_dir}, gap {_gap:+d}) "
+        f"· source: manual"
+    )
 
     # ========================================================
     # DATE
