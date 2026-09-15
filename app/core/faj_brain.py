@@ -2173,12 +2173,12 @@ class FAJBrain:
         # 2. Canonical FormContext
         # ====================================================
 
-        home_form_context = self._build_form(
+        home_form_context = _build_form(
             home_team,
             home_history,
         )
 
-        away_form_context = self._build_form(
+        away_form_context = _build_form(
             away_team,
             away_history,
         )
