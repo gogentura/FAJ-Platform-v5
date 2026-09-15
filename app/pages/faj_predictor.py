@@ -14,27 +14,33 @@ FAJ PREDICTOR — NEW ANALYTICAL INTERFACE
         ↓
     FACT COLLECTION
         ↓
-    FormContext
+    FAJBrain.predict()
         ↓
-    FormModel
+    BrainPrediction
         ↓
-    FormWin
-        ↓
-    Defence
-        ↓
-    GoalModel v6.0
-        ↓
-    Poisson
-        ↓
-    1X2 / BTTS / TOTALS / SCORE
-        ↓
-    CornersModel
-        ↓
-    CardsModel
-        ↓
-    Pair Rating + Winner Signal
-        ↓
-    FINAL ANALYSIS
+    ТОЛЬКО ОТОБРАЖЕНИЕ
+
+Страница НЕ рассчитывает ничего математически:
+
+    ❌ Poisson
+    ❌ score_distribution
+    ❌ result_probabilities
+    ❌ total_probabilities
+    ❌ over_probability
+    ❌ GoalModel
+    ❌ FormModel
+    ❌ FormWin
+    ❌ Defence
+    ❌ CornersModel
+    ❌ CardsModel
+    ❌ PairRating calculation
+    ❌ Winner Signal calculation
+    ❌ confidence calculation
+    ❌ risk calculation
+    ❌ Football Data API
+
+Единственный источник математического результата —
+FAJ Brain.
 
 НЕ ИСПОЛЬЗУЕТ:
 
@@ -69,39 +75,26 @@ import streamlit.components.v1 as components
 from app.parsers.soccer365_parser import Soccer365Parser
 
 # ============================================================
-# MATHEMATICAL ORGANS
-# ============================================================
-
-from app.core.form_model import FormModel
-from app.core.form_win import FormWin
-from app.core.defence import Defence
-from app.core.goal_model import GoalModel
-from app.core.corners_model import CornersModel
-from app.core.cards_model import CardsModel
-
-from app.core.pair_rating import calculate_pair_rating
-
-from app.faj_club_ratings import get_team_rating
-
-# ============================================================
-# FOOTBALL DATA API (независимый дополнительный источник)
-# ============================================================
-
-from app.api.football_data import get_team_matches
-
-# ============================================================
-# FAJ BRAIN (diagnostic-only bridge)
+# FAJ BRAIN — единственный источник математики
 # ============================================================
 
 from app.core.faj_brain import FAJBrain
 
 # ============================================================
+# CLUB RATING (display only)
+# ============================================================
+
+from app.faj_club_ratings import get_team_rating
+
+
+# ============================================================
 # VERSION
 # ============================================================
 
-PREDICTOR_VERSION = "FAJ-PREDICTOR-1.0"
+PREDICTOR_VERSION = "FAJ-PREDICTOR-1.1"
 
 HISTORY_SIZE = 6
+
 
 # ============================================================
 # PAGE CONFIG
@@ -113,6 +106,7 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+
 
 # ============================================================
 # MOBILE CSS
@@ -373,6 +367,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+
 # ============================================================
 # HELPERS
 # ============================================================
@@ -397,6 +392,7 @@ def safe_float(value: Any) -> Optional[float]:
 
     return None
 
+
 def safe_int(value: Any) -> Optional[int]:
 
     value = safe_float(value)
@@ -406,15 +402,27 @@ def safe_int(value: Any) -> Optional[int]:
 
     return int(round(value))
 
+
 def probability(value: Optional[float]) -> Optional[float]:
+    """
+    Клампит значение в [0, 100].
+
+    ВАЖНО:
+        BrainPrediction уже отдаёт *проценты* для
+        *_probability полей (home_win_probability,
+        btts_probability, over25_probability и т.д.),
+        поэтому повторное умножение на 100 здесь
+        НЕ делается.
+    """
 
     if value is None:
         return None
 
     return round(
-        max(0.0, min(1.0, float(value))) * 100.0,
+        max(0.0, min(100.0, float(value))),
         1,
     )
+
 
 def value(obj: Any, *names: str) -> Any:
 
@@ -446,6 +454,7 @@ def value(obj: Any, *names: str) -> Any:
 
     return None
 
+
 def nested(
     obj: Any,
     *names: str,
@@ -465,173 +474,6 @@ def nested(
 
     return current
 
-# ============================================================
-# SCORE
-# ============================================================
-
-def poisson(
-    goals: int,
-    expected: float,
-) -> float:
-
-    if expected is None:
-        return 0.0
-
-    if expected < 0:
-        return 0.0
-
-    return (
-        math.exp(-expected)
-        * expected ** goals
-        / math.factorial(goals)
-    )
-
-def score_distribution(
-    home_xg: float,
-    away_xg: float,
-    max_goals: int = 7,
-) -> List[Dict[str, Any]]:
-
-    scores = []
-
-    for home in range(max_goals + 1):
-
-        hp = poisson(
-            home,
-            home_xg,
-        )
-
-        for away in range(max_goals + 1):
-
-            ap = poisson(
-                away,
-                away_xg,
-            )
-
-            scores.append(
-                {
-                    "home": home,
-                    "away": away,
-                    "probability": hp * ap,
-                }
-            )
-
-    scores.sort(
-        key=lambda x: x["probability"],
-        reverse=True,
-    )
-
-    return scores
-
-def result_probabilities(
-    home_xg: float,
-    away_xg: float,
-) -> Dict[str, float]:
-
-    scores = score_distribution(
-        home_xg,
-        away_xg,
-    )
-
-    home = 0.0
-    draw = 0.0
-    away = 0.0
-
-    for item in scores:
-
-        p = item["probability"]
-
-        if item["home"] > item["away"]:
-            home += p
-
-        elif item["home"] == item["away"]:
-            draw += p
-
-        else:
-            away += p
-
-    total = home + draw + away
-
-    if total <= 0:
-        return {
-            "home": 1 / 3,
-            "draw": 1 / 3,
-            "away": 1 / 3,
-        }
-
-    return {
-        "home": home / total,
-        "draw": draw / total,
-        "away": away / total,
-    }
-
-def total_probabilities(
-    home_xg: float,
-    away_xg: float,
-) -> Dict[str, float]:
-
-    scores = score_distribution(
-        home_xg,
-        away_xg,
-    )
-
-    btts = 0.0
-    over25 = 0.0
-    over35 = 0.0
-
-    for item in scores:
-
-        p = item["probability"]
-
-        total = (
-            item["home"]
-            + item["away"]
-        )
-
-        if (
-            item["home"] >= 1
-            and item["away"] >= 1
-        ):
-            btts += p
-
-        if total >= 3:
-            over25 += p
-
-        if total >= 4:
-            over35 += p
-
-    return {
-        "btts": btts,
-        "over25": over25,
-        "over35": over35,
-    }
-
-def over_probability(
-    expected: Optional[float],
-    line: float,
-) -> Optional[float]:
-
-    if expected is None:
-        return None
-
-    under = 0.0
-
-    for goals in range(0, 20):
-
-        if goals <= math.floor(line):
-
-            under += poisson(
-                goals,
-                expected,
-            )
-
-    return max(
-        0.0,
-        min(
-            1.0,
-            1.0 - under,
-        ),
-    )
 
 # ============================================================
 # PARSER → MATCH FACT
@@ -665,6 +507,7 @@ def parse_match(
     result["stats"] = stats
 
     return result
+
 
 # ============================================================
 # BUILD TEAM MATCH RECORD
@@ -1032,334 +875,6 @@ def build_team_record(
             extra,
     }
 
-# ============================================================
-# BUILD FORM CONTEXT
-# ============================================================
-
-def build_form_context(
-    team_name: str,
-    records: List[Dict[str, Any]],
-) -> Dict[str, Any]:
-    """
-    Canonical adapter from collected factual matches
-    to FormModel / FormWin / Defence.
-
-    История:
-        oldest → newest
-
-    Последний матч находится последним.
-    """
-
-    records = list(records)[-HISTORY_SIZE:]
-
-    context: Dict[str, Any] = {
-
-        "team":
-            team_name,
-
-        "team_name":
-            team_name,
-
-        "matches_count":
-            len(records),
-
-        "goals_for_history": [],
-        "goals_against_history": [],
-
-        "recent_xg": [],
-        "recent_xga": [],
-
-        "team_xg_history": [],
-        "opponent_xg_history": [],
-
-        "shots_history": [],
-        "shots_conceded_history": [],
-
-        "shots_on_target_history": [],
-        "sot_conceded_history": [],
-
-        "blocked_shots_history": [],
-        "blocked_shots_conceded_history": [],
-
-        "big_chances_history": [],
-        "big_chances_against_history": [],
-
-        "possession_history": [],
-        "opponent_possession_history": [],
-
-        "corners_for_history": [],
-        "corners_against_history": [],
-
-        "passes_history": [],
-        "opponent_passes_history": [],
-
-        "pass_accuracy_history": [],
-        "opponent_pass_accuracy_history": [],
-
-        "fouls_history": [],
-        "offsides_history": [],
-
-        "team_cards_history": [],
-        "opponent_cards_history": [],
-
-        "venue_history": [],
-        "results_history": [],
-    }
-
-    for record in records:
-
-        extra = record.get(
-            "extra",
-            {},
-        )
-
-        context[
-            "goals_for_history"
-        ].append(
-            record.get(
-                "goals_for"
-            )
-        )
-
-        context[
-            "goals_against_history"
-        ].append(
-            record.get(
-                "goals_against"
-            )
-        )
-
-        context[
-            "recent_xg"
-        ].append(
-            record.get("xg")
-        )
-
-        context[
-            "recent_xga"
-        ].append(
-            record.get("xga")
-        )
-
-        context[
-            "team_xg_history"
-        ].append(
-            record.get("xg")
-        )
-
-        context[
-            "opponent_xg_history"
-        ].append(
-            record.get("xga")
-        )
-
-        context[
-            "shots_history"
-        ].append(
-            extra.get("shots")
-        )
-
-        context[
-            "shots_conceded_history"
-        ].append(
-            extra.get(
-                "opponent_shots"
-            )
-        )
-
-        context[
-            "shots_on_target_history"
-        ].append(
-            extra.get(
-                "shots_on_target"
-            )
-        )
-
-        context[
-            "sot_conceded_history"
-        ].append(
-            extra.get(
-                "opponent_shots_on_target"
-            )
-        )
-
-        context[
-            "blocked_shots_history"
-        ].append(
-            extra.get(
-                "blocked_shots"
-            )
-        )
-
-        context[
-            "blocked_shots_conceded_history"
-        ].append(
-            extra.get(
-                "opponent_blocked_shots"
-            )
-        )
-
-        context[
-            "big_chances_history"
-        ].append(
-            extra.get(
-                "big_chances"
-            )
-        )
-
-        context[
-            "big_chances_against_history"
-        ].append(
-            extra.get(
-                "opponent_big_chances"
-            )
-        )
-
-        context[
-            "possession_history"
-        ].append(
-            extra.get(
-                "possession"
-            )
-        )
-
-        context[
-            "opponent_possession_history"
-        ].append(
-            extra.get(
-                "opponent_possession"
-            )
-        )
-
-        context[
-            "corners_for_history"
-        ].append(
-            extra.get(
-                "corners"
-            )
-        )
-
-        context[
-            "corners_against_history"
-        ].append(
-            extra.get(
-                "opponent_corners"
-            )
-        )
-
-        context[
-            "passes_history"
-        ].append(
-            extra.get(
-                "passes"
-            )
-        )
-
-        context[
-            "opponent_passes_history"
-        ].append(
-            extra.get(
-                "opponent_passes"
-            )
-        )
-
-        context[
-            "pass_accuracy_history"
-        ].append(
-            extra.get(
-                "pass_accuracy"
-            )
-        )
-
-        context[
-            "opponent_pass_accuracy_history"
-        ].append(
-            extra.get(
-                "opponent_pass_accuracy"
-            )
-        )
-
-        context[
-            "fouls_history"
-        ].append(
-            extra.get(
-                "fouls"
-            )
-        )
-
-        context[
-            "offsides_history"
-        ].append(
-            extra.get(
-                "offsides"
-            )
-        )
-
-        context[
-            "team_cards_history"
-        ].append(
-            extra.get(
-                "yellow_cards"
-            )
-        )
-
-        context[
-            "opponent_cards_history"
-        ].append(
-            extra.get(
-                "opponent_yellow_cards"
-            )
-        )
-
-        context[
-            "venue_history"
-        ].append(
-            record.get(
-                "venue"
-            )
-        )
-
-        context[
-            "results_history"
-        ].append(
-            record.get(
-                "result"
-            )
-        )
-
-    # --------------------------------------------------------
-    # Legacy-compatible aliases
-    # --------------------------------------------------------
-
-    context[
-        "xg_history"
-    ] = list(
-        context["recent_xg"]
-    )
-
-    context[
-        "xga_history"
-    ] = list(
-        context["recent_xga"]
-    )
-
-    context[
-        "goals_for"
-    ] = list(
-        context[
-            "goals_for_history"
-        ]
-    )
-
-    context[
-        "goals_against"
-    ] = list(
-        context[
-            "goals_against_history"
-        ]
-    )
-
-    return context
 
 # ============================================================
 # COLLECT HISTORY
@@ -1456,8 +971,9 @@ def collect_history(
         errors,
     )
 
+
 # ============================================================
-# MATHEMATICAL ENGINE
+# FAJ BRAIN — CANONICAL PREDICTION
 # ============================================================
 
 def calculate_prediction(
@@ -1465,698 +981,35 @@ def calculate_prediction(
     away_team: str,
     home_records: List[Dict[str, Any]],
     away_records: List[Dict[str, Any]],
-    home_pair_rating: int = 80,
-    away_pair_rating: int = 80,
 ) -> Dict[str, Any]:
+    """
+    Единственная точка математического расчёта страницы.
 
-    home_context = build_form_context(
-        home_team,
-        home_records,
-    )
+    Все xG / Poisson / 1X2 / BTTS / totals /
+    exact scores / Winner Synthesis / Pair Rating /
+    Corners / Cards / confidence / risk
 
-    away_context = build_form_context(
-        away_team,
-        away_records,
-    )
+    приходят только из FAJBrain.
 
-    # ========================================================
-    # FORM MODEL
-    # ========================================================
+    Predictor ничего не пересчитывает.
+    """
 
-    form_model = FormModel()
+    brain = FAJBrain()
 
-    home_form = form_model.analyze(
-        home_context,
-        next_venue="home",
-    )
-
-    away_form = form_model.analyze(
-        away_context,
-        next_venue="away",
-    )
-
-    # ========================================================
-    # FORM WIN
-    # ========================================================
-
-    form_win = FormWin()
-
-    home_form_win = form_win.analyze(
-        home_context,
-        next_venue="home",
-    )
-
-    away_form_win = form_win.analyze(
-        away_context,
-        next_venue="away",
-    )
-
-    form_win_comparison = form_win.compare(
-        home_context,
-        away_context,
-    )
-
-    # ========================================================
-    # DEFENCE
-    # ========================================================
-
-    defence = Defence()
-
-    home_defence = defence.calculate(
-        home_context,
-        team_name=home_team,
-    )
-
-    away_defence = defence.calculate(
-        away_context,
-        team_name=away_team,
-    )
-
-    # ========================================================
-    # GOAL MODEL
-    # ========================================================
-
-    goal_model = GoalModel()
-
-    goal_result = goal_model.analyze(
-        home_form,
-        away_form,
+    result = brain.predict(
         home_team=home_team,
         away_team=away_team,
-        venue="HOME",
-        home_form_win=home_form_win,
-        away_form_win=away_form_win,
-        home_defence=home_defence,
-        away_defence=away_defence,
+        home_matches=home_records,
+        away_matches=away_records,
     )
 
-    home_xg = safe_float(
-        value(
-            goal_result,
-            "home_xg",
-        )
-    )
-
-    away_xg = safe_float(
-        value(
-            goal_result,
-            "away_xg",
-        )
-    )
-
-    if home_xg is None:
-        raise ValueError(
-            "GoalModel не рассчитал home xG. "
-            "Проверь наличие xG/xGA."
+    if not isinstance(result, dict):
+        raise TypeError(
+            "FAJBrain.predict() должен вернуть dict."
         )
 
-    if away_xg is None:
-        raise ValueError(
-            "GoalModel не рассчитал away xG. "
-            "Проверь наличие xG/xGA."
-        )
+    return result
 
-    # ========================================================
-    # 1X2
-    # ========================================================
-
-    probabilities = result_probabilities(
-        home_xg,
-        away_xg,
-    )
-
-    # ========================================================
-    # TOTALS
-    # ========================================================
-
-    totals = total_probabilities(
-        home_xg,
-        away_xg,
-    )
-
-    # ========================================================
-    # SCORE
-    # ========================================================
-
-    scores = score_distribution(
-        home_xg,
-        away_xg,
-    )
-
-    top_scores = scores[:3]
-
-    # ========================================================
-    # CORNERS
-    # ========================================================
-
-    corners_model = CornersModel()
-
-    corners_result = (
-        corners_model.synthesize_match(
-            home_context,
-            away_context,
-        )
-    )
-
-    home_corners = safe_float(
-        nested(
-            corners_result,
-            "home",
-            "home_corners_expected",
-        )
-    )
-
-    away_corners = safe_float(
-        nested(
-            corners_result,
-            "away",
-            "away_corners_expected",
-        )
-    )
-
-    total_corners = safe_float(
-        corners_result.get(
-            "total_expected_corners"
-        )
-        if isinstance(
-            corners_result,
-            dict,
-        )
-        else None
-    )
-
-    # ========================================================
-    # CARDS
-    # ========================================================
-
-    cards_model = CardsModel()
-
-    cards_result = (
-        cards_model.synthesize_match(
-            home_context,
-            away_context,
-        )
-    )
-
-    home_cards = safe_float(
-        nested(
-            cards_result,
-            "home",
-            "home_cards_expected",
-        )
-    )
-
-    away_cards = safe_float(
-        nested(
-            cards_result,
-            "away",
-            "away_cards_expected",
-        )
-    )
-
-    total_cards = safe_float(
-        cards_result.get(
-            "total_expected_cards"
-        )
-        if isinstance(
-            cards_result,
-            dict,
-        )
-        else None
-    )
-
-    # ========================================================
-    # DATA QUALITY
-    # ========================================================
-
-    def history_quality(
-        records: List[Dict[str, Any]],
-    ) -> float:
-
-        if not records:
-            return 0.0
-
-        fields = [
-
-            "goals_for",
-            "goals_against",
-            "xg",
-            "xga",
-
-        ]
-
-        available = 0
-        total = (
-            len(records)
-            * len(fields)
-        )
-
-        for record in records:
-
-            for field in fields:
-
-                if record.get(
-                    field
-                ) is not None:
-
-                    available += 1
-
-        completeness = (
-            available / total
-            if total
-            else 0.0
-        )
-
-        count_factor = min(
-            len(records)
-            / HISTORY_SIZE,
-            1.0,
-        )
-
-        return round(
-            (
-                0.65 * count_factor
-                + 0.35 * completeness
-            )
-            * 100.0,
-            1,
-        )
-
-    home_quality = history_quality(
-        home_records
-    )
-
-    away_quality = history_quality(
-        away_records
-    )
-
-    data_quality = round(
-        (
-            home_quality
-            + away_quality
-        ) / 2.0,
-        1,
-    )
-
-    # ========================================================
-    # CONFIDENCE
-    # ========================================================
-
-    ordered = sorted(
-        probabilities.values(),
-        reverse=True,
-    )
-
-    separation = (
-        ordered[0]
-        - ordered[1]
-    )
-
-    separation_score = min(
-        100.0,
-        max(
-            0.0,
-            separation / 0.45 * 100.0,
-        ),
-    )
-
-    confidence = round(
-        (
-            0.55 * data_quality
-            + 0.45 * separation_score
-        ),
-        1,
-    )
-
-    if data_quality < 35:
-        risk = "Высокий"
-
-    elif confidence < 45:
-        risk = "Высокий"
-
-    elif confidence < 65:
-        risk = "Средний"
-
-    else:
-        risk = "Низкий"
-
-    # ========================================================
-    # ANALYSIS MODE
-    # ========================================================
-
-    sample = min(
-        len(home_records),
-        len(away_records),
-    )
-
-    if sample >= 6:
-        analysis_mode = "Расширенный"
-
-    elif sample >= 3:
-        analysis_mode = "Базовый+"
-
-    elif sample >= 2:
-        analysis_mode = "Базовый"
-
-    else:
-        analysis_mode = "Экспресс"
-
-    # ========================================================
-    # FAVORITE
-    # ========================================================
-
-    if (
-        probabilities["home"]
-        >= probabilities["away"]
-        and probabilities["home"]
-        >= probabilities["draw"]
-    ):
-
-        favorite = home_team
-
-    elif (
-        probabilities["away"]
-        >= probabilities["home"]
-        and probabilities["away"]
-        >= probabilities["draw"]
-    ):
-
-        favorite = away_team
-
-    else:
-
-        favorite = "Равновесие"
-
-    # ========================================================
-    # CONCLUSION
-    # ========================================================
-
-    factors = []
-
-    if favorite == home_team:
-
-        factors.append(
-            f"Преимущество {home_team}."
-        )
-
-    elif favorite == away_team:
-
-        factors.append(
-            f"Преимущество {away_team}."
-        )
-
-    else:
-
-        factors.append(
-            "Явного фаворита нет."
-        )
-
-    if totals["btts"] >= 0.60:
-
-        factors.append(
-            "Повышенная вероятность BTTS."
-        )
-
-    elif totals["btts"] <= 0.40:
-
-        factors.append(
-            "BTTS выглядит менее вероятным."
-        )
-
-    if totals["over25"] >= 0.60:
-
-        factors.append(
-            "Сценарий 3+ голов имеет "
-            "повышенную вероятность."
-        )
-
-    elif totals["over25"] <= 0.40:
-
-        factors.append(
-            "Модель склоняется к умеренной "
-            "результативности."
-        )
-
-    conclusion = " ".join(
-        factors
-    )
-
-    # ========================================================
-    # PAIR RATING
-    # ========================================================
-
-    try:
-
-        pair_rating = calculate_pair_rating(
-            home_rating=int(home_pair_rating),
-            away_rating=int(away_pair_rating),
-            home_team=home_team,
-            away_team=away_team,
-        )
-
-        pair_rating_dict = pair_rating.to_dict()
-
-        pair_direction = pair_rating.winner_direction
-        pair_team = pair_rating.direction_team
-        pair_strength = pair_rating.direction_strength
-
-    except Exception:
-
-        pair_rating = None
-        pair_rating_dict = None
-
-        pair_direction = None
-        pair_team = None
-        pair_strength = None
-
-    # ========================================================
-    # WINNER SIGNAL
-    # ========================================================
-
-    if pair_rating is None:
-
-        agreement = "MODEL_ONLY"
-        final_winner = favorite
-
-    elif pair_rating.winner_direction == "NEUTRAL":
-
-        agreement = "PAIR_NEUTRAL"
-        final_winner = favorite
-
-    elif pair_rating.direction_team == favorite:
-
-        agreement = "AGREE"
-        final_winner = favorite
-
-    else:
-
-        agreement = "CONFLICT"
-        final_winner = "CONFLICT"
-
-    winner_signal = {
-
-        "model_favorite":
-            favorite,
-
-        "pair_direction":
-            pair_direction,
-
-        "pair_team":
-            pair_team,
-
-        "pair_strength":
-            pair_strength,
-
-        "agreement":
-            agreement,
-
-        "final_winner":
-            final_winner,
-    }
-
-    # ========================================================
-    # CLUB RATING (display only)
-    # ========================================================
-
-    club_rating = {
-
-        "home":
-            get_team_rating(home_team),
-
-        "away":
-            get_team_rating(away_team),
-    }
-
-    return {
-
-        "version":
-            PREDICTOR_VERSION,
-
-        "home_team":
-            home_team,
-
-        "away_team":
-            away_team,
-
-        "home_matches":
-            len(home_records),
-
-        "away_matches":
-            len(away_records),
-
-        "home_xg":
-            home_xg,
-
-        "away_xg":
-            away_xg,
-
-        "home_win":
-            probabilities["home"],
-
-        "draw":
-            probabilities["draw"],
-
-        "away_win":
-            probabilities["away"],
-
-        "btts":
-            totals["btts"],
-
-        "over25":
-            totals["over25"],
-
-        "over35":
-            totals["over35"],
-
-        "scores":
-            top_scores,
-
-        "home_corners":
-            home_corners,
-
-        "away_corners":
-            away_corners,
-
-        "total_corners":
-            total_corners,
-
-        "over75_corners":
-            over_probability(
-                total_corners,
-                7.5,
-            ),
-
-        "over85_corners":
-            over_probability(
-                total_corners,
-                8.5,
-            ),
-
-        "over95_corners":
-            over_probability(
-                total_corners,
-                9.5,
-            ),
-
-        "over105_corners":
-            over_probability(
-                total_corners,
-                10.5,
-            ),
-
-        "home_cards":
-            home_cards,
-
-        "away_cards":
-            away_cards,
-
-        "total_cards":
-            total_cards,
-
-        "over25_cards":
-            over_probability(
-                total_cards,
-                2.5,
-            ),
-
-        "over35_cards":
-            over_probability(
-                total_cards,
-                3.5,
-            ),
-
-        "over45_cards":
-            over_probability(
-                total_cards,
-                4.5,
-            ),
-
-        "confidence":
-            confidence,
-
-        "risk":
-            risk,
-
-        "analysis_mode":
-            analysis_mode,
-
-        "data_quality":
-            data_quality,
-
-        "favorite":
-            favorite,
-
-        "pair_rating":
-            pair_rating_dict,
-
-        "winner_signal":
-            winner_signal,
-
-        "club_rating":
-            club_rating,
-
-        "conclusion":
-            conclusion,
-
-        "factors":
-            factors,
-
-        "home_form":
-            home_form,
-
-        "away_form":
-            away_form,
-
-        "home_form_win":
-            home_form_win,
-
-        "away_form_win":
-            away_form_win,
-
-        "form_win_comparison":
-            form_win_comparison,
-
-        "home_defence":
-            home_defence,
-
-        "away_defence":
-            away_defence,
-
-        "goal_result":
-            goal_result,
-
-        "corners_result":
-            corners_result,
-
-        "cards_result":
-            cards_result,
-
-        "home_context":
-            home_context,
-
-        "away_context":
-            away_context,
-    }
 
 # ============================================================
 # SESSION STATE
@@ -2174,6 +1027,7 @@ if "faj_away_records" not in st.session_state:
 if "faj_collection_errors" not in st.session_state:
     st.session_state.faj_collection_errors = []
 
+
 # ============================================================
 # HEADER
 # ============================================================
@@ -2183,12 +1037,13 @@ st.markdown(
 <div class="faj-header">
     <div class="faj-title">⚽ FAJ Predictor</div>
     <div class="faj-subtitle">
-        Independent analytical brain · Form · Defence · xG · Score · Corners · Cards
+        Единый математический мозг — FAJ Brain · Form · Defence · xG · Score · Corners · Cards
     </div>
 </div>
 """,
     unsafe_allow_html=True,
 )
+
 
 # ============================================================
 # MATCH INPUT
@@ -2215,8 +1070,9 @@ with right:
         key="faj_away_team",
     )
 
+
 # ============================================================
-# FAJ CLUB RATING + FAJ PAIR RATING
+# FAJ CLUB RATING (display only)
 # ============================================================
 
 _home_club_rating = (
@@ -2270,34 +1126,10 @@ with club_c2:
         unsafe_allow_html=True,
     )
 
-st.markdown(
-    '<div class="section-title">FAJ Pair Rating</div>',
-    unsafe_allow_html=True,
-)
 
-pair_c1, pair_c2 = st.columns(2, gap="small")
-
-with pair_c1:
-
-    home_pair_rating = st.number_input(
-        f"{home_team or 'Хозяева'} — рейтинг",
-        min_value=60,
-        max_value=100,
-        value=80,
-        step=1,
-        key="faj_home_pair_rating",
-    )
-
-with pair_c2:
-
-    away_pair_rating = st.number_input(
-        f"{away_team or 'Гости'} — рейтинг",
-        min_value=60,
-        max_value=100,
-        value=80,
-        step=1,
-        key="faj_away_pair_rating",
-    )
+# ============================================================
+# HISTORY INPUT
+# ============================================================
 
 st.markdown(
     '<div class="section-title">История хозяев — последние 6 матчей</div>',
@@ -2331,6 +1163,7 @@ away_url_text = st.text_area(
     label_visibility="collapsed",
 )
 
+
 # ============================================================
 # ACTION
 # ============================================================
@@ -2341,88 +1174,6 @@ predict_clicked = st.button(
     use_container_width=True,
 )
 
-# ============================================================
-# FOOTBALL DATA API — ДОПОЛНИТЕЛЬНЫЙ ИСТОЧНИК
-# ============================================================
-#
-# Независимый Scout/Context источник.
-#
-# НЕ влияет на:
-#   - GoalModel
-#   - ProbabilityModel
-#   - ScorePredictor
-#   - FAJ Brain
-#
-# Данные сохраняются ТОЛЬКО в st.session_state
-# и только отображаются.
-#
-# ============================================================
-
-st.divider()
-st.subheader("⚽ Дополнительный источник")
-
-if st.button(
-    "⚽ Загрузить из Football Data API",
-    key="load_football_data_api",
-    use_container_width=True,
-):
-    try:
-        home_api_matches = get_team_matches(home_team, limit=6)
-        away_api_matches = get_team_matches(away_team, limit=6)
-
-        st.session_state["football_data_api_home"] = home_api_matches
-        st.session_state["football_data_api_away"] = away_api_matches
-
-        st.success(
-            f"Football Data API: загружено "
-            f"{len(home_api_matches)} матчей {home_team} и "
-            f"{len(away_api_matches)} матчей {away_team}."
-        )
-
-    except Exception as exc:
-        st.error(f"❌ Football Data API: {exc}")
-
-# ============================================================
-# FOOTBALL DATA API — ОТОБРАЖЕНИЕ РЕЗУЛЬТАТА
-# ============================================================
-
-api_home = st.session_state.get("football_data_api_home", [])
-api_away = st.session_state.get("football_data_api_away", [])
-
-if api_home or api_away:
-    left_api, right_api = st.columns(2)
-
-    with left_api:
-        st.markdown(f"**{home_team} — Football Data API**")
-        for match in api_home:
-            hs = match.get("home_score")
-            aws = match.get("away_score")
-            score = (
-                f"{hs}:{aws}"
-                if hs is not None and aws is not None
-                else "—"
-            )
-            st.caption(
-                f"{match.get('date', '—')} · "
-                f"{match.get('home', '—')} — {match.get('away', '—')} · "
-                f"{score}"
-            )
-
-    with right_api:
-        st.markdown(f"**{away_team} — Football Data API**")
-        for match in api_away:
-            hs = match.get("home_score")
-            aws = match.get("away_score")
-            score = (
-                f"{hs}:{aws}"
-                if hs is not None and aws is not None
-                else "—"
-            )
-            st.caption(
-                f"{match.get('date', '—')} · "
-                f"{match.get('home', '—')} — {match.get('away', '—')} · "
-                f"{score}"
-            )
 
 # ============================================================
 # PREDICT
@@ -2543,7 +1294,7 @@ if predict_clicked:
         st.stop()
 
     # --------------------------------------------------------
-    # CALCULATION
+    # CANONICAL CALCULATION — FAJ BRAIN ONLY
     # --------------------------------------------------------
 
     try:
@@ -2553,54 +1304,14 @@ if predict_clicked:
             away_team.strip(),
             home_records,
             away_records,
-            home_pair_rating=home_pair_rating,
-            away_pair_rating=away_pair_rating,
         )
-
-        # --------------------------------------------------------
-        # FAJ BRAIN — DIAGNOSTIC ONLY
-        # --------------------------------------------------------
-        # The existing Predictor 1.0 remains the primary result.
-        # Brain failure must never break the existing prediction.
-        brain_result = None
-        brain_error = None
-
-        try:
-            brain = FAJBrain()
-            brain_result = brain.predict(
-                home_team=home_team.strip(),
-                away_team=away_team.strip(),
-                home_matches=home_records,
-                away_matches=away_records,
-            )
-        except Exception as brain_exc:
-            brain_error = f"{type(brain_exc).__name__}: {brain_exc}"
-
-        prediction["brain_result"] = brain_result
-        prediction["brain_error"] = brain_error
-
-        if isinstance(brain_result, dict):
-            _brain_meta = brain_result.get("calculation_meta") or {}
-            prediction["brain_calculation_meta"] = _brain_meta
-            prediction["brain_winner_synthesis"] = (
-                _brain_meta.get("winner_synthesis")
-                or brain_result.get("winner_synthesis")
-            )
-            prediction["brain_pair_rating"] = (
-                _brain_meta.get("pair_rating")
-                or brain_result.get("pair_rating")
-            )
-        else:
-            prediction["brain_calculation_meta"] = {}
-            prediction["brain_winner_synthesis"] = None
-            prediction["brain_pair_rating"] = None
 
     except Exception as exc:
 
         progress.empty()
 
         st.error(
-            f"Ошибка математического расчёта: {exc}"
+            f"Ошибка расчёта FAJ Brain: {exc}"
         )
 
         st.exception(exc)
@@ -2609,7 +1320,7 @@ if predict_clicked:
 
     progress.progress(
         100,
-        text="FAJ расчёт завершён.",
+        text="FAJ Brain расчёт завершён.",
     )
 
     progress.empty()
@@ -2630,6 +1341,7 @@ if predict_clicked:
         all_errors
     )
 
+
 # ============================================================
 # RESULT
 # ============================================================
@@ -2646,6 +1358,7 @@ if prediction is None:
     )
 
     st.stop()
+
 
 # ============================================================
 # ERRORS / WARNINGS
@@ -2667,6 +1380,37 @@ if collection_errors:
                 f"• {error}"
             )
 
+
+# ============================================================
+# META EXTRACTION
+# ============================================================
+
+_meta = prediction.get(
+    "calculation_meta",
+    {},
+) or {}
+
+_winner_synthesis = _meta.get(
+    "winner_synthesis",
+) or {}
+
+_pair_rating = _meta.get(
+    "pair_rating",
+) or {}
+
+_score_forecast = _meta.get(
+    "score_forecast",
+) or {}
+
+_goal_model_meta = _meta.get(
+    "goal_model",
+) or {}
+
+_top_scores = _score_forecast.get(
+    "top_scores",
+) or []
+
+
 # ============================================================
 # TOP MATCH CARD
 # ============================================================
@@ -2676,20 +1420,21 @@ st.markdown(
 <div class="result-card">
 
     <div class="result-main">
-        {prediction["home_team"]}
+        {prediction.get("home_team", "—")}
         &nbsp; — &nbsp;
-        {prediction["away_team"]}
+        {prediction.get("away_team", "—")}
     </div>
 
     <div class="result-caption">
-        {prediction["analysis_mode"]}
-        · история {prediction["home_matches"]} / {prediction["away_matches"]}
+        {prediction.get("analysis_mode", "—")}
+        · история {prediction.get("home_matches", 0)} / {prediction.get("away_matches", 0)}
     </div>
 
 </div>
 """,
     unsafe_allow_html=True,
 )
+
 
 # ============================================================
 # 1X2
@@ -2707,14 +1452,15 @@ c1, c2, c3 = st.columns(
 
 with c1:
 
+    _hp = probability(prediction.get("home_win_probability"))
     st.markdown(
         f"""
         <div class="metric">
             <div class="metric-value">
-                {probability(prediction["home_win"]):.1f}%
+                {f"{_hp:.1f}%" if _hp is not None else "—"}
             </div>
             <div class="metric-label">
-                {prediction["home_team"]}
+                {prediction.get("home_team", "—")}
             </div>
         </div>
         """,
@@ -2723,11 +1469,12 @@ with c1:
 
 with c2:
 
+    _dp = probability(prediction.get("draw_probability"))
     st.markdown(
         f"""
         <div class="metric">
             <div class="metric-value">
-                {probability(prediction["draw"]):.1f}%
+                {f"{_dp:.1f}%" if _dp is not None else "—"}
             </div>
             <div class="metric-label">
                 НИЧЬЯ
@@ -2739,19 +1486,21 @@ with c2:
 
 with c3:
 
+    _ap = probability(prediction.get("away_win_probability"))
     st.markdown(
         f"""
         <div class="metric">
             <div class="metric-value">
-                {probability(prediction["away_win"]):.1f}%
+                {f"{_ap:.1f}%" if _ap is not None else "—"}
             </div>
             <div class="metric-label">
-                {prediction["away_team"]}
+                {prediction.get("away_team", "—")}
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
 
 # ============================================================
 # XG
@@ -2767,16 +1516,24 @@ x1, x2, x3 = st.columns(
     gap="small",
 )
 
+_hxg = safe_float(prediction.get("home_xg"))
+_axg = safe_float(prediction.get("away_xg"))
+_total_xg = (
+    _hxg + _axg
+    if _hxg is not None and _axg is not None
+    else None
+)
+
 with x1:
 
     st.markdown(
         f"""
         <div class="metric">
             <div class="metric-value">
-                {prediction["home_xg"]:.2f}
+                {f"{_hxg:.2f}" if _hxg is not None else "—"}
             </div>
             <div class="metric-label">
-                {prediction["home_team"]}
+                {prediction.get("home_team", "—")}
             </div>
         </div>
         """,
@@ -2789,7 +1546,7 @@ with x2:
         f"""
         <div class="metric">
             <div class="metric-value">
-                {prediction["home_xg"] + prediction["away_xg"]:.2f}
+                {f"{_total_xg:.2f}" if _total_xg is not None else "—"}
             </div>
             <div class="metric-label">
                 TOTAL xG
@@ -2805,15 +1562,16 @@ with x3:
         f"""
         <div class="metric">
             <div class="metric-value">
-                {prediction["away_xg"]:.2f}
+                {f"{_axg:.2f}" if _axg is not None else "—"}
             </div>
             <div class="metric-label">
-                {prediction["away_team"]}
+                {prediction.get("away_team", "—")}
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
 
 # ============================================================
 # SCORES
@@ -2829,36 +1587,52 @@ score_cols = st.columns(
     gap="small",
 )
 
+# top_scores ожидается в формате:
+#     [{"score": "1:0", "probability": 0.123}, ...]
+#
+# Источник — calculation_meta["score_forecast"]["top_scores"]
+# от Brain (ScorePredictor v2.2). Ничего не пересчитываем.
+
 for column, item, index in zip(
     score_cols,
-    prediction["scores"],
+    _top_scores[:3],
     range(1, 4),
 ):
 
     with column:
 
-        score = (
-            f'{item["home"]}:{item["away"]}'
+        _score_value = (
+            item.get("score")
+            if isinstance(item, dict)
+            else None
         )
 
-        p = (
-            item["probability"]
-            * 100.0
+        _score_prob = (
+            safe_float(item.get("probability"))
+            if isinstance(item, dict)
+            else None
+        )
+
+        _score_pct = (
+            round(_score_prob * 100.0, 1)
+            if _score_prob is not None
+            else None
         )
 
         st.markdown(
             f"""
             <div class="score-card">
                 <div class="score">
-                    {score}
+                    {_score_value or "—"}
                 </div>
                 <div class="score-label">
-                    #{index} · {p:.1f}%
+                    #{index} · {f"{_score_pct:.1f}%" if _score_pct is not None else "—"}
                 </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
+
 
 # ============================================================
 # GOALS
@@ -2874,13 +1648,17 @@ g1, g2, g3 = st.columns(
     gap="small",
 )
 
+_btts = probability(prediction.get("btts_probability"))
+_o25 = probability(prediction.get("over25_probability"))
+_o35 = probability(prediction.get("over35_probability"))
+
 with g1:
 
     st.markdown(
         f"""
         <div class="metric">
             <div class="metric-value">
-                {probability(prediction["btts"]):.1f}%
+                {f"{_btts:.1f}%" if _btts is not None else "—"}
             </div>
             <div class="metric-label">
                 BTTS
@@ -2896,7 +1674,7 @@ with g2:
         f"""
         <div class="metric">
             <div class="metric-value">
-                {probability(prediction["over25"]):.1f}%
+                {f"{_o25:.1f}%" if _o25 is not None else "—"}
             </div>
             <div class="metric-label">
                 ТБ 2.5
@@ -2912,7 +1690,7 @@ with g3:
         f"""
         <div class="metric">
             <div class="metric-value">
-                {probability(prediction["over35"]):.1f}%
+                {f"{_o35:.1f}%" if _o35 is not None else "—"}
             </div>
             <div class="metric-label">
                 ТБ 3.5
@@ -2922,6 +1700,7 @@ with g3:
         unsafe_allow_html=True,
     )
 
+
 # ============================================================
 # CORNERS
 # ============================================================
@@ -2930,6 +1709,10 @@ st.markdown(
     '<div class="section-title">Угловые</div>',
     unsafe_allow_html=True,
 )
+
+_hc = safe_float(prediction.get("home_corners_expected"))
+_ac = safe_float(prediction.get("away_corners_expected"))
+_tc = safe_float(prediction.get("corners_expected"))
 
 c1, c2, c3 = st.columns(
     3,
@@ -2942,10 +1725,10 @@ with c1:
         f"""
         <div class="metric">
             <div class="metric-value">
-                {prediction["home_corners"]:.2f}
+                {f"{_hc:.2f}" if _hc is not None else "—"}
             </div>
             <div class="metric-label">
-                {prediction["home_team"]}
+                {prediction.get("home_team", "—")}
             </div>
         </div>
         """,
@@ -2958,7 +1741,7 @@ with c2:
         f"""
         <div class="metric">
             <div class="metric-value">
-                {prediction["total_corners"]:.2f}
+                {f"{_tc:.2f}" if _tc is not None else "—"}
             </div>
             <div class="metric-label">
                 TOTAL
@@ -2974,10 +1757,10 @@ with c3:
         f"""
         <div class="metric">
             <div class="metric-value">
-                {prediction["away_corners"]:.2f}
+                {f"{_ac:.2f}" if _ac is not None else "—"}
             </div>
             <div class="metric-label">
-                {prediction["away_team"]}
+                {prediction.get("away_team", "—")}
             </div>
         </div>
         """,
@@ -2990,22 +1773,10 @@ corner_cols = st.columns(
 )
 
 corner_lines = [
-    (
-        "ТБ 7.5",
-        prediction["over75_corners"],
-    ),
-    (
-        "ТБ 8.5",
-        prediction["over85_corners"],
-    ),
-    (
-        "ТБ 9.5",
-        prediction["over95_corners"],
-    ),
-    (
-        "ТБ 10.5",
-        prediction["over105_corners"],
-    ),
+    ("ТБ 7.5", probability(prediction.get("over75_corners_probability"))),
+    ("ТБ 8.5", probability(prediction.get("over85_corners_probability"))),
+    ("ТБ 9.5", probability(prediction.get("over95_corners_probability"))),
+    ("ТБ 10.5", probability(prediction.get("over105_corners_probability"))),
 ]
 
 for column, (
@@ -3022,7 +1793,7 @@ for column, (
             f"""
             <div class="metric">
                 <div class="metric-value">
-                    {probability(p):.1f}%
+                    {f"{p:.1f}%" if p is not None else "—"}
                 </div>
                 <div class="metric-label">
                     {label}
@@ -3032,6 +1803,7 @@ for column, (
             unsafe_allow_html=True,
         )
 
+
 # ============================================================
 # CARDS
 # ============================================================
@@ -3040,6 +1812,10 @@ st.markdown(
     '<div class="section-title">Карточки</div>',
     unsafe_allow_html=True,
 )
+
+_hcards = safe_float(prediction.get("home_cards_expected"))
+_acards = safe_float(prediction.get("away_cards_expected"))
+_tcards = safe_float(prediction.get("cards_expected"))
 
 card_cols = st.columns(
     3,
@@ -3052,10 +1828,10 @@ with card_cols[0]:
         f"""
         <div class="metric">
             <div class="metric-value">
-                {prediction["home_cards"]:.2f}
+                {f"{_hcards:.2f}" if _hcards is not None else "—"}
             </div>
             <div class="metric-label">
-                {prediction["home_team"]}
+                {prediction.get("home_team", "—")}
             </div>
         </div>
         """,
@@ -3068,7 +1844,7 @@ with card_cols[1]:
         f"""
         <div class="metric">
             <div class="metric-value">
-                {prediction["total_cards"]:.2f}
+                {f"{_tcards:.2f}" if _tcards is not None else "—"}
             </div>
             <div class="metric-label">
                 TOTAL
@@ -3084,10 +1860,10 @@ with card_cols[2]:
         f"""
         <div class="metric">
             <div class="metric-value">
-                {prediction["away_cards"]:.2f}
+                {f"{_acards:.2f}" if _acards is not None else "—"}
             </div>
             <div class="metric-label">
-                {prediction["away_team"]}
+                {prediction.get("away_team", "—")}
             </div>
         </div>
         """,
@@ -3095,18 +1871,9 @@ with card_cols[2]:
     )
 
 card_lines = [
-    (
-        "ТБ 2.5",
-        prediction["over25_cards"],
-    ),
-    (
-        "ТБ 3.5",
-        prediction["over35_cards"],
-    ),
-    (
-        "ТБ 4.5",
-        prediction["over45_cards"],
-    ),
+    ("ТБ 2.5", probability(prediction.get("over25_cards_probability"))),
+    ("ТБ 3.5", probability(prediction.get("over35_cards_probability"))),
+    ("ТБ 4.5", probability(prediction.get("over45_cards_probability"))),
 ]
 
 card_probability_cols = st.columns(
@@ -3128,7 +1895,7 @@ for column, (
             f"""
             <div class="metric">
                 <div class="metric-value">
-                    {probability(p):.1f}%
+                    {f"{p:.1f}%" if p is not None else "—"}
                 </div>
                 <div class="metric-label">
                     {label}
@@ -3138,14 +1905,25 @@ for column, (
             unsafe_allow_html=True,
         )
 
+
 # ============================================================
-# CONFIDENCE
+# CONFIDENCE / RISK
 # ============================================================
 
 st.markdown(
     '<div class="section-title">Надёжность анализа</div>',
     unsafe_allow_html=True,
 )
+
+_conf_raw = safe_float(prediction.get("confidence"))
+_conf_pct = (
+    round(_conf_raw * 100.0, 1)
+    if _conf_raw is not None
+    else None
+)
+
+_dq = safe_float(prediction.get("data_quality"))
+_risk = prediction.get("risk", "—")
 
 q1, q2, q3 = st.columns(
     3,
@@ -3158,7 +1936,7 @@ with q1:
         f"""
         <div class="metric">
             <div class="metric-value">
-                {prediction["confidence"]:.1f}%
+                {f"{_conf_pct:.1f}%" if _conf_pct is not None else "—"}
             </div>
             <div class="metric-label">
                 CONFIDENCE
@@ -3174,7 +1952,7 @@ with q2:
         f"""
         <div class="metric">
             <div class="metric-value">
-                {prediction["data_quality"]:.1f}%
+                {f"{_dq:.1f}%" if _dq is not None else "—"}
             </div>
             <div class="metric-label">
                 DATA QUALITY
@@ -3190,7 +1968,7 @@ with q3:
         f"""
         <div class="metric">
             <div class="metric-value">
-                {prediction["risk"]}
+                {_risk}
             </div>
             <div class="metric-label">
                 RISK
@@ -3199,6 +1977,7 @@ with q3:
         """,
         unsafe_allow_html=True,
     )
+
 
 # ============================================================
 # CONCLUSION
@@ -3209,120 +1988,47 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+_favorite = (
+    _winner_synthesis.get("winner")
+    or prediction.get("home_team", "—")
+)
+
 st.markdown(
     f"""
 <div class="conclusion">
 
-<b>{prediction["favorite"]}</b><br><br>
+<b>{_favorite}</b><br><br>
 
-{prediction["conclusion"]}
+{prediction.get("conclusion", "")}
 
 </div>
 """,
     unsafe_allow_html=True,
 )
 
+
 # ============================================================
-# FAJ BRAIN v1.2 — DIAGNOSTIC
+# WINNER SYNTHESIS
 # ============================================================
 
-_brain_result = prediction.get("brain_result")
-_brain_error = prediction.get("brain_error")
-
-if _brain_result is not None or _brain_error:
+if _winner_synthesis:
 
     st.markdown(
-        '<div class="section-title">FAJ Brain v1.2 — Diagnostic</div>',
-        unsafe_allow_html=True,
-    )
-
-    if _brain_error:
-        st.warning(
-            f"FAJ Brain diagnostic unavailable: {_brain_error}. "
-            "Основной Predictor 1.0 продолжает работать."
-        )
-    else:
-        _bm = prediction.get("brain_calculation_meta") or {}
-        _bws = prediction.get("brain_winner_synthesis") or {}
-        _bpr = prediction.get("brain_pair_rating") or {}
-
-        _bc1, _bc2, _bc3, _bc4 = st.columns(4, gap="small")
-
-        with _bc1:
-            st.metric(
-                "Brain λ Home",
-                f"{safe_float(_brain_result.get('home_xg')):.3f}"
-                if safe_float(_brain_result.get("home_xg")) is not None
-                else "—",
-            )
-
-        with _bc2:
-            st.metric(
-                "Brain λ Away",
-                f"{safe_float(_brain_result.get('away_xg')):.3f}"
-                if safe_float(_brain_result.get("away_xg")) is not None
-                else "—",
-            )
-
-        with _bc3:
-            st.metric(
-                "Brain Winner",
-                str(_bws.get("winner") or "—"),
-            )
-
-        with _bc4:
-            st.metric(
-                "Brain Confidence",
-                f"{safe_float(_brain_result.get('confidence')):.1f}"
-                if safe_float(_brain_result.get("confidence")) is not None
-                else "—",
-            )
-
-        _bp_home = safe_float(_brain_result.get("home_win"))
-        _bp_draw = safe_float(_brain_result.get("draw"))
-        _bp_away = safe_float(_brain_result.get("away_win"))
-
-        _cmp1, _cmp2, _cmp3 = st.columns(3, gap="small")
-
-        with _cmp1:
-            st.metric(
-                "Brain Home",
-                f"{_bp_home * 100:.1f}%" if _bp_home is not None else "—",
-            )
-        with _cmp2:
-            st.metric(
-                "Brain Draw",
-                f"{_bp_draw * 100:.1f}%" if _bp_draw is not None else "—",
-            )
-        with _cmp3:
-            st.metric(
-                "Brain Away",
-                f"{_bp_away * 100:.1f}%" if _bp_away is not None else "—",
-            )
-
-        with st.expander("Brain calculation meta", expanded=False):
-            st.json(_bm)
-
-        with st.expander("Brain winner synthesis", expanded=False):
-            st.json(_bws)
-
-        with st.expander("Brain pair rating", expanded=False):
-            st.json(_bpr)
-
-# ============================================================
-# WINNER SIGNAL
-# ============================================================
-
-_winner_signal = prediction.get("winner_signal") or {}
-
-if _winner_signal:
-
-    st.markdown(
-        '<div class="section-title">Winner Signal</div>',
+        '<div class="section-title">Winner Synthesis</div>',
         unsafe_allow_html=True,
     )
 
     _ws1, _ws2 = st.columns(2, gap="small")
+
+    _pair_direction = (
+        _winner_synthesis.get("pair_rating_direction")
+        or "—"
+    )
+
+    _pair_strength = (
+        _winner_synthesis.get("pair_rating_strength")
+        or "—"
+    )
 
     with _ws1:
 
@@ -3330,7 +2036,7 @@ if _winner_signal:
             f"""
             <div class="metric">
                 <div class="metric-value">
-                    {_winner_signal.get("model_favorite", "—")}
+                    {_winner_synthesis.get("winner", "—")}
                 </div>
                 <div class="metric-label">
                     MODEL FAVORITE
@@ -3342,46 +2048,121 @@ if _winner_signal:
 
     with _ws2:
 
-        _pair_team_val = _winner_signal.get("pair_team") or "—"
-
         st.markdown(
             f"""
             <div class="metric">
                 <div class="metric-value">
-                    {_pair_team_val}
+                    {_pair_direction}
                 </div>
                 <div class="metric-label">
-                    PAIR DIRECTION
-                    ({_winner_signal.get("pair_strength", "—")})
+                    PAIR DIRECTION ({_pair_strength})
                 </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-    _agreement = _winner_signal.get("agreement", "—")
+    _synthesis = _winner_synthesis.get("synthesis", "—")
 
     _agreement_color = {
-        "AGREE": "rgba(46,160,67,.20)",
-        "PAIR_NEUTRAL": "rgba(128,128,128,.10)",
+        "STRONG_CONSENSUS": "rgba(46,160,67,.20)",
+        "CONSENSUS": "rgba(46,160,67,.12)",
+        "WEAK_CONSENSUS": "rgba(128,128,128,.10)",
+        "DRAW_PRIMARY": "rgba(128,128,128,.10)",
         "CONFLICT": "rgba(210,80,80,.20)",
-        "MODEL_ONLY": "rgba(128,128,128,.10)",
-    }.get(_agreement, "rgba(128,128,128,.10)")
+    }.get(_synthesis, "rgba(128,128,128,.10)")
+
+    _agreements = _winner_synthesis.get("agreements", 0)
+    _conflicts = _winner_synthesis.get("conflicts", 0)
 
     st.markdown(
         f"""
         <div class="result-card"
              style="background:{_agreement_color};">
             <div class="result-main">
-                {_winner_signal.get("final_winner", "—")}
+                {_winner_synthesis.get("winner", "—")}
             </div>
             <div class="result-caption">
-                AGREEMENT: {_agreement}
+                SYNTHESIS: {_synthesis}
+                · agreements {_agreements} · conflicts {_conflicts}
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+
+# ============================================================
+# FAJ BRAIN DIAGNOSTICS
+# ============================================================
+
+st.markdown(
+    '<div class="section-title">FAJ Brain Diagnostics</div>',
+    unsafe_allow_html=True,
+)
+
+_b1, _b2, _b3, _b4 = st.columns(
+    4,
+    gap="small",
+)
+
+with _b1:
+    st.metric(
+        "Brain λ Home",
+        f"{_hxg:.3f}" if _hxg is not None else "—",
+    )
+
+with _b2:
+    st.metric(
+        "Brain λ Away",
+        f"{_axg:.3f}" if _axg is not None else "—",
+    )
+
+with _b3:
+    st.metric(
+        "Winner",
+        str(
+            (_winner_synthesis or {}).get(
+                "winner",
+                "—",
+            )
+        ),
+    )
+
+with _b4:
+    st.metric(
+        "Confidence",
+        (
+            f"{_conf_pct:.1f}%"
+            if _conf_pct is not None
+            else "—"
+        ),
+    )
+
+with st.expander(
+    "Winner Synthesis",
+    expanded=False,
+):
+    st.json(_winner_synthesis or {})
+
+with st.expander(
+    "Pair Rating",
+    expanded=False,
+):
+    st.json(_pair_rating or {})
+
+with st.expander(
+    "Score Forecast",
+    expanded=False,
+):
+    st.json(_score_forecast or {})
+
+with st.expander(
+    "Brain calculation meta (full)",
+    expanded=False,
+):
+    st.json(_meta)
+
 
 # ============================================================
 # FACT HISTORY
@@ -3406,7 +2187,7 @@ with st.expander(
     )
 
     st.markdown(
-        f"### {prediction['home_team']}"
+        f"### {prediction.get('home_team', '—')}"
     )
 
     for record in home_records:
@@ -3448,7 +2229,7 @@ with st.expander(
         )
 
     st.markdown(
-        f"### {prediction['away_team']}"
+        f"### {prediction.get('away_team', '—')}"
     )
 
     for record in away_records:
@@ -3489,8 +2270,12 @@ with st.expander(
             unsafe_allow_html=True,
         )
 
+
 # ============================================================
 # 🔬 GOALMODEL v6.0 DIAGNOSTICS
+#
+# Источник: calculation_meta["goal_model"] (Brain).
+# Никакой математики — только чтение готового JSON.
 # ============================================================
 
 st.markdown(
@@ -3498,318 +2283,303 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-_goal_result = prediction.get("goal_result")
+_diagnostics = (
+    _goal_model_meta.get("diagnostics")
+    if isinstance(_goal_model_meta, dict)
+    else None
+)
 
-if _goal_result is None:
+if _diagnostics is None or not isinstance(_diagnostics, dict):
 
-    st.error("❌ goal_result отсутствует в prediction")
+    st.info("GoalModel diagnostics недоступны.")
 
 else:
 
-    _diagnostics = value(
-        _goal_result,
-        "diagnostics",
+    _version_val = _diagnostics.get("version", "—")
+    _status_val = _diagnostics.get("status", "—")
+
+    st.write(
+        f"**Version:** {_version_val}  ·  "
+        f"**Status:** {_status_val}"
     )
 
-    if _diagnostics is None or not isinstance(_diagnostics, dict):
+    # ------------------------------------------------
+    # HOME
+    # ------------------------------------------------
 
-        st.error("❌ diagnostics отсутствует или не dict")
+    _home_diag = _diagnostics.get("home", {}) or {}
 
-    else:
+    if _home_diag:
 
-        st.success(
-            f"✅ diagnostics найден: {len(_diagnostics)} ключей"
-        )
+        st.markdown("**Home**")
 
-        # ------------------------------------------------
-        # Ключевые поля
-        # ------------------------------------------------
+        _h1, _h2, _h3 = st.columns(3)
 
-        _version_val = _diagnostics.get("version", "—")
-        _status_val = _diagnostics.get("status", "—")
+        with _h1:
+            st.metric(
+                "Structural Attack",
+                f"{safe_float(_home_diag.get('structural_attack')):.3f}"
+                if safe_float(_home_diag.get("structural_attack")) is not None
+                else "—",
+            )
 
-        st.write(
-            f"**Version:** {_version_val}  ·  "
-            f"**Status:** {_status_val}"
-        )
+        with _h2:
+            st.metric(
+                "Recent Attack",
+                f"{safe_float(_home_diag.get('recent_attack')):.3f}"
+                if safe_float(_home_diag.get("recent_attack")) is not None
+                else "—",
+            )
 
-        # ------------------------------------------------
-        # HOME
-        # ------------------------------------------------
+        with _h3:
+            st.metric(
+                "Effective Attack",
+                f"{safe_float(_home_diag.get('effective_attack')):.3f}"
+                if safe_float(_home_diag.get("effective_attack")) is not None
+                else "—",
+            )
 
-        _home_diag = _diagnostics.get("home", {}) or {}
+        _h4, _h5, _h6 = st.columns(3)
 
-        if _home_diag:
+        with _h4:
+            st.metric(
+                "Match Attack",
+                f"{safe_float(_home_diag.get('match_attack')):.3f}"
+                if safe_float(_home_diag.get("match_attack")) is not None
+                else "—",
+            )
 
-            st.markdown("**Home**")
+        with _h5:
+            st.metric(
+                "Venue Attack xG",
+                f"{safe_float(_home_diag.get('venue_attack_xg')):.3f}"
+                if safe_float(_home_diag.get("venue_attack_xg")) is not None
+                else "—",
+            )
 
-            _h1, _h2, _h3 = st.columns(3)
+        with _h6:
+            st.metric(
+                "Effective xGA",
+                f"{safe_float(_home_diag.get('effective_xga')):.3f}"
+                if safe_float(_home_diag.get("effective_xga")) is not None
+                else "—",
+            )
 
-            with _h1:
-                st.metric(
-                    "Structural Attack",
-                    f"{safe_float(_home_diag.get('structural_attack')):.3f}"
-                    if safe_float(_home_diag.get("structural_attack")) is not None
-                    else "—",
-                )
+    # ------------------------------------------------
+    # AWAY
+    # ------------------------------------------------
 
-            with _h2:
-                st.metric(
-                    "Recent Attack",
-                    f"{safe_float(_home_diag.get('recent_attack')):.3f}"
-                    if safe_float(_home_diag.get("recent_attack")) is not None
-                    else "—",
-                )
+    _away_diag = _diagnostics.get("away", {}) or {}
 
-            with _h3:
-                st.metric(
-                    "Effective Attack",
-                    f"{safe_float(_home_diag.get('effective_attack')):.3f}"
-                    if safe_float(_home_diag.get("effective_attack")) is not None
-                    else "—",
-                )
+    if _away_diag:
 
-            _h4, _h5, _h6 = st.columns(3)
+        st.markdown("**Away**")
 
-            with _h4:
-                st.metric(
-                    "Match Attack",
-                    f"{safe_float(_home_diag.get('match_attack')):.3f}"
-                    if safe_float(_home_diag.get("match_attack")) is not None
-                    else "—",
-                )
+        _a1, _a2, _a3 = st.columns(3)
 
-            with _h5:
-                st.metric(
-                    "Venue Attack xG",
-                    f"{safe_float(_home_diag.get('venue_attack_xg')):.3f}"
-                    if safe_float(_home_diag.get("venue_attack_xg")) is not None
-                    else "—",
-                )
+        with _a1:
+            st.metric(
+                "Structural Attack",
+                f"{safe_float(_away_diag.get('structural_attack')):.3f}"
+                if safe_float(_away_diag.get("structural_attack")) is not None
+                else "—",
+            )
 
-            with _h6:
-                st.metric(
-                    "Effective xGA",
-                    f"{safe_float(_home_diag.get('effective_xga')):.3f}"
-                    if safe_float(_home_diag.get("effective_xga")) is not None
-                    else "—",
-                )
+        with _a2:
+            st.metric(
+                "Recent Attack",
+                f"{safe_float(_away_diag.get('recent_attack')):.3f}"
+                if safe_float(_away_diag.get("recent_attack")) is not None
+                else "—",
+            )
 
-        # ------------------------------------------------
-        # AWAY
-        # ------------------------------------------------
+        with _a3:
+            st.metric(
+                "Effective Attack",
+                f"{safe_float(_away_diag.get('effective_attack')):.3f}"
+                if safe_float(_away_diag.get("effective_attack")) is not None
+                else "—",
+            )
 
-        _away_diag = _diagnostics.get("away", {}) or {}
+        _a4, _a5, _a6 = st.columns(3)
 
-        if _away_diag:
+        with _a4:
+            st.metric(
+                "Match Attack",
+                f"{safe_float(_away_diag.get('match_attack')):.3f}"
+                if safe_float(_away_diag.get("match_attack")) is not None
+                else "—",
+            )
 
-            st.markdown("**Away**")
+        with _a5:
+            st.metric(
+                "Venue Attack xG",
+                f"{safe_float(_away_diag.get('venue_attack_xg')):.3f}"
+                if safe_float(_away_diag.get("venue_attack_xg")) is not None
+                else "—",
+            )
 
-            _a1, _a2, _a3 = st.columns(3)
+        with _a6:
+            st.metric(
+                "Effective xGA",
+                f"{safe_float(_away_diag.get('effective_xga')):.3f}"
+                if safe_float(_away_diag.get("effective_xga")) is not None
+                else "—",
+            )
 
-            with _a1:
-                st.metric(
-                    "Structural Attack",
-                    f"{safe_float(_away_diag.get('structural_attack')):.3f}"
-                    if safe_float(_away_diag.get("structural_attack")) is not None
-                    else "—",
-                )
+    # ------------------------------------------------
+    # VENUE
+    # ------------------------------------------------
 
-            with _a2:
-                st.metric(
-                    "Recent Attack",
-                    f"{safe_float(_away_diag.get('recent_attack')):.3f}"
-                    if safe_float(_away_diag.get("recent_attack")) is not None
-                    else "—",
-                )
+    _venue_diag = _diagnostics.get("venue", {}) or {}
 
-            with _a3:
-                st.metric(
-                    "Effective Attack",
-                    f"{safe_float(_away_diag.get('effective_attack')):.3f}"
-                    if safe_float(_away_diag.get("effective_attack")) is not None
-                    else "—",
-                )
+    if _venue_diag:
 
-            _a4, _a5, _a6 = st.columns(3)
+        st.markdown("**Venue**")
 
-            with _a4:
-                st.metric(
-                    "Match Attack",
-                    f"{safe_float(_away_diag.get('match_attack')):.3f}"
-                    if safe_float(_away_diag.get("match_attack")) is not None
-                    else "—",
-                )
+        _v1, _v2, _v3 = st.columns(3)
 
-            with _a5:
-                st.metric(
-                    "Venue Attack xG",
-                    f"{safe_float(_away_diag.get('venue_attack_xg')):.3f}"
-                    if safe_float(_away_diag.get("venue_attack_xg")) is not None
-                    else "—",
-                )
+        with _v1:
+            st.metric(
+                "Split Available",
+                "YES" if _venue_diag.get("venue_split_available") else "NO",
+            )
 
-            with _a6:
-                st.metric(
-                    "Effective xGA",
-                    f"{safe_float(_away_diag.get('effective_xga')):.3f}"
-                    if safe_float(_away_diag.get("effective_xga")) is not None
-                    else "—",
-                )
+        with _v2:
+            st.metric(
+                "HA Applied",
+                "YES" if _venue_diag.get("home_advantage_applied") else "NO",
+            )
 
-        # ------------------------------------------------
-        # VENUE
-        # ------------------------------------------------
+        with _v3:
+            st.metric(
+                "HA Fallback",
+                f"{safe_float(_venue_diag.get('home_advantage_fallback')):.3f}"
+                if safe_float(_venue_diag.get("home_advantage_fallback")) is not None
+                else "—",
+            )
 
-        _venue_diag = _diagnostics.get("venue", {}) or {}
+    # ------------------------------------------------
+    # LAMBDA
+    # ------------------------------------------------
 
-        if _venue_diag:
+    _lambda_data = _diagnostics.get("lambda", {}) or {}
 
-            st.markdown("**Venue**")
+    if _lambda_data:
 
-            _v1, _v2, _v3 = st.columns(3)
+        st.markdown("**Final Lambda**")
 
-            with _v1:
-                st.metric(
-                    "Split Available",
-                    "YES" if _venue_diag.get("venue_split_available") else "NO",
-                )
+        _l1, _l2, _l3 = st.columns(3)
 
-            with _v2:
-                st.metric(
-                    "HA Applied",
-                    "YES" if _venue_diag.get("home_advantage_applied") else "NO",
-                )
+        with _l1:
+            st.metric(
+                "λ Home",
+                f"{safe_float(_lambda_data.get('home')):.3f}"
+                if safe_float(_lambda_data.get("home")) is not None
+                else "—",
+            )
 
-            with _v3:
-                st.metric(
-                    "HA Fallback",
-                    f"{safe_float(_venue_diag.get('home_advantage_fallback')):.3f}"
-                    if safe_float(_venue_diag.get("home_advantage_fallback")) is not None
-                    else "—",
-                )
+        with _l2:
+            st.metric(
+                "λ Away",
+                f"{safe_float(_lambda_data.get('away')):.3f}"
+                if safe_float(_lambda_data.get("away")) is not None
+                else "—",
+            )
 
-        # ------------------------------------------------
-        # LAMBDA
-        # ------------------------------------------------
+        with _l3:
+            st.metric(
+                "λ Total",
+                f"{safe_float(_lambda_data.get('total')):.3f}"
+                if safe_float(_lambda_data.get("total")) is not None
+                else "—",
+            )
 
-        _lambda_data = _diagnostics.get("lambda", {}) or {}
+    # ------------------------------------------------
+    # FULL JSON
+    # ------------------------------------------------
 
-        if _lambda_data:
+    with st.expander("📋 Полный diagnostics (JSON)", expanded=False):
+        st.json(_diagnostics)
 
-            st.markdown("**Final Lambda**")
+    # ------------------------------------------------
+    # COPY BUTTON
+    # ------------------------------------------------
 
-            _l1, _l2, _l3 = st.columns(3)
+    _report_lines = []
+    _report_lines.append("FAJ GOALMODEL v6.0 DIAGNOSTICS")
+    _report_lines.append("================================")
+    _report_lines.append(
+        f"Match: {prediction.get('home_team', '—')} — {prediction.get('away_team', '—')}"
+    )
+    _report_lines.append(
+        f"Model: GoalModel v{_version_val} ({_status_val})"
+    )
+    _report_lines.append("")
 
-            with _l1:
-                st.metric(
-                    "λ Home",
-                    f"{safe_float(_lambda_data.get('home')):.3f}"
-                    if safe_float(_lambda_data.get("home")) is not None
-                    else "—",
-                )
+    _report_lines.append("HOME")
+    _report_lines.append(
+        f"Structural Attack: {safe_float(_home_diag.get('structural_attack')):.3f}"
+        if safe_float(_home_diag.get("structural_attack")) is not None
+        else "Structural Attack: —"
+    )
+    _report_lines.append(
+        f"Recent Attack:     {safe_float(_home_diag.get('recent_attack')):.3f}"
+        if safe_float(_home_diag.get("recent_attack")) is not None
+        else "Recent Attack:     —"
+    )
+    _report_lines.append(
+        f"Effective Attack:  {safe_float(_home_diag.get('effective_attack')):.3f}"
+        if safe_float(_home_diag.get("effective_attack")) is not None
+        else "Effective Attack:  —"
+    )
+    _report_lines.append("")
 
-            with _l2:
-                st.metric(
-                    "λ Away",
-                    f"{safe_float(_lambda_data.get('away')):.3f}"
-                    if safe_float(_lambda_data.get("away")) is not None
-                    else "—",
-                )
+    _report_lines.append("AWAY")
+    _report_lines.append(
+        f"Structural Attack: {safe_float(_away_diag.get('structural_attack')):.3f}"
+        if safe_float(_away_diag.get("structural_attack")) is not None
+        else "Structural Attack: —"
+    )
+    _report_lines.append(
+        f"Recent Attack:     {safe_float(_away_diag.get('recent_attack')):.3f}"
+        if safe_float(_away_diag.get("recent_attack")) is not None
+        else "Recent Attack:     —"
+    )
+    _report_lines.append(
+        f"Effective Attack:  {safe_float(_away_diag.get('effective_attack')):.3f}"
+        if safe_float(_away_diag.get("effective_attack")) is not None
+        else "Effective Attack:  —"
+    )
+    _report_lines.append("")
 
-            with _l3:
-                st.metric(
-                    "λ Total",
-                    f"{safe_float(_lambda_data.get('total')):.3f}"
-                    if safe_float(_lambda_data.get("total")) is not None
-                    else "—",
-                )
+    _report_lines.append("LAMBDA")
+    _report_lines.append(
+        f"λ Home:  {safe_float(_lambda_data.get('home')):.3f}"
+        if safe_float(_lambda_data.get("home")) is not None
+        else "λ Home:  —"
+    )
+    _report_lines.append(
+        f"λ Away:  {safe_float(_lambda_data.get('away')):.3f}"
+        if safe_float(_lambda_data.get("away")) is not None
+        else "λ Away:  —"
+    )
+    _report_lines.append(
+        f"λ Total: {safe_float(_lambda_data.get('total')):.3f}"
+        if safe_float(_lambda_data.get("total")) is not None
+        else "λ Total: —"
+    )
 
-        # ------------------------------------------------
-        # FULL JSON
-        # ------------------------------------------------
+    _report_text = "\n".join(_report_lines)
 
-        with st.expander("📋 Полный diagnostics (JSON)", expanded=False):
-            st.json(_diagnostics)
+    _copy_payload = (
+        _report_text
+        .replace("\\", "\\\\")
+        .replace("`", "\\`")
+        .replace("${", "\\${")
+    )
 
-        # ------------------------------------------------
-        # COPY BUTTON
-        # ------------------------------------------------
-
-        _report_lines = []
-        _report_lines.append("FAJ GOALMODEL v6.0 DIAGNOSTICS")
-        _report_lines.append("================================")
-        _report_lines.append(
-            f"Match: {prediction['home_team']} — {prediction['away_team']}"
-        )
-        _report_lines.append(
-            f"Model: GoalModel v{_version_val} ({_status_val})"
-        )
-        _report_lines.append("")
-
-        _report_lines.append("HOME")
-        _report_lines.append(
-            f"Structural Attack: {safe_float(_home_diag.get('structural_attack')):.3f}"
-            if safe_float(_home_diag.get("structural_attack")) is not None
-            else "Structural Attack: —"
-        )
-        _report_lines.append(
-            f"Recent Attack:     {safe_float(_home_diag.get('recent_attack')):.3f}"
-            if safe_float(_home_diag.get("recent_attack")) is not None
-            else "Recent Attack:     —"
-        )
-        _report_lines.append(
-            f"Effective Attack:  {safe_float(_home_diag.get('effective_attack')):.3f}"
-            if safe_float(_home_diag.get("effective_attack")) is not None
-            else "Effective Attack:  —"
-        )
-        _report_lines.append("")
-
-        _report_lines.append("AWAY")
-        _report_lines.append(
-            f"Structural Attack: {safe_float(_away_diag.get('structural_attack')):.3f}"
-            if safe_float(_away_diag.get("structural_attack")) is not None
-            else "Structural Attack: —"
-        )
-        _report_lines.append(
-            f"Recent Attack:     {safe_float(_away_diag.get('recent_attack')):.3f}"
-            if safe_float(_away_diag.get("recent_attack")) is not None
-            else "Recent Attack:     —"
-        )
-        _report_lines.append(
-            f"Effective Attack:  {safe_float(_away_diag.get('effective_attack')):.3f}"
-            if safe_float(_away_diag.get("effective_attack")) is not None
-            else "Effective Attack:  —"
-        )
-        _report_lines.append("")
-
-        _report_lines.append("LAMBDA")
-        _report_lines.append(
-            f"λ Home:  {safe_float(_lambda_data.get('home')):.3f}"
-            if safe_float(_lambda_data.get("home")) is not None
-            else "λ Home:  —"
-        )
-        _report_lines.append(
-            f"λ Away:  {safe_float(_lambda_data.get('away')):.3f}"
-            if safe_float(_lambda_data.get("away")) is not None
-            else "λ Away:  —"
-        )
-        _report_lines.append(
-            f"λ Total: {safe_float(_lambda_data.get('total')):.3f}"
-            if safe_float(_lambda_data.get("total")) is not None
-            else "λ Total: —"
-        )
-
-        _report_text = "\n".join(_report_lines)
-
-        _copy_payload = (
-            _report_text
-            .replace("\\", "\\\\")
-            .replace("`", "\\`")
-            .replace("${", "\\${")
-        )
-
-        _copy_html = f"""
+    _copy_html = f"""
 <div style="margin-top:8px;">
 <button id="faj-copy-btn" style="
     width:100%;
@@ -3860,10 +2630,11 @@ else:
 </script>
 """
 
-        components.html(
-            _copy_html,
-            height=90,
-        )
+    components.html(
+        _copy_html,
+        height=90,
+    )
+
 
 # ============================================================
 # FOOTER
@@ -3877,7 +2648,8 @@ st.markdown(
     font-size:10px;
     padding-top:15px;
 ">
-    FAJ Predictor 1.0 · No ETC · No Learning · No bookmaker odds
+    FAJ Predictor 1.1 · Single source of truth: FAJ Brain ·
+    No ETC · No Learning · No bookmaker odds · No Football Data API
 </div>
 """,
     unsafe_allow_html=True,
