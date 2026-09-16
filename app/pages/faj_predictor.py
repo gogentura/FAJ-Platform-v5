@@ -45,14 +45,15 @@ FAJ Brain.
 FAJ Club Rating:
     только отображается.
 
-FAJ Pair Rating:
-    только отображается.
-    Источник — calculation_meta["pair_rating"]
-    из FAJBrain.
-
 Winner Synthesis:
-    показывает Pair Rating как один
-    из подтверждающих сигналов.
+    НЕ используется.
+    НЕ рассчитывается.
+    НЕ отображается.
+
+Pair Rating:
+    НЕ используется.
+    НЕ рассчитывается.
+    НЕ отображается.
 
 НЕ ИСПОЛЬЗУЕТ:
 
@@ -103,7 +104,7 @@ from app.faj_club_ratings import get_team_rating
 # VERSION
 # ============================================================
 
-PREDICTOR_VERSION = "FAJ-PREDICTOR-1.2"
+PREDICTOR_VERSION = "FAJ-PREDICTOR-1.3"
 
 HISTORY_SIZE = 6
 
@@ -998,8 +999,7 @@ def calculate_prediction(
     Единственная точка математического расчёта страницы.
 
     Все xG / Poisson / 1X2 / BTTS / totals /
-    exact scores / Winner Synthesis / Pair Rating /
-    Corners / Cards / confidence / risk
+    exact scores / Corners / Cards / confidence
 
     приходят только из FAJBrain.
 
@@ -1136,118 +1136,6 @@ with club_c2:
         </div>
         """,
         unsafe_allow_html=True,
-    )
-
-
-# ============================================================
-# FAJ PAIR RATING (display only)
-#
-# Источник — calculation_meta["pair_rating"] и
-# calculation_meta["winner_synthesis"] из FAJBrain.
-#
-# Никакого ручного ввода.
-# Никакого расчёта на странице.
-# До первого прогноза — прочерк и подсказка.
-# ============================================================
-
-st.markdown(
-    '<div class="section-title">🧠 FAJ Pair Rating</div>',
-    unsafe_allow_html=True,
-)
-
-_pair_prediction = st.session_state.get("faj_prediction")
-
-if not isinstance(_pair_prediction, dict):
-
-    st.caption(
-        "Pair Rating появится после расчёта прогноза."
-    )
-
-else:
-
-    _pair_meta = (
-        _pair_prediction.get("calculation_meta")
-        or {}
-    )
-
-    _pair_rating = (
-        _pair_meta.get("pair_rating")
-        or {}
-    )
-
-    _pair_ws = (
-        _pair_meta.get("winner_synthesis")
-        or {}
-    )
-
-    _pair_home_rating = _pair_rating.get("home_rating")
-    _pair_away_rating = _pair_rating.get("away_rating")
-    _pair_gap = _pair_rating.get("rating_gap")
-
-    _pair_direction = (
-        _pair_rating.get("winner_direction")
-        or _pair_ws.get("pair_rating_direction")
-        or "—"
-    )
-
-    _pair_strength = (
-        _pair_rating.get("direction_strength")
-        or _pair_ws.get("pair_rating_strength")
-        or "—"
-    )
-
-    _pair_team = (
-        _pair_rating.get("direction_team")
-        or "—"
-    )
-
-    pair_c1, pair_c2 = st.columns(2, gap="small")
-
-    with pair_c1:
-
-        st.markdown(
-            f"""
-            <div class="metric">
-                <div class="metric-value">
-                    {_pair_home_rating if _pair_home_rating is not None else "—"}
-                </div>
-                <div class="metric-label">
-                    {home_team or "Хозяева"}
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    with pair_c2:
-
-        st.markdown(
-            f"""
-            <div class="metric">
-                <div class="metric-value">
-                    {_pair_away_rating if _pair_away_rating is not None else "—"}
-                </div>
-                <div class="metric-label">
-                    {away_team or "Гости"}
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    _pair_gap_text = "—"
-
-    if _pair_gap is not None:
-
-        try:
-            _pair_gap_text = f"{int(_pair_gap):+d}"
-        except (TypeError, ValueError):
-            _pair_gap_text = "—"
-
-    st.caption(
-        f"Направление: {_pair_team} "
-        f"({_pair_direction} / {_pair_strength}) "
-        f"· gap {_pair_gap_text}"
     )
 
 
@@ -1512,14 +1400,6 @@ if collection_errors:
 _meta = prediction.get(
     "calculation_meta",
     {},
-) or {}
-
-_winner_synthesis = _meta.get(
-    "winner_synthesis",
-) or {}
-
-_pair_rating = _meta.get(
-    "pair_rating",
 ) or {}
 
 _score_forecast = _meta.get(
@@ -2041,7 +1921,7 @@ _conf_pct = (
 )
 
 _dq = safe_float(prediction.get("data_quality"))
-_risk = prediction.get("risk", "—")
+_risk = prediction.get("risk") or "—"
 
 q1, q2, q3 = st.columns(
     3,
@@ -2106,132 +1986,16 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-_favorite = (
-    _winner_synthesis.get("winner")
-    or prediction.get("home_team", "—")
-)
-
 st.markdown(
     f"""
 <div class="conclusion">
 
-<b>{_favorite}</b><br><br>
-
-{prediction.get("conclusion", "")}
+{prediction.get("conclusion") or ""}
 
 </div>
 """,
     unsafe_allow_html=True,
 )
-
-
-# ============================================================
-# WINNER SYNTHESIS
-# ============================================================
-
-if _winner_synthesis:
-
-    st.markdown(
-        '<div class="section-title">Winner Synthesis</div>',
-        unsafe_allow_html=True,
-    )
-
-    _ws1, _ws2 = st.columns(2, gap="small")
-
-    _pair_direction = (
-        _winner_synthesis.get("pair_rating_direction")
-        or "—"
-    )
-
-    _pair_strength = (
-        _winner_synthesis.get("pair_rating_strength")
-        or "—"
-    )
-
-    with _ws1:
-
-        st.markdown(
-            f"""
-            <div class="metric">
-                <div class="metric-value">
-                    {_winner_synthesis.get("winner", "—")}
-                </div>
-                <div class="metric-label">
-                    MODEL FAVORITE
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    with _ws2:
-
-        st.markdown(
-            f"""
-            <div class="metric">
-                <div class="metric-value">
-                    {_pair_direction}
-                </div>
-                <div class="metric-label">
-                    PAIR DIRECTION ({_pair_strength})
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    _synthesis = _winner_synthesis.get("synthesis", "—")
-
-    _agreement_color = {
-        "STRONG_CONSENSUS": "rgba(46,160,67,.20)",
-        "CONSENSUS": "rgba(46,160,67,.12)",
-        "WEAK_CONSENSUS": "rgba(128,128,128,.10)",
-        "DRAW_PRIMARY": "rgba(128,128,128,.10)",
-        "CONFLICT": "rgba(210,80,80,.20)",
-    }.get(_synthesis, "rgba(128,128,128,.10)")
-
-    _agreements = _winner_synthesis.get("agreements", 0)
-    _conflicts = _winner_synthesis.get("conflicts", 0)
-
-    st.markdown(
-        f"""
-        <div class="result-card"
-             style="background:{_agreement_color};">
-            <div class="result-main">
-                {_winner_synthesis.get("winner", "—")}
-            </div>
-            <div class="result-caption">
-                SYNTHESIS: {_synthesis}
-                · agreements {_agreements} · conflicts {_conflicts}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # --------------------------------------------------------
-    # Pair Rating — как часть Winner Synthesis
-    # --------------------------------------------------------
-
-    if _pair_rating:
-
-        _pr_home = _pair_rating.get("home_rating")
-        _pr_away = _pair_rating.get("away_rating")
-        _pr_gap = _pair_rating.get("rating_gap")
-
-        _pr_gap_text = "—"
-
-        if _pr_gap is not None:
-
-            try:
-                _pr_gap_text = f"{int(_pr_gap):+d}"
-            except (TypeError, ValueError):
-                _pr_gap_text = "—"
-
-        st.caption(
-            f"Pair Rating: 🏠 {_pr_home} — ✈️ {_pr_away} "
-            f"(gap {_pr_gap_text})"
-        )
 
 
 # ============================================================
@@ -2262,17 +2026,6 @@ with _b2:
 
 with _b3:
     st.metric(
-        "Winner",
-        str(
-            (_winner_synthesis or {}).get(
-                "winner",
-                "—",
-            )
-        ),
-    )
-
-with _b4:
-    st.metric(
         "Confidence",
         (
             f"{_conf_pct:.1f}%"
@@ -2281,23 +2034,23 @@ with _b4:
         ),
     )
 
-with st.expander(
-    "Winner Synthesis",
-    expanded=False,
-):
-    st.json(_winner_synthesis or {})
-
-with st.expander(
-    "Pair Rating",
-    expanded=False,
-):
-    st.json(_pair_rating or {})
+with _b4:
+    st.metric(
+        "Model version",
+        str(prediction.get("model_version", "—")),
+    )
 
 with st.expander(
     "Score Forecast",
     expanded=False,
 ):
     st.json(_score_forecast or {})
+
+with st.expander(
+    "Goal Model Diagnostics",
+    expanded=False,
+):
+    st.json(_goal_model_meta or {})
 
 with st.expander(
     "Brain calculation meta (full)",
@@ -2787,7 +2540,8 @@ st.markdown(
     font-size:10px;
     padding-top:15px;
 ">
-    FAJ Predictor 1.2 · Single source of truth: FAJ Brain ·
+    FAJ Predictor 1.3 · Single source of truth: FAJ Brain ·
+    No Winner Synthesis · No Pair Rating ·
     No ETC · No Learning · No bookmaker odds · No Football Data API
 </div>
 """,
