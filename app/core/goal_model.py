@@ -4,137 +4,408 @@
 """
 ============================================================
 FAJ PLATFORM v12.1
-GOAL MODEL v6.0
+GOAL MODEL v1.0
 ============================================================
 
-STATUS:
-    FINAL CANDIDATE / MATHEMATICAL CORE
+НАЗНАЧЕНИЕ
+----------
 
-PURPOSE:
-    Generate independent expected-goal lambdas:
+GoalModel преобразует фактическую историю xG команды
+из FormContext в базовое состояние ожидаемых голов.
 
-        lambda_home
-        lambda_away
+GoalModel НЕ является WinnerModel.
+GoalModel НЕ является ProbabilityModel.
+GoalModel НЕ является ScorePredictor.
 
-CONTRACT:
+Цепочка:
 
-    FACTS / FormModel
-            ↓
-    structural state + recent state
-            ↓
-    effective attack / defensive exposure
-            ↓
-    venue-aware match state
-            ↓
-    independent home / away matchup
-            ↓
-    λH / λA
-            ↓
-    ProbabilityModel
+    FormContext
+        ↓
+    GoalModel
+        ↓
+    home_lambda
+    away_lambda
+        ↓
+    ProbabilityModel / ScorePredictor
 
-CORE PRINCIPLE:
+============================================================
+MATHEMATICAL CONTRACT v1
+============================================================
 
-    xG  = primary attacking observation
-    xGA = primary defensive-exposure observation
+Для каждой команды FormContext предоставляет:
 
-    Missing xG/xGA may fall back to goals only when
-    the corresponding xG/xGA value is genuinely unavailable.
+    team_xg_history
+        собственный xG команды (XGF)
 
-    Missing != 0.
+    opponent_xg_history
+        xG соперника против команды (XGA)
 
-    Venue data is used only when it is actually available
-    from historical match records.
+Истории находятся в каноническом порядке:
 
-    Home advantage is a bounded fallback only when
-    venue-specific information is unavailable.
+    M1 → M2 → ... → M6
 
-IMPORTANT:
+где:
 
-    GoalModel does NOT:
-        - calculate Poisson probabilities
-        - calculate 1X2
-        - calculate BTTS
-        - calculate totals
-        - select exact scores
-        - redistribute a shared total
-        - use strength-gap redistribution
-        - use finishing multipliers
-        - use confidence to modify λ
-        - use FormAnomaly to modify λ
-        - use SpecialForm to modify λ
-        - use controls to modify λ
+    M1 = самый старый матч
+    M6 = самый свежий матч
 
-    ProbabilityModel owns probability generation.
-    ScorePredictor owns score ranking.
+Temporal weights:
 
+    M1 = 1
+    M2 = 2
+    M3 = 3
+    M4 = 4
+    M5 = 5
+    M6 = 6
+
+Weighted XGF:
+
+    XGF_rec =
+        Σ(w_i * XGF_i) / Σ(w_i)
+
+Weighted XGA:
+
+    XGA_rec =
+        Σ(w_i * XGA_i) / Σ(w_i)
+
+Для матча:
+
+    λHome =
+        (Home_XGF_rec + Away_XGA_rec) / 2
+
+    λAway =
+        (Away_XGF_rec + Home_XGA_rec) / 2
+
+============================================================
+IMPORTANT
+============================================================
+
+GoalModel v1.0 НЕ использует:
+
+    - geometric mean
+    - home advantage multiplier
+    - league strength
+    - opponent rating
+    - FAJ Rating
+    - Form multiplier
+    - Control multiplier
+    - Winner Signal
+    - finishing bonus
+    - arbitrary coefficients
+    - confidence
+    - risk
+    - bookmaker odds
+    - actual future result
+
+Missing xG:
+
+    None != 0
+
+Если вся необходимая история отсутствует,
+соответствующий показатель остаётся None.
+
+Если для λ недостаточно одного из двух компонентов,
+λ также остаётся None.
+
+============================================================
+VERSION
 ============================================================
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from math import sqrt
-from typing import Any, Iterable, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 
 # ============================================================
-# MODEL CONSTANTS
+# VERSION
 # ============================================================
 
-MODEL_VERSION = "6.0"
-MODEL_STATUS = "FINAL_CANDIDATE"
-
-MIN_LAMBDA = 0.0
-MAX_LAMBDA = 4.50
-
-# Used ONLY when venue-specific attack/defence information
-# is unavailable for the relevant matchup.
-HOME_ADVANTAGE_FALLBACK = 1.10
-
-# Safety floor for relative-state diagnostics.
-RELATIVE_DELTA_FLOOR = 0.75
+GOAL_MODEL_VERSION = "1.0"
+GOAL_MODEL_STATUS = "CONTRACT_V1"
 
 
 # ============================================================
-# RESULT
+# TEMPORAL WEIGHTS
+# ============================================================
+
+DEFAULT_MAX_HISTORY = 6
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def _safe_float(value: Any) -> Optional[float]:
+    """
+    Безопасное преобразование значения в float.
+
+    None остаётся None.
+
+    Пустые значения:
+        None
+
+    Некорректные значения:
+        None
+
+    Никогда не заменяет отсутствие данных на 0.
+    """
+
+    if value is None:
+        return None
+
+    if isinstance(value, bool):
+        return None
+
+    try:
+
+        text = str(value).strip()
+
+        if not text:
+            return None
+
+        text = text.replace(",", ".")
+
+        return float(text)
+
+    except (TypeError, ValueError):
+
+        return None
+
+
+def _get_value(
+    record: Any,
+    *keys: str,
+) -> Any:
+    """
+    Получение значения из:
+
+        dict
+        sqlite3.Row
+        объекта с атрибутами
+    """
+
+    if record is None:
+        return None
+
+    for key in keys:
+
+        # ----------------------------------------------------
+        # dict
+        # ----------------------------------------------------
+
+        if isinstance(record, dict):
+
+            if key in record:
+
+                return record[key]
+
+        # ----------------------------------------------------
+        # sqlite3.Row / mapping-like
+        # ----------------------------------------------------
+
+        try:
+
+            if key in record.keys():
+
+                return record[key]
+
+        except (
+            AttributeError,
+            TypeError,
+        ):
+
+            pass
+
+        # ----------------------------------------------------
+        # object
+        # ----------------------------------------------------
+
+        try:
+
+            return getattr(
+                record,
+                key,
+            )
+
+        except AttributeError:
+
+            pass
+
+    return None
+
+
+def _to_sequence(
+    value: Any,
+) -> List[Any]:
+    """
+    Нормализует history в обычный список.
+
+    None -> []
+
+    tuple/list -> list
+
+    одиночное значение -> [value]
+    """
+
+    if value is None:
+
+        return []
+
+    if isinstance(
+        value,
+        (list, tuple),
+    ):
+
+        return list(value)
+
+    return [value]
+
+
+# ============================================================
+# WEIGHTED MEAN
+# ============================================================
+
+def weighted_mean(
+    values: Sequence[Any],
+) -> Optional[float]:
+    """
+    Recency-weighted mean.
+
+    Канонический порядок:
+
+        values[0] = M1 = oldest
+        values[-1] = newest
+
+    Вес:
+
+        M1 = 1
+        M2 = 2
+        ...
+        Mn = n
+
+    ВАЖНО:
+
+    Если значение None, оно НЕ получает вес.
+
+    Пример:
+
+        [1.0, None, 2.0]
+
+    веса:
+
+        1, 2, 3
+
+    используется:
+
+        (1*1.0 + 3*2.0) / (1+3)
+
+    То есть отсутствие наблюдения
+    не превращается в ноль.
+    """
+
+    if not values:
+
+        return None
+
+    numerator = 0.0
+    denominator = 0.0
+
+    for index, raw_value in enumerate(
+        values,
+        start=1,
+    ):
+
+        value = _safe_float(
+            raw_value
+        )
+
+        if value is None:
+
+            continue
+
+        weight = float(index)
+
+        numerator += (
+            weight * value
+        )
+
+        denominator += weight
+
+    if denominator <= 0:
+
+        return None
+
+    return (
+        numerator
+        / denominator
+    )
+
+
+# ============================================================
+# GOAL STATE
 # ============================================================
 
 @dataclass
-class GoalModelResult:
+class GoalState:
     """
-    Public GoalModel result.
-
-    Compatibility fields are intentionally retained because
-    downstream Brain / adapters may already expect them.
+    Чистое математическое состояние GoalModel.
     """
 
-    home_xg: float
-    away_xg: float
+    model_version: str = GOAL_MODEL_VERSION
 
-    home_base_xg: float
-    away_base_xg: float
+    # --------------------------------------------------------
+    # TEAM
+    # --------------------------------------------------------
 
-    home_attack: float
-    away_attack: float
+    home_team: Optional[str] = None
+    away_team: Optional[str] = None
 
-    home_defence: float
-    away_defence: float
+    # --------------------------------------------------------
+    # RECENT XG STATES
+    # --------------------------------------------------------
 
-    home_form_effect: float
-    away_form_effect: float
+    home_xgf_rec: Optional[float] = None
+    home_xga_rec: Optional[float] = None
 
-    confidence: float
+    away_xgf_rec: Optional[float] = None
+    away_xga_rec: Optional[float] = None
 
-    finishing_delta_home: Optional[float]
-    finishing_delta_away: Optional[float]
+    # --------------------------------------------------------
+    # EXPECTED GOALS
+    # --------------------------------------------------------
 
-    diagnostics: dict[str, Any]
+    home_lambda: Optional[float] = None
+    away_lambda: Optional[float] = None
 
-    model_version: str = MODEL_VERSION
-    model_status: str = MODEL_STATUS
+    total_lambda: Optional[float] = None
 
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+    # --------------------------------------------------------
+    # DATA QUALITY
+    # --------------------------------------------------------
+
+    home_xgf_sample: int = 0
+    home_xga_sample: int = 0
+
+    away_xgf_sample: int = 0
+    away_xga_sample: int = 0
+
+    # --------------------------------------------------------
+    # HISTORY SIZE
+    # --------------------------------------------------------
+
+    home_matches: int = 0
+    away_matches: int = 0
+
+    # --------------------------------------------------------
+    # DIAGNOSTICS
+    # --------------------------------------------------------
+
+    home_lambda_available: bool = False
+    away_lambda_available: bool = False
+
+    calculation_valid: bool = False
 
 
 # ============================================================
@@ -143,1366 +414,658 @@ class GoalModelResult:
 
 class GoalModel:
     """
-    FAJ GoalModel v6.0.
+    FAJ GoalModel v1.0.
 
-    Mathematical chain:
+    Единственная математическая задача:
 
-        structural attack
-                +
-        recent attack
-                ↓
-        geometric mean
-                ↓
-        venue-aware attack
+        FACT xG history
+            ↓
+        recency-weighted XGF/XGA
+            ↓
+        structural matchup
+            ↓
+        λHome / λAway
 
-        structural xGA
-                +
-        recent xGA
-                ↓
-        geometric mean
-                ↓
-        venue-aware defensive exposure
-
-        λH = sqrt(
-            home_attack_match
-            * away_defensive_exposure_match
-        )
-
-        λA = sqrt(
-            away_attack_match
-            * home_defensive_exposure_match
-        )
-
-    Venue-specific data has priority.
-
-    If venue-specific data is unavailable:
-
-        λH *= HOME_ADVANTAGE_FALLBACK
-
-    λA is not multiplied.
-
-    This is intentionally simple.
+    Никакой дополнительной корректировки здесь нет.
     """
 
-    VERSION = MODEL_VERSION
-    STATUS = MODEL_STATUS
+    VERSION = GOAL_MODEL_VERSION
 
-    MIN_LAMBDA = MIN_LAMBDA
-    MAX_LAMBDA = MAX_LAMBDA
+    MAX_HISTORY = DEFAULT_MAX_HISTORY
 
-    HOME_ADVANTAGE_FALLBACK = HOME_ADVANTAGE_FALLBACK
+    # ========================================================
+    # INIT
+    # ========================================================
 
-    # --------------------------------------------------------
-    # PUBLIC API
-    # --------------------------------------------------------
-
-    def analyze(
+    def __init__(
         self,
-        home_form: Any,
-        away_form: Any,
-        home_team: Optional[str] = None,
-        away_team: Optional[str] = None,
-        venue: Optional[str] = None,
-        home_control: Any = None,
-        away_control: Any = None,
-        home_special: Any = None,
-        away_special: Any = None,
-        home_history: Any = None,
-        away_history: Any = None,
-        **kwargs: Any,
-    ) -> GoalModelResult:
+        max_history: int = DEFAULT_MAX_HISTORY,
+    ) -> None:
+
+        if max_history <= 0:
+
+            max_history = DEFAULT_MAX_HISTORY
+
+        self.max_history = int(
+            max_history
+        )
+
+    # ========================================================
+    # HISTORY EXTRACTION
+    # ========================================================
+
+    def _extract_history(
+        self,
+        context: Any,
+        key: str,
+    ) -> List[Optional[float]]:
         """
-        Main GoalModel entry point.
+        Получает историю из FormContext.
 
-        home_form / away_form:
-            FormModel result, dict, dataclass, sqlite.Row,
-            or compatible object.
+        Основной контракт:
 
-        home_history / away_history:
-            Historical match records.
-
-        Additional compatibility arguments are accepted but
-        intentionally do not modify λ.
+            team_xg_history
+            opponent_xg_history
         """
 
-        home = self._mapping(home_form)
-        away = self._mapping(away_form)
-
-        # ----------------------------------------------------
-        # STRUCTURAL STATE
-        # ----------------------------------------------------
-
-        home_structural_attack = self._structural_attack(home)
-        away_structural_attack = self._structural_attack(away)
-
-        home_structural_defence = self._structural_defence(home)
-        away_structural_defence = self._structural_defence(away)
-
-        # ----------------------------------------------------
-        # RECENT STATE
-        # ----------------------------------------------------
-
-        home_recent_attack = self._recent_attack(
-            home,
-            structural_value=home_structural_attack,
+        value = _get_value(
+            context,
+            key,
         )
 
-        away_recent_attack = self._recent_attack(
-            away,
-            structural_value=away_structural_attack,
-        )
-
-        home_recent_defence = self._recent_defence(
-            home,
-            structural_value=home_structural_defence,
-        )
-
-        away_recent_defence = self._recent_defence(
-            away,
-            structural_value=away_structural_defence,
+        values = _to_sequence(
+            value
         )
 
         # ----------------------------------------------------
-        # EFFECTIVE STATE
-        # ----------------------------------------------------
-
-        home_attack_eff = self._geometric_state(
-            home_structural_attack,
-            home_recent_attack,
-        )
-
-        away_attack_eff = self._geometric_state(
-            away_structural_attack,
-            away_recent_attack,
-        )
-
-        home_defence_eff = self._geometric_state(
-            home_structural_defence,
-            home_recent_defence,
-        )
-
-        away_defence_eff = self._geometric_state(
-            away_structural_defence,
-            away_recent_defence,
-        )
-
-        # ----------------------------------------------------
-        # VENUE STATE
-        # ----------------------------------------------------
-
-        home_venue = self._venue_profile(
-            history=home_history,
-            required_side="home",
-        )
-
-        away_venue = self._venue_profile(
-            history=away_history,
-            required_side="away",
-        )
-
-        venue_split_available = (
-            home_venue["attack_xg"] is not None
-            and home_venue["defence_xga"] is not None
-            and away_venue["attack_xg"] is not None
-            and away_venue["defence_xga"] is not None
-        )
-
-        # ----------------------------------------------------
-        # MATCH-SPECIFIC STATE
-        # ----------------------------------------------------
+        # FormContext уже гарантирует:
         #
-        # Venue применяется только целиком.
+        # oldest -> newest
         #
-        # Если хотя бы одного из четырёх venue-показателей
-        # нет, полностью возвращаемся к generic effective state.
-        #
-        # Это запрещает частичный venue + fallback одновременно.
+        # Поэтому здесь НЕ выполняется reverse().
         # ----------------------------------------------------
 
-        if venue_split_available:
-
-            home_attack_match = home_venue["attack_xg"]
-            away_attack_match = away_venue["attack_xg"]
-
-            home_defence_match = home_venue["defence_xga"]
-            away_defence_match = away_venue["defence_xga"]
-
-        else:
-
-            home_attack_match = home_attack_eff
-            away_attack_match = away_attack_eff
-
-            home_defence_match = home_defence_eff
-            away_defence_match = away_defence_eff
-
-        # ----------------------------------------------------
-        # INDEPENDENT MATCHUP
-        # ----------------------------------------------------
-
-        home_lambda = self._matchup(
-            attack=home_attack_match,
-            opponent_defence_exposure=away_defence_match,
-        )
-
-        away_lambda = self._matchup(
-            attack=away_attack_match,
-            opponent_defence_exposure=home_defence_match,
-        )
-
-        # ----------------------------------------------------
-        # HOME ADVANTAGE FALLBACK
-        # ----------------------------------------------------
-
-        home_advantage_applied = False
-
-        if not venue_split_available:
-            home_lambda *= self.HOME_ADVANTAGE_FALLBACK
-            home_advantage_applied = True
-
-        # ----------------------------------------------------
-        # SAFETY
-        # ----------------------------------------------------
-
-        home_lambda = self._clip_lambda(home_lambda)
-        away_lambda = self._clip_lambda(away_lambda)
-
-        # ----------------------------------------------------
-        # FORM DIAGNOSTIC
-        # ----------------------------------------------------
-        #
-        # Form is already incorporated into A_eff / D_eff.
-        #
-        # These fields are retained for compatibility and
-        # diagnostics only. They do NOT modify λ again.
-        # ----------------------------------------------------
-
-        home_form_effect = self._form_effect_diagnostic(
-            structural=home_structural_attack,
-            recent=home_recent_attack,
-        )
-
-        away_form_effect = self._form_effect_diagnostic(
-            structural=away_structural_attack,
-            recent=away_recent_attack,
-        )
-
-        # ----------------------------------------------------
-        # CONFIDENCE
-        # ----------------------------------------------------
-
-        confidence = self._confidence(
-            home=home,
-            away=away,
-            home_history=home_history,
-            away_history=away_history,
-            venue_split_available=venue_split_available,
-        )
-
-        # ----------------------------------------------------
-        # FINISHING DIAGNOSTIC
-        # ----------------------------------------------------
-
-        finishing_delta_home = self._optional_float(
-            home.get("finishing_delta")
-        )
-
-        finishing_delta_away = self._optional_float(
-            away.get("finishing_delta")
-        )
-
-        # ----------------------------------------------------
-        # RELATIVE STATE DIAGNOSTICS
-        # ----------------------------------------------------
-
-        home_attack_delta = self._relative_delta(
-            home_structural_attack,
-            home_recent_attack,
-        )
-
-        away_attack_delta = self._relative_delta(
-            away_structural_attack,
-            away_recent_attack,
-        )
-
-        home_defence_delta = self._relative_delta(
-            home_structural_defence,
-            home_recent_defence,
-        )
-
-        away_defence_delta = self._relative_delta(
-            away_structural_defence,
-            away_recent_defence,
-        )
-
-        # ----------------------------------------------------
-        # DIAGNOSTICS
-        # ----------------------------------------------------
-
-        diagnostics: dict[str, Any] = {
-            "model": "FAJ GoalModel",
-            "version": MODEL_VERSION,
-            "status": MODEL_STATUS,
-
-            "principles": {
-                "xg_primary": True,
-                "xga_primary": True,
-                "goals_fallback_only": True,
-                "missing_is_not_zero": True,
-                "independent_lambdas": True,
-                "shared_total": False,
-                "sigmoid": False,
-                "strength_gap_redistribution": False,
-                "finishing_multiplier": False,
-                "confidence_multiplier": False,
-                "control_multiplier": False,
-                "special_multiplier": False,
-                "league_baseline": False,
-            },
-
-            "formula": {
-                "effective_attack":
-                    "sqrt(structural_attack * recent_attack)",
-                "effective_defence":
-                    "sqrt(structural_xga * recent_xga)",
-                "home_lambda":
-                    "sqrt(home_attack_match * away_defensive_exposure_match)",
-                "away_lambda":
-                    "sqrt(away_attack_match * home_defensive_exposure_match)",
-            },
-
-            "home": {
-                "team": home_team,
-                "structural_attack": home_structural_attack,
-                "recent_attack": home_recent_attack,
-                "effective_attack": home_attack_eff,
-
-                "structural_xga": home_structural_defence,
-                "recent_xga": home_recent_defence,
-                "effective_xga": home_defence_eff,
-
-                "venue_attack_xg": home_venue["attack_xg"],
-                "venue_defence_xga": home_venue["defence_xga"],
-
-                "match_attack": home_attack_match,
-                "match_defensive_exposure": home_defence_match,
-
-                "recent_attack_delta": home_attack_delta,
-                "recent_xga_delta": home_defence_delta,
-            },
-
-            "away": {
-                "team": away_team,
-                "structural_attack": away_structural_attack,
-                "recent_attack": away_recent_attack,
-                "effective_attack": away_attack_eff,
-
-                "structural_xga": away_structural_defence,
-                "recent_xga": away_recent_defence,
-                "effective_xga": away_defence_eff,
-
-                "venue_attack_xg": away_venue["attack_xg"],
-                "venue_defence_xga": away_venue["defence_xga"],
-
-                "match_attack": away_attack_match,
-                "match_defensive_exposure": away_defence_match,
-
-                "recent_attack_delta": away_attack_delta,
-                "recent_xga_delta": away_defence_delta,
-            },
-
-            "venue": {
-                "venue": venue,
-                "venue_split_available": venue_split_available,
-                "home_advantage_fallback":
-                    self.HOME_ADVANTAGE_FALLBACK,
-                "home_advantage_applied": home_advantage_applied,
-            },
-
-            "lambda": {
-                "home": home_lambda,
-                "away": away_lambda,
-                "total": home_lambda + away_lambda,
-            },
-
-            "compatibility_inputs_ignored_for_lambda": {
-                "home_control": home_control is not None,
-                "away_control": away_control is not None,
-                "home_special": home_special is not None,
-                "away_special": away_special is not None,
-            },
-        }
-
-        return GoalModelResult(
-            home_xg=home_lambda,
-            away_xg=away_lambda,
-
-            home_base_xg=home_lambda,
-            away_base_xg=away_lambda,
-
-            home_attack=home_attack_match,
-            away_attack=away_attack_match,
-
-            home_defence=home_defence_match,
-            away_defence=away_defence_match,
-
-            home_form_effect=home_form_effect,
-            away_form_effect=away_form_effect,
-
-            confidence=confidence,
-
-            finishing_delta_home=finishing_delta_home,
-            finishing_delta_away=finishing_delta_away,
-
-            diagnostics=diagnostics,
-        )
-
-    # --------------------------------------------------------
-    # COMPATIBILITY ALIASES
-    # --------------------------------------------------------
-
-    def predict(
-        self,
-        home_form: Any,
-        away_form: Any,
-        **kwargs: Any,
-    ) -> GoalModelResult:
-        return self.analyze(
-            home_form=home_form,
-            away_form=away_form,
-            **kwargs,
-        )
-
-    def calculate(
-        self,
-        home_form: Any,
-        away_form: Any,
-        **kwargs: Any,
-    ) -> GoalModelResult:
-        return self.analyze(
-            home_form=home_form,
-            away_form=away_form,
-            **kwargs,
-        )
-
-    # --------------------------------------------------------
-    # STRUCTURAL ATTACK
-    # --------------------------------------------------------
-
-    def _structural_attack(
-        self,
-        state: Mapping[str, Any],
-    ) -> Optional[float]:
-        """
-        Primary:
-            xg_avg
-
-        Fallback:
-            goals_for_avg
-
-        Missing != 0.
-        """
-
-        xg = self._optional_float(state.get("xg_avg"))
-
-        if xg is not None:
-            return self._non_negative(xg)
-
-        goals = self._optional_float(
-            state.get("goals_for_avg")
-        )
-
-        if goals is not None:
-            return self._non_negative(goals)
-
-        return None
-
-    # --------------------------------------------------------
-    # STRUCTURAL DEFENSIVE EXPOSURE
-    # --------------------------------------------------------
-
-    def _structural_defence(
-        self,
-        state: Mapping[str, Any],
-    ) -> Optional[float]:
-        """
-        Primary:
-            xga_avg
-
-        Fallback:
-            goals_against_avg
-
-        Lower xGA = stronger defensive performance.
-
-        xGA itself is stored as defensive exposure, not
-        defensive strength.
-
-        Missing != 0.
-        """
-
-        xga = self._optional_float(state.get("xga_avg"))
-
-        if xga is not None:
-            return self._non_negative(xga)
-
-        goals_against = self._optional_float(
-            state.get("goals_against_avg")
-        )
-
-        if goals_against is not None:
-            return self._non_negative(goals_against)
-
-        return None
-
-    # --------------------------------------------------------
-    # RECENT ATTACK
-    # --------------------------------------------------------
-
-    def _recent_attack(
-        self,
-        state: Mapping[str, Any],
-        structural_value: Optional[float],
-    ) -> Optional[float]:
-        """
-        Priority:
-
-            xg_recent
-            mean(xg_history)
-            structural attack
-        """
-
-        recent = self._optional_float(
-            state.get("xg_recent")
-        )
-
-        if recent is not None:
-            return self._non_negative(recent)
-
-        history = self._extract_numeric_history(
-            state.get("xg_history")
-        )
-
-        if history:
-            return self._mean(history)
-
-        return structural_value
-
-    # --------------------------------------------------------
-    # RECENT DEFENCE
-    # --------------------------------------------------------
-
-    def _recent_defence(
-        self,
-        state: Mapping[str, Any],
-        structural_value: Optional[float],
-    ) -> Optional[float]:
-        """
-        Priority:
-
-            xga_recent
-            mean(xga_history)
-            structural xGA
-        """
-
-        recent = self._optional_float(
-            state.get("xga_recent")
-        )
-
-        if recent is not None:
-            return self._non_negative(recent)
-
-        history = self._extract_numeric_history(
-            state.get("xga_history")
-        )
-
-        if history:
-            return self._mean(history)
-
-        return structural_value
-
-    # --------------------------------------------------------
-    # GEOMETRIC STATE
-    # --------------------------------------------------------
-
-    def _geometric_state(
-        self,
-        structural: Optional[float],
-        recent: Optional[float],
-    ) -> Optional[float]:
-        """
-        Effective state:
-
-            sqrt(structural * recent)
-
-        If one component is unavailable, use the other.
-
-        If both are unavailable, return None.
-        """
-
-        if structural is None and recent is None:
-            return None
-
-        if structural is None:
-            return self._non_negative(recent)
-
-        if recent is None:
-            return self._non_negative(structural)
-
-        return sqrt(
-            self._non_negative(structural)
-            * self._non_negative(recent)
-        )
-
-    # --------------------------------------------------------
-    # MATCHUP
-    # --------------------------------------------------------
-
-    def _matchup(
-        self,
-        attack: Optional[float],
-        opponent_defence_exposure: Optional[float],
-    ) -> float:
-        """
-        Independent matchup:
-
-            sqrt(Attack × Opponent xGA)
-
-        If one component is missing, use the available
-        component.
-
-        If both are missing, return zero.
-
-        This is a safety fallback only; upstream data
-        completeness should normally prevent this case.
-        """
-
-        if attack is None and opponent_defence_exposure is None:
-            return 0.0
-
-        if attack is None:
-            return self._non_negative(
-                opponent_defence_exposure
-            )
-
-        if opponent_defence_exposure is None:
-            return self._non_negative(attack)
-
-        return sqrt(
-            self._non_negative(attack)
-            * self._non_negative(
-                opponent_defence_exposure
-            )
-        )
-
-    # --------------------------------------------------------
-    # VENUE PROFILE
-    # --------------------------------------------------------
-
-    def _venue_profile(
-        self,
-        history: Any,
-        required_side: str,
-    ) -> dict[str, Optional[float]]:
-        """
-        Extract venue-specific:
-
-            attack_xg
-            defence_xga
-
-        from historical match records.
-
-        required_side:
-            "home" or "away"
-
-        A record qualifies only when its venue can be
-        reliably determined.
-
-        Attack uses xG.
-        Defence uses xGA.
-
-        One metric is never reused as the other.
-        """
-
-        records = self._records(history)
-
-        attack_values: list[float] = []
-        defence_values: list[float] = []
-
-        for record in records:
-            row = self._mapping(record)
-
-            side = self._record_side(row)
-
-            if side != required_side:
-                continue
-
-            xg = self._extract_record_xg(row)
-            xga = self._extract_record_xga(row)
-
-            if xg is not None:
-                attack_values.append(xg)
-
-            if xga is not None:
-                defence_values.append(xga)
-
-        return {
-            "attack_xg": (
-                self._mean(attack_values)
-                if attack_values
-                else None
-            ),
-            "defence_xga": (
-                self._mean(defence_values)
-                if defence_values
-                else None
-            ),
-        }
-
-    # --------------------------------------------------------
-    # RECORD SIDE
-    # --------------------------------------------------------
-
-    def _record_side(
-        self,
-        row: Mapping[str, Any],
-    ) -> Optional[str]:
-        """
-        Robustly determine home/away side.
-
-        Supported examples:
-
-            is_home=True
-            is_home=False
-
-            is_home="true"
-            is_home="false"
-
-            home=True
-            home=False
-
-            side="home"
-            side="away"
-
-            venue="home"
-            venue="away"
-
-        No blind bool("false") conversion.
-        """
-
-        for key in (
-            "side",
-            "venue_side",
-            "team_side",
-        ):
-            value = row.get(key)
-
-            normalized = self._normalize_side(value)
-
-            if normalized is not None:
-                return normalized
-
-        for key in (
-            "is_home",
-            "home",
-        ):
-            if key in row:
-                value = row.get(key)
-
-                parsed = self._parse_bool(value)
-
-                if parsed is True:
-                    return "home"
-
-                if parsed is False:
-                    return "away"
-
-        return None
-
-    # --------------------------------------------------------
-    # RECORD XG
-    # --------------------------------------------------------
-
-    def _extract_record_xg(
-        self,
-        row: Mapping[str, Any],
-    ) -> Optional[float]:
-        """
-        xG field priority.
-        """
-
-        for key in (
-            "xg",
-            "expected_goals",
-            "external_xg",
-            "expected_goal",
-        ):
-            value = self._optional_float(row.get(key))
-
-            if value is not None:
-                return self._non_negative(value)
-
-        return None
-
-    # --------------------------------------------------------
-    # RECORD XGA
-    # --------------------------------------------------------
-
-    def _extract_record_xga(
-        self,
-        row: Mapping[str, Any],
-    ) -> Optional[float]:
-        """
-        xGA field priority.
-
-        Prefer explicit xGA fields.
-
-        If explicit xGA is absent, derive team xGA from
-        opponent xG only when the record contains an explicit
-        opponent xG field.
-
-        Never use team's own xG as xGA.
-        """
-
-        for key in (
-            "xga",
-            "xGA",
-            "expected_goals_against",
-            "expected_goals_conceded",
-            "opponent_xg",
-            "opp_xg",
-            "against_xg",
-        ):
-            value = self._optional_float(row.get(key))
-
-            if value is not None:
-                return self._non_negative(value)
-
-        return None
-
-    # --------------------------------------------------------
-    # HISTORY RECORD NORMALIZATION
-    # --------------------------------------------------------
-
-    def _records(
-        self,
-        history: Any,
-    ) -> list[Any]:
-        """
-        Normalize arbitrary history containers.
-        """
-
-        if history is None:
-            return []
-
-        if isinstance(history, Mapping):
-            # A single record.
-            if self._looks_like_record(history):
-                return [history]
-
-            # Common nested containers.
-            for key in (
-                "matches",
-                "history",
-                "records",
-                "items",
-                "data",
-            ):
-                value = history.get(key)
-
-                if value is not None:
-                    return self._records(value)
-
-            return []
-
-        if isinstance(history, (str, bytes)):
-            return []
-
-        try:
-            return list(history)
-        except TypeError:
-            return []
-
-    def _looks_like_record(
-        self,
-        value: Mapping[str, Any],
-    ) -> bool:
-        keys = set(value.keys())
-
-        interesting = {
-            "xg",
-            "xga",
-            "external_xg",
-            "expected_goals",
-            "is_home",
-            "home",
-            "side",
-            "venue",
-        }
-
-        return bool(keys.intersection(interesting))
-
-    # --------------------------------------------------------
-    # GENERIC MAPPING
-    # --------------------------------------------------------
-
-    def _mapping(
-        self,
-        value: Any,
-    ) -> dict[str, Any]:
-        """
-        Convert common FAJ result objects into a dict-like
-        structure.
-
-        Supports:
-            dict
-            sqlite.Row
-            dataclass
-            objects with __dict__
-            objects with to_dict()
-        """
-
-        if value is None:
-            return {}
-
-        if isinstance(value, Mapping):
-            return dict(value)
-
-        to_dict = getattr(value, "to_dict", None)
-
-        if callable(to_dict):
-            try:
-                result = to_dict()
-
-                if isinstance(result, Mapping):
-                    return dict(result)
-            except Exception:
-                pass
-
-        # sqlite.Row and similar mapping-like objects.
-        keys = getattr(value, "keys", None)
-
-        if callable(keys):
-            try:
-                return {
-                    key: value[key]
-                    for key in keys()
-                }
-            except Exception:
-                pass
-
-        if hasattr(value, "__dict__"):
-            try:
-                return dict(vars(value))
-            except Exception:
-                pass
-
-        return {}
-
-    # --------------------------------------------------------
-    # NUMERIC HISTORY
-    # --------------------------------------------------------
-
-    def _extract_numeric_history(
-        self,
-        history: Any,
-    ) -> list[float]:
-        """
-        Extract scalar values from:
-
-            [1.2, 1.5, 0.8]
-
-        or:
-
-            [{"xg": 1.2}, {"xg": 1.5}]
-
-        or:
-
-            sqlite.Row / dataclass records.
-
-        This helper is intentionally generic and is used
-        only for xG/xGA histories.
-        """
-
-        if history is None:
-            return []
-
-        if isinstance(history, Mapping):
-            # Direct scalar record.
-            for key in (
-                "value",
-                "xg",
-                "xga",
-            ):
-                if key in history:
-                    value = self._optional_float(
-                        history.get(key)
-                    )
-
-                    if value is not None:
-                        return [self._non_negative(value)]
-
-            return []
-
-        if isinstance(history, (str, bytes)):
-            return []
-
-        scalar = self._optional_float(history)
-
-        if scalar is not None:
-            return [self._non_negative(scalar)]
-
-        try:
-            items = list(history)
-        except TypeError:
-            return []
-
-        result: list[float] = []
-
-        for item in items:
-            if isinstance(item, Mapping):
-                row = self._mapping(item)
-
-                value = None
-
-                for key in (
-                    "value",
-                    "xg",
-                    "xga",
-                ):
-                    if key in row:
-                        value = self._optional_float(
-                            row.get(key)
-                        )
-
-                        if value is not None:
-                            break
-
-                if value is not None:
-                    result.append(
-                        self._non_negative(value)
-                    )
-
-                continue
-
-            value = self._optional_float(item)
-
-            if value is not None:
-                result.append(
-                    self._non_negative(value)
-                )
-
-        return result
-
-    # --------------------------------------------------------
-    # FORM DIAGNOSTIC
-    # --------------------------------------------------------
-
-    def _form_effect_diagnostic(
-        self,
-        structural: Optional[float],
-        recent: Optional[float],
-    ) -> float:
-        """
-        Descriptive form signal only.
-
-        It does NOT modify λ.
-
-        Uses bounded relative change:
-
-            (recent - structural)
-            /
-            max(|structural|, 0.75)
-
-        This avoids explosive ratios when the baseline
-        is very small.
-        """
-
-        if structural is None or recent is None:
-            return 0.0
-
-        denominator = max(
-            abs(structural),
-            RELATIVE_DELTA_FLOOR,
-        )
-
-        delta = (
-            recent - structural
-        ) / denominator
-
-        return self._clip(
-            delta,
-            -1.0,
-            1.0,
-        )
-
-    def _relative_delta(
-        self,
-        base: Optional[float],
-        recent: Optional[float],
-    ) -> Optional[float]:
-        if base is None or recent is None:
-            return None
-
-        denominator = max(
-            abs(base),
-            RELATIVE_DELTA_FLOOR,
-        )
-
-        return self._clip(
-            (recent - base) / denominator,
-            -1.0,
-            1.0,
-        )
-
-    # --------------------------------------------------------
-    # CONFIDENCE
-    # --------------------------------------------------------
-
-    def _confidence(
-        self,
-        home: Mapping[str, Any],
-        away: Mapping[str, Any],
-        home_history: Any,
-        away_history: Any,
-        venue_split_available: bool,
-    ) -> float:
-        """
-        Descriptive confidence only.
-
-        NEVER modifies λ.
-
-        Confidence is deliberately conservative.
-
-        It reflects data completeness, not team strength.
-        """
-
-        scores: list[float] = []
-
-        for state in (home, away):
-            score = 0.0
-            count = 0.0
-
-            for key in (
-                "xg_avg",
-                "xga_avg",
-                "xg_recent",
-                "xga_recent",
-            ):
-                count += 1.0
-
-                if self._optional_float(
-                    state.get(key)
-                ) is not None:
-                    score += 1.0
-
-            if count > 0:
-                scores.append(score / count)
-
-        if not scores:
-            confidence = 0.0
-        else:
-            confidence = self._mean(scores)
-
-        # Venue information is useful evidence but should not
-        # become a strength multiplier.
-        if venue_split_available:
-            confidence += 0.10
-
-        # Historical availability gives a small descriptive
-        # confidence contribution.
-        if self._records(home_history):
-            confidence += 0.05
-
-        if self._records(away_history):
-            confidence += 0.05
-
-        return self._clip(
-            confidence,
-            0.0,
-            1.0,
-        )
-
-    # --------------------------------------------------------
-    # HELPERS
-    # --------------------------------------------------------
-
-    @staticmethod
-    def _optional_float(
-        value: Any,
-    ) -> Optional[float]:
-        if value is None:
-            return None
-
-        if isinstance(value, bool):
-            return None
-
-        try:
-            number = float(value)
-        except (TypeError, ValueError):
-            return None
-
-        # NaN / infinity protection.
-        if number != number:
-            return None
-
-        if number == float("inf"):
-            return None
-
-        if number == float("-inf"):
-            return None
-
-        return number
-
-    @staticmethod
-    def _non_negative(
-        value: Optional[float],
-    ) -> Optional[float]:
-        if value is None:
-            return None
-
-        return max(
-            0.0,
-            float(value),
-        )
-
-    @staticmethod
-    def _mean(
-        values: Iterable[float],
-    ) -> float:
-        items = [
-            float(value)
+        values = values[
+            :self.max_history
+        ]
+
+        return [
+            _safe_float(value)
             for value in values
         ]
 
-        if not items:
-            return 0.0
+    # ========================================================
+    # TEAM XGF
+    # ========================================================
 
-        return sum(items) / len(items)
+    def _calculate_xgf(
+        self,
+        context: Any,
+    ) -> Optional[float]:
+        """
+        Recency-weighted XGF команды.
+        """
+
+        history = self._extract_history(
+            context,
+            "team_xg_history",
+        )
+
+        return weighted_mean(
+            history
+        )
+
+    # ========================================================
+    # TEAM XGA
+    # ========================================================
+
+    def _calculate_xga(
+        self,
+        context: Any,
+    ) -> Optional[float]:
+        """
+        Recency-weighted XGA команды.
+        """
+
+        history = self._extract_history(
+            context,
+            "opponent_xg_history",
+        )
+
+        return weighted_mean(
+            history
+        )
+
+    # ========================================================
+    # SAMPLE
+    # ========================================================
+
+    def _count_available(
+        self,
+        context: Any,
+        key: str,
+    ) -> int:
+        """
+        Количество доступных xG наблюдений.
+        """
+
+        history = self._extract_history(
+            context,
+            key,
+        )
+
+        return sum(
+            1
+            for value in history
+            if value is not None
+        )
+
+    # ========================================================
+    # MATCH COUNT
+    # ========================================================
+
+    def _get_matches_count(
+        self,
+        context: Any,
+    ) -> int:
+        """
+        Получает количество матчей
+        непосредственно из FormContext.
+        """
+
+        value = _get_value(
+            context,
+            "matches_count",
+        )
+
+        if value is not None:
+
+            try:
+
+                return int(value)
+
+            except (
+                TypeError,
+                ValueError,
+            ):
+
+                pass
+
+        # Fallback только как размер
+        # фактически переданной истории.
+
+        history = self._extract_history(
+            context,
+            "team_xg_history",
+        )
+
+        return len(history)
+
+    # ========================================================
+    # LAMBDA
+    # ========================================================
 
     @staticmethod
-    def _clip(
-        value: float,
-        lower: float,
-        upper: float,
-    ) -> float:
-        return max(
-            lower,
-            min(
-                upper,
-                value,
+    def _calculate_lambda(
+        attack_xgf: Optional[float],
+        opponent_xga: Optional[float],
+    ) -> Optional[float]:
+        """
+        Базовая формула Goal State.
+
+        λ = (XGF команды + XGA соперника) / 2
+
+        Если один компонент отсутствует,
+        λ НЕ рассчитывается.
+
+        Missing != 0.
+        """
+
+        if (
+            attack_xgf is None
+            or opponent_xga is None
+        ):
+
+            return None
+
+        return (
+            attack_xgf
+            + opponent_xga
+        ) / 2.0
+
+    # ========================================================
+    # MAIN CALCULATION
+    # ========================================================
+
+    def calculate(
+        self,
+        home_context: Any,
+        away_context: Any,
+        home_team: Optional[str] = None,
+        away_team: Optional[str] = None,
+    ) -> GoalState:
+        """
+        Основной расчёт Goal State.
+
+        home_context:
+            FormContext домашней команды
+
+        away_context:
+            FormContext гостевой команды
+
+        Формулы:
+
+            Home XGF:
+                home.team_xg_history
+
+            Home XGA:
+                home.opponent_xg_history
+
+            Away XGF:
+                away.team_xg_history
+
+            Away XGA:
+                away.opponent_xg_history
+
+            λHome:
+                (Home XGF + Away XGA) / 2
+
+            λAway:
+                (Away XGF + Home XGA) / 2
+        """
+
+        # ----------------------------------------------------
+        # TEAM NAMES
+        # ----------------------------------------------------
+
+        if home_team is None:
+
+            home_team = _get_value(
+                home_context,
+                "team",
+            )
+
+        if away_team is None:
+
+            away_team = _get_value(
+                away_context,
+                "team",
+            )
+
+        # ----------------------------------------------------
+        # RECENT XGF / XGA
+        # ----------------------------------------------------
+
+        home_xgf_rec = (
+            self._calculate_xgf(
+                home_context
+            )
+        )
+
+        home_xga_rec = (
+            self._calculate_xga(
+                home_context
+            )
+        )
+
+        away_xgf_rec = (
+            self._calculate_xgf(
+                away_context
+            )
+        )
+
+        away_xga_rec = (
+            self._calculate_xga(
+                away_context
+            )
+        )
+
+        # ----------------------------------------------------
+        # λ HOME
+        #
+        # Home attack:
+        #       Home XGF
+        #
+        # Away defensive allowance:
+        #       Away XGA
+        # ----------------------------------------------------
+
+        home_lambda = (
+            self._calculate_lambda(
+                attack_xgf=home_xgf_rec,
+                opponent_xga=away_xga_rec,
+            )
+        )
+
+        # ----------------------------------------------------
+        # λ AWAY
+        #
+        # Away attack:
+        #       Away XGF
+        #
+        # Home defensive allowance:
+        #       Home XGA
+        # ----------------------------------------------------
+
+        away_lambda = (
+            self._calculate_lambda(
+                attack_xgf=away_xgf_rec,
+                opponent_xga=home_xga_rec,
+            )
+        )
+
+        # ----------------------------------------------------
+        # TOTAL
+        # ----------------------------------------------------
+
+        if (
+            home_lambda is not None
+            and away_lambda is not None
+        ):
+
+            total_lambda = (
+                home_lambda
+                + away_lambda
+            )
+
+        else:
+
+            total_lambda = None
+
+        # ----------------------------------------------------
+        # SAMPLES
+        # ----------------------------------------------------
+
+        home_xgf_sample = (
+            self._count_available(
+                home_context,
+                "team_xg_history",
+            )
+        )
+
+        home_xga_sample = (
+            self._count_available(
+                home_context,
+                "opponent_xg_history",
+            )
+        )
+
+        away_xgf_sample = (
+            self._count_available(
+                away_context,
+                "team_xg_history",
+            )
+        )
+
+        away_xga_sample = (
+            self._count_available(
+                away_context,
+                "opponent_xg_history",
+            )
+        )
+
+        # ----------------------------------------------------
+        # VALIDITY
+        # ----------------------------------------------------
+
+        home_lambda_available = (
+            home_lambda is not None
+        )
+
+        away_lambda_available = (
+            away_lambda is not None
+        )
+
+        calculation_valid = (
+            home_lambda_available
+            and away_lambda_available
+        )
+
+        # ----------------------------------------------------
+        # STATE
+        # ----------------------------------------------------
+
+        return GoalState(
+
+            model_version=self.VERSION,
+
+            home_team=(
+                str(home_team)
+                if home_team is not None
+                else None
+            ),
+
+            away_team=(
+                str(away_team)
+                if away_team is not None
+                else None
+            ),
+
+            home_xgf_rec=home_xgf_rec,
+            home_xga_rec=home_xga_rec,
+
+            away_xgf_rec=away_xgf_rec,
+            away_xga_rec=away_xga_rec,
+
+            home_lambda=home_lambda,
+            away_lambda=away_lambda,
+
+            total_lambda=total_lambda,
+
+            home_xgf_sample=home_xgf_sample,
+            home_xga_sample=home_xga_sample,
+
+            away_xgf_sample=away_xgf_sample,
+            away_xga_sample=away_xga_sample,
+
+            home_matches=self._get_matches_count(
+                home_context
+            ),
+
+            away_matches=self._get_matches_count(
+                away_context
+            ),
+
+            home_lambda_available=(
+                home_lambda_available
+            ),
+
+            away_lambda_available=(
+                away_lambda_available
+            ),
+
+            calculation_valid=(
+                calculation_valid
             ),
         )
 
-    def _clip_lambda(
-        self,
-        value: Optional[float],
-    ) -> float:
-        if value is None:
-            return 0.0
+    # ========================================================
+    # DICT API
+    # ========================================================
 
-        return self._clip(
-            float(value),
-            self.MIN_LAMBDA,
-            self.MAX_LAMBDA,
+    def predict(
+        self,
+        home_context: Any,
+        away_context: Any,
+        home_team: Optional[str] = None,
+        away_team: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Основной orchestration-friendly API.
+
+        Возвращает обычный dict,
+        чтобы существующие компоненты FAJ
+        могли использовать результат
+        без зависимости от dataclass.
+        """
+
+        state = self.calculate(
+            home_context=home_context,
+            away_context=away_context,
+            home_team=home_team,
+            away_team=away_team,
         )
 
-    @staticmethod
-    def _normalize_side(
-        value: Any,
-    ) -> Optional[str]:
-        if value is None:
-            return None
+        return asdict(
+            state
+        )
 
-        text = str(value).strip().lower()
+    # ========================================================
+    # COMPATIBILITY ALIASES
+    # ========================================================
 
-        if text in {
-            "home",
-            "h",
-            "host",
-            "hosts",
-            "дом",
-            "хозяева",
-            "true",
-            "1",
-        }:
-            return "home"
+    def calculate_goal_state(
+        self,
+        home_context: Any,
+        away_context: Any,
+        home_team: Optional[str] = None,
+        away_team: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Явное имя для Brain / AnalysisEngine.
+        """
 
-        if text in {
-            "away",
-            "a",
-            "visitor",
-            "visitors",
-            "гости",
-            "false",
-            "0",
-        }:
-            return "away"
-
-        return None
-
-    @staticmethod
-    def _parse_bool(
-        value: Any,
-    ) -> Optional[bool]:
-        if value is None:
-            return None
-
-        if isinstance(value, bool):
-            return value
-
-        if isinstance(value, (int, float)):
-            if value == 1:
-                return True
-
-            if value == 0:
-                return False
-
-            return None
-
-        text = str(value).strip().lower()
-
-        if text in {
-            "true",
-            "1",
-            "yes",
-            "y",
-            "да",
-            "home",
-        }:
-            return True
-
-        if text in {
-            "false",
-            "0",
-            "no",
-            "n",
-            "нет",
-            "away",
-        }:
-            return False
-
-        return None
+        return self.predict(
+            home_context=home_context,
+            away_context=away_context,
+            home_team=home_team,
+            away_team=away_team,
+        )
 
 
 # ============================================================
-# MODULE CONVENIENCE API
+# SIMPLE FUNCTION API
 # ============================================================
 
-def calculate_expected_goals(
-    home_form: Any,
-    away_form: Any,
-    **kwargs: Any,
-) -> GoalModelResult:
+def calculate_goal_state(
+    home_context: Any,
+    away_context: Any,
+    home_team: Optional[str] = None,
+    away_team: Optional[str] = None,
+) -> Dict[str, Any]:
     """
-    Convenience wrapper.
+    Stateless helper API.
     """
 
-    return GoalModel().analyze(
-        home_form=home_form,
-        away_form=away_form,
-        **kwargs,
+    model = GoalModel()
+
+    return model.predict(
+        home_context=home_context,
+        away_context=away_context,
+        home_team=home_team,
+        away_team=away_team,
     )
 
 
 # ============================================================
-# END
+# DEBUG / SELF TEST
 # ============================================================
+
+if __name__ == "__main__":
+
+    # --------------------------------------------------------
+    # FormContext-like test data.
+    #
+    # M1 oldest -> M6 newest
+    # --------------------------------------------------------
+
+    home_context = {
+
+        "team": "Зенит",
+
+        "matches_count": 6,
+
+        "team_xg_history": (
+            1.00,
+            1.20,
+            1.40,
+            1.60,
+            1.80,
+            2.00,
+        ),
+
+        "opponent_xg_history": (
+            1.40,
+            1.30,
+            1.20,
+            1.10,
+            1.00,
+            0.90,
+        ),
+    }
+
+    away_context = {
+
+        "team": "ЦСКА",
+
+        "matches_count": 6,
+
+        "team_xg_history": (
+            1.20,
+            1.30,
+            1.40,
+            1.50,
+            1.60,
+            1.70,
+        ),
+
+        "opponent_xg_history": (
+            1.60,
+            1.50,
+            1.40,
+            1.30,
+            1.20,
+            1.10,
+        ),
+    }
+
+    model = GoalModel()
+
+    result = model.predict(
+        home_context=home_context,
+        away_context=away_context,
+    )
+
+    print(
+        "GOAL MODEL v1.0"
+    )
+
+    print(
+        "Home XGF:",
+        result["home_xgf_rec"],
+    )
+
+    print(
+        "Home XGA:",
+        result["home_xga_rec"],
+    )
+
+    print(
+        "Away XGF:",
+        result["away_xgf_rec"],
+    )
+
+    print(
+        "Away XGA:",
+        result["away_xga_rec"],
+    )
+
+    print(
+        "Home λ:",
+        result["home_lambda"],
+    )
+
+    print(
+        "Away λ:",
+        result["away_lambda"],
+    )
+
+    print(
+        "Total λ:",
+        result["total_lambda"],
+    )
+
+    print(
+        "Valid:",
+        result["calculation_valid"],
+    )
