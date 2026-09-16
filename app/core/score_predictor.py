@@ -1119,3 +1119,14 @@ def predict_score(
 
 
 # ============================================================
+# PUBLIC EXPORTS
+# ============================================================
+
+__all__ = [
+    "VERSION",
+    "FORMULA_STATUS",
+    "TOP_SCORES_COUNT",
+    "ScorePrediction",
+    "ScorePredictor",
+    "predict_score",
+]
