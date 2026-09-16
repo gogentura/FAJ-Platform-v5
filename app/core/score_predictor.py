@@ -4,77 +4,69 @@
 """
 ============================================================
 FAJ Platform v12.1
-SCORE PREDICTOR v2.2
+SCORE PREDICTOR v1.0
 ============================================================
 
 Назначение
 ----------
-ScorePredictor выбирает наиболее вероятные точные счета
-из уже рассчитанного ProbabilityModel распределения.
+ScorePredictor формирует Score State из уже рассчитанного
+ProbabilityModel распределения точных счетов.
 
 Архитектура:
 
-    GoalModel v2
-          │
-          ▼
-       λ Home
-       λ Away
-          │
-          ▼
+    GoalModel
+        │
+        ▼
+    home_lambda
+    away_lambda
+        │
+        ▼
     ProbabilityModel
-          │
-          ▼
-    Score Distribution
-          │
-          ▼
-    ScorePredictor v2.2
-          │
-          ├── likely_score
-          ├── predicted_score
-          ├── second_score
-          ├── third_score
-          └── top_scores
+        │
+        ▼
+    score_distribution
+        │
+        ▼
+    ScorePredictor
+        │
+        ├── predicted_score
+        ├── second_score
+        ├── third_score
+        └── ranked_scores
 
-ВАЖНЫЙ ПРИНЦИП
----------------
+КРИТИЧЕСКИЙ ПРИНЦИП
+-------------------
 
-ScorePredictor НЕ является второй probability model.
+ProbabilityModel является единственным владельцем
+вероятностей точных счетов.
 
-Он НЕ пересчитывает:
+ScorePredictor:
 
-- OutcomeFit
-- MarginFit
-- BTTSFit
-- TotalFit
-- ScenarioFit
-- ScoreUtility
-- FormWin
-- Defence
-- Control
-- Anomaly
-- Special signals
+    НЕ пересчитывает Poisson
+    НЕ меняет P(score)
+    НЕ применяет бонусы
+    НЕ применяет штрафы
+    НЕ использует FormWin
+    НЕ использует Defence
+    НЕ использует Control
+    НЕ использует Anomaly
+    НЕ использует SpecialForm
+    НЕ использует WinnerState
+    НЕ использует ScoreUtility
 
-Главный и единственный источник вероятности
-точного счёта:
+Математика:
 
-    P(score)
+    predicted_score = argmax P(score)
 
-из ProbabilityModel.
-
-Следовательно:
-
-    predicted_score = argmax(P(score))
-
-Top-N также строится непосредственно
-по P(score).
-
+ScorePredictor является ranking / state layer,
+а не второй probability model.
 ============================================================
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 import math
 
 
@@ -82,53 +74,28 @@ import math
 # VERSION
 # ============================================================
 
-VERSION = "2.2"
-FORMULA_STATUS = "RESEARCH_FORMULA"
+VERSION = "1.0"
+FORMULA_STATUS = "CONTRACT_V1"
 
 TOP_SCORES_COUNT = 10
 
 
 # ============================================================
-# SCORE PREDICTION RESULT
+# SCORE PREDICTION
 # ============================================================
 
 @dataclass
 class ScorePrediction:
     """
-    Результат ScorePredictor.
+    Score State v1.
 
-    Старые поля сохраняются ради совместимости
-    с остальным FAJ.
-
-    В v2.2:
-
-        likely_score
-            чистый argmax P(score)
+    Основной математический результат:
 
         predicted_score
-            основной выбранный счёт.
-            В v2.2 равен likely_score.
-
-        second_score
-            второй по вероятности.
-
-        third_score
-            третий по вероятности.
-
-        primary_score_value
-            P(primary_score)
-
-        second_score_value
-            P(second_score)
-
-        third_score_value
-            P(third_score)
-
         probability_score
-            P(predicted_score)
+        ranked_scores
 
-    Старые secondary-fit поля оставлены,
-    но математически не используются.
+    Старые поля сохранены как compatibility API.
     """
 
     version: str
@@ -145,28 +112,26 @@ class ScorePrediction:
 
     probability_score: Optional[float]
 
+    # Полное ранжированное распределение.
     top_scores: List[Dict[str, Any]] = field(
         default_factory=list
     )
 
+    # Compatibility.
+    home_lambda: Optional[float] = None
+    away_lambda: Optional[float] = None
+
+    # Старые имена API.
     home_xg: Optional[float] = None
     away_xg: Optional[float] = None
 
-    # --------------------------------------------------------
-    # Compatibility fields
-    # --------------------------------------------------------
-
+    # Старые compatibility fields.
     outcome_fit_score: Optional[float] = None
     margin_fit_score: Optional[float] = None
     btts_fit_score: Optional[float] = None
     total_fit_score: Optional[float] = None
     scenario_fit_score: Optional[float] = None
-
     state_advantage: Optional[float] = None
-
-    # --------------------------------------------------------
-    # Probability summary
-    # --------------------------------------------------------
 
     probability_summary: Dict[str, Any] = field(
         default_factory=dict
@@ -183,120 +148,113 @@ class ScorePrediction:
 
 class ScorePredictor:
     """
-    Score ranking layer.
+    Pure Score State layer.
 
-    Input:
+    Источник вероятности:
 
-        ProbabilityModel score distribution.
+        ProbabilityModel.score_distribution
 
-    Output:
-
-        mathematically highest-probability exact scores.
-
-    No secondary scenario model.
+    Никакой собственной probability mathematics здесь нет.
     """
-
-    def __init__(self) -> None:
-        pass
-
-    # ========================================================
-    # PUBLIC API
-    # ========================================================
 
     def predict(
         self,
         score_probabilities: Any,
-        home_xg: Optional[float],
-        away_xg: Optional[float],
+        home_lambda: Optional[float] = None,
+        away_lambda: Optional[float] = None,
         probability_result: Any = None,
+        *,
+        home_xg: Optional[float] = None,
+        away_xg: Optional[float] = None,
     ) -> ScorePrediction:
         """
-        Select exact scores directly from ProbabilityModel.
+        Rank scores directly from ProbabilityModel.
 
-        Parameters
-        ----------
-        score_probabilities:
-            Score probability distribution.
+        Compatibility:
+            home_xg / away_xg могут быть переданы вместо
+            home_lambda / away_lambda.
 
-            Supported examples:
-
-                {
-                    "1:0": 0.18,
-                    "1:1": 0.14,
-                    "2:0": 0.11,
-                }
-
-            or a list of score records.
-
-        home_xg:
-            GoalModel home lambda.
-
-        away_xg:
-            GoalModel away lambda.
-
-        probability_result:
-            Optional ProbabilityModel result.
-            Used only for diagnostics / summary.
-
-        Returns
-        -------
-        ScorePrediction
+        Внутри используются именно lambda.
         """
 
-        home_xg = self._safe_float(home_xg)
-        away_xg = self._safe_float(away_xg)
-
         # ----------------------------------------------------
-        # Validate xG
+        # Compatibility input resolution
         # ----------------------------------------------------
 
-        if home_xg is None or away_xg is None:
+        if home_lambda is None:
+            home_lambda = home_xg
+
+        if away_lambda is None:
+            away_lambda = away_xg
+
+        home_lambda = self._safe_float(
+            home_lambda
+        )
+
+        away_lambda = self._safe_float(
+            away_lambda
+        )
+
+        # ----------------------------------------------------
+        # Lambda validation
+        # ----------------------------------------------------
+
+        if (
+            home_lambda is None
+            or away_lambda is None
+            or home_lambda < 0.0
+            or away_lambda < 0.0
+        ):
             return self._unavailable_prediction(
-                home_xg=home_xg,
-                away_xg=away_xg,
-                reason="INVALID_XG",
+                home_lambda=home_lambda,
+                away_lambda=away_lambda,
+                reason="INVALID_LAMBDA",
             )
 
         # ----------------------------------------------------
-        # Normalize score distribution
+        # Read ProbabilityModel distribution
         # ----------------------------------------------------
 
-        candidates = self._normalize_score_probabilities(
+        candidates = self._read_score_distribution(
             score_probabilities
         )
 
         if not candidates:
             return self._unavailable_prediction(
-                home_xg=home_xg,
-                away_xg=away_xg,
+                home_lambda=home_lambda,
+                away_lambda=away_lambda,
                 reason="EMPTY_SCORE_DISTRIBUTION",
             )
 
         # ----------------------------------------------------
-        # Pure mathematical ranking
+        # IMPORTANT:
+        #
+        # No normalization.
+        # No probability modification.
+        #
+        # ProbabilityModel owns P(score).
         # ----------------------------------------------------
 
-        evaluated = sorted(
+        ranked = sorted(
             candidates,
-            key=lambda item: item["probability"],
-            reverse=True,
+            key=lambda item: (
+                -item["probability"],
+                item["home_goals"],
+                item["away_goals"],
+            ),
         )
 
         # ----------------------------------------------------
         # Top N
         # ----------------------------------------------------
 
-        top_scores = evaluated[
+        top_scores = ranked[
             :TOP_SCORES_COUNT
         ]
 
-        # ----------------------------------------------------
-        # Primary / secondary / tertiary
-        # ----------------------------------------------------
-
         primary = (
             top_scores[0]
-            if len(top_scores) >= 1
+            if top_scores
             else None
         )
 
@@ -314,7 +272,7 @@ class ScorePredictor:
 
         likely_score = (
             primary["score"]
-            if primary is not None
+            if primary
             else None
         )
 
@@ -322,36 +280,38 @@ class ScorePredictor:
 
         second_score = (
             second["score"]
-            if second is not None
+            if second
             else None
         )
 
         third_score = (
             third["score"]
-            if third is not None
+            if third
             else None
         )
 
         primary_probability = (
             primary["probability"]
-            if primary is not None
+            if primary
             else None
         )
 
         second_probability = (
             second["probability"]
-            if second is not None
+            if second
             else None
         )
 
         third_probability = (
             third["probability"]
-            if third is not None
+            if third
             else None
         )
 
         # ----------------------------------------------------
-        # Probability summary
+        # Diagnostic probability summary only.
+        #
+        # Never used to modify score ranking.
         # ----------------------------------------------------
 
         probability_summary = (
@@ -360,27 +320,19 @@ class ScorePredictor:
             )
         )
 
-        # ----------------------------------------------------
-        # Diagnostics
-        # ----------------------------------------------------
-
         diagnostics = {
             "version": VERSION,
             "formula_status": FORMULA_STATUS,
 
-            "home_xg": home_xg,
-            "away_xg": away_xg,
+            "home_lambda": home_lambda,
+            "away_lambda": away_lambda,
 
-            "candidate_count": len(
-                candidates
-            ),
+            # Compatibility names.
+            "home_xg": home_lambda,
+            "away_xg": away_lambda,
 
-            "top_scores_count": len(
-                top_scores
-            ),
-
-            "likely_score": likely_score,
-            "likely_probability": primary_probability,
+            "candidate_count": len(candidates),
+            "top_scores_count": len(top_scores),
 
             "predicted_score": predicted_score,
             "predicted_probability": primary_probability,
@@ -392,7 +344,7 @@ class ScorePredictor:
             "third_probability": third_probability,
 
             "selection_method": (
-                "PURE_SCORE_PROBABILITY"
+                "ARGMAX_RAW_SCORE_PROBABILITY"
             ),
 
             "distribution_source": (
@@ -400,14 +352,21 @@ class ScorePredictor:
             ),
 
             # ------------------------------------------------
-            # Explicitly document what is NOT used.
+            # Explicit architectural contract.
             # ------------------------------------------------
+
+            "probability_recalculated": False,
+            "probability_modified": False,
+
+            "poisson_recalculated": False,
+            "low_score_correction_used": False,
 
             "secondary_signals_used": False,
 
+            "winner_state_used": False,
+
             "form_win_used": False,
             "defence_used": False,
-
             "control_used": False,
             "anomaly_used": False,
             "special_used": False,
@@ -417,7 +376,6 @@ class ScorePredictor:
             "btts_fit_used": False,
             "total_fit_used": False,
             "scenario_fit_used": False,
-
             "score_utility_used": False,
         }
 
@@ -438,13 +396,11 @@ class ScorePredictor:
 
             top_scores=top_scores,
 
-            home_xg=home_xg,
-            away_xg=away_xg,
+            home_lambda=home_lambda,
+            away_lambda=away_lambda,
 
-            # ------------------------------------------------
-            # Compatibility fields.
-            # No secondary mathematical scoring.
-            # ------------------------------------------------
+            home_xg=home_lambda,
+            away_xg=away_lambda,
 
             outcome_fit_score=None,
             margin_fit_score=None,
@@ -460,28 +416,23 @@ class ScorePredictor:
         )
 
     # ========================================================
-    # NORMALIZE SCORE PROBABILITIES
+    # READ SCORE DISTRIBUTION
     # ========================================================
 
-    def _normalize_score_probabilities(
+    def _read_score_distribution(
         self,
         score_probabilities: Any,
     ) -> List[Dict[str, Any]]:
         """
-        Normalize different ProbabilityModel output shapes
-        into:
+        Convert ProbabilityModel score distribution into
+        Score State records.
 
-            [
-                {
-                    "score": "1:2",
-                    "probability": 0.148
-                },
-                ...
-            ]
+        IMPORTANT:
 
-        Missing/invalid probabilities are ignored.
+        Probabilities are NOT normalized and NOT recalculated.
 
-        No probability is invented.
+        The numeric P(score) received from ProbabilityModel
+        is preserved.
         """
 
         if score_probabilities is None:
@@ -492,11 +443,11 @@ class ScorePredictor:
         ] = []
 
         # ----------------------------------------------------
-        # Dictionary:
+        # Dict:
         #
         # {
-        #     "1:0": 0.15,
-        #     "1:1": 0.12
+        #     "1:0": 0.18,
+        #     "1:1": 0.14
         # }
         # ----------------------------------------------------
 
@@ -507,28 +458,10 @@ class ScorePredictor:
             for score, probability in (
                 score_probabilities.items()
             ):
-                score_text = self._parse_score(
-                    score
-                )
-
-                probability_value = (
-                    self._safe_float(
-                        probability
-                    )
-                )
-
-                if (
-                    score_text is None
-                    or probability_value is None
-                    or probability_value < 0
-                ):
-                    continue
-
-                candidates.append(
-                    {
-                        "score": score_text,
-                        "probability": probability_value,
-                    }
+                self._append_candidate(
+                    candidates,
+                    score,
+                    probability,
                 )
 
         # ----------------------------------------------------
@@ -537,21 +470,12 @@ class ScorePredictor:
 
         elif isinstance(
             score_probabilities,
-            (
-                list,
-                tuple,
-            ),
+            (list, tuple),
         ):
             for item in score_probabilities:
 
                 score = None
                 probability = None
-
-                # --------------------------------------------
-                # Tuple:
-                #
-                # ("1:2", 0.14)
-                # --------------------------------------------
 
                 if isinstance(
                     item,
@@ -560,10 +484,6 @@ class ScorePredictor:
                     if len(item) >= 2:
                         score = item[0]
                         probability = item[1]
-
-                # --------------------------------------------
-                # Dict record
-                # --------------------------------------------
 
                 elif isinstance(
                     item,
@@ -580,10 +500,6 @@ class ScorePredictor:
                         if "probability" in item
                         else item.get("prob")
                     )
-
-                # --------------------------------------------
-                # Object
-                # --------------------------------------------
 
                 else:
                     score = (
@@ -616,52 +532,34 @@ class ScorePredictor:
                             )
                         )
 
-                score_text = self._parse_score(
-                    score
-                )
-
-                probability_value = (
-                    self._safe_float(
-                        probability
-                    )
-                )
-
-                if (
-                    score_text is None
-                    or probability_value is None
-                    or probability_value < 0
-                ):
-                    continue
-
-                candidates.append(
-                    {
-                        "score": score_text,
-                        "probability": probability_value,
-                    }
+                self._append_candidate(
+                    candidates,
+                    score,
+                    probability,
                 )
 
         # ----------------------------------------------------
-        # Object containing score_probabilities
+        # ProbabilityResult / object wrapper
         # ----------------------------------------------------
 
         else:
+            nested = self._get_value(
+                score_probabilities,
+                "score_distribution",
+            )
+
+            if nested is not None:
+                return self._read_score_distribution(
+                    nested
+                )
+
             nested = self._get_value(
                 score_probabilities,
                 "score_probabilities",
             )
 
             if nested is not None:
-                return self._normalize_score_probabilities(
-                    nested
-                )
-
-            nested = self._get_value(
-                score_probabilities,
-                "scores",
-            )
-
-            if nested is not None:
-                return self._normalize_score_probabilities(
+                return self._read_score_distribution(
                     nested
                 )
 
@@ -671,12 +569,15 @@ class ScorePredictor:
             )
 
             if nested is not None:
-                return self._normalize_score_probabilities(
+                return self._read_score_distribution(
                     nested
                 )
 
         # ----------------------------------------------------
-        # Merge duplicate scores
+        # Merge duplicates WITHOUT changing total probability
+        #
+        # Duplicate score records represent the same state.
+        # Their supplied probabilities are summed.
         # ----------------------------------------------------
 
         merged: Dict[
@@ -694,29 +595,126 @@ class ScorePredictor:
                 + probability
             )
 
-        # ----------------------------------------------------
-        # Normalize
-        # ----------------------------------------------------
-
-        total = sum(
-            merged.values()
-        )
-
-        if total <= 0.0:
-            return []
-
-        normalized = [
-            {
-                "score": score,
-                "probability": (
-                    probability / total
-                ),
-            }
+        return [
+            self._build_score_state(
+                score,
+                probability,
+            )
             for score, probability
             in merged.items()
         ]
 
-        return normalized
+    # ========================================================
+    # APPEND CANDIDATE
+    # ========================================================
+
+    def _append_candidate(
+        self,
+        candidates: List[Dict[str, Any]],
+        score: Any,
+        probability: Any,
+    ) -> None:
+
+        score_text = self._parse_score(
+            score
+        )
+
+        probability_value = (
+            self._safe_float(
+                probability
+            )
+        )
+
+        if (
+            score_text is None
+            or probability_value is None
+            or probability_value < 0.0
+            or probability_value > 1.0
+        ):
+            return
+
+        home_goals, away_goals = (
+            self._score_parts(
+                score_text
+            )
+        )
+
+        if (
+            home_goals is None
+            or away_goals is None
+        ):
+            return
+
+        candidates.append(
+            {
+                "score": score_text,
+                "probability": probability_value,
+                "home_goals": home_goals,
+                "away_goals": away_goals,
+            }
+        )
+
+    # ========================================================
+    # BUILD SCORE STATE
+    # ========================================================
+
+    @staticmethod
+    def _build_score_state(
+        score: str,
+        probability: float,
+    ) -> Dict[str, Any]:
+        """
+        Add descriptive scenario metadata.
+
+        No probability modification occurs here.
+        """
+
+        home_goals, away_goals = (
+            ScorePredictor._score_parts(
+                score
+            )
+        )
+
+        if (
+            home_goals is None
+            or away_goals is None
+        ):
+            raise ValueError(
+                f"Invalid score: {score}"
+            )
+
+        if home_goals > away_goals:
+            winner = "HOME"
+        elif away_goals > home_goals:
+            winner = "AWAY"
+        else:
+            winner = "DRAW"
+
+        total_goals = (
+            home_goals
+            + away_goals
+        )
+
+        btts = (
+            "YES"
+            if home_goals > 0
+            and away_goals > 0
+            else "NO"
+        )
+
+        return {
+            "score": score,
+            "probability": probability,
+
+            "home_goals": home_goals,
+            "away_goals": away_goals,
+
+            "winner": winner,
+
+            "total_goals": total_goals,
+
+            "btts": btts,
+        }
 
     # ========================================================
     # SCORE PARSER
@@ -726,28 +724,14 @@ class ScorePredictor:
     def _parse_score(
         score: Any,
     ) -> Optional[str]:
-        """
-        Normalize score representation.
-
-        Accepted examples:
-
-            "1:2"
-            "1-2"
-            "1 : 2"
-            (1, 2)
-            [1, 2]
-            {"home": 1, "away": 2}
-        """
 
         if score is None:
             return None
 
-        # ----------------------------------------------------
-        # String
-        # ----------------------------------------------------
-
-        if isinstance(score, str):
-
+        if isinstance(
+            score,
+            str,
+        ):
             value = score.strip()
 
             if not value:
@@ -758,18 +742,16 @@ class ScorePredictor:
                 "",
             )
 
-            if "-" in value:
-                parts = value.split(
-                    "-",
-                    1,
-                )
-
-            elif ":" in value:
+            if ":" in value:
                 parts = value.split(
                     ":",
                     1,
                 )
-
+            elif "-" in value:
+                parts = value.split(
+                    "-",
+                    1,
+                )
             else:
                 return None
 
@@ -789,10 +771,6 @@ class ScorePredictor:
                 return None
 
             return f"{home}:{away}"
-
-        # ----------------------------------------------------
-        # Tuple / list
-        # ----------------------------------------------------
 
         if isinstance(
             score,
@@ -814,10 +792,6 @@ class ScorePredictor:
                 return None
 
             return f"{home}:{away}"
-
-        # ----------------------------------------------------
-        # Dict
-        # ----------------------------------------------------
 
         if isinstance(
             score,
@@ -852,6 +826,46 @@ class ScorePredictor:
         return None
 
     # ========================================================
+    # SCORE PARTS
+    # ========================================================
+
+    @staticmethod
+    def _score_parts(
+        score: str,
+    ) -> tuple[
+        Optional[int],
+        Optional[int],
+    ]:
+
+        if not isinstance(
+            score,
+            str,
+        ):
+            return None, None
+
+        parts = score.split(
+            ":",
+            1,
+        )
+
+        if len(parts) != 2:
+            return None, None
+
+        try:
+            home = int(parts[0])
+            away = int(parts[1])
+        except (
+            TypeError,
+            ValueError,
+        ):
+            return None, None
+
+        if home < 0 or away < 0:
+            return None, None
+
+        return home, away
+
+    # ========================================================
     # PROBABILITY SUMMARY
     # ========================================================
 
@@ -859,15 +873,6 @@ class ScorePredictor:
         self,
         probability_result: Any,
     ) -> Dict[str, Any]:
-        """
-        Extract ProbabilityModel summary.
-
-        IMPORTANT:
-
-        This data is diagnostic only.
-
-        It is NOT used to modify exact-score ranking.
-        """
 
         if probability_result is None:
             return {}
@@ -883,35 +888,20 @@ class ScorePredictor:
         ):
             return dict(summary)
 
-        return self._derive_probability_summary(
-            probability_result
-        )
-
-    # ========================================================
-    # DERIVE PROBABILITY SUMMARY
-    # ========================================================
-
-    def _derive_probability_summary(
-        self,
-        probability_result: Any,
-    ) -> Dict[str, Any]:
-        """
-        Best-effort extraction of common
-        ProbabilityModel aggregate values.
-
-        These values are diagnostic only.
-        """
-
         fields = (
             "home_win",
             "draw",
             "away_win",
+
             "btts_yes",
             "btts_no",
-            "over_25",
-            "under_25",
+
             "over_15",
             "under_15",
+
+            "over_25",
+            "under_25",
+
             "over_35",
             "under_35",
         )
@@ -920,101 +910,62 @@ class ScorePredictor:
 
         for field_name in fields:
 
-            value = self._get_value(
-                probability_result,
-                field_name,
-            )
-
             value = self._safe_float(
-                value
+                self._get_value(
+                    probability_result,
+                    field_name,
+                )
             )
 
             if value is not None:
                 result[field_name] = value
 
-        # ----------------------------------------------------
-        # Common alternate names
-        # ----------------------------------------------------
-
-        aliases = {
-            "home_win_probability": "home_win",
-            "draw_probability": "draw",
-            "away_win_probability": "away_win",
-            "btts_yes_probability": "btts_yes",
-            "btts_no_probability": "btts_no",
-            "over_25_probability": "over_25",
-            "under_25_probability": "under_25",
-        }
-
-        for source_name, target_name in (
-            aliases.items()
-        ):
-
-            if target_name in result:
-                continue
-
-            value = self._get_value(
-                probability_result,
-                source_name,
-            )
-
-            value = self._safe_float(
-                value
-            )
-
-            if value is not None:
-                result[target_name] = value
-
         return result
 
     # ========================================================
-    # UNAVAILABLE RESULT
+    # UNAVAILABLE
     # ========================================================
 
     def _unavailable_prediction(
         self,
         *,
-        home_xg: Optional[float],
-        away_xg: Optional[float],
+        home_lambda: Optional[float],
+        away_lambda: Optional[float],
         reason: str,
     ) -> ScorePrediction:
-        """
-        Return safe empty result when prediction
-        cannot be calculated.
-
-        No artificial score is created.
-        """
 
         diagnostics = {
             "version": VERSION,
             "formula_status": FORMULA_STATUS,
 
-            "home_xg": home_xg,
-            "away_xg": away_xg,
+            "home_lambda": home_lambda,
+            "away_lambda": away_lambda,
 
             "candidate_count": 0,
-
-            "likely_score": None,
-            "likely_probability": None,
 
             "predicted_score": None,
             "predicted_probability": None,
 
             "selection_method": (
-                "PURE_SCORE_PROBABILITY"
+                "ARGMAX_RAW_SCORE_PROBABILITY"
             ),
 
             "distribution_source": (
                 "ProbabilityModel"
             ),
 
-            "error": reason,
+            "probability_recalculated": False,
+            "probability_modified": False,
+
+            "poisson_recalculated": False,
+            "low_score_correction_used": False,
 
             "secondary_signals_used": False,
 
+            "winner_state_used": False,
+
             "form_win_used": False,
             "defence_used": False,
-
             "control_used": False,
             "anomaly_used": False,
             "special_used": False,
@@ -1024,8 +975,9 @@ class ScorePredictor:
             "btts_fit_used": False,
             "total_fit_used": False,
             "scenario_fit_used": False,
-
             "score_utility_used": False,
+
+            "error": reason,
         }
 
         return ScorePrediction(
@@ -1045,8 +997,11 @@ class ScorePredictor:
 
             top_scores=[],
 
-            home_xg=home_xg,
-            away_xg=away_xg,
+            home_lambda=home_lambda,
+            away_lambda=away_lambda,
+
+            home_xg=home_lambda,
+            away_xg=away_lambda,
 
             outcome_fit_score=None,
             margin_fit_score=None,
@@ -1069,12 +1024,6 @@ class ScorePredictor:
     def _safe_float(
         value: Any,
     ) -> Optional[float]:
-        """
-        Convert value to finite float.
-
-        None stays None.
-        Invalid values stay None.
-        """
 
         if value is None:
             return None
@@ -1108,9 +1057,6 @@ class ScorePredictor:
         field: str,
         default: Any = None,
     ) -> Any:
-        """
-        Read field from dict or object.
-        """
 
         if source is None:
             return default
@@ -1131,61 +1077,7 @@ class ScorePredictor:
         )
 
     # ========================================================
-    # CLAMP
-    # ========================================================
-
-    @staticmethod
-    def _clamp(
-        value: Optional[float],
-        minimum: float = 0.0,
-        maximum: float = 1.0,
-    ) -> Optional[float]:
-        """
-        Generic numeric clamp.
-
-        Kept as a technical helper for compatibility.
-        """
-
-        if value is None:
-            return None
-
-        return max(
-            minimum,
-            min(
-                maximum,
-                value,
-            ),
-        )
-
-    # ========================================================
-    # LOG SAFE
-    # ========================================================
-
-    @staticmethod
-    def _log_safe(
-        value: Optional[float],
-        floor: float = 1e-12,
-    ) -> Optional[float]:
-        """
-        Safe natural logarithm.
-
-        Kept as a technical compatibility helper.
-
-        v2.2 does NOT use logarithmic ScoreUtility.
-        """
-
-        if value is None:
-            return None
-
-        value = max(
-            value,
-            floor,
-        )
-
-        return math.log(value)
-
-    # ========================================================
-    # COMPATIBILITY PUBLIC METHOD
+    # COMPATIBILITY API
     # ========================================================
 
     def predict_score(
@@ -1196,9 +1088,7 @@ class ScorePredictor:
         probability_result: Any = None,
     ) -> ScorePrediction:
         """
-        Compatibility wrapper.
-
-        Delegates directly to predict().
+        Compatibility wrapper for old FAJ callers.
         """
 
         return self.predict(
@@ -1210,7 +1100,7 @@ class ScorePredictor:
 
 
 # ============================================================
-# MODULE-LEVEL CONVENIENCE FUNCTION
+# MODULE-LEVEL CONVENIENCE
 # ============================================================
 
 def predict_score(
@@ -1219,13 +1109,8 @@ def predict_score(
     away_xg: Optional[float],
     probability_result: Any = None,
 ) -> ScorePrediction:
-    """
-    Module-level convenience API.
-    """
 
-    predictor = ScorePredictor()
-
-    return predictor.predict(
+    return ScorePredictor().predict(
         score_probabilities=score_probabilities,
         home_xg=home_xg,
         away_xg=away_xg,
@@ -1234,14 +1119,3 @@ def predict_score(
 
 
 # ============================================================
-# PUBLIC EXPORTS
-# ============================================================
-
-__all__ = [
-    "VERSION",
-    "FORMULA_STATUS",
-    "TOP_SCORES_COUNT",
-    "ScorePrediction",
-    "ScorePredictor",
-    "predict_score",
-]
