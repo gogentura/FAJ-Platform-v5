@@ -93,7 +93,7 @@ from .cards_model import CardsModel
 # VERSION
 # ============================================================
 
-BRAIN_VERSION = "FAJ-BRAIN-3.0"
+BRAIN_VERSION = "FAJ-BRAIN-3.1"
 BRAIN_STATUS = "FINAL"
 
 HISTORY_SIZE = 6
@@ -1084,7 +1084,7 @@ def _side_value(
 
 class FAJBrain:
     """
-    FAJ Brain v3.0.
+    FAJ Brain v3.1.
 
     Thin orchestrator.
 
@@ -1341,14 +1341,34 @@ class FAJBrain:
         # CORNERS / CARDS
         # ----------------------------------------------------
 
-        corners_value = _side_value(
+        home_corners_expected = _side_value(
+            corners_result,
+            "home_corners_expected",
+        )
+
+        away_corners_expected = _side_value(
+            corners_result,
+            "away_corners_expected",
+        )
+
+        total_corners_expected = _side_value(
             corners_result,
             "total_expected_corners",
             "expected_corners",
             "total_corners",
         )
 
-        cards_value = _side_value(
+        home_cards_expected = _side_value(
+            cards_result,
+            "home_cards_expected",
+        )
+
+        away_cards_expected = _side_value(
+            cards_result,
+            "away_cards_expected",
+        )
+
+        total_cards_expected = _side_value(
             cards_result,
             "total_expected_cards",
             "expected_cards",
@@ -1366,6 +1386,28 @@ class FAJBrain:
             away_context=away_context,
             diagnostics=diagnostics,
         )
+
+        # ----------------------------------------------------
+        # SCORE FORECAST
+        # ----------------------------------------------------
+
+        score_forecast = {
+            "predicted_score": score_output[
+                "predicted_score"
+            ],
+            "likely_score": score_output[
+                "most_likely_score"
+            ],
+            "second_score": score_output[
+                "second_score"
+            ],
+            "third_score": score_output[
+                "third_score"
+            ],
+            "top_scores": score_output[
+                "top_scores"
+            ],
+        }
 
         # ----------------------------------------------------
         # CALCULATION META
@@ -1428,6 +1470,12 @@ class FAJBrain:
             "diagnostics": _serialize(
                 diagnostics
             ),
+
+            "score_forecast": score_forecast,
+
+            "pair_rating": {},
+
+            "winner_synthesis": {},
 
             "math_integrity": {
                 "brain_recalculates_xg": False,
@@ -1551,11 +1599,37 @@ class FAJBrain:
             ],
 
             # =================================================
-            # PARALLEL MODELS
+            # CORNERS (detailed)
             # =================================================
 
-            "corners": corners_value,
-            "cards": cards_value,
+            "home_corners_expected":
+                home_corners_expected,
+
+            "away_corners_expected":
+                away_corners_expected,
+
+            "corners_expected":
+                total_corners_expected,
+
+            # =================================================
+            # CARDS (detailed)
+            # =================================================
+
+            "home_cards_expected":
+                home_cards_expected,
+
+            "away_cards_expected":
+                away_cards_expected,
+
+            "cards_expected":
+                total_cards_expected,
+
+            # =================================================
+            # TOTALS (also kept as previous keys)
+            # =================================================
+
+            "corners": total_corners_expected,
+            "cards": total_cards_expected,
 
             # =================================================
             # DIAGNOSTICS
@@ -1582,7 +1656,7 @@ class FAJBrain:
             # =================================================
 
             "risk": None,
-            "conclusion": None,
+            "conclusion": "",
 
             # =================================================
             # META
