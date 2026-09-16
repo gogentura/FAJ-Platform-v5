@@ -4,137 +4,22 @@
 """
 ============================================================
 FAJ PLATFORM v12.1
-DEFENCE v1.2
+DEFENCE v1.3
 ============================================================
 
-МАТЕМАТИЧЕСКИЙ ОРГАН FAJ
+Defence = defensive evidence.
 
-Назначение
-----------
+Defence НЕ является WinnerState.
 
-Defence измеряет текущее оборонительное состояние команды
-и формирует независимые defensive evidence-сигналы.
-
-Defence является INPUT для Winner State.
-
-Defence НЕ определяет победителя самостоятельно.
-
-Архитектура:
-
-    Match Facts
-        ↓
-    FormContext
-        ↓
-    Defence
-        ↓
-    DefenceState
-        ↓
-    Winner State
-        ↓
-    FAJ Brain
-
-Главный принцип:
-
-    Defence = defensive evidence
-    WinnerState = synthesis of evidence
-
-Defence НЕ:
-
-    - прогнозирует счёт;
-    - рассчитывает 1X2;
-    - рассчитывает вероятность победы;
-    - рассчитывает Poisson;
-    - выбирает HOME/AWAY/DRAW;
-    - использует bookmaker odds;
-    - обращается к SQLite;
-    - обращается к Soccer365;
-    - изменяет Rating;
-    - изменяет Team Passport;
-    - использует будущий результат;
-    - обучается на результате текущего матча.
-
-Математический диапазон:
-
-    Все directional evidence ∈ [-1, +1]
-
-    +1 = сильное оборонительное состояние
-     0 = нейтральное
-    -1 = слабое оборонительное состояние
-    None = недостаточно данных
-
-ВАЖНО:
-
-    None != 0
-
-Отсутствующие наблюдения никогда не превращаются
-в нулевые значения.
-
-============================================================
-CONTRACT V1
-============================================================
-
-Defence является одним из источников Winner State:
-
-    Goal State
-    FormModel
-    FormWin
-    Defence
-    FormControl
-    FormAnomaly
-    SpecialForm
-    Venue
-    Trend
-          ↓
-      WinnerState
-
-Winner State самостоятельно сравнивает evidence.
-
-Defence НЕ содержит:
-
-    winner_direction
-    winner_probability
-    draw_probability
-    winner_override
-    winner_weight
-
-Никаких фиксированных весов Winner State здесь нет.
-
-============================================================
-CHANGES V1.2
-============================================================
-
-1. Сохраняется defensive process.
-
-2. Сохраняются независимые:
-       creation
-       control
-       outcome
-       momentum
-
-3. xGA остаётся отдельным defensive creation evidence.
-   Он НЕ смешивается с GoalModel и не используется
-   для изменения lambda.
-
-4. DefenceScore остаётся агрегированным описанием
-   оборонительного состояния для совместимости.
-
-5. Добавлены:
-       evidence_vector
-       evidence_sources
-       evidence_conflicts
-       defensive_quality
-       process_data_quality
-       creation_data_quality
-       outcome_data_quality
-       momentum_data_quality
-
-6. compare() теперь возвращает независимые
-   defensive differences для Winner State.
-
-7. compare() НЕ превращает defensive advantage
-   в prediction.
-
-============================================================
+FACTS
+  ↓
+FormContext
+  ↓
+Defence
+  ↓
+DefenceState
+  ↓
+WinnerState
 """
 
 from __future__ import annotations
@@ -145,16 +30,9 @@ from statistics import median
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
-# ============================================================
-# VERSION
-# ============================================================
+DEFENCE_VERSION = "1.3"
 
-DEFENCE_VERSION = "1.2"
-
-
-# ============================================================
-# STRUCTURAL PRIORS
-# ============================================================
+EPSILON = 1e-9
 
 TEMPORAL_WEIGHTS: Tuple[float, ...] = (
     1.0,
@@ -173,10 +51,8 @@ PROCESS_WEIGHTS = {
     "corners": 1.0 / 15.0,
 }
 
-
 SOT_VOLUME_WEIGHT = 0.65
 SOT_RATE_WEIGHT = 0.35
-
 
 FINAL_WEIGHTS = {
     "process": 0.65,
@@ -185,18 +61,14 @@ FINAL_WEIGHTS = {
     "venue": 0.10,
 }
 
-
 MOMENTUM_WEIGHTS = {
     "shots": 0.50,
     "sot": 0.30,
     "goals": 0.20,
 }
 
-
 BIG_CHANCES_CAP = 0.50
 CORNERS_CAP = 0.40
-
-EPSILON = 1e-9
 
 
 # ============================================================
@@ -205,21 +77,18 @@ EPSILON = 1e-9
 
 def _safe_float(value: Any) -> Optional[float]:
 
-    if value is None:
-        return None
-
-    if isinstance(value, bool):
+    if value is None or isinstance(value, bool):
         return None
 
     try:
-        result = float(value)
+        value = float(value)
     except (TypeError, ValueError):
         return None
 
-    if not isfinite(result):
+    if not isfinite(value):
         return None
 
-    return result
+    return value
 
 
 def _get_value(
@@ -237,8 +106,10 @@ def _get_value(
 
         try:
             keys = obj.keys()
+
             if name in keys:
                 return obj[name]
+
         except (AttributeError, TypeError):
             pass
 
@@ -256,7 +127,10 @@ def _clamp(
     high: float = 1.0,
 ) -> float:
 
-    return max(low, min(high, value))
+    return max(
+        low,
+        min(high, value),
+    )
 
 
 def _mean(
@@ -264,7 +138,7 @@ def _mean(
 ) -> Optional[float]:
 
     clean = [
-        float(value)
+        value
         for value in values
         if value is not None
     ]
@@ -280,7 +154,7 @@ def _median(
 ) -> Optional[float]:
 
     clean = [
-        float(value)
+        value
         for value in values
         if value is not None
     ]
@@ -296,7 +170,7 @@ def _weighted_mean(
     weights: Sequence[float] = TEMPORAL_WEIGHTS,
 ) -> Optional[float]:
 
-    pairs: List[Tuple[float, float]] = []
+    pairs = []
 
     for value, weight in zip(values, weights):
 
@@ -316,19 +190,17 @@ def _weighted_mean(
         return None
 
     denominator = sum(
-        weight for _, weight in pairs
+        weight
+        for _, weight in pairs
     )
 
     if denominator <= EPSILON:
         return None
 
-    return (
-        sum(
-            value * weight
-            for value, weight in pairs
-        )
-        / denominator
-    )
+    return sum(
+        value * weight
+        for value, weight in pairs
+    ) / denominator
 
 
 def _mad(
@@ -336,7 +208,7 @@ def _mad(
 ) -> Optional[float]:
 
     clean = [
-        float(value)
+        value
         for value in values
         if value is not None
     ]
@@ -359,7 +231,7 @@ def _robust_scale(
 ) -> Optional[float]:
 
     clean = [
-        float(value)
+        value
         for value in values
         if value is not None
     ]
@@ -372,19 +244,21 @@ def _robust_scale(
     if mad is not None and mad > EPSILON:
         return 1.4826 * mad
 
-    data_range = max(clean) - min(clean)
+    data_range = (
+        max(clean) - min(clean)
+    )
 
-    if data_range > EPSILON:
-        return data_range / 2.0
+    if data_range <= EPSILON:
+        return None
 
-    return None
+    return data_range / 2.0
 
 
 def _ols_slope(
     values: Sequence[Optional[float]],
 ) -> Optional[float]:
 
-    observations: List[Tuple[float, float]] = []
+    observations = []
 
     for index, value in enumerate(values):
 
@@ -410,8 +284,8 @@ def _ols_slope(
     y_mean = sum(y) / len(y)
 
     denominator = sum(
-        (item - x_mean) ** 2
-        for item in x
+        (xi - x_mean) ** 2
+        for xi in x
     )
 
     if denominator <= EPSILON:
@@ -425,24 +299,85 @@ def _ols_slope(
     return numerator / denominator
 
 
+def _combine_optional(
+    components: Sequence[
+        Tuple[Optional[float], float]
+    ],
+) -> Optional[float]:
+
+    available = [
+        (value, weight)
+        for value, weight in components
+        if value is not None
+    ]
+
+    if not available:
+        return None
+
+    denominator = sum(
+        weight
+        for _, weight in available
+    )
+
+    if denominator <= EPSILON:
+        return None
+
+    return _clamp(
+        sum(
+            value * weight
+            for value, weight in available
+        ) / denominator
+    )
+
+
+def _availability(
+    values: Sequence[Optional[float]],
+) -> Optional[float]:
+
+    if not values:
+        return None
+
+    return (
+        sum(
+            value is not None
+            for value in values
+        )
+        / len(values)
+    )
+
+
+def _extract_history(
+    context: Any,
+    *names: str,
+) -> List[Optional[float]]:
+
+    for name in names:
+
+        value = _get_value(
+            context,
+            name,
+        )
+
+        if isinstance(
+            value,
+            (list, tuple),
+        ):
+
+            return [
+                _safe_float(item)
+                for item in value
+            ]
+
+    return []
+
+
 # ============================================================
-# SIGNAL NORMALIZATION
+# SIGNALS
 # ============================================================
 
 def _inverse_state_signal(
     values: Sequence[Optional[float]],
 ) -> Optional[float]:
-    """
-    Defensive metric:
-
-        lower value = better defence.
-
-    recent < historical center
-        => positive defensive signal
-
-    recent > historical center
-        => negative defensive signal
-    """
 
     clean = [
         value
@@ -507,87 +442,6 @@ def _bounded(
     )
 
 
-def _combine_optional(
-    components: Sequence[
-        Tuple[Optional[float], float]
-    ],
-) -> Optional[float]:
-
-    available = [
-        (value, weight)
-        for value, weight in components
-        if value is not None
-    ]
-
-    if not available:
-        return None
-
-    denominator = sum(
-        weight
-        for _, weight in available
-    )
-
-    if denominator <= EPSILON:
-        return None
-
-    numerator = sum(
-        value * weight
-        for value, weight in available
-    )
-
-    return _clamp(
-        numerator / denominator
-    )
-
-
-def _availability(
-    values: Sequence[Optional[float]],
-) -> float:
-
-    if not values:
-        return 0.0
-
-    return (
-        sum(
-            value is not None
-            for value in values
-        )
-        / len(values)
-    )
-
-
-# ============================================================
-# HISTORY EXTRACTION
-# ============================================================
-
-def _extract_history(
-    context: Any,
-    *names: str,
-) -> List[Optional[float]]:
-
-    for name in names:
-
-        value = _get_value(
-            context,
-            name,
-        )
-
-        if value is None:
-            continue
-
-        if isinstance(
-            value,
-            (list, tuple),
-        ):
-
-            return [
-                _safe_float(item)
-                for item in value
-            ]
-
-    return []
-
-
 # ============================================================
 # DATACLASSES
 # ============================================================
@@ -598,15 +452,12 @@ class DefenceSignals:
     xga_signal: Optional[float] = None
 
     shots_conceded_signal: Optional[float] = None
-
     sot_conceded_signal: Optional[float] = None
 
     sot_volume_signal: Optional[float] = None
-
     sot_rate_signal: Optional[float] = None
 
     big_chances_signal: Optional[float] = None
-
     corners_conceded_signal: Optional[float] = None
 
     goals_conceded_signal: Optional[float] = None
@@ -614,21 +465,16 @@ class DefenceSignals:
     possession_signal: Optional[float] = None
 
     blocked_shots_signal: Optional[float] = None
-
     blocked_rate_signal: Optional[float] = None
 
     woodwork_signal: Optional[float] = None
 
     dangerous_attacks_signal: Optional[float] = None
-
     attacks_signal: Optional[float] = None
 
     defensive_creation_signal: Optional[float] = None
-
     defensive_control_signal: Optional[float] = None
-
     defensive_outcome_signal: Optional[float] = None
-
     defensive_momentum_signal: Optional[float] = None
 
     venue_signal: Optional[float] = None
@@ -638,42 +484,29 @@ class DefenceSignals:
 class DefenceState:
 
     version: str
-
     team: Optional[str]
 
     signals: DefenceSignals
 
     process_signal: Optional[float]
-
     outcome_signal: Optional[float]
-
     momentum_signal: Optional[float]
-
     venue_signal: Optional[float]
 
     stability: Optional[float]
 
-    evidence_quality: float
+    evidence_quality: Optional[float]
 
     defence_score: Optional[float]
 
     sample_size: int
 
     available_xga: int
-
     available_shots: int
-
     available_sot: int
-
     available_big_chances: int
-
     available_corners: int
-
     available_goals: int
-
-    # --------------------------------------------------------
-    # NEW V1.2
-    # --------------------------------------------------------
 
     evidence_vector: Dict[
         str,
@@ -686,13 +519,10 @@ class DefenceState:
 
     defensive_quality: Optional[float]
 
-    process_data_quality: float
-
-    creation_data_quality: float
-
-    outcome_data_quality: float
-
-    momentum_data_quality: float
+    process_data_quality: Optional[float]
+    creation_data_quality: Optional[float]
+    outcome_data_quality: Optional[float]
+    momentum_data_quality: Optional[float]
 
     diagnostics: Dict[str, Any]
 
@@ -701,33 +531,20 @@ class DefenceState:
 class DefenceComparison:
 
     home_defence: Optional[float]
-
     away_defence: Optional[float]
 
     relative_defence_advantage: Optional[float]
 
     home_state: Optional[DefenceState] = None
-
     away_state: Optional[DefenceState] = None
 
-    # --------------------------------------------------------
-    # NEW V1.2
-    #
-    # Это defensive evidence.
-    # Это НЕ Winner State.
-    # --------------------------------------------------------
-
     relative_creation: Optional[float] = None
-
     relative_process: Optional[float] = None
-
     relative_control: Optional[float] = None
-
     relative_outcome: Optional[float] = None
-
     relative_momentum: Optional[float] = None
 
-    evidence_sources: List[str] = None
+    evidence_sources: Optional[List[str]] = None
 
 
 # ============================================================
@@ -756,10 +573,7 @@ class Defence:
     def _histories(
         self,
         context: Any,
-    ) -> Dict[
-        str,
-        List[Optional[float]],
-    ]:
+    ) -> Dict[str, List[Optional[float]]]:
 
         return {
 
@@ -848,19 +662,13 @@ class Defence:
         self,
         shots: Sequence[Optional[float]],
         sot: Sequence[Optional[float]],
-    ) -> Tuple[
-        Optional[float],
-        Optional[float],
-        Optional[float],
-    ]:
+    ):
 
-        sot_volume_signal = (
-            _inverse_state_signal(sot)
+        sot_volume_signal = _inverse_state_signal(
+            sot
         )
 
-        rate_history: List[
-            Optional[float]
-        ] = []
+        rate_history = []
 
         for shots_value, sot_value in zip(
             shots,
@@ -873,16 +681,13 @@ class Defence:
                 or shots_value <= EPSILON
             ):
                 rate_history.append(None)
-                continue
+            else:
+                rate_history.append(
+                    sot_value / shots_value
+                )
 
-            rate_history.append(
-                sot_value / shots_value
-            )
-
-        sot_rate_signal = (
-            _inverse_state_signal(
-                rate_history
-            )
+        sot_rate_signal = _inverse_state_signal(
+            rate_history
         )
 
         sot_signal = _combine_optional(
@@ -905,60 +710,17 @@ class Defence:
         )
 
     # ========================================================
-    # BLOCKED
-    # ========================================================
-
-    def _blocked_diagnostics(
-        self,
-        shots: Sequence[Optional[float]],
-        blocked: Sequence[Optional[float]],
-    ) -> Tuple[
-        Optional[float],
-        Optional[float],
-    ]:
-
-        blocked_signal = None
-
-        rate_history: List[
-            Optional[float]
-        ] = []
-
-        for shots_value, blocked_value in zip(
-            shots,
-            blocked,
-        ):
-
-            if (
-                shots_value is None
-                or blocked_value is None
-                or shots_value <= EPSILON
-            ):
-                rate_history.append(None)
-                continue
-
-            rate_history.append(
-                blocked_value / shots_value
-            )
-
-        return (
-            blocked_signal,
-            _inverse_state_signal(
-                rate_history
-            ),
-        )
-
-    # ========================================================
     # PROCESS
     # ========================================================
 
     def _process_signal(
         self,
         *,
-        shots_signal: Optional[float],
-        sot_signal: Optional[float],
-        big_chances_signal: Optional[float],
-        corners_signal: Optional[float],
-    ) -> Optional[float]:
+        shots_signal,
+        sot_signal,
+        big_chances_signal,
+        corners_signal,
+    ):
 
         return _combine_optional(
             (
@@ -994,10 +756,10 @@ class Defence:
     def _momentum(
         self,
         *,
-        shots: Sequence[Optional[float]],
-        sot: Sequence[Optional[float]],
-        goals: Sequence[Optional[float]],
-    ) -> Optional[float]:
+        shots,
+        sot,
+        goals,
+    ):
 
         return _combine_optional(
             (
@@ -1020,15 +782,9 @@ class Defence:
     # STABILITY
     # ========================================================
 
-    def _stability(
-        self,
-        histories: Dict[
-            str,
-            List[Optional[float]],
-        ],
-    ) -> Optional[float]:
+    def _stability(self, histories):
 
-        values: List[float] = []
+        values = []
 
         for key in (
             "xga",
@@ -1077,16 +833,10 @@ class Defence:
         )
 
     # ========================================================
-    # DATA QUALITY
+    # EVIDENCE QUALITY
     # ========================================================
 
-    def _evidence_quality(
-        self,
-        histories: Dict[
-            str,
-            List[Optional[float]],
-        ],
-    ) -> float:
+    def _evidence_quality(self, histories):
 
         importance = {
             "xga": 0.55,
@@ -1109,22 +859,26 @@ class Defence:
             if not history:
                 continue
 
+            availability = _availability(
+                history
+            )
+
+            if availability is None:
+                continue
+
             numerator += (
-                _availability(history)
-                * weight
+                availability * weight
             )
 
             denominator += weight
 
         if denominator <= EPSILON:
-            return 0.0
+            return None
 
-        return max(
+        return _clamp(
+            numerator / denominator,
             0.0,
-            min(
-                1.0,
-                numerator / denominator,
-            ),
+            1.0,
         )
 
     # ========================================================
@@ -1134,61 +888,22 @@ class Defence:
     def _venue_signal(
         self,
         *,
-        histories: Dict[
-            str,
-            List[Optional[float]],
-        ],
-        context: Any,
+        histories,
+        context,
     ) -> Optional[float]:
 
-        # Contract v1:
-        # venue is a separate evidence source.
-        #
-        # No defensible venue-specific defensive formula
-        # is currently frozen.
-        #
-        # Therefore:
-        #
-        # None != 0
+        # Нет зафиксированной defensible venue-модели.
+        # Поэтому отсутствие venue evidence = None.
 
         return None
 
     # ========================================================
-    # EVIDENCE VECTOR
-    # ========================================================
-
-    def _build_evidence_vector(
-        self,
-        *,
-        xga_signal: Optional[float],
-        process_signal: Optional[float],
-        defensive_creation_signal: Optional[float],
-        defensive_control_signal: Optional[float],
-        outcome_signal: Optional[float],
-        momentum_signal: Optional[float],
-        venue_signal: Optional[float],
-    ) -> Dict[str, Optional[float]]:
-
-        return {
-            "xga": xga_signal,
-            "process": process_signal,
-            "creation": defensive_creation_signal,
-            "control": defensive_control_signal,
-            "outcome": outcome_signal,
-            "momentum": momentum_signal,
-            "venue": venue_signal,
-        }
-
-    # ========================================================
-    # CONFLICT DETECTION
+    # CONFLICTS
     # ========================================================
 
     def _detect_conflicts(
         self,
-        evidence: Dict[
-            str,
-            Optional[float],
-        ],
+        evidence,
     ) -> List[str]:
 
         available = {
@@ -1197,10 +912,10 @@ class Defence:
             if value is not None
         }
 
-        conflicts: List[str] = []
-
         if len(available) < 2:
-            return conflicts
+            return []
+
+        conflicts = []
 
         positive = [
             key
@@ -1215,60 +930,67 @@ class Defence:
         ]
 
         if positive and negative:
-
             conflicts.append(
                 "defensive_evidence_conflict"
             )
 
-        if (
-            evidence.get("xga") is not None
-            and evidence.get("process") is not None
-        ):
-
-            if (
-                evidence["xga"] > 0.25
-                and evidence["process"] < -0.25
-            ) or (
-                evidence["xga"] < -0.25
-                and evidence["process"] > 0.25
-            ):
-
-                conflicts.append(
-                    "xga_process_conflict"
-                )
+        xga = evidence.get("xga")
+        process = evidence.get("process")
 
         if (
-            evidence.get("process") is not None
-            and evidence.get("momentum") is not None
-        ):
-
-            if (
-                evidence["process"] > 0.25
-                and evidence["momentum"] < -0.25
-            ) or (
-                evidence["process"] < -0.25
-                and evidence["momentum"] > 0.25
-            ):
-
-                conflicts.append(
-                    "process_momentum_conflict"
+            xga is not None
+            and process is not None
+            and (
+                (
+                    xga > 0.25
+                    and process < -0.25
                 )
+                or
+                (
+                    xga < -0.25
+                    and process > 0.25
+                )
+            )
+        ):
+            conflicts.append(
+                "xga_process_conflict"
+            )
+
+        momentum = evidence.get(
+            "momentum"
+        )
+
+        if (
+            process is not None
+            and momentum is not None
+            and (
+                (
+                    process > 0.25
+                    and momentum < -0.25
+                )
+                or
+                (
+                    process < -0.25
+                    and momentum > 0.25
+                )
+            )
+        ):
+            conflicts.append(
+                "process_momentum_conflict"
+            )
 
         return conflicts
 
     # ========================================================
-    # DEFENSIVE QUALITY
+    # QUALITY
     # ========================================================
 
     def _defensive_quality(
         self,
         *,
-        evidence: Dict[
-            str,
-            Optional[float],
-        ],
-        stability: Optional[float],
-        evidence_quality: float,
+        evidence,
+        stability,
+        evidence_quality,
     ) -> Optional[float]:
 
         available = [
@@ -1278,6 +1000,9 @@ class Defence:
         ]
 
         if not available:
+            return None
+
+        if evidence_quality is None:
             return None
 
         agreement = abs(
@@ -1320,22 +1045,9 @@ class Defence:
         xga = histories["xga"]
         shots = histories["shots"]
         sot = histories["sot"]
-        blocked = histories["blocked"]
-        woodwork = histories["woodwork"]
         corners = histories["corners"]
         big_chances = histories["big_chances"]
         goals = histories["goals"]
-        possession = histories[
-            "possession_opponent"
-        ]
-        attacks = histories["attacks"]
-        dangerous_attacks = histories[
-            "dangerous_attacks"
-        ]
-
-        # ----------------------------------------------------
-        # PRIMARY SIGNALS
-        # ----------------------------------------------------
 
         xga_signal = _inverse_state_signal(
             xga
@@ -1372,41 +1084,23 @@ class Defence:
             )
         )
 
-        # ----------------------------------------------------
-        # DIAGNOSTICS
-        # ----------------------------------------------------
-
-        (
-            blocked_signal,
-            blocked_rate_signal,
-        ) = self._blocked_diagnostics(
-            shots,
-            blocked,
-        )
-
+        blocked_signal = None
+        blocked_rate_signal = None
         woodwork_signal = None
 
-        possession_signal = (
-            _inverse_state_signal(
-                possession
-            )
+        possession_signal = _inverse_state_signal(
+            histories["possession_opponent"]
         )
 
-        attacks_signal = (
-            _inverse_state_signal(
-                attacks
-            )
+        attacks_signal = _inverse_state_signal(
+            histories["attacks"]
         )
 
         dangerous_attacks_signal = (
             _inverse_state_signal(
-                dangerous_attacks
+                histories["dangerous_attacks"]
             )
         )
-
-        # ----------------------------------------------------
-        # MAIN STATES
-        # ----------------------------------------------------
 
         process_signal = self._process_signal(
             shots_signal=shots_signal,
@@ -1437,10 +1131,6 @@ class Defence:
                 histories
             )
         )
-
-        # ----------------------------------------------------
-        # DEFENSIVE SUB-STATES
-        # ----------------------------------------------------
 
         defensive_creation_signal = (
             _combine_optional(
@@ -1480,13 +1170,8 @@ class Defence:
             momentum_signal
         )
 
-        # ----------------------------------------------------
-        # DEFENCE SCORE
-        #
-        # This remains an aggregate defensive state.
-        # It is NOT Winner State.
-        # ----------------------------------------------------
-
+        # Compatibility aggregate only.
+        # WinnerState MUST NOT use this as its own score.
         defence_score = _combine_optional(
             (
                 (
@@ -1508,30 +1193,19 @@ class Defence:
             )
         )
 
-        # ----------------------------------------------------
-        # EVIDENCE VECTOR
-        # ----------------------------------------------------
-
-        evidence_vector = (
-            self._build_evidence_vector(
-                xga_signal=xga_signal,
-                process_signal=process_signal,
-                defensive_creation_signal=(
-                    defensive_creation_signal
-                ),
-                defensive_control_signal=(
-                    defensive_control_signal
-                ),
-                outcome_signal=outcome_signal,
-                momentum_signal=momentum_signal,
-                venue_signal=venue_signal,
-            )
-        )
+        evidence_vector = {
+            "xga": xga_signal,
+            "process": process_signal,
+            "creation": defensive_creation_signal,
+            "control": defensive_control_signal,
+            "outcome": outcome_signal,
+            "momentum": momentum_signal,
+            "venue": venue_signal,
+        }
 
         evidence_sources = [
             key
-            for key, value
-            in evidence_vector.items()
+            for key, value in evidence_vector.items()
             if value is not None
         ]
 
@@ -1549,10 +1223,6 @@ class Defence:
             )
         )
 
-        # ----------------------------------------------------
-        # DATA QUALITY BY STATE
-        # ----------------------------------------------------
-
         process_data_quality = _mean(
             (
                 _availability(shots),
@@ -1560,17 +1230,17 @@ class Defence:
                 _availability(big_chances),
                 _availability(corners),
             )
-        ) or 0.0
+        )
 
         creation_data_quality = _mean(
             (
                 _availability(xga),
                 _availability(big_chances),
             )
-        ) or 0.0
+        )
 
-        outcome_data_quality = (
-            _availability(goals)
+        outcome_data_quality = _availability(
+            goals
         )
 
         momentum_data_quality = _mean(
@@ -1579,7 +1249,15 @@ class Defence:
                 _availability(sot),
                 _availability(goals),
             )
-        ) or 0.0
+        )
+
+        sample_size = max(
+            (
+                len(history)
+                for history in histories.values()
+            ),
+            default=0,
+        )
 
         signals = DefenceSignals(
             xga_signal=xga_signal,
@@ -1631,31 +1309,18 @@ class Defence:
             venue_signal=venue_signal,
         )
 
-        sample_size = max(
-            len(xga),
-            len(shots),
-            len(sot),
-            len(goals),
-            len(corners),
-        )
-
         return DefenceState(
             version=DEFENCE_VERSION,
-
             team=team_name,
 
             signals=signals,
 
             process_signal=process_signal,
-
             outcome_signal=outcome_signal,
-
             momentum_signal=momentum_signal,
-
             venue_signal=venue_signal,
 
             stability=stability,
-
             evidence_quality=evidence_quality,
 
             defence_score=defence_score,
@@ -1716,17 +1381,15 @@ class Defence:
                 ),
 
                 "winner_state_generated": False,
+                "winner_direction_generated": False,
+                "winner_probability_generated": False,
 
                 "probability_generated": False,
-
                 "poisson_used": False,
-
                 "score_generated": False,
 
                 "xga_used_in_process_signal": False,
-
                 "xga_used_in_momentum_signal": False,
-
                 "xga_used_in_venue_signal": False,
 
                 "xga_available_as_evidence": (
@@ -1734,11 +1397,8 @@ class Defence:
                 ),
 
                 "missing_is_zero": False,
-
                 "future_result_used": False,
-
                 "goalmodel_modified": False,
-
                 "winner_override": False,
 
                 "evidence_sources": (
@@ -1749,32 +1409,22 @@ class Defence:
                     evidence_conflicts
                 ),
 
-                "process_weights": dict(
-                    PROCESS_WEIGHTS
+                "contract": (
+                    "MATHEMATICAL_CONTRACT_V1"
                 ),
 
-                "final_weights": dict(
-                    FINAL_WEIGHTS
-                ),
-
-                "momentum_weights": dict(
-                    MOMENTUM_WEIGHTS
-                ),
-
-                "contract": "MATHEMATICAL_CONTRACT_V1",
+                "legacy_defence_score": True,
 
                 "change_log": [
-                    "v1.2: Defence remains defensive evidence only",
-                    "v1.2: added evidence_vector",
-                    "v1.2: added evidence_sources",
-                    "v1.2: added evidence_conflicts",
-                    "v1.2: added defensive_quality",
-                    "v1.2: added state-specific data quality",
-                    "v1.2: added relative defensive evidence to compare()",
-                    "v1.2: no WinnerState generated",
-                    "v1.2: no probability generated",
-                    "v1.2: no Poisson used",
-                    "v1.2: no GoalModel modification",
+                    "v1.3: defensive evidence only",
+                    "v1.3: None preserved for absent quality data",
+                    "v1.3: evidence vector preserved",
+                    "v1.3: independent defensive sub-states",
+                    "v1.3: compare exposes evidence differences",
+                    "v1.3: no WinnerState",
+                    "v1.3: no probability",
+                    "v1.3: no Poisson",
+                    "v1.3: no GoalModel modification",
                 ],
             },
         )
@@ -1798,7 +1448,7 @@ class Defence:
         )
 
     # ========================================================
-    # COMPARISON
+    # COMPARE
     # ========================================================
 
     def compare(
@@ -1809,37 +1459,21 @@ class Defence:
         home_team: Optional[str] = None,
         away_team: Optional[str] = None,
     ) -> DefenceComparison:
-        """
-        Compare defensive evidence.
 
-        IMPORTANT:
-
-            This method does NOT determine the winner.
-
-        It only exposes directional defensive evidence
-        for Winner State.
-
-        Positive relative value:
-            stronger defensive evidence for Home.
-
-        Negative relative value:
-            stronger defensive evidence for Away.
-        """
-
-        home_state = self.calculate(
+        home = self.calculate(
             home_context,
             team_name=home_team,
         )
 
-        away_state = self.calculate(
+        away = self.calculate(
             away_context,
             team_name=away_team,
         )
 
         def relative(
-            home_value: Optional[float],
-            away_value: Optional[float],
-        ) -> Optional[float]:
+            home_value,
+            away_value,
+        ):
 
             if (
                 home_value is None
@@ -1851,42 +1485,34 @@ class Defence:
                 home_value - away_value
             )
 
-        home_signals = (
-            home_state.signals
-        )
-
-        away_signals = (
-            away_state.signals
-        )
-
         relative_defence = relative(
-            home_state.defence_score,
-            away_state.defence_score,
+            home.defence_score,
+            away.defence_score,
         )
 
         relative_creation = relative(
-            home_signals.defensive_creation_signal,
-            away_signals.defensive_creation_signal,
+            home.signals.defensive_creation_signal,
+            away.signals.defensive_creation_signal,
         )
 
         relative_process = relative(
-            home_state.process_signal,
-            away_state.process_signal,
+            home.process_signal,
+            away.process_signal,
         )
 
         relative_control = relative(
-            home_signals.defensive_control_signal,
-            away_signals.defensive_control_signal,
+            home.signals.defensive_control_signal,
+            away.signals.defensive_control_signal,
         )
 
         relative_outcome = relative(
-            home_state.outcome_signal,
-            away_state.outcome_signal,
+            home.outcome_signal,
+            away.outcome_signal,
         )
 
         relative_momentum = relative(
-            home_state.momentum_signal,
-            away_state.momentum_signal,
+            home.momentum_signal,
+            away.momentum_signal,
         )
 
         sources = [
@@ -1921,41 +1547,21 @@ class Defence:
         ]
 
         return DefenceComparison(
-            home_defence=(
-                home_state.defence_score
-            ),
-
-            away_defence=(
-                away_state.defence_score
-            ),
+            home_defence=home.defence_score,
+            away_defence=away.defence_score,
 
             relative_defence_advantage=(
                 relative_defence
             ),
 
-            home_state=home_state,
+            home_state=home,
+            away_state=away,
 
-            away_state=away_state,
-
-            relative_creation=(
-                relative_creation
-            ),
-
-            relative_process=(
-                relative_process
-            ),
-
-            relative_control=(
-                relative_control
-            ),
-
-            relative_outcome=(
-                relative_outcome
-            ),
-
-            relative_momentum=(
-                relative_momentum
-            ),
+            relative_creation=relative_creation,
+            relative_process=relative_process,
+            relative_control=relative_control,
+            relative_outcome=relative_outcome,
+            relative_momentum=relative_momentum,
 
             evidence_sources=sources,
         )
