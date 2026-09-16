@@ -43,7 +43,6 @@ import streamlit as st
 
 from app.core.faj_brain import FAJBrain
 from app.core.form_context import build_form_context
-from app.database import get_team_rating
 from app.parsers.soccer365_parser import Soccer365Parser
 
 
@@ -676,33 +675,6 @@ def render_form_context(
 
 
 # ============================================================
-# CLUB RATING — DISPLAY ONLY
-# ============================================================
-
-def get_display_rating(team_name: str) -> Optional[float]:
-    """
-    FAJ Club Rating is display-only here.
-    It is NOT passed into the mathematical prediction.
-    """
-    try:
-        result = get_team_rating(team_name)
-
-        if isinstance(result, dict):
-            return safe_float(
-                first_not_none(
-                    result.get("rating"),
-                    result.get("faj_rating"),
-                    result.get("value"),
-                )
-            )
-
-        return safe_float(result)
-
-    except Exception:
-        return None
-
-
-# ============================================================
 # BRAIN
 # ============================================================
 
@@ -1331,36 +1303,6 @@ def main() -> None:
 
     if caption_parts:
         st.caption(" · ".join(caption_parts))
-
-    # --------------------------------------------------------
-    # CLUB RATINGS — DISPLAY ONLY
-    # --------------------------------------------------------
-
-    if home_team and away_team:
-        home_rating = get_display_rating(home_team)
-        away_rating = get_display_rating(away_team)
-
-        if home_rating is not None or away_rating is not None:
-            st.markdown("### FAJ Club Rating")
-
-            columns = st.columns(2)
-
-            with columns[0]:
-                st.metric(
-                    home_team,
-                    number(home_rating),
-                )
-
-            with columns[1]:
-                st.metric(
-                    away_team,
-                    number(away_rating),
-                )
-
-            st.caption(
-                "Rating отображается только как справочная информация "
-                "и не передаётся в математический расчёт Brain."
-            )
 
     # --------------------------------------------------------
     # HISTORY
