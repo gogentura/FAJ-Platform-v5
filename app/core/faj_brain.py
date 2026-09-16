@@ -7,10 +7,9 @@ FAJ PLATFORM v12.1
 FAJ BRAIN
 ============================================================
 
-ROLE:
-    Thin analytical orchestrator.
+THIN ANALYTICAL ORCHESTRATOR
 
-CANONICAL MATHEMATICAL CHAIN:
+CANONICAL CHAIN
 
     6 HOME + 6 AWAY
             ↓
@@ -20,55 +19,53 @@ CANONICAL MATHEMATICAL CHAIN:
             ↓
        GoalModel v6.0
             ↓
-        λH / λA
+          λH / λA
             ↓
-    ProbabilityModel
+    ProbabilityModel v1.1
             ↓
-    1X2 / BTTS / TOTALS /
-    JOINT SCORE DISTRIBUTION
+       1X2 / BTTS
+       TOTALS / SCORE MATRIX
             ↓
-      ScorePredictor
+      ScorePredictor v2.2
             ↓
-    predicted / likely /
-       top scores
+     predicted / likely /
+        top scores
 
-PARALLEL CHANNELS:
+PARALLEL DIAGNOSTIC CHANNELS
 
     FormWin
     Defence
     FormControl
     FormAnomaly
     FormSpecial
+
+PARALLEL INDEPENDENT MODELS
+
     CornersModel
     CardsModel
 
-IMPORTANT:
+IMPORTANT
 
-    Brain does NOT:
-        - calculate xG
-        - calculate lambda
-        - calculate Poisson
-        - calculate 1X2
-        - calculate BTTS
-        - calculate totals
-        - calculate score probabilities
-        - sort score probabilities
-        - apply rating multipliers
-        - apply Winner Signal
-        - apply Winner Synthesis
-        - modify GoalModel formulas
-        - modify ProbabilityModel formulas
-        - modify ScorePredictor formulas
-        - train parameters
-        - write to database
+Brain does NOT:
 
-    Missing != 0.
+    - calculate xG
+    - calculate lambda
+    - calculate Poisson
+    - calculate 1X2
+    - calculate BTTS
+    - calculate totals
+    - calculate score probabilities
+    - rank scores again
+    - apply rating multipliers
+    - modify GoalModel
+    - modify ProbabilityModel
+    - modify ScorePredictor
+    - train parameters
+    - write to database
 
-    Core mathematical failures are explicit.
+Missing != 0.
 
-    Diagnostic failures are isolated and reported.
-
-============================================================
+Diagnostic failure does not become mathematical data.
 """
 
 from __future__ import annotations
@@ -76,32 +73,17 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
-
-# ============================================================
-# CORE MATHEMATICAL ORGANS
-# ============================================================
-
 from .form_context import build_form_context
 from .form_model import FormModel
 from .goal_model import GoalModel
 from .probability_model import ProbabilityModel
 from .score_predictor import ScorePredictor
 
-
-# ============================================================
-# DIAGNOSTIC ORGANS
-# ============================================================
-
 from .form_win import FormWin
 from .defence import Defence
 from .form_control import FormControl
 from .form_anomaly import FormAnomaly
 from .special_form import FormSpecial
-
-
-# ============================================================
-# PARALLEL MODELS
-# ============================================================
 
 from .corners_model import CornersModel
 from .cards_model import CardsModel
@@ -111,36 +93,28 @@ from .cards_model import CardsModel
 # VERSION
 # ============================================================
 
-BRAIN_VERSION = "FAJ-BRAIN-2.0"
-BRAIN_STATUS = "FINAL-CANDIDATE"
+BRAIN_VERSION = "FAJ-BRAIN-3.0"
+BRAIN_STATUS = "FINAL"
 
 HISTORY_SIZE = 6
 
 
 # ============================================================
-# EXCEPTIONS
+# EXCEPTION
 # ============================================================
 
 class BrainCoreError(RuntimeError):
-    """
-    Explicit failure of a mandatory mathematical stage.
-    """
+    """Mandatory FAJ Brain stage failed."""
 
     pass
 
 
 # ============================================================
-# GENERIC VALUE HELPERS
+# GENERIC HELPERS
 # ============================================================
 
-def _get(
-    obj: Any,
-    *names: str,
-) -> Any:
-    """
-    Read a field from dict / Mapping / sqlite.Row /
-    dataclass/object.
-    """
+def _get(obj: Any, *names: str) -> Any:
+    """Read a value from dict / sqlite.Row / object."""
 
     if obj is None:
         return None
@@ -169,12 +143,8 @@ def _get(
     return None
 
 
-def _dict(
-    obj: Any,
-) -> Dict[str, Any]:
-    """
-    Serialize model results without changing their contract.
-    """
+def _dict(obj: Any) -> Dict[str, Any]:
+    """Convert model result to dict without changing its data."""
 
     if obj is None:
         return {}
@@ -194,24 +164,59 @@ def _dict(
     to_dict = getattr(obj, "to_dict", None)
 
     if callable(to_dict):
-        result = to_dict()
+        try:
+            result = to_dict()
 
-        if isinstance(result, Mapping):
-            return dict(result)
+            if isinstance(result, Mapping):
+                return dict(result)
+
+        except Exception:
+            pass
 
     try:
         return dict(vars(obj))
+
     except Exception:
         return {}
 
 
-def _num(
-    value: Any,
-) -> Optional[float]:
-    """
-    Numeric normalization.
+def _serialize(obj: Any) -> Any:
+    """Recursively serialize model output."""
 
-    Missing / invalid values remain None.
+    if obj is None:
+        return None
+
+    if isinstance(obj, Mapping):
+        return {
+            key: _serialize(value)
+            for key, value in obj.items()
+        }
+
+    if isinstance(obj, (list, tuple)):
+        return [
+            _serialize(value)
+            for value in obj
+        ]
+
+    if is_dataclass(obj):
+        return _serialize(asdict(obj))
+
+    to_dict = getattr(obj, "to_dict", None)
+
+    if callable(to_dict):
+        try:
+            return _serialize(to_dict())
+        except Exception:
+            pass
+
+    return obj
+
+
+def _num(value: Any) -> Optional[float]:
+    """
+    Numeric conversion.
+
+    Invalid / missing values remain None.
     """
 
     if value is None:
@@ -238,14 +243,11 @@ def _num(
     return number
 
 
-def _prob01(
-    value: Any,
-) -> Optional[float]:
+def _prob01(value: Any) -> Optional[float]:
     """
-    Normalize probability to [0, 1].
+    Normalize already calculated probability to [0, 1].
 
-    This does NOT calculate a probability.
-    It only normalizes an already calculated model value.
+    This does NOT calculate probability.
     """
 
     number = _num(value)
@@ -262,12 +264,8 @@ def _prob01(
     )
 
 
-def _prob100(
-    value: Any,
-) -> Optional[float]:
-    """
-    Presentation conversion from [0,1] to percentage.
-    """
+def _prob100(value: Any) -> Optional[float]:
+    """Presentation conversion [0,1] -> percentage."""
 
     probability = _prob01(value)
 
@@ -280,111 +278,33 @@ def _prob100(
     )
 
 
-def _serialize(
-    value: Any,
-) -> Any:
-    """
-    Recursively serialize model result structures.
-    """
+def _model_version(
+    result: Any,
+    *names: str,
+) -> Optional[str]:
+
+    data = _dict(result)
+
+    value = _get(
+        data,
+        *names,
+    )
 
     if value is None:
         return None
 
-    if isinstance(value, Mapping):
-        return {
-            key: _serialize(item)
-            for key, item in value.items()
-        }
-
-    if isinstance(value, (list, tuple)):
-        return [
-            _serialize(item)
-            for item in value
-        ]
-
-    if is_dataclass(value):
-        return _serialize(asdict(value))
-
-    to_dict = getattr(value, "to_dict", None)
-
-    if callable(to_dict):
-        result = to_dict()
-
-        return _serialize(result)
-
-    return value
+    return str(value)
 
 
 # ============================================================
-# HISTORY VALIDATION
+# HISTORY
 # ============================================================
 
-def _history(
-    matches: Iterable[Any],
-    team_name: str,
-) -> List[Any]:
+def _normalize_record(record: Any) -> Dict[str, Any]:
     """
-    Validate exactly six historical records.
+    Preserve Predictor's factual team-record structure.
 
-    Predictor already supplies canonical team-level records.
-
-    Brain does not invent missing matches.
-    """
-
-    if matches is None:
-        raise BrainCoreError(
-            f"{team_name}: historical matches are missing"
-        )
-
-    try:
-        values = list(matches)
-
-    except TypeError as exc:
-        raise BrainCoreError(
-            f"{team_name}: invalid history container"
-        ) from exc
-
-    if len(values) != HISTORY_SIZE:
-        raise BrainCoreError(
-            f"{team_name}: FAJBrain requires exactly "
-            f"{HISTORY_SIZE} historical matches; "
-            f"received {len(values)}"
-        )
-
-    return values
-
-
-# ============================================================
-# RECORD NORMALIZATION
-# ============================================================
-
-def _normalize_record(
-    record: Any,
-) -> Dict[str, Any]:
-    """
-    Preserve the current FAJ Predictor team-record contract.
-
-    Expected canonical fields include:
-
-        team
-        team_name
-        opponent
-        is_home
-        venue
-        goals_for
-        goals_against
-        result
-        xg
-        xga
-        corners
-        opponent_corners
-        yellow_cards
-        opponent_yellow_cards
-        match_date
-        competition
-        extra
-
-    No mathematical value is fabricated here.
+    No missing value is invented.
     """
 
     if isinstance(record, Mapping):
@@ -424,14 +344,46 @@ def _normalize_record(
 def _normalize_history(
     matches: Sequence[Any],
 ) -> List[Dict[str, Any]]:
-    """
-    Normalize records without changing their factual content.
-    """
 
     return [
         _normalize_record(record)
         for record in matches
     ]
+
+
+def _history(
+    matches: Iterable[Any],
+    team_name: str,
+) -> List[Any]:
+    """
+    FAJ Brain requires exactly six records per team.
+
+    Predictor is responsible for selecting the six
+    most recent records and ordering them oldest -> newest.
+    Brain does not invent missing matches.
+    """
+
+    if matches is None:
+        raise BrainCoreError(
+            f"{team_name}: historical matches are missing"
+        )
+
+    try:
+        values = list(matches)
+
+    except TypeError as exc:
+        raise BrainCoreError(
+            f"{team_name}: invalid history container"
+        ) from exc
+
+    if len(values) != HISTORY_SIZE:
+        raise BrainCoreError(
+            f"{team_name}: FAJ Brain requires exactly "
+            f"{HISTORY_SIZE} historical matches; "
+            f"received {len(values)}"
+        )
+
+    return values
 
 
 # ============================================================
@@ -443,13 +395,13 @@ def _build_context(
     history: Sequence[Any],
 ) -> Dict[str, Any]:
     """
-    Canonical history -> FormContext adapter.
+    Build canonical FormContext.
 
-    The current FormContext API receives:
-        team_name
-        records
-
-    It owns the six-match limitation.
+    Current FormContext API:
+        build_form_context(
+            team_name=...,
+            records=...
+        )
     """
 
     records = _normalize_history(history)
@@ -465,29 +417,25 @@ def _build_context(
             f"FormContext failed for {team_name}"
         ) from exc
 
-    context_dict = _dict(context)
+    result = _dict(context)
 
-    if not isinstance(context_dict, dict):
+    if not result:
         raise BrainCoreError(
-            f"FormContext returned invalid result for {team_name}"
+            f"FormContext returned empty result for {team_name}"
         )
 
-    return context_dict
+    return result
 
 
 # ============================================================
 # FORM MODEL
 # ============================================================
 
-def _form_models(
+def _run_form_model(
+    model: FormModel,
     home_context: Dict[str, Any],
     away_context: Dict[str, Any],
 ) -> tuple[Any, Any]:
-    """
-    Mandatory mathematical FormModel stage.
-    """
-
-    model = FormModel()
 
     try:
         home_form = model.analyze(
@@ -505,147 +453,128 @@ def _form_models(
             "FormModel failed"
         ) from exc
 
-    if home_form is None or away_form is None:
+    if home_form is None:
         raise BrainCoreError(
-            "FormModel returned missing result"
+            "FormModel returned None for home team"
+        )
+
+    if away_form is None:
+        raise BrainCoreError(
+            "FormModel returned None for away team"
         )
 
     return home_form, away_form
 
 
 # ============================================================
-# DIAGNOSTICS
+# DIAGNOSTIC EXECUTION
 # ============================================================
 
-def _diagnostic_call(
+def _safe_diagnostic(
+    errors: List[str],
     name: str,
-    fn: Any,
+    function: Any,
     **kwargs: Any,
-) -> tuple[Any, Optional[str]]:
+) -> Any:
     """
-    Isolated diagnostic execution.
+    Execute a diagnostic organ.
 
-    Diagnostic failure never creates fake mathematical data.
+    Failure is isolated.
+    No fake value is generated.
     """
 
     try:
-        return fn(**kwargs), None
+        return function(**kwargs)
 
     except Exception as exc:
-        return None, f"{name}: {exc}"
+        errors.append(
+            f"{name}: {exc}"
+        )
+
+        return None
 
 
-def _diagnostics(
+def _run_diagnostics(
     home_context: Dict[str, Any],
     away_context: Dict[str, Any],
     home_team: str,
     away_team: str,
 ) -> Dict[str, Any]:
+    """
+    Run descriptive organs only.
 
-    diagnostics: Dict[str, Any] = {
+    IMPORTANT:
+        There is no winner synthesis here.
+        There is no FormWin.compare().
+        There is no second mathematical prediction.
+    """
+
+    errors: List[str] = []
+
+    result: Dict[str, Any] = {
+        "home": {},
+        "away": {},
+        "errors": errors,
         "contract": {
-            "prediction_impact": "none",
+            "prediction_impact": False,
             "lambda_influence": False,
             "probability_influence": False,
             "score_ranking_influence": False,
         },
-
-        "home": {},
-        "away": {},
-
-        "errors": [],
     }
 
     # --------------------------------------------------------
-    # FORM WIN
+    # FormWin
     # --------------------------------------------------------
 
     form_win = FormWin()
 
-    home_value, error = _diagnostic_call(
+    result["home"]["form_win"] = _safe_diagnostic(
+        errors,
         "FormWin.home",
         form_win.analyze,
         form_context=home_context,
         next_venue="home",
     )
 
-    diagnostics["home"]["form_win"] = _serialize(
-        home_value
-    )
-
-    if error:
-        diagnostics["errors"].append(error)
-
-    away_value, error = _diagnostic_call(
+    result["away"]["form_win"] = _safe_diagnostic(
+        errors,
         "FormWin.away",
         form_win.analyze,
         form_context=away_context,
         next_venue="away",
     )
 
-    diagnostics["away"]["form_win"] = _serialize(
-        away_value
-    )
-
-    if error:
-        diagnostics["errors"].append(error)
-
-    # Comparison is diagnostic only.
-    comparison, error = _diagnostic_call(
-        "FormWin.compare",
-        form_win.compare,
-        home_context,
-        away_context,
-    )
-
-    diagnostics["form_win_comparison"] = _serialize(
-        comparison
-    )
-
-    if error:
-        diagnostics["errors"].append(error)
-
     # --------------------------------------------------------
-    # DEFENCE
+    # Defence
     # --------------------------------------------------------
 
     defence = Defence()
 
-    home_value, error = _diagnostic_call(
+    result["home"]["defence"] = _safe_diagnostic(
+        errors,
         "Defence.home",
         defence.calculate,
         context=home_context,
         team_name=home_team,
     )
 
-    diagnostics["home"]["defence"] = _serialize(
-        home_value
-    )
-
-    if error:
-        diagnostics["errors"].append(error)
-
-    away_value, error = _diagnostic_call(
+    result["away"]["defence"] = _safe_diagnostic(
+        errors,
         "Defence.away",
         defence.calculate,
         context=away_context,
         team_name=away_team,
     )
 
-    diagnostics["away"]["defence"] = _serialize(
-        away_value
-    )
-
-    if error:
-        diagnostics["errors"].append(error)
-
     # --------------------------------------------------------
-    # FORM CONTROL
+    # FormControl
     # --------------------------------------------------------
 
     control = FormControl()
 
-    home_control, error = _diagnostic_call(
+    result["home"]["control"] = _safe_diagnostic(
+        errors,
         "FormControl.home",
         control.analyze,
         context=home_context,
@@ -654,14 +583,8 @@ def _diagnostics(
         venue="home",
     )
 
-    diagnostics["home"]["control"] = _serialize(
-        home_control
-    )
-
-    if error:
-        diagnostics["errors"].append(error)
-
-    away_control, error = _diagnostic_call(
+    result["away"]["control"] = _safe_diagnostic(
+        errors,
         "FormControl.away",
         control.analyze,
         context=away_context,
@@ -670,119 +593,57 @@ def _diagnostics(
         venue="away",
     )
 
-    diagnostics["away"]["control"] = _serialize(
-        away_control
-    )
-
-    if error:
-        diagnostics["errors"].append(error)
-
-    if (
-        home_control is not None
-        and away_control is not None
-    ):
-        diagnostics["control_comparison"] = {
-            "home_signal": _get(
-                home_control,
-                "control_signal",
-            ),
-            "away_signal": _get(
-                away_control,
-                "control_signal",
-            ),
-            "home_strength": _get(
-                home_control,
-                "control_strength",
-            ),
-            "away_strength": _get(
-                away_control,
-                "control_strength",
-            ),
-            "home_result": _serialize(
-                home_control
-            ),
-            "away_result": _serialize(
-                away_control
-            ),
-        }
-
-    else:
-        diagnostics["control_comparison"] = None
-
     # --------------------------------------------------------
-    # FORM ANOMALY
+    # FormAnomaly
     # --------------------------------------------------------
 
     anomaly = FormAnomaly()
 
-    home_anomaly, error = _diagnostic_call(
+    result["home"]["anomaly"] = _safe_diagnostic(
+        errors,
         "FormAnomaly.home",
         anomaly.analyze,
         context=home_context,
     )
 
-    diagnostics["home"]["anomaly"] = _serialize(
-        home_anomaly
-    )
-
-    if error:
-        diagnostics["errors"].append(error)
-
-    away_anomaly, error = _diagnostic_call(
+    result["away"]["anomaly"] = _safe_diagnostic(
+        errors,
         "FormAnomaly.away",
         anomaly.analyze,
         context=away_context,
     )
 
-    diagnostics["away"]["anomaly"] = _serialize(
-        away_anomaly
-    )
-
-    if error:
-        diagnostics["errors"].append(error)
-
     # --------------------------------------------------------
-    # SPECIAL FORM
+    # FormSpecial
     # --------------------------------------------------------
 
     special = FormSpecial()
 
-    home_special, error = _diagnostic_call(
+    result["home"]["special_form"] = _safe_diagnostic(
+        errors,
         "FormSpecial.home",
         special.analyze,
         context=home_context,
         team_name=home_team,
     )
 
-    diagnostics["home"]["special_form"] = _serialize(
-        home_special
-    )
-
-    if error:
-        diagnostics["errors"].append(error)
-
-    away_special, error = _diagnostic_call(
+    result["away"]["special_form"] = _safe_diagnostic(
+        errors,
         "FormSpecial.away",
         special.analyze,
         context=away_context,
         team_name=away_team,
     )
 
-    diagnostics["away"]["special_form"] = _serialize(
-        away_special
-    )
-
-    if error:
-        diagnostics["errors"].append(error)
-
-    return diagnostics
+    return result
 
 
 # ============================================================
 # GOAL MODEL
 # ============================================================
 
-def _goal_model(
+def _run_goal_model(
+    model: GoalModel,
     home_form: Any,
     away_form: Any,
     home_team: str,
@@ -792,19 +653,13 @@ def _goal_model(
     diagnostics: Dict[str, Any],
 ) -> Any:
     """
-    Mandatory GoalModel v6.0 stage.
+    GoalModel is the sole owner of λH / λA.
 
-    GoalModel owns:
-        λH
-        λA
-
-    Brain does not recalculate them.
+    Brain does not calculate xG itself.
     """
 
-    goal_model = GoalModel()
-
     try:
-        result = goal_model.analyze(
+        result = model.analyze(
             home_form=home_form,
             away_form=away_form,
 
@@ -838,7 +693,7 @@ def _goal_model(
 
     if result is None:
         raise BrainCoreError(
-            "GoalModel returned missing result"
+            "GoalModel returned None"
         )
 
     return result
@@ -848,7 +703,7 @@ def _goal_lambdas(
     goal_result: Any,
 ) -> tuple[float, float]:
     """
-    Extract GoalModel-owned λ values.
+    Extract GoalModel-owned xG/lambda.
 
     No recalculation.
     """
@@ -883,16 +738,12 @@ def _goal_lambdas(
             "GoalModel did not return away_xg"
         )
 
-    if not (
-        0.0 <= home_xg <= 4.50
-    ):
+    if not 0.0 <= home_xg <= 4.50:
         raise BrainCoreError(
             f"Invalid GoalModel home_xg={home_xg}"
         )
 
-    if not (
-        0.0 <= away_xg <= 4.50
-    ):
+    if not 0.0 <= away_xg <= 4.50:
         raise BrainCoreError(
             f"Invalid GoalModel away_xg={away_xg}"
         )
@@ -904,17 +755,15 @@ def _goal_lambdas(
 # PROBABILITY MODEL
 # ============================================================
 
-def _probability_model(
+def _run_probability_model(
+    model: ProbabilityModel,
     home_xg: float,
     away_xg: float,
 ) -> Any:
     """
-    Mandatory ProbabilityModel stage.
-
-    Brain passes GoalModel lambdas directly.
+    ProbabilityModel owns the complete score matrix
+    and all derived probabilities.
     """
-
-    model = ProbabilityModel()
 
     try:
         result = model.calculate(
@@ -929,7 +778,7 @@ def _probability_model(
 
     if result is None:
         raise BrainCoreError(
-            "ProbabilityModel returned missing result"
+            "ProbabilityModel returned None"
         )
 
     data = _dict(result)
@@ -937,14 +786,11 @@ def _probability_model(
     distribution = _get(
         data,
         "score_distribution",
-        "score_probabilities",
-        "distribution",
     )
 
     if distribution is None:
         raise BrainCoreError(
-            "ProbabilityModel did not return "
-            "score_distribution"
+            "ProbabilityModel returned no score_distribution"
         )
 
     return result
@@ -954,15 +800,16 @@ def _probability_model(
 # SCORE PREDICTOR
 # ============================================================
 
-def _score_predictor(
+def _run_score_predictor(
+    predictor: ScorePredictor,
     probability_result: Any,
     home_xg: float,
     away_xg: float,
 ) -> Any:
     """
-    Mandatory ScorePredictor stage.
+    ScorePredictor owns exact-score ranking.
 
-    ScorePredictor owns score ranking.
+    Brain does not sort scores itself.
     """
 
     probability_data = _dict(
@@ -972,16 +819,12 @@ def _score_predictor(
     distribution = _get(
         probability_data,
         "score_distribution",
-        "score_probabilities",
-        "distribution",
     )
 
     if distribution is None:
         raise BrainCoreError(
-            "ScorePredictor input distribution missing"
+            "ScorePredictor received no score_distribution"
         )
-
-    predictor = ScorePredictor()
 
     try:
         result = predictor.predict(
@@ -998,41 +841,33 @@ def _score_predictor(
 
     if result is None:
         raise BrainCoreError(
-            "ScorePredictor returned missing result"
+            "ScorePredictor returned None"
         )
 
     return result
 
 
 # ============================================================
-# PARALLEL CORNERS / CARDS
+# SIDE MODELS
 # ============================================================
 
-def _side_models(
+def _run_side_models(
+    corners_model: CornersModel,
+    cards_model: CardsModel,
     home_context: Dict[str, Any],
     away_context: Dict[str, Any],
 ) -> tuple[Any, Any, List[str]]:
-    """
-    Corners and Cards are independent analytical channels.
-
-    They cannot modify:
-        xG
-        λ
-        1X2
-        BTTS
-        totals
-        score distribution
-        score ranking
-    """
 
     errors: List[str] = []
 
-    corners = None
+    corners_result = None
 
     try:
-        corners = CornersModel().synthesize_match(
-            home_context,
-            away_context,
+        corners_result = (
+            corners_model.synthesize_match(
+                home_context,
+                away_context,
+            )
         )
 
     except Exception as exc:
@@ -1040,12 +875,14 @@ def _side_models(
             f"CornersModel: {exc}"
         )
 
-    cards = None
+    cards_result = None
 
     try:
-        cards = CardsModel().synthesize_match(
-            home_context,
-            away_context,
+        cards_result = (
+            cards_model.synthesize_match(
+                home_context,
+                away_context,
+            )
         )
 
     except Exception as exc:
@@ -1053,7 +890,11 @@ def _side_models(
             f"CardsModel: {exc}"
         )
 
-    return corners, cards, errors
+    return (
+        corners_result,
+        cards_result,
+        errors,
+    )
 
 
 # ============================================================
@@ -1062,40 +903,30 @@ def _side_models(
 
 def _field_coverage(
     records: Sequence[Any],
-    field_names: Sequence[str],
+    fields: Sequence[str],
 ) -> Dict[str, Any]:
-    """
-    Count actual available observations.
-
-    None remains missing.
-    """
 
     total = len(records)
 
-    coverage: Dict[str, Any] = {
+    result = {
         "records": total,
         "fields": {},
     }
 
-    for field in field_names:
+    for field in fields:
 
-        available = 0
+        available = sum(
+            1
+            for record in records
+            if _get(record, field) is not None
+        )
 
-        for record in records:
-            value = _get(
-                record,
-                field,
-            )
-
-            if value is not None:
-                available += 1
-
-        coverage["fields"][field] = {
+        result["fields"][field] = {
             "available": available,
             "missing": total - available,
         }
 
-    return coverage
+    return result
 
 
 def _data_quality(
@@ -1105,18 +936,10 @@ def _data_quality(
     away_context: Dict[str, Any],
     diagnostics: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """
-    Transparent data-quality report.
-
-    No quality value is substituted into mathematics.
-    """
-
-    home_count = len(home_history)
-    away_count = len(away_history)
 
     history_complete = (
-        home_count == HISTORY_SIZE
-        and away_count == HISTORY_SIZE
+        len(home_history) == HISTORY_SIZE
+        and len(away_history) == HISTORY_SIZE
     )
 
     xg_fields = (
@@ -1131,40 +954,16 @@ def _data_quality(
         "opponent_yellow_cards",
     )
 
-    home_xg = _field_coverage(
-        home_history,
-        xg_fields,
-    )
-
-    away_xg = _field_coverage(
-        away_history,
-        xg_fields,
-    )
-
-    home_stats = _field_coverage(
-        home_history,
-        statistics_fields,
-    )
-
-    away_stats = _field_coverage(
-        away_history,
-        statistics_fields,
-    )
-
     diagnostic_errors = diagnostics.get(
         "errors",
         [],
     )
 
-    diagnostics_available = (
-        len(diagnostic_errors) == 0
-    )
-
     return {
         "history": {
             "required_per_team": HISTORY_SIZE,
-            "home_matches": home_count,
-            "away_matches": away_count,
+            "home_matches": len(home_history),
+            "away_matches": len(away_history),
             "status": (
                 "complete"
                 if history_complete
@@ -1173,17 +972,31 @@ def _data_quality(
         },
 
         "xg": {
-            "home": home_xg,
-            "away": away_xg,
+            "home": _field_coverage(
+                home_history,
+                xg_fields,
+            ),
+            "away": _field_coverage(
+                away_history,
+                xg_fields,
+            ),
         },
 
         "statistics": {
-            "home": home_stats,
-            "away": away_stats,
+            "home": _field_coverage(
+                home_history,
+                statistics_fields,
+            ),
+            "away": _field_coverage(
+                away_history,
+                statistics_fields,
+            ),
         },
 
         "diagnostics": {
-            "available": diagnostics_available,
+            "available": (
+                len(diagnostic_errors) == 0
+            ),
             "errors": list(
                 diagnostic_errors
             ),
@@ -1205,51 +1018,56 @@ def _data_quality(
 
 
 # ============================================================
-# SCORE EXTRACTION
+# SCORE OUTPUT
 # ============================================================
 
 def _score_output(
     score_result: Any,
 ) -> Dict[str, Any]:
-    """
-    Extract ScorePredictor-owned output.
-
-    Brain does not rank scores again.
-    """
 
     data = _dict(score_result)
 
-    top_scores = _get(
-        data,
-        "top_scores",
-    )
-
-    predicted_score = _get(
-        data,
-        "predicted_score",
-    )
-
-    likely_score = _get(
-        data,
-        "likely_score",
-        "most_likely_score",
-    )
-
     return {
-        "predicted_score": predicted_score,
-        "most_likely_score": likely_score,
-        "top_scores": top_scores,
+        "predicted_score": _get(
+            data,
+            "predicted_score",
+        ),
+
+        "most_likely_score": _get(
+            data,
+            "likely_score",
+            "most_likely_score",
+        ),
+
+        "top_scores": _get(
+            data,
+            "top_scores",
+        ),
+
+        "second_score": _get(
+            data,
+            "second_score",
+        ),
+
+        "third_score": _get(
+            data,
+            "third_score",
+        ),
     }
 
 
 # ============================================================
-# SIDE VALUE EXTRACTION
+# SIDE VALUES
 # ============================================================
 
-def _expected_side_value(
+def _side_value(
     result: Any,
     *names: str,
 ) -> Optional[float]:
+
+    if result is None:
+        return None
+
     data = _dict(result)
 
     return _num(
@@ -1261,60 +1079,16 @@ def _expected_side_value(
 
 
 # ============================================================
-# CONFIDENCE
-# ============================================================
-
-def _confidence(
-    goal_result: Any,
-) -> Optional[float]:
-    """
-    Confidence source:
-
-        GoalModel.confidence
-
-    Brain does not calculate a new confidence score.
-    """
-
-    data = _dict(goal_result)
-
-    return _prob01(
-        _get(
-            data,
-            "confidence",
-        )
-    )
-
-
-# ============================================================
-# MODEL METADATA
-# ============================================================
-
-def _model_version(
-    result: Any,
-    *names: str,
-) -> Optional[str]:
-    data = _dict(result)
-
-    value = _get(
-        data,
-        *names,
-    )
-
-    if value is None:
-        return None
-
-    return str(value)
-
-
-# ============================================================
 # MAIN BRAIN
 # ============================================================
 
 class FAJBrain:
     """
-    FAJ Brain v2.0.
+    FAJ Brain v3.0.
 
-    Thin orchestrator over the current mathematical organs.
+    Thin orchestrator.
+
+    No duplicate mathematics.
     """
 
     VERSION = BRAIN_VERSION
@@ -1324,28 +1098,16 @@ class FAJBrain:
 
         self.version = BRAIN_VERSION
 
-        # ----------------------------------------------------
-        # Real mathematical organs
-        # ----------------------------------------------------
-
         self.form_model = FormModel()
         self.goal_model = GoalModel()
         self.probability_model = ProbabilityModel()
         self.score_predictor = ScorePredictor()
-
-        # ----------------------------------------------------
-        # Real diagnostic organs
-        # ----------------------------------------------------
 
         self.form_win = FormWin()
         self.defence = Defence()
         self.form_control = FormControl()
         self.form_anomaly = FormAnomaly()
         self.form_special = FormSpecial()
-
-        # ----------------------------------------------------
-        # Independent side models
-        # ----------------------------------------------------
 
         self.corners_model = CornersModel()
         self.cards_model = CardsModel()
@@ -1362,16 +1124,6 @@ class FAJBrain:
         away_matches: Iterable[Any],
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        """
-        Execute the complete FAJ Brain chain.
-
-        Required input:
-            exactly 6 home historical matches
-            exactly 6 away historical matches
-
-        The current Predictor already supplies team-level
-        historical records. Brain preserves those facts.
-        """
 
         # ----------------------------------------------------
         # VALIDATION
@@ -1426,7 +1178,8 @@ class FAJBrain:
         # FORM MODEL
         # ----------------------------------------------------
 
-        home_form, away_form = _form_models(
+        home_form, away_form = _run_form_model(
+            self.form_model,
             home_context,
             away_context,
         )
@@ -1435,7 +1188,7 @@ class FAJBrain:
         # DIAGNOSTICS
         # ----------------------------------------------------
 
-        diagnostics = _diagnostics(
+        diagnostics = _run_diagnostics(
             home_context=home_context,
             away_context=away_context,
             home_team=home_team,
@@ -1446,37 +1199,16 @@ class FAJBrain:
         # GOAL MODEL
         # ----------------------------------------------------
 
-        goal_result = self.goal_model.analyze(
+        goal_result = _run_goal_model(
+            self.goal_model,
             home_form=home_form,
             away_form=away_form,
-
             home_team=home_team,
             away_team=away_team,
-
-            venue="home",
-
-            home_control=diagnostics["home"].get(
-                "control"
-            ),
-            away_control=diagnostics["away"].get(
-                "control"
-            ),
-
-            home_special=diagnostics["home"].get(
-                "special_form"
-            ),
-            away_special=diagnostics["away"].get(
-                "special_form"
-            ),
-
             home_history=home_history,
             away_history=away_history,
+            diagnostics=diagnostics,
         )
-
-        if goal_result is None:
-            raise BrainCoreError(
-                "GoalModel returned None"
-            )
 
         home_xg, away_xg = _goal_lambdas(
             goal_result
@@ -1486,51 +1218,27 @@ class FAJBrain:
         # PROBABILITY MODEL
         # ----------------------------------------------------
 
-        probability_result = self.probability_model.calculate(
-            home_xg=home_xg,
-            away_xg=away_xg,
-        )
-
-        if probability_result is None:
-            raise BrainCoreError(
-                "ProbabilityModel returned None"
+        probability_result = (
+            _run_probability_model(
+                self.probability_model,
+                home_xg,
+                away_xg,
             )
+        )
 
         probability_data = _dict(
             probability_result
         )
 
-        score_distribution = _get(
-            probability_data,
-            "score_distribution",
-            "score_probabilities",
-            "distribution",
-        )
-
-        if score_distribution is None:
-            raise BrainCoreError(
-                "ProbabilityModel returned no "
-                "score_distribution"
-            )
-
         # ----------------------------------------------------
         # SCORE PREDICTOR
         # ----------------------------------------------------
 
-        score_result = self.score_predictor.predict(
-            score_probabilities=score_distribution,
-            home_xg=home_xg,
-            away_xg=away_xg,
-            probability_result=probability_result,
-        )
-
-        if score_result is None:
-            raise BrainCoreError(
-                "ScorePredictor returned None"
-            )
-
-        score_data = _dict(
-            score_result
+        score_result = _run_score_predictor(
+            self.score_predictor,
+            probability_result,
+            home_xg,
+            away_xg,
         )
 
         score_output = _score_output(
@@ -1538,14 +1246,18 @@ class FAJBrain:
         )
 
         # ----------------------------------------------------
-        # PARALLEL CORNERS / CARDS
+        # PARALLEL MODELS
         # ----------------------------------------------------
 
-        corners_result, cards_result, side_errors = (
-            _side_models(
-                home_context,
-                away_context,
-            )
+        (
+            corners_result,
+            cards_result,
+            side_errors,
+        ) = _run_side_models(
+            self.corners_model,
+            self.cards_model,
+            home_context,
+            away_context,
         )
 
         if side_errors:
@@ -1562,7 +1274,6 @@ class FAJBrain:
             _get(
                 probability_data,
                 "home_win",
-                "home_win_probability",
             )
         )
 
@@ -1570,7 +1281,6 @@ class FAJBrain:
             _get(
                 probability_data,
                 "draw",
-                "draw_probability",
             )
         )
 
@@ -1578,7 +1288,6 @@ class FAJBrain:
             _get(
                 probability_data,
                 "away_win",
-                "away_win_probability",
             )
         )
 
@@ -1586,25 +1295,30 @@ class FAJBrain:
             _get(
                 probability_data,
                 "btts",
-                "btts_probability",
+            )
+        )
+
+        over15 = _prob01(
+            _get(
+                probability_data,
+                "over_15",
+                "over15",
             )
         )
 
         over25 = _prob01(
             _get(
                 probability_data,
-                "over25",
                 "over_25",
-                "over25_probability",
+                "over25",
             )
         )
 
         over35 = _prob01(
             _get(
                 probability_data,
-                "over35",
                 "over_35",
-                "over35_probability",
+                "over35",
             )
         )
 
@@ -1612,40 +1326,37 @@ class FAJBrain:
         # CONFIDENCE
         # ----------------------------------------------------
 
-        confidence = _confidence(
+        goal_data = _dict(
             goal_result
         )
 
-        # ----------------------------------------------------
-        # CORNERS
-        # ----------------------------------------------------
-
-        corners_value = None
-
-        if corners_result is not None:
-            corners_value = _expected_side_value(
-                corners_result,
-                "total_expected_corners",
-                "expected_corners",
-                "total_corners",
+        confidence = _prob01(
+            _get(
+                goal_data,
+                "confidence",
             )
+        )
 
         # ----------------------------------------------------
-        # CARDS
+        # CORNERS / CARDS
         # ----------------------------------------------------
 
-        cards_value = None
+        corners_value = _side_value(
+            corners_result,
+            "total_expected_corners",
+            "expected_corners",
+            "total_corners",
+        )
 
-        if cards_result is not None:
-            cards_value = _expected_side_value(
-                cards_result,
-                "total_expected_cards",
-                "expected_cards",
-                "total_cards",
-            )
+        cards_value = _side_value(
+            cards_result,
+            "total_expected_cards",
+            "expected_cards",
+            "total_cards",
+        )
 
         # ----------------------------------------------------
-        # DATA QUALITY
+        # QUALITY
         # ----------------------------------------------------
 
         data_quality = _data_quality(
@@ -1660,7 +1371,7 @@ class FAJBrain:
         # CALCULATION META
         # ----------------------------------------------------
 
-        calculation_meta: Dict[str, Any] = {
+        calculation_meta = {
             "brain": {
                 "version": BRAIN_VERSION,
                 "status": BRAIN_STATUS,
@@ -1674,6 +1385,16 @@ class FAJBrain:
                 "ProbabilityModel",
                 "ScorePredictor",
             ],
+
+            "ownership": {
+                "xg": "GoalModel",
+                "lambda": "GoalModel",
+                "probabilities": "ProbabilityModel",
+                "score_distribution": "ProbabilityModel",
+                "score_ranking": "ScorePredictor",
+                "corners": "CornersModel",
+                "cards": "CardsModel",
+            },
 
             "goal_model": _serialize(
                 goal_result
@@ -1704,27 +1425,9 @@ class FAJBrain:
                 ),
             },
 
-            "diagnostics": diagnostics,
-
-            "ownership": {
-                "xg": "GoalModel",
-                "lambda": "GoalModel",
-                "probabilities": "ProbabilityModel",
-                "score_distribution": "ProbabilityModel",
-                "score_ranking": "ScorePredictor",
-                "corners": "CornersModel",
-                "cards": "CardsModel",
-            },
-
-            "diagnostic_policy": {
-                "form_win_affects_prediction": False,
-                "defence_affects_prediction": False,
-                "form_control_affects_prediction": False,
-                "form_anomaly_affects_prediction": False,
-                "form_special_affects_prediction": False,
-                "corners_affects_goal_model": False,
-                "cards_affects_goal_model": False,
-            },
+            "diagnostics": _serialize(
+                diagnostics
+            ),
 
             "math_integrity": {
                 "brain_recalculates_xg": False,
@@ -1734,8 +1437,6 @@ class FAJBrain:
                 "brain_recalculates_btts": False,
                 "brain_recalculates_totals": False,
                 "brain_reranks_scores": False,
-                "winner_synthesis": False,
-                "winner_signal": False,
                 "rating_multiplier": False,
                 "missing_is_not_zero": True,
             },
@@ -1746,15 +1447,17 @@ class FAJBrain:
                     "model_version",
                     "version",
                 ),
+
                 "probability_model": _model_version(
                     probability_result,
                     "model_version",
                     "version",
                 ),
+
                 "score_predictor": _model_version(
                     score_result,
-                    "model_version",
                     "version",
+                    "model_version",
                 ),
             },
         }
@@ -1764,9 +1467,10 @@ class FAJBrain:
         # ----------------------------------------------------
 
         return {
-            # ------------------------------------------------
+
+            # =================================================
             # MATCH
-            # ------------------------------------------------
+            # =================================================
 
             "home_team": home_team,
             "away_team": away_team,
@@ -1774,20 +1478,21 @@ class FAJBrain:
             "home_matches": len(
                 home_history
             ),
+
             "away_matches": len(
                 away_history
             ),
 
-            # ------------------------------------------------
+            # =================================================
             # GOALS
-            # ------------------------------------------------
+            # =================================================
 
             "home_xg": home_xg,
             "away_xg": away_xg,
 
-            # ------------------------------------------------
+            # =================================================
             # 1X2
-            # ------------------------------------------------
+            # =================================================
 
             "home_win_probability": _prob100(
                 home_win
@@ -1801,12 +1506,16 @@ class FAJBrain:
                 away_win
             ),
 
-            # ------------------------------------------------
+            # =================================================
             # BTTS / TOTALS
-            # ------------------------------------------------
+            # =================================================
 
             "btts_probability": _prob100(
                 btts
+            ),
+
+            "over15_probability": _prob100(
+                over15
             ),
 
             "over25_probability": _prob100(
@@ -1817,9 +1526,9 @@ class FAJBrain:
                 over35
             ),
 
-            # ------------------------------------------------
+            # =================================================
             # SCORE
-            # ------------------------------------------------
+            # =================================================
 
             "predicted_score": score_output[
                 "predicted_score"
@@ -1829,56 +1538,66 @@ class FAJBrain:
                 "most_likely_score"
             ],
 
+            "second_score": score_output[
+                "second_score"
+            ],
+
+            "third_score": score_output[
+                "third_score"
+            ],
+
             "top_scores": score_output[
                 "top_scores"
             ],
 
-            # ------------------------------------------------
+            # =================================================
             # PARALLEL MODELS
-            # ------------------------------------------------
+            # =================================================
 
             "corners": corners_value,
             "cards": cards_value,
 
-            # ------------------------------------------------
+            # =================================================
             # DIAGNOSTICS
-            # ------------------------------------------------
+            # =================================================
 
             "diagnostics": _serialize(
                 diagnostics
             ),
 
-            # ------------------------------------------------
-            # QUALITY
-            # ------------------------------------------------
+            # =================================================
+            # DATA QUALITY
+            # =================================================
 
             "data_quality": data_quality,
 
-            # ------------------------------------------------
-            # CONFIDENCE / RISK
-            # ------------------------------------------------
+            # =================================================
+            # CONFIDENCE
+            # =================================================
 
             "confidence": confidence,
 
-            # No current mathematical owner.
-            "risk": None,
+            # =================================================
+            # NO OWNER
+            # =================================================
 
-            # No current analytical conclusion engine.
+            "risk": None,
             "conclusion": None,
 
-            # ------------------------------------------------
+            # =================================================
             # META
-            # ------------------------------------------------
+            # =================================================
 
             "calculation_meta": calculation_meta,
 
             "model_version": BRAIN_VERSION,
 
-            # ------------------------------------------------
-            # FULL ORGAN OUTPUT
-            # ------------------------------------------------
+            # =================================================
+            # COMPLETE ORGAN OUTPUT
+            # =================================================
 
             "brain_result": {
+
                 "brain_version": BRAIN_VERSION,
                 "brain_status": BRAIN_STATUS,
 
@@ -1940,9 +1659,6 @@ def predict_match(
     home_matches: Iterable[Any],
     away_matches: Iterable[Any],
 ) -> Dict[str, Any]:
-    """
-    Module-level convenience API.
-    """
 
     return FAJBrain().predict(
         home_team=home_team,
