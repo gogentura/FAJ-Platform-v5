@@ -2,9 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ PREDICTOR — Streamlit Interface
-
-Multi-match interface for FAJ Personal Prediction Brain.
+FAJ PREDICTOR — Streamlit Interface (Brain v4.0 adapter)
 
 Архитектура:
 
@@ -14,7 +12,7 @@ Multi-match interface for FAJ Personal Prediction Brain.
         ↓
     factual history
         ↓
-    FAJBrain.predict()
+    FAJBrain v4.0 .predict()
         ↓
     BrainPrediction
         ↓
@@ -35,29 +33,28 @@ Streamlit НЕ считает:
     ❌ corners
     ❌ cards
 
-Всё приходит из FAJBrain через calculation_meta.
+Всё приходит из FAJBrain v4.0 как BrainPrediction.
+
+Контракт Brain v4.0:
+
+    brain.predict(
+        home_team=...,
+        away_team=...,
+        home_history=[...],
+        away_history=[...],
+    )
 
 Pair Rating:
-    ручной исследовательский сигнал конкретной пары.
-    НЕ меняет xG / λ / Poisson / ScorePredictor.
-    Используется ТОЛЬКО в Winner Synthesis
-    как структурный сигнал.
-
-    Контракт:
-        - оба поля заданы вручную (60..100)
-            → source = "manual"
-        - оба поля None
-            → source = "club_rating_fallback"
-        - не удалось ни то, ни другое
-            → source = None
-
-    В UI Pair Rating — только display + manual input.
+    ручной исследовательский сигнал / display only.
+    В Brain v4.0 НЕ передаётся.
+    В математическом ядре НЕ участвует.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from dataclasses import asdict
 from datetime import date
 from typing import Any, Dict, List, Optional
 
@@ -263,7 +260,8 @@ def create_match_slot() -> Dict[str, Any]:
         "match_date": date.today().isoformat(),
 
         # ------------------------------------------------
-        # Ручной Pair Rating для конкретной пары
+        # Ручной Pair Rating — display / research only.
+        # В Brain v4.0 НЕ передаётся.
         # ------------------------------------------------
         "home_pair_rating": PAIR_RATING_DEFAULT,
         "away_pair_rating": PAIR_RATING_DEFAULT,
@@ -853,7 +851,6 @@ def make_form_context(
         context = build_form_context(
             team_name=team_name,
             records=records,
-            limit=MAX_HISTORY_MATCHES,
         )
 
         if isinstance(
@@ -882,7 +879,7 @@ def make_form_context(
 
 
 # ============================================================
-# BUILD PREDICTION
+# BUILD PREDICTION — FAJ Brain v4.0 adapter
 # ============================================================
 
 def build_prediction(
@@ -894,27 +891,18 @@ def build_prediction(
     away_pair_rating: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
-    Единственная математическая точка страницы.
+    FAJ Brain v4.0 adapter.
 
-    Streamlit НЕ считает:
-    - xG
-    - Poisson
-    - 1X2
-    - BTTS
-    - totals
-    - exact scores
-    - Pair Rating
-    - Winner Synthesis
-    - confidence
-    - risk
-    - corners
-    - cards
+    Streamlit только передаёт фактическую историю.
+    Pair Rating НЕ передаётся в Brain и не участвует
+    в математическом ядре.
 
-    Всё приходит из FAJBrain.
+    Brain v4.0 принимает только:
 
-    Pair Rating прокидывается как входные параметры:
-        - если оба заданы → manual;
-        - если оба None   → club_rating_fallback.
+        home_team
+        away_team
+        home_history
+        away_history
     """
 
     brain = get_faj_brain()
@@ -922,13 +910,15 @@ def build_prediction(
     result = brain.predict(
         home_team=home_team,
         away_team=away_team,
-        home_matches=history_home,
-        away_matches=history_away,
-        home_pair_rating=home_pair_rating,
-        away_pair_rating=away_pair_rating,
+        home_history=history_home,
+        away_history=history_away,
     )
 
-    if hasattr(result, "to_dict"):
+    # BrainPrediction — dataclass.
+    if hasattr(result, "__dataclass_fields__"):
+        prediction = asdict(result)
+
+    elif hasattr(result, "to_dict"):
         prediction = result.to_dict()
 
     elif isinstance(result, dict):
@@ -937,15 +927,8 @@ def build_prediction(
     else:
         raise TypeError(
             "FAJBrain.predict() "
-            "вернул неподдерживаемый тип."
-        )
-
-    if not isinstance(
-        prediction.get("calculation_meta"),
-        dict,
-    ):
-        raise ValueError(
-            "FAJBrain не вернул calculation_meta."
+            "вернул неподдерживаемый тип: "
+            f"{type(result).__name__}"
         )
 
     return prediction
@@ -1165,16 +1148,8 @@ def generate_prediction(
 
         return
 
-    home_pair_rating = match.get(
-        "home_pair_rating"
-    )
-
-    away_pair_rating = match.get(
-        "away_pair_rating"
-    )
-
     with st.spinner(
-        "FAJ Brain анализирует матч..."
+        "FAJ Brain v4.0 анализирует матч..."
     ):
 
         try:
@@ -1184,8 +1159,6 @@ def generate_prediction(
                 away_team=away_team,
                 history_home=history_home,
                 history_away=history_away,
-                home_pair_rating=home_pair_rating,
-                away_pair_rating=away_pair_rating,
             )
 
         except Exception as exc:
@@ -1501,235 +1474,7 @@ def render_form_context_card(
 
 
 # ============================================================
-# WINNER SYNTHESIS — DETAILED BREAKDOWN
-# ============================================================
-
-def _render_winner_synthesis_breakdown(
-    winner_synthesis: Dict[str, Any],
-    pair_rating: Dict[str, Any],
-    pair_rating_source: Optional[str],
-    winner_probability_map: Dict[str, Optional[float]],
-) -> None:
-    """
-    Разложение Winner Synthesis по источникам сигналов.
-
-    Только отображение уже посчитанных полей:
-        - PRIMARY (Poisson)
-        - PAIR RATING
-        - FORMWIN
-        - DEFENCE
-        - agreements / conflicts
-
-    Никакой математики.
-    """
-
-    poisson_winner = (
-        winner_synthesis.get("poisson_winner")
-        or "—"
-    )
-
-    primary_prob = winner_probability_map.get(
-        poisson_winner
-    )
-
-    primary_text = (
-        f"{poisson_winner}"
-        + (
-            f" ({primary_prob:.1f}%)"
-            if primary_prob is not None
-            else ""
-        )
-    )
-
-    # --------------------------------------------------------
-    # PAIR RATING
-    # --------------------------------------------------------
-
-    pr_direction = (
-        winner_synthesis.get("pair_rating_direction")
-        or "—"
-    )
-
-    pr_strength = (
-        winner_synthesis.get("pair_rating_strength")
-        or "—"
-    )
-
-    pr_home = pair_rating.get("home_rating")
-    pr_away = pair_rating.get("away_rating")
-    pr_gap = pair_rating.get("rating_gap")
-
-    pr_numbers_text = "—"
-
-    if pr_home is not None and pr_away is not None:
-
-        gap_text = "—"
-
-        if pr_gap is not None:
-
-            try:
-                gap_text = f"{int(pr_gap):+d}"
-            except (TypeError, ValueError):
-                gap_text = "—"
-
-        pr_numbers_text = (
-            f"{pr_home} vs {pr_away} — {pr_strength} — gap {gap_text}"
-        )
-
-        if pair_rating_source:
-            pr_numbers_text += f" — source: {pair_rating_source}"
-
-    # --------------------------------------------------------
-    # FORMWIN
-    # --------------------------------------------------------
-
-    form_direction = (
-        winner_synthesis.get("form_direction")
-        or "—"
-    )
-
-    form_advantage = winner_synthesis.get(
-        "form_advantage"
-    )
-
-    form_text = form_direction
-
-    if form_advantage is not None:
-
-        try:
-            form_text = (
-                f"{form_direction} "
-                f"({float(form_advantage):+.3f})"
-            )
-        except (TypeError, ValueError):
-            pass
-
-    # --------------------------------------------------------
-    # DEFENCE
-    # --------------------------------------------------------
-
-    defence_direction = (
-        winner_synthesis.get("defence_direction")
-        or "—"
-    )
-
-    defence_home = winner_synthesis.get("defence_home")
-    defence_away = winner_synthesis.get("defence_away")
-
-    defence_text = defence_direction
-
-    if (
-        defence_home is not None
-        and defence_away is not None
-    ):
-
-        try:
-            defence_text = (
-                f"{defence_direction} "
-                f"({float(defence_home):.3f} / "
-                f"{float(defence_away):.3f})"
-            )
-        except (TypeError, ValueError):
-            pass
-
-    # --------------------------------------------------------
-    # AGREEMENTS / CONFLICTS
-    # --------------------------------------------------------
-
-    agreements = winner_synthesis.get("agreements", 0)
-    conflicts = winner_synthesis.get("conflicts", 0)
-
-    st.markdown(
-        f"""
-**Winner Synthesis: {winner_synthesis.get("synthesis", "—")}**
-
-- PRIMARY MODEL: `{primary_text}`
-- PAIR RATING: `{pr_direction}` — `{pr_numbers_text}`
-- FORMWIN: `{form_text}`
-- DEFENCE: `{defence_text}`
-
-`{agreements} agreement(s) / {conflicts} conflict(s)`
-""",
-        unsafe_allow_html=False,
-    )
-
-
-# ============================================================
-# CONFIDENCE BREAKDOWN
-# ============================================================
-
-def _render_confidence_breakdown(
-    winner_synthesis: Dict[str, Any],
-    winner_probability_map: Dict[str, Optional[float]],
-) -> None:
-    """
-    Разложение confidence.
-
-    Base — вероятность poisson_winner.
-    Final — winner_synthesis["confidence"] (0..1).
-    Penalty — final − base (в %).
-
-    Все значения — уже существующие в winner_synthesis.
-    Никаких новых полей не создаём.
-    """
-
-    poisson_winner = winner_synthesis.get(
-        "poisson_winner"
-    )
-
-    base_prob = winner_probability_map.get(
-        poisson_winner
-    )
-
-    final_conf_raw = safe_float(
-        winner_synthesis.get("confidence")
-    )
-
-    base_pct = (
-        base_prob * 100.0
-        if base_prob is not None
-        else None
-    )
-
-    final_pct = (
-        final_conf_raw * 100.0
-        if final_conf_raw is not None
-        else None
-    )
-
-    delta_pct = None
-
-    if base_pct is not None and final_pct is not None:
-
-        delta_pct = final_pct - base_pct
-
-    c1, c2, c3 = st.columns(3, gap="small")
-
-    with c1:
-        st.metric(
-            "Base confidence",
-            pct(base_pct),
-        )
-
-    with c2:
-        st.metric(
-            "Synthesis penalty",
-            (
-                f"{delta_pct:+.1f}%"
-                if delta_pct is not None
-                else "—"
-            ),
-        )
-
-    with c3:
-        st.metric(
-            "Final confidence",
-            pct(final_pct),
-        )
-
-
-# ============================================================
-# PREDICTION CARD
+# PREDICTION CARD — Brain v4.0
 # ============================================================
 
 def render_prediction_card(
@@ -1753,260 +1498,15 @@ def render_prediction_card(
     )
 
     # ========================================================
-    # META — ЕДИНСТВЕННЫЙ ИСТОЧНИК ИСТИНЫ
+    # BRAIN DIAGNOSTICS
     # ========================================================
 
-    meta = prediction.get(
-        "calculation_meta",
-        {},
-    ) or {}
-
-    winner_synthesis = (
-        meta.get("winner_synthesis")
-        or {}
+    diagnostics = (
+        prediction.get("diagnostics") or {}
     )
 
-    pair_rating = (
-        meta.get("pair_rating")
-        or {}
-    )
-
-    pair_rating_source = meta.get(
-        "pair_rating_source"
-    )
-
-    score_forecast = (
-        meta.get("score_forecast")
-        or {}
-    )
-
-    # ========================================================
-    # WINNER PROBABILITY MAP — для отображения PRIMARY и Base confidence
-    # ========================================================
-
-    winner_probability_map = {
-        "HOME": safe_float(
-            winner_synthesis.get("home_probability")
-        ),
-        "DRAW": safe_float(
-            winner_synthesis.get("draw_probability")
-        ),
-        "AWAY": safe_float(
-            winner_synthesis.get("away_probability")
-        ),
-    }
-
-    winner_probability_map_pct = {
-        key: (
-            value * 100.0
-            if value is not None
-            else None
-        )
-        for key, value in winner_probability_map.items()
-    }
-
-    # ========================================================
-    # WINNER SYNTHESIS
-    # ========================================================
-
-    st.subheader(
-        "🧠 Winner Synthesis"
-    )
-
-    model_favorite = (
-        winner_synthesis.get(
-            "winner",
-            "—",
-        )
-    )
-
-    pair_direction = (
-        winner_synthesis.get(
-            "pair_rating_direction",
-            "—",
-        )
-    )
-
-    pair_strength = (
-        winner_synthesis.get(
-            "pair_rating_strength",
-            "—",
-        )
-    )
-
-    synthesis = (
-        winner_synthesis.get(
-            "synthesis",
-            "—",
-        )
-    )
-
-    agreements = (
-        winner_synthesis.get(
-            "agreements",
-            0,
-        )
-    )
-
-    conflicts = (
-        winner_synthesis.get(
-            "conflicts",
-            0,
-        )
-    )
-
-    c1, c2 = st.columns(2)
-
-    with c1:
-
-        st.metric(
-            "Model favorite",
-            model_favorite,
-        )
-
-    with c2:
-
-        st.metric(
-            "Pair direction",
-            pair_direction,
-        )
-
-    c1, c2 = st.columns(2)
-
-    with c1:
-
-        st.metric(
-            "Pair strength",
-            pair_strength,
-        )
-
-    with c2:
-
-        st.metric(
-            "Synthesis",
-            synthesis,
-        )
-
-    st.caption(
-        f"agreements: {agreements} · "
-        f"conflicts: {conflicts}"
-    )
-
-    # --------------------------------------------------------
-    # Pair Rating caption (как было)
-    # --------------------------------------------------------
-
-    if pair_rating:
-
-        home_rating = pair_rating.get(
-            "home_rating"
-        )
-
-        away_rating = pair_rating.get(
-            "away_rating"
-        )
-
-        gap = pair_rating.get(
-            "rating_gap"
-        )
-
-        if gap is not None:
-
-            try:
-
-                gap_text = (
-                    f"{int(gap):+d}"
-                )
-
-            except (
-                TypeError,
-                ValueError,
-            ):
-
-                gap_text = "—"
-
-        else:
-
-            gap_text = "—"
-
-        source_text = (
-            pair_rating_source
-            if pair_rating_source is not None
-            else "—"
-        )
-
-        st.caption(
-            f"Pair Rating: "
-            f"🏠 {home_rating} — "
-            f"✈️ {away_rating} "
-            f"(gap {gap_text}) "
-            f"· source: {source_text}"
-        )
-
-    # --------------------------------------------------------
-    # Синтез: цветовая плашка + разложение
-    # --------------------------------------------------------
-
-    if synthesis == "STRONG_CONSENSUS":
-
-        st.success(
-            "Winner Synthesis: "
-            "STRONG_CONSENSUS — "
-            "все сигналы согласованы."
-        )
-
-    elif synthesis == "CONSENSUS":
-
-        st.success(
-            "Winner Synthesis: "
-            "CONSENSUS."
-        )
-
-    elif synthesis == "CONFLICT":
-
-        st.error(
-            "⚠️ Winner Synthesis: CONFLICT"
-        )
-
-    elif synthesis == "WEAK_CONSENSUS":
-
-        st.info(
-            "Winner Synthesis: "
-            "WEAK_CONSENSUS."
-        )
-
-    elif synthesis == "DRAW_PRIMARY":
-
-        st.info(
-            "Winner Synthesis: "
-            "DRAW_PRIMARY."
-        )
-
-    # --------------------------------------------------------
-    # Разложение Winner Synthesis
-    # --------------------------------------------------------
-
-    _render_winner_synthesis_breakdown(
-        winner_synthesis=winner_synthesis,
-        pair_rating=pair_rating,
-        pair_rating_source=pair_rating_source,
-        winner_probability_map=winner_probability_map_pct,
-    )
-
-    # --------------------------------------------------------
-    # Разложение confidence
-    # --------------------------------------------------------
-
-    st.markdown("**Confidence breakdown**")
-
-    _render_confidence_breakdown(
-        winner_synthesis=winner_synthesis,
-        winner_probability_map=winner_probability_map_pct,
-    )
-
-    st.markdown(
-        f"### Итоговое направление: "
-        f"{winner_synthesis.get('winner', model_favorite)}"
+    errors = (
+        prediction.get("errors") or []
     )
 
     # ========================================================
@@ -2052,52 +1552,38 @@ def render_prediction_card(
             ),
         )
 
-    c1, c2 = st.columns(2)
+    primary_outcome = prediction.get(
+        "primary_outcome"
+    )
 
-    with c1:
+    if primary_outcome:
 
-        confidence_raw = safe_float(
-            prediction.get("confidence")
-        )
-
-        confidence_pct = (
-            confidence_raw * 100.0
-            if confidence_raw is not None
-            else None
-        )
-
-        st.metric(
-            "Уверенность FAJ",
-            pct(confidence_pct),
-        )
-
-    with c2:
-
-        st.metric(
-            "Риск",
-            prediction.get(
-                "risk",
-                "—",
-            ),
+        st.info(
+            f"Основное направление Poisson: "
+            f"**{primary_outcome}**"
         )
 
     # ========================================================
-    # 2. GOALS
+    # 2. GOAL STATE
     # ========================================================
 
     st.subheader(
-        "2. Голы"
+        "2. Goal State"
     )
 
-    c1, c2 = st.columns(2)
+    goal_state = (
+        prediction.get("goal_state") or {}
+    )
+
+    c1, c2, c3 = st.columns(3)
 
     with c1:
 
         st.metric(
-            f"🏠 {home} xG",
+            f"🏠 {home} λ",
             num(
                 prediction.get(
-                    "home_xg"
+                    "home_lambda"
                 )
             ),
         )
@@ -2105,27 +1591,62 @@ def render_prediction_card(
     with c2:
 
         st.metric(
-            f"✈️ {away} xG",
+            f"✈️ {away} λ",
             num(
                 prediction.get(
-                    "away_xg"
+                    "away_lambda"
                 )
             ),
         )
+
+    with c3:
+
+        st.metric(
+            "Total λ",
+            num(
+                prediction.get(
+                    "total_lambda"
+                )
+            ),
+        )
+
+    if goal_state:
+
+        with st.expander(
+            "Goal State — детали"
+        ):
+
+            st.json(goal_state)
+
+    # ========================================================
+    # 3. BTTS / TOTALS
+    # ========================================================
+
+    st.subheader(
+        "3. Голы и тоталы"
+    )
 
     btts = prediction.get(
         "btts_probability"
     )
 
     over25 = prediction.get(
-        "over25_probability"
+        "over_25_probability"
+    )
+
+    under25 = prediction.get(
+        "under_25_probability"
     )
 
     over35 = prediction.get(
-        "over35_probability"
+        "over_35_probability"
     )
 
-    c1, c2, c3 = st.columns(3)
+    under35 = prediction.get(
+        "under_35_probability"
+    )
+
+    c1, c2 = st.columns(2)
 
     with c1:
 
@@ -2135,15 +1656,18 @@ def render_prediction_card(
                 "ДА"
                 if (
                     btts is not None
-                    and btts >= 50
+                    and btts >= 0.5
                 )
-                else "НЕТ"
+                else (
+                    "НЕТ"
+                    if btts is not None
+                    else "—"
+                )
             ),
         )
 
         st.caption(
-            f"Вероятность: "
-            f"{pct(btts)}"
+            f"BTTS YES: {pct(btts)}"
         )
 
     with c2:
@@ -2154,261 +1678,300 @@ def render_prediction_card(
                 "ДА"
                 if (
                     over25 is not None
-                    and over25 >= 50
+                    and over25 >= 0.5
                 )
-                else "НЕТ"
+                else (
+                    "НЕТ"
+                    if over25 is not None
+                    else "—"
+                )
             ),
         )
 
         st.caption(
-            f"Вероятность: "
-            f"{pct(over25)}"
+            f"Over 2.5: {pct(over25)}"
+        )
+
+    c1, c2 = st.columns(2)
+
+    with c1:
+
+        st.metric(
+            "ТМ 2.5",
+            pct(under25),
+        )
+
+    with c2:
+
+        st.metric(
+            "ТБ 3.5",
+            pct(over35),
+        )
+
+    st.caption(
+        f"ТМ 3.5: {pct(under35)}"
+    )
+
+    # ========================================================
+    # 4. SCORE STATE
+    # ========================================================
+
+    st.subheader(
+        "4. Наиболее вероятные "
+        "точные счета"
+    )
+
+    predicted_score = prediction.get(
+        "predicted_score"
+    )
+
+    second_score = prediction.get(
+        "second_score"
+    )
+
+    third_score = prediction.get(
+        "third_score"
+    )
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+
+        st.metric(
+            "🥇 №1",
+            predicted_score or "—",
+        )
+
+    with c2:
+
+        st.metric(
+            "🥈 №2",
+            second_score or "—",
         )
 
     with c3:
 
         st.metric(
-            "ТБ 3.5",
-            (
-                "ДА"
-                if (
-                    over35 is not None
-                    and over35 >= 50
-                )
-                else "НЕТ"
-            ),
+            "🥉 №3",
+            third_score or "—",
         )
 
-        st.caption(
-            f"Вероятность: "
-            f"{pct(over35)}"
+    score_probability = safe_float(
+        prediction.get(
+            "predicted_score_probability"
         )
-
-    # ========================================================
-    # 3. SCORES
-    # ========================================================
-
-    st.subheader(
-        "3. Наиболее вероятные "
-        "точные счета"
     )
 
+    if score_probability is not None:
+
+        st.caption(
+            f"Вероятность основного счёта: "
+            f"{pct(score_probability)}"
+        )
+
     top_scores = (
-        score_forecast.get(
-            "top_scores",
-            [],
+        prediction.get(
+            "top_scores"
         )
         or []
     )
 
     if top_scores:
 
-        cols = st.columns(
-            len(top_scores[:3])
-        )
-
-        for idx, item in enumerate(
-            top_scores[:3]
+        with st.expander(
+            "Top-10 Score Distribution"
         ):
 
-            score_value = (
-                item.get("score")
-                if isinstance(item, dict)
-                else None
-            )
+            for position, item in enumerate(
+                top_scores[:10],
+                start=1,
+            ):
 
-            st.markdown(
-                f"### "
-                f"{score_value or '—'}"
-            )
+                if not isinstance(
+                    item,
+                    dict,
+                ):
+                    continue
 
-    else:
+                score = item.get(
+                    "score"
+                )
 
-        st.write("—")
+                probability = item.get(
+                    "raw_probability"
+                )
+
+                if probability is None:
+
+                    probability = item.get(
+                        "probability"
+                    )
+
+                st.write(
+                    f"{position}. "
+                    f"**{score or '—'}** — "
+                    f"{pct(probability)}"
+                )
+
+    score_state = (
+        prediction.get(
+            "score_state"
+        )
+        or {}
+    )
+
+    if score_state:
+
+        with st.expander(
+            "Score State — детали"
+        ):
+
+            st.json(score_state)
 
     # ========================================================
-    # 4. CORNERS
+    # 5. PARALLEL STATES
     # ========================================================
 
     st.subheader(
-        "4. Угловые"
+        "5. Параллельные "
+        "аналитические состояния"
     )
 
-    c1, c2, c3 = st.columns(3)
+    state_map = [
+        (
+            "FormWin",
+            "form_win",
+        ),
+        (
+            "Defence",
+            "defence",
+        ),
+        (
+            "FormControl",
+            "control",
+        ),
+        (
+            "FormAnomaly",
+            "anomaly",
+        ),
+        (
+            "SpecialForm",
+            "special_form",
+        ),
+        (
+            "Corners",
+            "corners_state",
+        ),
+        (
+            "Cards",
+            "cards_state",
+        ),
+    ]
+
+    for title, key in state_map:
+
+        value = prediction.get(key)
+
+        if value is None:
+            continue
+
+        with st.expander(title):
+
+            if isinstance(
+                value,
+                dict,
+            ):
+
+                st.json(value)
+
+            else:
+
+                st.write(value)
+
+    # ========================================================
+    # 6. CONFIDENCE / RISK
+    # ========================================================
+
+    st.subheader(
+        "6. Confidence / Risk"
+    )
+
+    c1, c2 = st.columns(2)
 
     with c1:
 
         st.metric(
-            "Всего",
-            num(
-                prediction.get(
-                    "corners_expected"
-                )
-            ),
+            "Confidence",
+            "—",
         )
 
     with c2:
 
         st.metric(
-            home,
-            num(
-                prediction.get(
-                    "home_corners_expected"
-                )
-            ),
+            "Risk",
+            "—",
         )
 
-    with c3:
-
-        st.metric(
-            away,
-            num(
-                prediction.get(
-                    "away_corners_expected"
-                )
-            ),
-        )
-
-    corner_lines = [
-        (
-            "7.5",
-            prediction.get(
-                "over75_corners_probability"
-            ),
-        ),
-        (
-            "8.5",
-            prediction.get(
-                "over85_corners_probability"
-            ),
-        ),
-        (
-            "9.5",
-            prediction.get(
-                "over95_corners_probability"
-            ),
-        ),
-        (
-            "10.5",
-            prediction.get(
-                "over105_corners_probability"
-            ),
-        ),
-    ]
-
-    cols = st.columns(4)
-
-    for col, (
-        line,
-        prob,
-    ) in zip(
-        cols,
-        corner_lines,
-    ):
-
-        with col:
-
-            st.metric(
-                f"ТБ {line}",
-                pct(prob),
-            )
-
-    # ========================================================
-    # 5. CARDS
-    # ========================================================
-
-    st.subheader(
-        "5. Карточки"
+    st.caption(
+        "В Brain v4.0 Confidence и Risk "
+        "пока архитектурно "
+        "не рассчитываются."
     )
 
-    c1, c2, c3 = st.columns(3)
-
-    with c1:
-
-        st.metric(
-            "Всего",
-            num(
-                prediction.get(
-                    "cards_expected"
-                )
-            ),
-        )
-
-    with c2:
-
-        st.metric(
-            home,
-            num(
-                prediction.get(
-                    "home_cards_expected"
-                )
-            ),
-        )
-
-    with c3:
-
-        st.metric(
-            away,
-            num(
-                prediction.get(
-                    "away_cards_expected"
-                )
-            ),
-        )
-
-    card_lines = [
-        (
-            "2.5",
-            prediction.get(
-                "over25_cards_probability"
-            ),
-        ),
-        (
-            "3.5",
-            prediction.get(
-                "over35_cards_probability"
-            ),
-        ),
-        (
-            "4.5",
-            prediction.get(
-                "over45_cards_probability"
-            ),
-        ),
-    ]
-
-    cols = st.columns(3)
-
-    for col, (
-        line,
-        prob,
-    ) in zip(
-        cols,
-        card_lines,
-    ):
-
-        with col:
-
-            st.metric(
-                f"ТБ {line}",
-                pct(prob),
-            )
-
     # ========================================================
-    # 6. ANALYSIS
+    # 7. PRIMARY SCENARIO
     # ========================================================
 
     st.subheader(
-        "6. Аналитический вывод FAJ"
+        "7. Primary Scenario"
+    )
+
+    primary_scenario = prediction.get(
+        "primary_scenario"
     )
 
     st.info(
-        prediction.get(
-            "conclusion",
-            "Аналитический вывод "
-            "пока недоступен.",
+        str(
+            primary_scenario
+            if primary_scenario is not None
+            else "—"
         )
     )
+
+    # ========================================================
+    # 8. BRAIN DIAGNOSTICS
+    # ========================================================
+
+    st.subheader(
+        "8. FAJ Brain Diagnostics"
+    )
+
+    if diagnostics:
+
+        with st.expander(
+            "Контракт Brain"
+        ):
+
+            st.json(diagnostics)
+
+    if errors:
+
+        with st.expander(
+            "⚠️ Ошибки / предупреждения"
+        ):
+
+            for error in errors:
+
+                st.warning(
+                    str(error)
+                )
+
+    else:
+
+        st.success(
+            "FAJ Brain завершил расчёт "
+            "без зарегистрированных ошибок."
+        )
 
 
 # ============================================================
@@ -2570,11 +2133,12 @@ def render_match_setup(
     )
 
     # ========================================================
-    # FAJ PAIR RATING (manual)
+    # FAJ PAIR RATING (manual, research only)
     # ========================================================
 
     st.markdown(
-        "#### 🧠 FAJ Pair Rating"
+        "#### 🧠 FAJ Pair Rating "
+        "(research only)"
     )
 
     _home_pr_default = int(
@@ -2648,7 +2212,8 @@ def render_match_setup(
     st.caption(
         f"Направление пары: {_team} "
         f"({_dir}, gap {_gap:+d}) "
-        f"· source: manual"
+        f"· source: manual · "
+        f"в Brain v4.0 не передаётся."
     )
 
     # ========================================================
@@ -2916,8 +2481,9 @@ def main() -> None:
     )
 
     st.caption(
-        "FAJ Brain — математический "
-        "анализ футбольной пары."
+        "FAJ Brain v4.0 — "
+        "математический анализ "
+        "футбольной пары."
     )
 
     # ========================================================
