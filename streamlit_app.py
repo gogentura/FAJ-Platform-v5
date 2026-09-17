@@ -119,13 +119,33 @@ def normalize_name(value: Any) -> str:
 
 
 def pct(value: Optional[float]) -> str:
+    """
+    UI formatter for probabilities.
+
+    Brain contract:
+    - probability is normally stored as 0..1
+    - UI displays it as 0..100%
+
+    Examples:
+        0.308 -> 30.8%
+        0.447 -> 44.7%
+        1.0   -> 100.0%
+        None  -> —
+    """
+
     if value is None:
         return "—"
 
     try:
-        return f"{float(value):.1f}%"
+        value = float(value)
     except (TypeError, ValueError):
         return "—"
+
+    # Brain probability contract: 0..1
+    if 0.0 <= value <= 1.0:
+        value *= 100.0
+
+    return f"{value:.1f}%"
 
 
 def num(
@@ -1164,15 +1184,15 @@ def generate_prediction(
         except Exception as exc:
 
             logger.exception(
-                "Ошибка FAJ Brain"
+                "FAJ Brain prediction failed"
             )
 
-            st.error(
-                f"Ошибка получения прогноза: "
-                f"{exc}"
+            st.info(
+                "ℹ️ Один дополнительный аналитический модуль "
+                "временно недоступен."
             )
 
-            return
+            return None
 
     st.session_state.faj_predictions[
         index
@@ -1477,501 +1497,391 @@ def render_form_context_card(
 # PREDICTION CARD — Brain v4.0
 # ============================================================
 
-def render_prediction_card(
-    prediction: Dict[str, Any],
-) -> None:
+def render_prediction_card(prediction):
+    """
+    User-facing FAJ Brain prediction card.
 
-    home = prediction.get(
-        "home_team",
-        "Хозяева",
+    IMPORTANT:
+        - no prediction recalculation here
+        - no threshold-based decisions
+        - no mathematical transformations except display formatting
+        - Brain remains the only prediction source
+    """
+
+    if not prediction:
+        st.info("ℹ️ Прогноз пока недоступен.")
+        return
+
+    # ---------------------------------------------------------
+    # Basic identity
+    # ---------------------------------------------------------
+
+    home_team = (
+        prediction.get("home_team")
+        or prediction.get("home")
+        or "Хозяева"
     )
 
-    away = prediction.get(
-        "away_team",
-        "Гости",
+    away_team = (
+        prediction.get("away_team")
+        or prediction.get("away")
+        or "Гости"
     )
-
-    st.markdown("---")
 
     st.markdown(
-        f"## ⚽ {home} — {away}"
+        f"## ⚽ {home_team} — {away_team}"
     )
 
-    # ========================================================
-    # BRAIN DIAGNOSTICS
-    # ========================================================
+    # ---------------------------------------------------------
+    # XG
+    # ---------------------------------------------------------
 
-    diagnostics = (
-        prediction.get("diagnostics") or {}
+    home_xg = (
+        prediction.get("home_xg")
+        if prediction.get("home_xg") is not None
+        else prediction.get("home_lambda")
     )
 
-    errors = (
-        prediction.get("errors") or []
+    away_xg = (
+        prediction.get("away_xg")
+        if prediction.get("away_xg") is not None
+        else prediction.get("away_lambda")
     )
 
-    # ========================================================
-    # 1. MAIN OUTCOME
-    # ========================================================
+    col1, col2 = st.columns(2)
 
-    st.subheader(
-        "1. Главный исход"
-    )
+    with col1:
+        st.metric(
+            home_team,
+            f"xG {float(home_xg):.2f}"
+            if home_xg is not None
+            else "xG —"
+        )
+
+    with col2:
+        st.metric(
+            away_team,
+            f"xG {float(away_xg):.2f}"
+            if away_xg is not None
+            else "xG —"
+        )
+
+    st.divider()
+
+    # ---------------------------------------------------------
+    # 1X2
+    # ---------------------------------------------------------
+
+    home_win = prediction.get("home_win")
+    draw = prediction.get("draw")
+    away_win = prediction.get("away_win")
+
+    # Alternative nested structure, if Brain returns it.
+    one_x_two = prediction.get("1x2")
+
+    if isinstance(one_x_two, dict):
+        home_win = (
+            one_x_two.get("home")
+            if one_x_two.get("home") is not None
+            else home_win
+        )
+        draw = (
+            one_x_two.get("draw")
+            if one_x_two.get("draw") is not None
+            else draw
+        )
+        away_win = (
+            one_x_two.get("away")
+            if one_x_two.get("away") is not None
+            else away_win
+        )
+
+    st.markdown("### 🏆 Исход")
 
     c1, c2, c3 = st.columns(3)
 
     with c1:
-
-        st.metric(
-            f"🏠 {home}",
-            pct(
-                prediction.get(
-                    "home_win_probability"
-                )
-            ),
-        )
+        st.metric(home_team, pct(home_win))
 
     with c2:
-
-        st.metric(
-            "🤝 Ничья",
-            pct(
-                prediction.get(
-                    "draw_probability"
-                )
-            ),
-        )
+        st.metric("Ничья", pct(draw))
 
     with c3:
+        st.metric(away_team, pct(away_win))
 
-        st.metric(
-            f"✈️ {away}",
-            pct(
-                prediction.get(
-                    "away_win_probability"
-                )
-            ),
-        )
+    # ---------------------------------------------------------
+    # Most probable score
+    # ---------------------------------------------------------
 
-    primary_outcome = prediction.get(
-        "primary_outcome"
+    top_score = prediction.get("top_score")
+
+    if top_score is None:
+        top_scores = prediction.get("top_scores")
+
+        if isinstance(top_scores, list) and top_scores:
+            first = top_scores[0]
+
+            if isinstance(first, dict):
+                home_score = first.get("home")
+                away_score = first.get("away")
+
+                if home_score is None:
+                    home_score = first.get("home_goals")
+
+                if away_score is None:
+                    away_score = first.get("away_goals")
+
+                if home_score is not None and away_score is not None:
+                    top_score = f"{home_score} : {away_score}"
+
+            elif isinstance(first, (list, tuple)) and len(first) >= 2:
+                top_score = f"{first[0]} : {first[1]}"
+
+    st.markdown("### ⚽ Наиболее вероятный счёт")
+    st.markdown(
+        f"## {top_score if top_score is not None else '—'}"
     )
 
-    if primary_outcome:
+    # ---------------------------------------------------------
+    # BTTS
+    # ---------------------------------------------------------
 
-        st.info(
-            f"Основное направление Poisson: "
-            f"**{primary_outcome}**"
+    btts = prediction.get("btts")
+
+    if isinstance(btts, dict):
+        btts_yes = (
+            btts.get("yes")
+            if btts.get("yes") is not None
+            else btts.get("btts_yes")
         )
+    else:
+        btts_yes = prediction.get("btts_yes")
 
-    # ========================================================
-    # 2. GOAL STATE
-    # ========================================================
+    st.markdown("### 🔥 Обе забьют")
 
-    st.subheader(
-        "2. Goal State"
-    )
+    if btts_yes is not None:
+        st.write(f"Да — **{pct(btts_yes)}**")
+    else:
+        st.write("Да — **—**")
 
-    goal_state = (
-        prediction.get("goal_state") or {}
-    )
+    # ---------------------------------------------------------
+    # TOTAL 2.5
+    # ---------------------------------------------------------
 
-    c1, c2, c3 = st.columns(3)
+    over25 = prediction.get("over25")
 
-    with c1:
+    if over25 is None:
+        over25 = prediction.get("over_2_5")
 
-        st.metric(
-            f"🏠 {home} λ",
-            num(
-                prediction.get(
-                    "home_lambda"
-                )
-            ),
+    if isinstance(over25, dict):
+        over25_probability = (
+            over25.get("probability")
+            if over25.get("probability") is not None
+            else over25.get("over")
         )
+    else:
+        over25_probability = over25
 
-    with c2:
+    st.markdown("### 📈 Тотал 2.5")
 
-        st.metric(
-            f"✈️ {away} λ",
-            num(
-                prediction.get(
-                    "away_lambda"
-                )
-            ),
+    if over25_probability is not None:
+        st.write(
+            f"Больше — **{pct(over25_probability)}**"
         )
+    else:
+        st.write("Больше — **—**")
 
-    with c3:
+    # ---------------------------------------------------------
+    # CORNERS
+    # ---------------------------------------------------------
 
-        st.metric(
-            "Total λ",
-            num(
-                prediction.get(
-                    "total_lambda"
-                )
-            ),
-        )
+    corners = prediction.get("corners")
 
-    if goal_state:
+    if corners is None:
+        corners = prediction.get("corners_state")
 
-        with st.expander(
-            "Goal State — детали"
+    corners_value = None
+
+    if isinstance(corners, dict):
+        for key in (
+            "total",
+            "expected_total",
+            "expected",
+            "prediction",
         ):
+            if corners.get(key) is not None:
+                corners_value = corners.get(key)
+                break
 
-            st.json(goal_state)
+    elif isinstance(corners, (int, float)):
+        corners_value = corners
 
-    # ========================================================
-    # 3. BTTS / TOTALS
-    # ========================================================
+    st.markdown("### 🚩 Угловые")
 
-    st.subheader(
-        "3. Голы и тоталы"
-    )
+    if corners_value is not None:
+        st.write(f"≈ **{float(corners_value):.1f}**")
+    else:
+        st.write("≈ **—**")
 
-    btts = prediction.get(
-        "btts_probability"
-    )
+    # ---------------------------------------------------------
+    # CARDS
+    # ---------------------------------------------------------
 
-    over25 = prediction.get(
-        "over_25_probability"
-    )
+    cards = prediction.get("cards")
 
-    under25 = prediction.get(
-        "under_25_probability"
-    )
+    if cards is None:
+        cards = prediction.get("cards_state")
 
-    over35 = prediction.get(
-        "over_35_probability"
-    )
+    cards_value = None
 
-    under35 = prediction.get(
-        "under_35_probability"
-    )
-
-    c1, c2 = st.columns(2)
-
-    with c1:
-
-        st.metric(
-            "Обе забьют",
-            (
-                "ДА"
-                if (
-                    btts is not None
-                    and btts >= 0.5
-                )
-                else (
-                    "НЕТ"
-                    if btts is not None
-                    else "—"
-                )
-            ),
-        )
-
-        st.caption(
-            f"BTTS YES: {pct(btts)}"
-        )
-
-    with c2:
-
-        st.metric(
-            "ТБ 2.5",
-            (
-                "ДА"
-                if (
-                    over25 is not None
-                    and over25 >= 0.5
-                )
-                else (
-                    "НЕТ"
-                    if over25 is not None
-                    else "—"
-                )
-            ),
-        )
-
-        st.caption(
-            f"Over 2.5: {pct(over25)}"
-        )
-
-    c1, c2 = st.columns(2)
-
-    with c1:
-
-        st.metric(
-            "ТМ 2.5",
-            pct(under25),
-        )
-
-    with c2:
-
-        st.metric(
-            "ТБ 3.5",
-            pct(over35),
-        )
-
-    st.caption(
-        f"ТМ 3.5: {pct(under35)}"
-    )
-
-    # ========================================================
-    # 4. SCORE STATE
-    # ========================================================
-
-    st.subheader(
-        "4. Наиболее вероятные "
-        "точные счета"
-    )
-
-    predicted_score = prediction.get(
-        "predicted_score"
-    )
-
-    second_score = prediction.get(
-        "second_score"
-    )
-
-    third_score = prediction.get(
-        "third_score"
-    )
-
-    c1, c2, c3 = st.columns(3)
-
-    with c1:
-
-        st.metric(
-            "🥇 №1",
-            predicted_score or "—",
-        )
-
-    with c2:
-
-        st.metric(
-            "🥈 №2",
-            second_score or "—",
-        )
-
-    with c3:
-
-        st.metric(
-            "🥉 №3",
-            third_score or "—",
-        )
-
-    score_probability = safe_float(
-        prediction.get(
-            "predicted_score_probability"
-        )
-    )
-
-    if score_probability is not None:
-
-        st.caption(
-            f"Вероятность основного счёта: "
-            f"{pct(score_probability)}"
-        )
-
-    top_scores = (
-        prediction.get(
-            "top_scores"
-        )
-        or []
-    )
-
-    if top_scores:
-
-        with st.expander(
-            "Top-10 Score Distribution"
+    if isinstance(cards, dict):
+        for key in (
+            "total",
+            "expected_total",
+            "expected",
+            "prediction",
         ):
+            if cards.get(key) is not None:
+                cards_value = cards.get(key)
+                break
 
-            for position, item in enumerate(
-                top_scores[:10],
-                start=1,
-            ):
+    elif isinstance(cards, (int, float)):
+        cards_value = cards
 
-                if not isinstance(
-                    item,
-                    dict,
-                ):
-                    continue
+    st.markdown("### 🟨 Карточки")
 
-                score = item.get(
-                    "score"
-                )
+    if cards_value is not None:
+        st.write(f"≈ **{float(cards_value):.1f}**")
+    else:
+        st.write("≈ **—**")
 
-                probability = item.get(
-                    "raw_probability"
-                )
+    # =========================================================
+    # TECHNICAL / ANALYTICAL DETAILS
+    # =========================================================
 
-                if probability is None:
+    with st.expander("📊 Детали прогноза"):
+        scenario = prediction.get("primary_scenario")
 
-                    probability = item.get(
-                        "probability"
-                    )
+        if scenario:
+            st.write("**Основной сценарий:**")
+            st.write(scenario)
 
-                st.write(
-                    f"{position}. "
-                    f"**{score or '—'}** — "
-                    f"{pct(probability)}"
-                )
+        confidence = prediction.get("confidence")
 
-    score_state = (
-        prediction.get(
-            "score_state"
-        )
-        or {}
+        if confidence is not None:
+            st.write(f"Confidence: {confidence}")
+
+        risk = prediction.get("risk")
+
+        if risk is not None:
+            st.write(f"Risk: {risk}")
+
+    # ---------------------------------------------------------
+    # FORM
+    # ---------------------------------------------------------
+
+    form_keys = (
+        "form",
+        "form_state",
+        "form_model",
+        "form_win",
+        "form_control",
+        "form_anomaly",
+        "special_form",
     )
 
-    if score_state:
+    form_data = {
+        key: prediction.get(key)
+        for key in form_keys
+        if prediction.get(key) is not None
+    }
 
-        with st.expander(
-            "Score State — детали"
-        ):
+    with st.expander("📈 Форма"):
+        if form_data:
+            st.json(form_data)
+        else:
+            st.write("Данные формы отсутствуют.")
 
-            st.json(score_state)
+    # ---------------------------------------------------------
+    # DEFENCE
+    # ---------------------------------------------------------
 
-    # ========================================================
-    # 5. PARALLEL STATES
-    # ========================================================
+    defence = prediction.get("defence")
 
-    st.subheader(
-        "5. Параллельные "
-        "аналитические состояния"
-    )
+    with st.expander("🛡 Защита"):
+        if defence is not None:
+            st.json(defence)
+        else:
+            st.write("Данные защиты отсутствуют.")
 
-    state_map = [
-        (
-            "FormWin",
-            "form_win",
-        ),
-        (
-            "Defence",
-            "defence",
-        ),
-        (
-            "FormControl",
-            "control",
-        ),
-        (
-            "FormAnomaly",
-            "anomaly",
-        ),
-        (
-            "SpecialForm",
-            "special_form",
-        ),
-        (
-            "Corners",
-            "corners_state",
-        ),
-        (
-            "Cards",
-            "cards_state",
-        ),
-    ]
+    # ---------------------------------------------------------
+    # PROBABILITIES
+    # ---------------------------------------------------------
 
-    for title, key in state_map:
+    probability_state = prediction.get("probability_state")
 
-        value = prediction.get(key)
+    with st.expander("🎯 Вероятности"):
+        if probability_state is not None:
+            st.json(probability_state)
+        else:
+            st.write("Дополнительные вероятности отсутствуют.")
 
-        if value is None:
-            continue
+    # ---------------------------------------------------------
+    # SCORE DISTRIBUTION
+    # ---------------------------------------------------------
 
-        with st.expander(title):
+    score_distribution = prediction.get("score_distribution")
 
-            if isinstance(
-                value,
-                dict,
-            ):
+    with st.expander("⚽ Распределение счетов"):
+        if score_distribution is not None:
+            st.json(score_distribution)
+        else:
+            st.write("Распределение счетов отсутствует.")
 
-                st.json(value)
+    # ---------------------------------------------------------
+    # CORNERS DETAILS
+    # ---------------------------------------------------------
 
-            else:
+    with st.expander("🚩 Угловые"):
+        if corners is not None:
+            st.json(corners)
+        else:
+            st.write("Данные по угловым отсутствуют.")
 
-                st.write(value)
+    # ---------------------------------------------------------
+    # CARDS DETAILS
+    # ---------------------------------------------------------
 
-    # ========================================================
-    # 6. CONFIDENCE / RISK
-    # ========================================================
+    with st.expander("🟨 Карточки"):
+        if cards is not None:
+            st.json(cards)
+        else:
+            st.write("Данные по карточкам отсутствуют.")
 
-    st.subheader(
-        "6. Confidence / Risk"
-    )
+    # ---------------------------------------------------------
+    # TECHNICAL DIAGNOSTICS
+    # ---------------------------------------------------------
 
-    c1, c2 = st.columns(2)
+    diagnostics = prediction.get("diagnostics")
+    errors = prediction.get("errors")
 
-    with c1:
-
-        st.metric(
-            "Confidence",
-            "—",
-        )
-
-    with c2:
-
-        st.metric(
-            "Risk",
-            "—",
-        )
-
-    st.caption(
-        "В Brain v4.0 Confidence и Risk "
-        "пока архитектурно "
-        "не рассчитываются."
-    )
-
-    # ========================================================
-    # 7. PRIMARY SCENARIO
-    # ========================================================
-
-    st.subheader(
-        "7. Primary Scenario"
-    )
-
-    primary_scenario = prediction.get(
-        "primary_scenario"
-    )
-
-    st.info(
-        str(
-            primary_scenario
-            if primary_scenario is not None
-            else "—"
-        )
-    )
-
-    # ========================================================
-    # 8. BRAIN DIAGNOSTICS
-    # ========================================================
-
-    st.subheader(
-        "8. FAJ Brain Diagnostics"
-    )
-
-    if diagnostics:
-
-        with st.expander(
-            "Контракт Brain"
-        ):
-
+    with st.expander("🔧 Техническая диагностика"):
+        if diagnostics is not None:
             st.json(diagnostics)
 
-    if errors:
+        if errors:
+            st.write("**Ошибки/предупреждения модулей:**")
+            st.json(errors)
 
-        with st.expander(
-            "⚠️ Ошибки / предупреждения"
-        ):
+        if diagnostics is None and not errors:
+            st.write("Технических диагностических данных нет.")
 
-            for error in errors:
+    # ---------------------------------------------------------
+    # RAW JSON
+    # ---------------------------------------------------------
 
-                st.warning(
-                    str(error)
-                )
-
-    else:
-
-        st.success(
-            "FAJ Brain завершил расчёт "
-            "без зарегистрированных ошибок."
-        )
+    with st.expander("JSON"):
+        st.json(prediction)
 
 
 # ============================================================
