@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ PLATFORM v12.1
-FORM CONTEXT v1.7
+FORM CONTEXT v1.8
 ============================================================
 
 НАЗНАЧЕНИЕ
@@ -157,6 +157,37 @@ VERSION 1.7
     - Все истории синхронизированы по одной временной оси (старый → новый)
     - None не заменяется на 0
     - Средние считаются только по доступным значениям
+
+============================================================
+VERSION 1.8
+============================================================
+
+Изменения:
+
+    - Расширен MatchContext статистикой контроля:
+        possession
+        passes
+        pass accuracy
+        crosses
+        throw-ins
+        offsides
+        shots
+        big chances
+
+    - Добавлены парные значения:
+        команда / соперник
+
+    - Добавлены синхронные истории для FormControl
+
+    - Поддерживается несколько возможных структур
+      historical record / statistics
+
+    - None не заменяется на 0
+
+    - Статистика не влияет на xG, GoalModel,
+      ProbabilityModel или Prediction
+
+    - FormContext остаётся только FACT/context layer
 ============================================================
 """
 
@@ -170,7 +201,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 # VERSION
 # ============================================================
 
-FORM_CONTEXT_VERSION = "1.7"
+FORM_CONTEXT_VERSION = "1.8"
 
 DEFAULT_MATCH_LIMIT = 6
 
@@ -270,6 +301,141 @@ def _get_value(
 
         except AttributeError:
             pass
+
+    return None
+
+
+def _get_stat_value(
+    record: Any,
+    metric_names: Tuple[str, ...],
+    side: str,
+) -> Any:
+    """
+    Извлекает статистику конкретной стороны матча.
+
+    Поддерживает:
+
+        home_possession / away_possession
+
+        possession = {
+            "home": ...,
+            "away": ...
+        }
+
+        statistics = {
+            "possession": {
+                "home": ...,
+                "away": ...
+            }
+        }
+
+    None остаётся None.
+    """
+
+    if record is None:
+        return None
+
+    side = str(side).strip().lower()
+
+    if side not in ("home", "away"):
+        return None
+
+    # --------------------------------------------------------
+    # 1. Прямые поля
+    # --------------------------------------------------------
+
+    for metric in metric_names:
+
+        candidates = (
+            f"{side}_{metric}",
+            f"{metric}_{side}",
+        )
+
+        for key in candidates:
+
+            value = _get_value(
+                record,
+                key,
+            )
+
+            if value is not None:
+                return value
+
+    # --------------------------------------------------------
+    # 2. Контейнеры statistics / stats
+    # --------------------------------------------------------
+
+    containers = []
+
+    for container_name in (
+        "statistics",
+        "stats",
+        "match_statistics",
+        "match_stats",
+    ):
+
+        container = _get_value(
+            record,
+            container_name,
+        )
+
+        if isinstance(container, dict):
+            containers.append(container)
+
+    # Сам record также может содержать:
+    # possession = {"home": ..., "away": ...}
+
+    if isinstance(record, dict):
+        containers.append(record)
+
+    else:
+
+        try:
+            if hasattr(record, "keys"):
+                containers.append(
+                    {
+                        key: record[key]
+                        for key in record.keys()
+                    }
+                )
+        except (AttributeError, TypeError):
+            pass
+
+    # --------------------------------------------------------
+    # 3. metric -> {home, away}
+    # --------------------------------------------------------
+
+    for container in containers:
+
+        for metric in metric_names:
+
+            value = container.get(metric)
+
+            if not isinstance(value, dict):
+                continue
+
+            if side in value:
+                return value[side]
+
+            if side == "home":
+
+                for key in (
+                    "home",
+                    "h",
+                    "host",
+                ):
+                    if key in value:
+                        return value[key]
+
+            else:
+
+                for key in (
+                    "away",
+                    "a",
+                    "guest",
+                ):
+                    if key in value:
+                        return value[key]
 
     return None
 
@@ -521,6 +687,34 @@ class MatchContext:
     team_cards: Optional[int] = None
 
     opponent_cards: Optional[int] = None
+
+    # --------------------------------------------------------
+    # MATCH STATISTICS — CONTROL
+    # --------------------------------------------------------
+
+    possession: Optional[float] = None
+    opponent_possession: Optional[float] = None
+
+    passes: Optional[float] = None
+    opponent_passes: Optional[float] = None
+
+    pass_accuracy: Optional[float] = None
+    opponent_pass_accuracy: Optional[float] = None
+
+    crosses: Optional[float] = None
+    opponent_crosses: Optional[float] = None
+
+    throw_ins: Optional[float] = None
+    opponent_throw_ins: Optional[float] = None
+
+    offsides: Optional[float] = None
+    opponent_offsides: Optional[float] = None
+
+    shots: Optional[float] = None
+    opponent_shots: Optional[float] = None
+
+    big_chances: Optional[float] = None
+    opponent_big_chances: Optional[float] = None
 
     # --------------------------------------------------------
     # Difficulty
@@ -874,6 +1068,370 @@ def build_match_context(
         )
 
     # --------------------------------------------------------
+    # MATCH STATISTICS — CONTROL
+    # --------------------------------------------------------
+
+    home_possession = _safe_float(
+        _get_stat_value(
+            record,
+            (
+                "possession",
+                "possession_pct",
+                "possession_percent",
+            ),
+            "home",
+        )
+    )
+
+    away_possession = _safe_float(
+        _get_stat_value(
+            record,
+            (
+                "possession",
+                "possession_pct",
+                "possession_percent",
+            ),
+            "away",
+        )
+    )
+
+    home_passes = _safe_float(
+        _get_stat_value(
+            record,
+            (
+                "passes",
+                "total_passes",
+                "pass_count",
+            ),
+            "home",
+        )
+    )
+
+    away_passes = _safe_float(
+        _get_stat_value(
+            record,
+            (
+                "passes",
+                "total_passes",
+                "pass_count",
+            ),
+            "away",
+        )
+    )
+
+    home_accuracy = _safe_float(
+        _get_stat_value(
+            record,
+            (
+                "pass_accuracy",
+                "passing_accuracy",
+                "accuracy",
+                "pass_accuracy_pct",
+            ),
+            "home",
+        )
+    )
+
+    away_accuracy = _safe_float(
+        _get_stat_value(
+            record,
+            (
+                "pass_accuracy",
+                "passing_accuracy",
+                "accuracy",
+                "pass_accuracy_pct",
+            ),
+            "away",
+        )
+    )
+
+    home_crosses = _safe_float(
+        _get_stat_value(
+            record,
+            (
+                "crosses",
+                "crosses_total",
+            ),
+            "home",
+        )
+    )
+
+    away_crosses = _safe_float(
+        _get_stat_value(
+            record,
+            (
+                "crosses",
+                "crosses_total",
+            ),
+            "away",
+        )
+    )
+
+    home_throw_ins = _safe_float(
+        _get_stat_value(
+            record,
+            (
+                "throw_ins",
+                "throwins",
+                "throw_in",
+            ),
+            "home",
+        )
+    )
+
+    away_throw_ins = _safe_float(
+        _get_stat_value(
+            record,
+            (
+                "throw_ins",
+                "throwins",
+                "throw_in",
+            ),
+            "away",
+        )
+    )
+
+    home_offsides = _safe_float(
+        _get_stat_value(
+            record,
+            (
+                "offsides",
+                "offside",
+            ),
+            "home",
+        )
+    )
+
+    away_offsides = _safe_float(
+        _get_stat_value(
+            record,
+            (
+                "offsides",
+                "offside",
+            ),
+            "away",
+        )
+    )
+
+    home_shots = _safe_float(
+        _get_stat_value(
+            record,
+            (
+                "shots",
+                "total_shots",
+                "shots_total",
+            ),
+            "home",
+        )
+    )
+
+    away_shots = _safe_float(
+        _get_stat_value(
+            record,
+            (
+                "shots",
+                "total_shots",
+                "shots_total",
+            ),
+            "away",
+        )
+    )
+
+    home_big_chances = _safe_float(
+        _get_stat_value(
+            record,
+            (
+                "big_chances",
+                "big_chances_created",
+                "big_chances_total",
+            ),
+            "home",
+        )
+    )
+
+    away_big_chances = _safe_float(
+        _get_stat_value(
+            record,
+            (
+                "big_chances",
+                "big_chances_created",
+                "big_chances_total",
+            ),
+            "away",
+        )
+    )
+
+    # --------------------------------------------------------
+    # TEAM / OPPONENT ORIENTATION
+    # --------------------------------------------------------
+
+    if is_home:
+
+        possession = home_possession
+        opponent_possession = away_possession
+
+        passes = home_passes
+        opponent_passes = away_passes
+
+        pass_accuracy = home_accuracy
+        opponent_pass_accuracy = away_accuracy
+
+        crosses = home_crosses
+        opponent_crosses = away_crosses
+
+        throw_ins = home_throw_ins
+        opponent_throw_ins = away_throw_ins
+
+        offsides = home_offsides
+        opponent_offsides = away_offsides
+
+        shots = home_shots
+        opponent_shots = away_shots
+
+        big_chances = home_big_chances
+        opponent_big_chances = away_big_chances
+
+    elif is_away:
+
+        possession = away_possession
+        opponent_possession = home_possession
+
+        passes = away_passes
+        opponent_passes = home_passes
+
+        pass_accuracy = away_accuracy
+        opponent_pass_accuracy = home_accuracy
+
+        crosses = away_crosses
+        opponent_crosses = home_crosses
+
+        throw_ins = away_throw_ins
+        opponent_throw_ins = home_throw_ins
+
+        offsides = away_offsides
+        opponent_offsides = home_offsides
+
+        shots = away_shots
+        opponent_shots = home_shots
+
+        big_chances = away_big_chances
+        opponent_big_chances = home_big_chances
+
+    else:
+
+        possession = _safe_float(
+            _get_value(
+                record,
+                "team_possession",
+            )
+        )
+
+        opponent_possession = _safe_float(
+            _get_value(
+                record,
+                "opponent_possession",
+            )
+        )
+
+        passes = _safe_float(
+            _get_value(
+                record,
+                "team_passes",
+            )
+        )
+
+        opponent_passes = _safe_float(
+            _get_value(
+                record,
+                "opponent_passes",
+            )
+        )
+
+        pass_accuracy = _safe_float(
+            _get_value(
+                record,
+                "team_pass_accuracy",
+            )
+        )
+
+        opponent_pass_accuracy = _safe_float(
+            _get_value(
+                record,
+                "opponent_pass_accuracy",
+            )
+        )
+
+        crosses = _safe_float(
+            _get_value(
+                record,
+                "team_crosses",
+            )
+        )
+
+        opponent_crosses = _safe_float(
+            _get_value(
+                record,
+                "opponent_crosses",
+            )
+        )
+
+        throw_ins = _safe_float(
+            _get_value(
+                record,
+                "team_throw_ins",
+            )
+        )
+
+        opponent_throw_ins = _safe_float(
+            _get_value(
+                record,
+                "opponent_throw_ins",
+            )
+        )
+
+        offsides = _safe_float(
+            _get_value(
+                record,
+                "team_offsides",
+            )
+        )
+
+        opponent_offsides = _safe_float(
+            _get_value(
+                record,
+                "opponent_offsides",
+            )
+        )
+
+        shots = _safe_float(
+            _get_value(
+                record,
+                "team_shots",
+            )
+        )
+
+        opponent_shots = _safe_float(
+            _get_value(
+                record,
+                "opponent_shots",
+            )
+        )
+
+        big_chances = _safe_float(
+            _get_value(
+                record,
+                "team_big_chances",
+            )
+        )
+
+        opponent_big_chances = _safe_float(
+            _get_value(
+                record,
+                "opponent_big_chances",
+            )
+        )
+
+    # --------------------------------------------------------
     # Difficulty
     # --------------------------------------------------------
 
@@ -902,6 +1460,35 @@ def build_match_context(
         corners_against=corners_against,
         team_cards=team_cards,
         opponent_cards=opponent_cards,
+
+        # ----------------------------------------------------
+        # CONTROL STATISTICS
+        # ----------------------------------------------------
+
+        possession=possession,
+        opponent_possession=opponent_possession,
+
+        passes=passes,
+        opponent_passes=opponent_passes,
+
+        pass_accuracy=pass_accuracy,
+        opponent_pass_accuracy=opponent_pass_accuracy,
+
+        crosses=crosses,
+        opponent_crosses=opponent_crosses,
+
+        throw_ins=throw_ins,
+        opponent_throw_ins=opponent_throw_ins,
+
+        offsides=offsides,
+        opponent_offsides=opponent_offsides,
+
+        shots=shots,
+        opponent_shots=opponent_shots,
+
+        big_chances=big_chances,
+        opponent_big_chances=opponent_big_chances,
+
         difficulty=difficulty,
     )
 
@@ -999,6 +1586,33 @@ def build_form_context(
     team_cards_history: List[Optional[int]] = []
     opponent_cards_history: List[Optional[int]] = []
 
+    # --------------------------------------------------------
+    # CONTROL STATISTICS HISTORY
+    # --------------------------------------------------------
+    possession_history: List[Optional[float]] = []
+    opponent_possession_history: List[Optional[float]] = []
+
+    passes_history: List[Optional[float]] = []
+    opponent_passes_history: List[Optional[float]] = []
+
+    pass_accuracy_history: List[Optional[float]] = []
+    opponent_pass_accuracy_history: List[Optional[float]] = []
+
+    crosses_history: List[Optional[float]] = []
+    opponent_crosses_history: List[Optional[float]] = []
+
+    throw_ins_history: List[Optional[float]] = []
+    opponent_throw_ins_history: List[Optional[float]] = []
+
+    offsides_history: List[Optional[float]] = []
+    opponent_offsides_history: List[Optional[float]] = []
+
+    shots_history: List[Optional[float]] = []
+    shots_conceded_history: List[Optional[float]] = []
+
+    big_chances_history: List[Optional[float]] = []
+    big_chances_against_history: List[Optional[float]] = []
+
     # ========================================================
     # DERIVED NUMERIC COLLECTIONS
     # ========================================================
@@ -1053,6 +1667,74 @@ def build_form_context(
         corners_against_history.append(match.corners_against)
         team_cards_history.append(match.team_cards)
         opponent_cards_history.append(match.opponent_cards)
+
+        # ----------------------------------------------------
+        # CONTROL STATISTICS HISTORY
+        # ----------------------------------------------------
+
+        possession_history.append(
+            match.possession
+        )
+
+        opponent_possession_history.append(
+            match.opponent_possession
+        )
+
+        passes_history.append(
+            match.passes
+        )
+
+        opponent_passes_history.append(
+            match.opponent_passes
+        )
+
+        pass_accuracy_history.append(
+            match.pass_accuracy
+        )
+
+        opponent_pass_accuracy_history.append(
+            match.opponent_pass_accuracy
+        )
+
+        crosses_history.append(
+            match.crosses
+        )
+
+        opponent_crosses_history.append(
+            match.opponent_crosses
+        )
+
+        throw_ins_history.append(
+            match.throw_ins
+        )
+
+        opponent_throw_ins_history.append(
+            match.opponent_throw_ins
+        )
+
+        offsides_history.append(
+            match.offsides
+        )
+
+        opponent_offsides_history.append(
+            match.opponent_offsides
+        )
+
+        shots_history.append(
+            match.shots
+        )
+
+        shots_conceded_history.append(
+            match.opponent_shots
+        )
+
+        big_chances_history.append(
+            match.big_chances
+        )
+
+        big_chances_against_history.append(
+            match.opponent_big_chances
+        )
 
         # ----------------------------------------------------
         # HOME / AWAY COUNTS
@@ -1325,6 +2007,66 @@ def build_form_context(
         ),
         "opponent_cards_history": tuple(
             opponent_cards_history
+        ),
+
+        # ====================================================
+        # FORM CONTROL HISTORY
+        # ====================================================
+
+        "possession_history": tuple(
+            possession_history
+        ),
+        "opponent_possession_history": tuple(
+            opponent_possession_history
+        ),
+
+        "passes_history": tuple(
+            passes_history
+        ),
+        "opponent_passes_history": tuple(
+            opponent_passes_history
+        ),
+
+        "pass_accuracy_history": tuple(
+            pass_accuracy_history
+        ),
+        "opponent_pass_accuracy_history": tuple(
+            opponent_pass_accuracy_history
+        ),
+
+        "crosses_history": tuple(
+            crosses_history
+        ),
+        "opponent_crosses_history": tuple(
+            opponent_crosses_history
+        ),
+
+        "throw_ins_history": tuple(
+            throw_ins_history
+        ),
+        "opponent_throw_ins_history": tuple(
+            opponent_throw_ins_history
+        ),
+
+        "offsides_history": tuple(
+            offsides_history
+        ),
+        "opponent_offsides_history": tuple(
+            opponent_offsides_history
+        ),
+
+        "shots_history": tuple(
+            shots_history
+        ),
+        "shots_conceded_history": tuple(
+            shots_conceded_history
+        ),
+
+        "big_chances_history": tuple(
+            big_chances_history
+        ),
+        "big_chances_against_history": tuple(
+            big_chances_against_history
         ),
 
         # ====================================================
