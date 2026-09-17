@@ -2,234 +2,736 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ PLATFORM — FORM CONTROL v1.1
+============================================================
+FAJ PLATFORM v12.1
+FORM CONTROL v1.2
+============================================================
 
-Назначение:
-    Измерить контроль игры через владение, пасы, точность,
-    прогрессию (навесы, ауты, офсайды) и давление (удары, большие моменты).
+МАТЕМАТИЧЕСКИЙ ОРГАН FAJ
+
+Назначение
+----------
+
+FormControl измеряет evidence контроля команды по фактам
+последних матчей.
+
+FormControl = CONTROL EVIDENCE ORGAN
+
+Он измеряет:
+
+    Control
+        ├── possession
+        ├── passes
+        └── pass accuracy
+
+    Progression
+        ├── crosses
+        ├── throw-ins
+        └── offsides
+
+    Pressure
+        ├── shots
+        └── big chances
+
+Corners являются отдельным диагностическим сигналом.
 
 Архитектура:
-    FormContext → FormControl → ControlSignal
 
-Принципы:
-    - None ≠ 0
-    - RESEARCH PARAMETERS
-    - Компонент независим от FormWin и GoalModel
-    - Сигнал ограничен через tanh
-    - Явный target_team
+    FormContext
+        ↓
+    FormControl
+        ↓
+    ControlResult
+        ↓
+    FAJBrain / AnalysisEngine
 
-Формула v1.1:
-    1. Три блока: Control, Progression, Pressure
-    2. ControlRaw = 0.50*Control + 0.25*Progression + 0.25*Pressure
-    3. ControlSignal = tanh(ControlRaw)
-    4. Учёт собственной нормы: 65% vs соперник + 35% vs норма (с std)
-    5. Затухающий вес для 6 матчей: [0.08, 0.10, 0.13, 0.18, 0.23, 0.28]
-    6. Corners — только диагностический сигнал (не влияет на ControlRaw)
+FormControl НЕ:
+
+    - прогнозирует победителя;
+    - выбирает HOME/AWAY/DRAW;
+    - рассчитывает вероятность;
+    - рассчитывает Poisson;
+    - изменяет GoalModel;
+    - изменяет ProbabilityModel;
+    - изменяет ScorePredictor;
+    - зависит от FormWin;
+    - изменяет xG;
+    - изменяет Rating;
+    - обращается к SQLite;
+    - обращается к Soccer365;
+    - использует будущий результат.
+
+Главный принцип:
+
+    ControlSignal = evidence
+
+Это НЕ:
+
+    probability
+    confidence
+    winner prediction
+
+None != 0
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, asdict
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import asdict, dataclass, field
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
 
 # ============================================================
 # VERSION
 # ============================================================
 
-FORM_CONTROL_VERSION = "1.1"
+FORM_CONTROL_VERSION = "1.2"
 FORMULA_STATUS = "RESEARCH_FORMULA"
 
+EPSILON = 1e-9
+
+
 # ============================================================
-# RESEARCH PARAMETERS
+# TEMPORAL WEIGHTS
+#
+# История FormContext:
+#
+# oldest → newest
+#
+# Последний матч получает максимальный вес.
 # ============================================================
 
-# Блок Control (контроль)
+TEMPORAL_WEIGHTS: Tuple[float, ...] = (
+    0.08,
+    0.10,
+    0.13,
+    0.18,
+    0.23,
+    0.28,
+)
+
+
+# ============================================================
+# INTERNAL RESEARCH PARAMETERS
+#
+# Эти веса относятся только к FormControl.
+#
+# Они НЕ являются:
+#   - Winner weights;
+#   - GoalModel multipliers;
+#   - Probability weights;
+#   - Confidence weights;
+#   - Risk weights.
+# ============================================================
+
 CONTROL_POSSESSION_WEIGHT = 0.40
 CONTROL_PASSES_WEIGHT = 0.35
 CONTROL_ACCURACY_WEIGHT = 0.25
 
-# Блок Progression (прогрессия)
 PROGRESSION_CROSSES_WEIGHT = 0.40
 PROGRESSION_THROWINS_WEIGHT = 0.35
 PROGRESSION_OFFSIDES_WEIGHT = 0.25
 
-# Блок Pressure (давление)
 PRESSURE_SHOTS_WEIGHT = 0.60
 PRESSURE_BIG_CHANCES_WEIGHT = 0.40
 
-# Итоговый ControlRaw
 CONTROL_WEIGHT = 0.50
 PROGRESSION_WEIGHT = 0.25
 PRESSURE_WEIGHT = 0.25
 
-# Сравнение с собственной нормой
 OPPONENT_WEIGHT = 0.65
 SELF_WEIGHT = 0.35
 
-# SelfSignal: коэффициент и baseline
-SELF_K = 2.0  # RESEARCH PARAMETER
-SELF_EPS = 0.01
-SELF_BASELINE_STD = 0.15  # если std недоступен
+SELF_K = 2.0
 
-# Веса для временного затухания (M1 → M6)
-TEMPORAL_WEIGHTS: Tuple[float, ...] = (0.08, 0.10, 0.13, 0.18, 0.23, 0.28)
-
-# Максимальное влияние ControlSignal на Brain
-MAX_CONTROL_INFLUENCE = 0.05  # ±5%
+# ============================================================
+# ВАЖНО:
+#
+# MAX_CONTROL_INFLUENCE удалён.
+#
+# FormControl не должен заранее диктовать Brain:
+# "влияние только ±5%".
+#
+# Brain/AnalysisEngine сам решает, как интерпретировать
+# evidence в общей системе.
+# ============================================================
 
 
 # ============================================================
 # HELPERS
 # ============================================================
 
-def _safe_float(value: Any) -> Optional[float]:
-    """Безопасное преобразование в float. None остаётся None."""
+def _safe_float(
+    value: Any,
+) -> Optional[float]:
+    """
+    Безопасное преобразование в float.
+
+    None остаётся None.
+    """
+
     if value is None:
         return None
+
+    if isinstance(value, bool):
+        return None
+
     try:
         result = float(value)
-        if not math.isfinite(result):
-            return None
-        return result
     except (TypeError, ValueError):
         return None
 
+    if not math.isfinite(result):
+        return None
 
-def _mean(values: List[Optional[float]]) -> Optional[float]:
-    """Среднее арифметическое. None исключаются."""
-    clean = [v for v in values if v is not None]
+    return result
+
+
+def _get_value(
+    obj: Any,
+    *names: str,
+) -> Any:
+    """
+    Читает значение из:
+
+        dict
+        mapping-like object
+        dataclass/object
+
+    Позволяет FormControl работать с текущим FormContext
+    без создания нового schema.
+    """
+
+    if obj is None:
+        return None
+
+    for name in names:
+
+        if isinstance(obj, dict) and name in obj:
+            return obj[name]
+
+        try:
+            keys = obj.keys()
+
+            if name in keys:
+                return obj[name]
+
+        except (AttributeError, TypeError):
+            pass
+
+        try:
+            return getattr(obj, name)
+
+        except AttributeError:
+            pass
+
+    return None
+
+
+def _clamp(
+    value: float,
+    low: float = -1.0,
+    high: float = 1.0,
+) -> float:
+    return max(
+        low,
+        min(high, value),
+    )
+
+
+def _mean(
+    values: Sequence[Optional[float]],
+) -> Optional[float]:
+    """
+    Среднее только по существующим значениям.
+    """
+
+    clean = [
+        value
+        for value in values
+        if value is not None
+    ]
+
     if not clean:
         return None
+
     return sum(clean) / len(clean)
 
 
-def _std(values: List[Optional[float]]) -> Optional[float]:
-    """Стандартное отклонение. None исключаются."""
-    clean = [v for v in values if v is not None]
-    if len(clean) < 2:
-        return None
-    mean_val = sum(clean) / len(clean)
-    variance = sum((v - mean_val) ** 2 for v in clean) / len(clean)
-    return math.sqrt(variance)
-
-
-def _weighted_advantage(
-    home_values: List[Optional[float]],
-    away_values: List[Optional[float]],
-    weights: Tuple[float, ...] = TEMPORAL_WEIGHTS,
+def _std(
+    values: Sequence[Optional[float]],
 ) -> Optional[float]:
     """
-    Вычисляет взвешенное преимущество с затуханием.
-    
-    Вес принадлежит матчу, а не позиции после удаления None.
+    Population standard deviation.
+
+    None исключаются.
     """
-    if not home_values or not away_values:
+
+    clean = [
+        value
+        for value in values
+        if value is not None
+    ]
+
+    if len(clean) < 2:
         return None
-    
-    # Берём последние 6
-    home = home_values[:6]
-    away = away_values[:6]
-    
-    weighted_sum = 0.0
+
+    mean_value = sum(clean) / len(clean)
+
+    variance = (
+        sum(
+            (value - mean_value) ** 2
+            for value in clean
+        )
+        / len(clean)
+    )
+
+    return math.sqrt(
+        variance
+    )
+
+
+def _weighted_mean(
+    values: Sequence[Optional[float]],
+    weights: Sequence[float] = TEMPORAL_WEIGHTS,
+) -> Optional[float]:
+    """
+    Взвешенное среднее.
+
+    Веса принадлежат исходным позициям матчей.
+
+    None:
+        - не получает вес;
+        - не входит в denominator.
+    """
+
+    pairs: List[Tuple[float, float]] = []
+
+    for index, value in enumerate(values):
+
+        if index >= len(weights):
+            break
+
+        numeric = _safe_float(
+            value
+        )
+
+        if numeric is None:
+            continue
+
+        weight = float(
+            weights[index]
+        )
+
+        if weight <= EPSILON:
+            continue
+
+        pairs.append(
+            (
+                numeric,
+                weight,
+            )
+        )
+
+    if not pairs:
+        return None
+
+    denominator = sum(
+        weight
+        for _, weight in pairs
+    )
+
+    if denominator <= EPSILON:
+        return None
+
+    return (
+        sum(
+            value * weight
+            for value, weight in pairs
+        )
+        / denominator
+    )
+
+
+def _weighted_pair_advantage(
+    target_values: Sequence[Optional[float]],
+    opponent_values: Sequence[Optional[float]],
+    weights: Sequence[float] = TEMPORAL_WEIGHTS,
+) -> Optional[float]:
+    """
+    Взвешенное относительное преимущество target относительно
+    opponent.
+
+    Formula:
+
+        A = (target - opponent)
+            / (abs(target) + abs(opponent))
+
+    Результат:
+
+        [-1, +1]
+
+    Это symmetric bounded evidence.
+
+    Важное отличие от старой версии:
+
+        denominator никогда не использует
+        target + opponent.
+
+    Поэтому корректно работает и для нулевых значений.
+    """
+
+    if not target_values:
+        return None
+
+    if not opponent_values:
+        return None
+
     total_weight = 0.0
-    
-    for i, (h, a) in enumerate(zip(home, away)):
-        if h is not None and a is not None:
-            total = h + a
-            if total != 0:
-                weight = weights[i] if i < len(weights) else 0.0
-                advantage = (h - a) / total
-                weighted_sum += weight * advantage
-                total_weight += weight
-    
-    if total_weight == 0:
+    weighted_sum = 0.0
+
+    limit = min(
+        len(target_values),
+        len(opponent_values),
+        len(weights),
+        6,
+    )
+
+    for index in range(limit):
+
+        target = _safe_float(
+            target_values[index]
+        )
+
+        opponent = _safe_float(
+            opponent_values[index]
+        )
+
+        if (
+            target is None
+            or opponent is None
+        ):
+            continue
+
+        denominator = (
+            abs(target)
+            + abs(opponent)
+        )
+
+        # Оба значения действительно равны нулю.
+        # Это не преимущество ни одной стороны.
+        if denominator <= EPSILON:
+            advantage = 0.0
+
+        else:
+            advantage = (
+                target - opponent
+            ) / denominator
+
+        weight = float(
+            weights[index]
+        )
+
+        if weight <= EPSILON:
+            continue
+
+        weighted_sum += (
+            weight * advantage
+        )
+
+        total_weight += weight
+
+    if total_weight <= EPSILON:
         return None
-    
-    return weighted_sum / total_weight
+
+    return _clamp(
+        weighted_sum / total_weight
+    )
 
 
 def _weighted_possession_advantage(
-    home_values: List[Optional[float]],
-    away_values: List[Optional[float]],
-    weights: Tuple[float, ...] = TEMPORAL_WEIGHTS,
+    target_values: Sequence[Optional[float]],
+    opponent_values: Sequence[Optional[float]],
+    weights: Sequence[float] = TEMPORAL_WEIGHTS,
 ) -> Optional[float]:
     """
-    Вычисляет взвешенное преимущество во владении.
-    
-    Formula: D_possession = (possession - 50) / 50
+    Преимущество во владении.
+
+    Formula:
+
+        (target - opponent) / 100
+
+    При нормальном футбольном владении:
+
+        55% vs 45%
+            ↓
+        +0.10
+
+        45% vs 55%
+            ↓
+        -0.10
     """
-    if not home_values or not away_values:
+
+    if not target_values:
         return None
-    
-    home = home_values[:6]
-    away = away_values[:6]
-    
-    weighted_sum = 0.0
+
+    if not opponent_values:
+        return None
+
     total_weight = 0.0
-    
-    for i, (h, a) in enumerate(zip(home, away)):
-        if h is not None and a is not None:
-            weight = weights[i] if i < len(weights) else 0.0
-            h_norm = (h - 50.0) / 50.0
-            a_norm = (a - 50.0) / 50.0
-            advantage = h_norm - a_norm
-            weighted_sum += weight * advantage
-            total_weight += weight
-    
-    if total_weight == 0:
+    weighted_sum = 0.0
+
+    limit = min(
+        len(target_values),
+        len(opponent_values),
+        len(weights),
+        6,
+    )
+
+    for index in range(limit):
+
+        target = _safe_float(
+            target_values[index]
+        )
+
+        opponent = _safe_float(
+            opponent_values[index]
+        )
+
+        if (
+            target is None
+            or opponent is None
+        ):
+            continue
+
+        advantage = (
+            target - opponent
+        ) / 100.0
+
+        weight = float(
+            weights[index]
+        )
+
+        if weight <= EPSILON:
+            continue
+
+        weighted_sum += (
+            weight * advantage
+        )
+
+        total_weight += weight
+
+    if total_weight <= EPSILON:
         return None
-    
-    return weighted_sum / total_weight
+
+    return _clamp(
+        weighted_sum / total_weight
+    )
 
 
 def _weighted_accuracy_advantage(
-    home_values: List[Optional[float]],
-    away_values: List[Optional[float]],
-    weights: Tuple[float, ...] = TEMPORAL_WEIGHTS,
+    target_values: Sequence[Optional[float]],
+    opponent_values: Sequence[Optional[float]],
+    weights: Sequence[float] = TEMPORAL_WEIGHTS,
 ) -> Optional[float]:
     """
-    Вычисляет взвешенное преимущество в точности пасов.
-    
-    Formula: D_accuracy = (home - away) / 100
+    Преимущество точности пасов.
+
+    Formula:
+
+        (target - opponent) / 100
     """
-    if not home_values or not away_values:
+
+    if not target_values:
         return None
-    
-    home = home_values[:6]
-    away = away_values[:6]
-    
-    weighted_sum = 0.0
+
+    if not opponent_values:
+        return None
+
     total_weight = 0.0
-    
-    for i, (h, a) in enumerate(zip(home, away)):
-        if h is not None and a is not None:
-            weight = weights[i] if i < len(weights) else 0.0
-            advantage = (h - a) / 100.0
-            weighted_sum += weight * advantage
-            total_weight += weight
-    
-    if total_weight == 0:
+    weighted_sum = 0.0
+
+    limit = min(
+        len(target_values),
+        len(opponent_values),
+        len(weights),
+        6,
+    )
+
+    for index in range(limit):
+
+        target = _safe_float(
+            target_values[index]
+        )
+
+        opponent = _safe_float(
+            opponent_values[index]
+        )
+
+        if (
+            target is None
+            or opponent is None
+        ):
+            continue
+
+        advantage = (
+            target - opponent
+        ) / 100.0
+
+        weight = float(
+            weights[index]
+        )
+
+        if weight <= EPSILON:
+            continue
+
+        weighted_sum += (
+            weight * advantage
+        )
+
+        total_weight += weight
+
+    if total_weight <= EPSILON:
         return None
-    
-    return weighted_sum / total_weight
+
+    return _clamp(
+        weighted_sum / total_weight
+    )
+
+
+def _weighted_self_state(
+    values: Sequence[Optional[float]],
+    weights: Sequence[float] = TEMPORAL_WEIGHTS,
+) -> Optional[float]:
+    """
+    Последнее взвешенное состояние относительно собственной
+    исторической нормы.
+
+    Formula:
+
+        recent = WeightedMean(history)
+
+        baseline = Mean(history)
+
+        relative =
+            (recent - baseline)
+            / max(abs(baseline), scale)
+
+    Здесь scale определяется самим показателем.
+
+    Это diagnostic evidence, а не абсолютная сила команды.
+    """
+
+    clean = [
+        value
+        for value in values
+        if value is not None
+    ]
+
+    if not clean:
+        return None
+
+    recent = _weighted_mean(
+        values,
+        weights,
+    )
+
+    baseline = _mean(
+        clean
+    )
+
+    if (
+        recent is None
+        or baseline is None
+    ):
+        return None
+
+    scale = max(
+        abs(baseline),
+        1.0,
+    )
+
+    relative = (
+        recent - baseline
+    ) / scale
+
+    return _clamp(
+        math.tanh(relative)
+    )
+
+
+def _combine_optional(
+    components: Sequence[
+        Tuple[Optional[float], float]
+    ],
+) -> Optional[float]:
+    """
+    Взвешенное объединение доступных компонентов.
+
+    Отсутствующий компонент не заменяется нулём.
+    Его вес исключается из denominator.
+    """
+
+    available = [
+        (
+            value,
+            weight,
+        )
+        for value, weight in components
+        if value is not None
+    ]
+
+    if not available:
+        return None
+
+    denominator = sum(
+        weight
+        for _, weight in available
+    )
+
+    if denominator <= EPSILON:
+        return None
+
+    numerator = sum(
+        value * weight
+        for value, weight in available
+    )
+
+    return _clamp(
+        numerator / denominator
+    )
 
 
 def _extract_history(
-    context: Dict[str, Any],
-    field_home: str,
-    field_away: str,
-) -> Tuple[List[Optional[float]], List[Optional[float]]]:
-    """Извлекает историю из FormContext для домашней и гостевой команды."""
-    home_history = context.get(field_home, [])
-    away_history = context.get(field_away, [])
-    
-    if not isinstance(home_history, list):
-        home_history = []
-    if not isinstance(away_history, list):
-        away_history = []
-    
-    return home_history[:6], away_history[:6]
+    context: Any,
+    *names: str,
+) -> List[Optional[float]]:
+    """
+    Извлекает историю из FormContext.
+
+    История предполагается oldest → newest.
+    """
+
+    for name in names:
+
+        value = _get_value(
+            context,
+            name,
+        )
+
+        if value is None:
+            continue
+
+        if isinstance(
+            value,
+            (list, tuple),
+        ):
+            return [
+                _safe_float(item)
+                for item in value[:6]
+            ]
+
+    return []
 
 
 # ============================================================
@@ -238,60 +740,101 @@ def _extract_history(
 
 @dataclass
 class ControlBlock:
-    """Результат одного блока контроля."""
-    raw: Optional[float]
-    normalized: Optional[float]
-    components: Dict[str, Optional[float]]
+    """
+    Результат отдельного блока FormControl.
+    """
 
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+    raw: Optional[float]
+
+    normalized: Optional[float]
+
+    components: Dict[
+        str,
+        Optional[float],
+    ]
+
+    data_quality: Optional[float] = None
+
+    sample_size: int = 0
+
+    def to_dict(
+        self,
+    ) -> Dict[str, Any]:
+
+        return asdict(
+            self
+        )
 
 
 @dataclass
 class ControlResult:
-    """Полный результат FormControl."""
+    """
+    Полное состояние FormControl.
+
+    control_signal:
+        bounded evidence [-1, +1]
+
+    control_strength:
+        |control_signal| [0, 1]
+
+    Это НЕ вероятность.
+    """
+
     version: str
+
     target_team: Optional[str]
+
     opponent_team: Optional[str]
+
     venue: Optional[str]
-    
-    # Итоговый сигнал
-    control_signal: Optional[float]  # [-1, 1]
-    control_strength: Optional[float]  # [0, 1]
-    
-    # Блоки
+
+    control_signal: Optional[float]
+
+    control_strength: Optional[float]
+
     control_block: Optional[ControlBlock]
+
     progression_block: Optional[ControlBlock]
+
     pressure_block: Optional[ControlBlock]
-    
-    # Сравнение с соперником
+
     opponent_signal: Optional[float]
-    
-    # Сравнение с собственной нормой
+
     self_signal: Optional[float]
+
     self_norm: Optional[float]
+
     self_std: Optional[float]
+
     self_z_score: Optional[float]
-    
-    # Диагностические сигналы (не влияют на ControlRaw)
+
     corners_signal: Optional[float]
-    
-    # Сырые компоненты
-    raw_components: Dict[str, Optional[float]]
-    
-    # Мета
+
+    raw_components: Dict[
+        str,
+        Optional[float],
+    ]
+
     formula_status: str
-    diagnostics: Dict[str, Any]
-    
-    def to_dict(self) -> Dict[str, Any]:
-        result = asdict(self)
-        if self.control_block:
-            result["control_block"] = self.control_block.to_dict()
-        if self.progression_block:
-            result["progression_block"] = self.progression_block.to_dict()
-        if self.pressure_block:
-            result["pressure_block"] = self.pressure_block.to_dict()
-        return result
+
+    data_quality: Optional[float]
+
+    sample_size: int
+
+    diagnostics: Dict[
+        str,
+        Any,
+    ] = field(
+        default_factory=dict
+    )
+
+    def to_dict(
+        self,
+    ) -> Dict[str, Any]:
+
+        return asdict(
+            self
+        )
 
 
 # ============================================================
@@ -300,237 +843,551 @@ class ControlResult:
 
 class FormControl:
     """
-    Модель контроля игры v1.1.
-    
-    Вход:
-        FormContext (с историческими данными)
-    
-    Выход:
-        ControlResult с ограниченным сигналом [-1, 1]
-    
-    Принцип:
-        - Не дублирует FormWin
-        - Не рассчитывает xG
-        - Не выдаёт вероятности
-        - Только измеряет контроль
-        - Явный target_team
+    FormControl v1.2.
+
+    Измеряет контроль как отдельный evidence-орган.
+
+    Основная логика:
+
+        opponent evidence
+                +
+        self-state evidence
+                ↓
+        ControlSignal
+
+    Но:
+
+        ControlSignal != winner
+        ControlSignal != probability
+        ControlSignal != confidence
     """
-    
+
     VERSION = FORM_CONTROL_VERSION
+
     FORMULA_STATUS = FORMULA_STATUS
-    
-    def __init__(self) -> None:
-        pass
-    
-    # ============================================================
+
+    def __init__(
+        self,
+        *,
+        temporal_weights: Sequence[
+            float
+        ] = TEMPORAL_WEIGHTS,
+    ) -> None:
+
+        weights = tuple(
+            float(weight)
+            for weight in temporal_weights
+        )
+
+        if not weights:
+            raise ValueError(
+                "temporal_weights must not be empty"
+            )
+
+        if any(
+            weight <= 0.0
+            for weight in weights
+        ):
+            raise ValueError(
+                "temporal_weights must be positive"
+            )
+
+        self.temporal_weights = weights
+
+    # ========================================================
     # PUBLIC API
-    # ============================================================
-    
+    # ========================================================
+
     def analyze(
         self,
-        context: Dict[str, Any],
-        target_team: str,
-        opponent_team: str,
-        venue: str = "home",
+        context: Any,
+        target_team: Optional[str] = None,
+        opponent_team: Optional[str] = None,
+        venue: Optional[str] = None,
     ) -> ControlResult:
         """
-        Анализирует контроль игры для целевой команды.
-        
+        Анализирует контроль target_team.
+
         Parameters
         ----------
-        context : Dict[str, Any]
-            Enriched FormContext с историями
-        target_team : str
-            Команда, для которой считаем сигнал
-        opponent_team : str
-            Команда-соперник
-        venue : str
-            "home" или "away" (для целевой команды)
-        
-        Returns
-        -------
-        ControlResult
-            Результат анализа контроля
+        context:
+            FormContext.
+
+        target_team:
+            Целевая команда.
+
+        opponent_team:
+            Соперник.
+
+        venue:
+            home / away / None.
+
+        Context должен содержать истории:
+
+            team values
+            opponent values
+
+        FormControl не создаёт новый context/schema.
         """
-        # ============================================================
-        # 1. Извлекаем истории
-        # ============================================================
-        
-        home_possession, away_possession = _extract_history(
-            context, "possession_history", "opponent_possession_history"
+
+        # ====================================================
+        # 1. HISTORIES
+        # ====================================================
+
+        target_possession = _extract_history(
+            context,
+            "possession_history",
+            "team_possession_history",
         )
-        home_passes, away_passes = _extract_history(
-            context, "passes_history", "opponent_passes_history"
+
+        opponent_possession = _extract_history(
+            context,
+            "opponent_possession_history",
+            "opponent_possession",
         )
-        home_accuracy, away_accuracy = _extract_history(
-            context, "pass_accuracy_history", "opponent_pass_accuracy_history"
+
+        target_passes = _extract_history(
+            context,
+            "passes_history",
+            "team_passes_history",
         )
-        home_crosses, away_crosses = _extract_history(
-            context, "crosses_history", "opponent_crosses_history"
+
+        opponent_passes = _extract_history(
+            context,
+            "opponent_passes_history",
+            "passes_against_history",
         )
-        home_throwins, away_throwins = _extract_history(
-            context, "throw_ins_history", "opponent_throw_ins_history"
+
+        target_accuracy = _extract_history(
+            context,
+            "pass_accuracy_history",
+            "team_pass_accuracy_history",
         )
-        home_offsides, away_offsides = _extract_history(
-            context, "offsides_history", "opponent_offsides_history"
+
+        opponent_accuracy = _extract_history(
+            context,
+            "opponent_pass_accuracy_history",
+            "pass_accuracy_against_history",
         )
-        home_shots, away_shots = _extract_history(
-            context, "shots_history", "shots_conceded_history"
+
+        target_crosses = _extract_history(
+            context,
+            "crosses_history",
+            "team_crosses_history",
         )
-        home_big_chances, away_big_chances = _extract_history(
-            context, "big_chances_history", "big_chances_against_history"
+
+        opponent_crosses = _extract_history(
+            context,
+            "opponent_crosses_history",
+            "crosses_against_history",
         )
-        home_corners, away_corners = _extract_history(
-            context, "corners_for_history", "corners_against_history"
+
+        target_throwins = _extract_history(
+            context,
+            "throw_ins_history",
+            "team_throw_ins_history",
         )
-        
-        # ============================================================
-        # 2. Вычисляем нормализованные преимущества
-        # ============================================================
-        
-        # Control
-        possession_adv = _weighted_possession_advantage(
-            home_possession, away_possession
+
+        opponent_throwins = _extract_history(
+            context,
+            "opponent_throw_ins_history",
+            "throw_ins_against_history",
         )
-        passes_adv = _weighted_advantage(home_passes, away_passes)
-        accuracy_adv = _weighted_accuracy_advantage(home_accuracy, away_accuracy)
-        
-        # Progression
-        crosses_adv = _weighted_advantage(home_crosses, away_crosses)
-        throwins_adv = _weighted_advantage(home_throwins, away_throwins)
-        offsides_adv = _weighted_advantage(home_offsides, away_offsides)
-        
-        # Pressure
-        shots_adv = _weighted_advantage(home_shots, away_shots)
-        big_chances_adv = _weighted_advantage(home_big_chances, away_big_chances)
-        
-        # Corners (диагностика)
-        corners_adv = _weighted_advantage(home_corners, away_corners)
-        
-        # ============================================================
-        # 3. Собираем компоненты
-        # ============================================================
-        
-        raw_components = {
-            "possession": possession_adv,
-            "passes": passes_adv,
-            "accuracy": accuracy_adv,
-            "crosses": crosses_adv,
-            "throwins": throwins_adv,
-            "offsides": offsides_adv,
-            "shots": shots_adv,
-            "big_chances": big_chances_adv,
-            "corners": corners_adv,
+
+        target_offsides = _extract_history(
+            context,
+            "offsides_history",
+            "team_offsides_history",
+        )
+
+        opponent_offsides = _extract_history(
+            context,
+            "opponent_offsides_history",
+            "offsides_against_history",
+        )
+
+        target_shots = _extract_history(
+            context,
+            "shots_history",
+            "team_shots_history",
+        )
+
+        opponent_shots = _extract_history(
+            context,
+            "shots_conceded_history",
+            "opponent_shots_history",
+            "team_opponent_shots_history",
+        )
+
+        target_big_chances = _extract_history(
+            context,
+            "big_chances_history",
+            "team_big_chances_history",
+        )
+
+        opponent_big_chances = _extract_history(
+            context,
+            "big_chances_against_history",
+            "opponent_big_chances_history",
+        )
+
+        target_corners = _extract_history(
+            context,
+            "corners_history",
+            "team_corners_history",
+            "corners_for_history",
+        )
+
+        opponent_corners = _extract_history(
+            context,
+            "opponent_corners_history",
+            "corners_against_history",
+        )
+
+        # ====================================================
+        # 2. OPPONENT EVIDENCE
+        # ====================================================
+
+        possession_advantage = (
+            _weighted_possession_advantage(
+                target_possession,
+                opponent_possession,
+                self.temporal_weights,
+            )
+        )
+
+        passes_advantage = (
+            _weighted_pair_advantage(
+                target_passes,
+                opponent_passes,
+                self.temporal_weights,
+            )
+        )
+
+        accuracy_advantage = (
+            _weighted_accuracy_advantage(
+                target_accuracy,
+                opponent_accuracy,
+                self.temporal_weights,
+            )
+        )
+
+        crosses_advantage = (
+            _weighted_pair_advantage(
+                target_crosses,
+                opponent_crosses,
+                self.temporal_weights,
+            )
+        )
+
+        throwins_advantage = (
+            _weighted_pair_advantage(
+                target_throwins,
+                opponent_throwins,
+                self.temporal_weights,
+            )
+        )
+
+        offsides_advantage = (
+            _weighted_pair_advantage(
+                target_offsides,
+                opponent_offsides,
+                self.temporal_weights,
+            )
+        )
+
+        shots_advantage = (
+            _weighted_pair_advantage(
+                target_shots,
+                opponent_shots,
+                self.temporal_weights,
+            )
+        )
+
+        big_chances_advantage = (
+            _weighted_pair_advantage(
+                target_big_chances,
+                opponent_big_chances,
+                self.temporal_weights,
+            )
+        )
+
+        corners_advantage = (
+            _weighted_pair_advantage(
+                target_corners,
+                opponent_corners,
+                self.temporal_weights,
+            )
+        )
+
+        # ====================================================
+        # 3. RAW COMPONENTS
+        # ====================================================
+
+        raw_components: Dict[
+            str,
+            Optional[float],
+        ] = {
+
+            "possession": possession_advantage,
+
+            "passes": passes_advantage,
+
+            "accuracy": accuracy_advantage,
+
+            "crosses": crosses_advantage,
+
+            "throwins": throwins_advantage,
+
+            "offsides": offsides_advantage,
+
+            "shots": shots_advantage,
+
+            "big_chances": big_chances_advantage,
+
+            "corners": corners_advantage,
         }
-        
-        # ============================================================
-        # 4. Вычисляем блоки
-        # ============================================================
-        
+
+        # ====================================================
+        # 4. BLOCKS
+        # ====================================================
+
         control_block = self._calculate_control(
-            possession_adv, passes_adv, accuracy_adv
+            possession_advantage,
+            passes_advantage,
+            accuracy_advantage,
         )
-        progression_block = self._calculate_progression(
-            crosses_adv, throwins_adv, offsides_adv
+
+        progression_block = (
+            self._calculate_progression(
+                crosses_advantage,
+                throwins_advantage,
+                offsides_advantage,
+            )
         )
-        pressure_block = self._calculate_pressure(
-            shots_adv, big_chances_adv
+
+        pressure_block = (
+            self._calculate_pressure(
+                shots_advantage,
+                big_chances_advantage,
+            )
         )
-        
-        # ============================================================
-        # 5. Вычисляем ControlRaw
-        # ============================================================
-        
-        control_raw = self._calculate_control_raw(
-            control_block, progression_block, pressure_block
+
+        # ====================================================
+        # 5. CONTROL RAW
+        # ====================================================
+
+        control_raw = (
+            self._calculate_control_raw(
+                control_block,
+                progression_block,
+                pressure_block,
+            )
         )
-        
-        # ============================================================
-        # 6. Применяем tanh
-        # ============================================================
-        
-        control_signal = self._apply_tanh(control_raw)
-        
-        # ============================================================
-        # 7. Сравнение с собственной нормой
-        # ============================================================
-        
-        self_norm, self_std = self._calculate_norm_and_std(
-            home_possession, home_passes, home_accuracy
+
+        # ====================================================
+        # 6. OPPONENT SIGNAL
+        # ====================================================
+
+        opponent_signal = self._apply_tanh(
+            control_raw
         )
-        self_z_score = self._calculate_z_score(
-            home_possession, home_passes, home_accuracy,
-            self_norm, self_std
+
+        # ====================================================
+        # 7. SELF STATE
+        #
+        # Только собственная история target_team.
+        #
+        # Не используем:
+        #   fixed league baseline
+        #   rating
+        #   opponent result
+        #   future result
+        # ====================================================
+
+        self_possession = (
+            _weighted_self_state(
+                target_possession,
+                self.temporal_weights,
+            )
         )
-        self_signal = self._calculate_self_signal(self_z_score)
-        
-        opponent_signal = control_signal
-        
-        # ============================================================
-        # 8. Итоговый сигнал
-        # ============================================================
-        
+
+        self_passes = (
+            _weighted_self_state(
+                target_passes,
+                self.temporal_weights,
+            )
+        )
+
+        self_accuracy = (
+            _weighted_self_state(
+                target_accuracy,
+                self.temporal_weights,
+            )
+        )
+
+        self_signal = _combine_optional(
+            (
+                (
+                    self_possession,
+                    CONTROL_POSSESSION_WEIGHT,
+                ),
+                (
+                    self_passes,
+                    CONTROL_PASSES_WEIGHT,
+                ),
+                (
+                    self_accuracy,
+                    CONTROL_ACCURACY_WEIGHT,
+                ),
+            )
+        )
+
+        if self_signal is not None:
+            self_signal = _clamp(
+                math.tanh(
+                    SELF_K * self_signal
+                )
+            )
+
+        # ====================================================
+        # 8. SELF DIAGNOSTIC VALUES
+        #
+        # Без искусственных baseline 300 / 60 / 50.
+        # ====================================================
+
+        self_norm = self._self_norm(
+            target_possession,
+            target_passes,
+            target_accuracy,
+        )
+
+        self_std = self._self_std(
+            target_possession,
+            target_passes,
+            target_accuracy,
+        )
+
+        self_z_score = self._self_z_score(
+            self_signal,
+            self_std,
+        )
+
+        # ====================================================
+        # 9. FINAL CONTROL EVIDENCE
+        #
+        # opponent evidence 65%
+        # self-state evidence 35%
+        #
+        # Это внутреннее объединение FormControl.
+        # Это НЕ Brain weighting.
+        # ====================================================
+
         final_signal = self._combine_signals(
-            opponent_signal, self_signal
+            opponent_signal,
+            self_signal,
         )
-        
-        # ============================================================
-        # 9. Сила сигнала
-        # ============================================================
-        
-        control_strength = abs(final_signal) if final_signal is not None else None
-        
-        # ============================================================
-        # 10. Диагностика
-        # ============================================================
-        
+
+        if final_signal is not None:
+            final_signal = _clamp(
+                final_signal
+            )
+
+        # ====================================================
+        # 10. STRENGTH
+        # ====================================================
+
+        control_strength = (
+            abs(final_signal)
+            if final_signal is not None
+            else None
+        )
+
+        # ====================================================
+        # 11. QUALITY
+        # ====================================================
+
+        data_quality = self._data_quality(
+            raw_components
+        )
+
+        sample_size = self._sample_size(
+            raw_components
+        )
+
+        # ====================================================
+        # 12. DIAGNOSTICS
+        # ====================================================
+
         diagnostics = self._build_diagnostics(
             raw_components=raw_components,
             control_block=control_block,
             progression_block=progression_block,
             pressure_block=pressure_block,
             control_raw=control_raw,
-            control_signal=control_signal,
             opponent_signal=opponent_signal,
             self_signal=self_signal,
+            final_signal=final_signal,
             self_norm=self_norm,
             self_std=self_std,
             self_z_score=self_z_score,
-            corners_adv=corners_adv,
+            corners_adv=corners_advantage,
             target_team=target_team,
             opponent_team=opponent_team,
             venue=venue,
         )
-        
-        # ============================================================
-        # 11. Возвращаем результат
-        # ============================================================
-        
+
+        # ====================================================
+        # 13. RESULT
+        # ====================================================
+
         return ControlResult(
+
             version=self.VERSION,
+
             target_team=target_team,
+
             opponent_team=opponent_team,
+
             venue=venue,
+
             control_signal=final_signal,
+
             control_strength=control_strength,
+
             control_block=control_block,
+
             progression_block=progression_block,
+
             pressure_block=pressure_block,
+
             opponent_signal=opponent_signal,
+
             self_signal=self_signal,
+
             self_norm=self_norm,
+
             self_std=self_std,
+
             self_z_score=self_z_score,
-            corners_signal=corners_adv,
+
+            corners_signal=corners_advantage,
+
             raw_components=raw_components,
+
             formula_status=self.FORMULA_STATUS,
+
+            data_quality=data_quality,
+
+            sample_size=sample_size,
+
             diagnostics=diagnostics,
         )
-    
-    # ============================================================
-    # BLOCK CALCULATIONS
-    # ============================================================
-    
+
+    # ========================================================
+    # CONTROL BLOCK
+    # ========================================================
+
     def _calculate_control(
         self,
         possession: Optional[float],
@@ -538,52 +1395,64 @@ class FormControl:
         accuracy: Optional[float],
     ) -> Optional[ControlBlock]:
         """
-        Вычисляет блок Control (контроль).
-        
+        Control block.
+
         Formula:
-            C = 0.40*possession + 0.35*passes + 0.25*accuracy
+
+            0.40 possession
+          + 0.35 passes
+          + 0.25 accuracy
         """
+
         components = {
             "possession": possession,
             "passes": passes,
             "accuracy": accuracy,
         }
-        
-        raw = 0.0
-        has_value = False
-        
-        if possession is not None:
-            raw += CONTROL_POSSESSION_WEIGHT * possession
-            has_value = True
-        if passes is not None:
-            raw += CONTROL_PASSES_WEIGHT * passes
-            has_value = True
-        if accuracy is not None:
-            raw += CONTROL_ACCURACY_WEIGHT * accuracy
-            has_value = True
-        
-        if not has_value:
+
+        values = [
+            (
+                possession,
+                CONTROL_POSSESSION_WEIGHT,
+            ),
+            (
+                passes,
+                CONTROL_PASSES_WEIGHT,
+            ),
+            (
+                accuracy,
+                CONTROL_ACCURACY_WEIGHT,
+            ),
+        ]
+
+        normalized = _combine_optional(
+            values
+        )
+
+        if normalized is None:
             return None
-        
-        total_weight = 0.0
-        if possession is not None:
-            total_weight += CONTROL_POSSESSION_WEIGHT
-        if passes is not None:
-            total_weight += CONTROL_PASSES_WEIGHT
-        if accuracy is not None:
-            total_weight += CONTROL_ACCURACY_WEIGHT
-        
-        if total_weight == 0:
-            return None
-        
-        normalized = raw / total_weight
-        
+
+        available = [
+            value
+            for value, _ in values
+            if value is not None
+        ]
+
         return ControlBlock(
-            raw=raw,
+            raw=normalized,
             normalized=normalized,
             components=components,
+            data_quality=(
+                len(available)
+                / len(values)
+            ),
+            sample_size=len(available),
         )
-    
+
+    # ========================================================
+    # PROGRESSION BLOCK
+    # ========================================================
+
     def _calculate_progression(
         self,
         crosses: Optional[float],
@@ -591,98 +1460,122 @@ class FormControl:
         offsides: Optional[float],
     ) -> Optional[ControlBlock]:
         """
-        Вычисляет блок Progression (прогрессия).
-        
+        Progression block.
+
         Formula:
-            P = 0.40*crosses + 0.35*throwins + 0.25*offsides
+
+            0.40 crosses
+          + 0.35 throw-ins
+          + 0.25 offsides
         """
+
         components = {
             "crosses": crosses,
             "throwins": throwins,
             "offsides": offsides,
         }
-        
-        raw = 0.0
-        has_value = False
-        
-        if crosses is not None:
-            raw += PROGRESSION_CROSSES_WEIGHT * crosses
-            has_value = True
-        if throwins is not None:
-            raw += PROGRESSION_THROWINS_WEIGHT * throwins
-            has_value = True
-        if offsides is not None:
-            raw += PROGRESSION_OFFSIDES_WEIGHT * offsides
-            has_value = True
-        
-        if not has_value:
+
+        values = [
+            (
+                crosses,
+                PROGRESSION_CROSSES_WEIGHT,
+            ),
+            (
+                throwins,
+                PROGRESSION_THROWINS_WEIGHT,
+            ),
+            (
+                offsides,
+                PROGRESSION_OFFSIDES_WEIGHT,
+            ),
+        ]
+
+        normalized = _combine_optional(
+            values
+        )
+
+        if normalized is None:
             return None
-        
-        total_weight = 0.0
-        if crosses is not None:
-            total_weight += PROGRESSION_CROSSES_WEIGHT
-        if throwins is not None:
-            total_weight += PROGRESSION_THROWINS_WEIGHT
-        if offsides is not None:
-            total_weight += PROGRESSION_OFFSIDES_WEIGHT
-        
-        if total_weight == 0:
-            return None
-        
-        normalized = raw / total_weight
-        
+
+        available = [
+            value
+            for value, _ in values
+            if value is not None
+        ]
+
         return ControlBlock(
-            raw=raw,
+            raw=normalized,
             normalized=normalized,
             components=components,
+            data_quality=(
+                len(available)
+                / len(values)
+            ),
+            sample_size=len(available),
         )
-    
+
+    # ========================================================
+    # PRESSURE BLOCK
+    # ========================================================
+
     def _calculate_pressure(
         self,
         shots: Optional[float],
         big_chances: Optional[float],
     ) -> Optional[ControlBlock]:
         """
-        Вычисляет блок Pressure (давление).
-        
+        Pressure block.
+
         Formula:
-            R = 0.60*shots + 0.40*big_chances
+
+            0.60 shots
+          + 0.40 big chances
         """
+
         components = {
             "shots": shots,
             "big_chances": big_chances,
         }
-        
-        raw = 0.0
-        has_value = False
-        
-        if shots is not None:
-            raw += PRESSURE_SHOTS_WEIGHT * shots
-            has_value = True
-        if big_chances is not None:
-            raw += PRESSURE_BIG_CHANCES_WEIGHT * big_chances
-            has_value = True
-        
-        if not has_value:
+
+        values = [
+            (
+                shots,
+                PRESSURE_SHOTS_WEIGHT,
+            ),
+            (
+                big_chances,
+                PRESSURE_BIG_CHANCES_WEIGHT,
+            ),
+        ]
+
+        normalized = _combine_optional(
+            values
+        )
+
+        if normalized is None:
             return None
-        
-        total_weight = 0.0
-        if shots is not None:
-            total_weight += PRESSURE_SHOTS_WEIGHT
-        if big_chances is not None:
-            total_weight += PRESSURE_BIG_CHANCES_WEIGHT
-        
-        if total_weight == 0:
-            return None
-        
-        normalized = raw / total_weight
-        
+
+        available = [
+            value
+            for value, _ in values
+            if value is not None
+        ]
+
         return ControlBlock(
-            raw=raw,
+            raw=normalized,
             normalized=normalized,
             components=components,
+            data_quality=(
+                len(available)
+                / len(values)
+            ),
+            sample_size=len(available),
         )
-    
+
+    # ========================================================
+    # CONTROL RAW
+    # ========================================================
+
     def _calculate_control_raw(
         self,
         control: Optional[ControlBlock],
@@ -690,283 +1583,518 @@ class FormControl:
         pressure: Optional[ControlBlock],
     ) -> Optional[float]:
         """
-        Вычисляет ControlRaw из трёх блоков.
-        
         Formula:
-            ControlRaw = 0.50*Control + 0.25*Progression + 0.25*Pressure
+
+            ControlRaw =
+                0.50 * Control
+              + 0.25 * Progression
+              + 0.25 * Pressure
+
+        Missing blocks:
+            excluded from denominator.
+
+        Missing != 0.
         """
-        raw = 0.0
-        total_weight = 0.0
-        
-        if control is not None and control.normalized is not None:
-            raw += CONTROL_WEIGHT * control.normalized
-            total_weight += CONTROL_WEIGHT
-        
-        if progression is not None and progression.normalized is not None:
-            raw += PROGRESSION_WEIGHT * progression.normalized
-            total_weight += PROGRESSION_WEIGHT
-        
-        if pressure is not None and pressure.normalized is not None:
-            raw += PRESSURE_WEIGHT * pressure.normalized
-            total_weight += PRESSURE_WEIGHT
-        
-        if total_weight == 0:
-            return None
-        
-        return raw / total_weight
-    
-    # ============================================================
-    # SELF SIGNAL
-    # ============================================================
-    
-    def _calculate_norm_and_std(
+
+        components = [
+            (
+                control.normalized
+                if control is not None
+                else None,
+                CONTROL_WEIGHT,
+            ),
+            (
+                progression.normalized
+                if progression is not None
+                else None,
+                PROGRESSION_WEIGHT,
+            ),
+            (
+                pressure.normalized
+                if pressure is not None
+                else None,
+                PRESSURE_WEIGHT,
+            ),
+        ]
+
+        return _combine_optional(
+            components
+        )
+
+    # ========================================================
+    # SELF NORM
+    # ========================================================
+
+    def _self_norm(
         self,
-        possession_history: List[Optional[float]],
-        passes_history: List[Optional[float]],
-        accuracy_history: List[Optional[float]],
-    ) -> Tuple[Optional[float], Optional[float]]:
-        """
-        Вычисляет норму и стандартное отклонение команды.
-        """
-        # Нормализуем каждый показатель
-        possession_norm = None
-        passes_norm = None
-        accuracy_norm = None
-        
-        possession_mean = _mean(possession_history)
-        passes_mean = _mean(passes_history)
-        accuracy_mean = _mean(accuracy_history)
-        
-        if possession_mean is not None:
-            possession_norm = (possession_mean - 50.0) / 50.0
-        if passes_mean is not None:
-            passes_norm = (passes_mean - 300.0) / 300.0
-        if accuracy_mean is not None:
-            accuracy_norm = (accuracy_mean - 60.0) / 30.0
-        
-        # Агрегируем норму
-        values = []
-        weights = []
-        
-        if possession_norm is not None:
-            values.append(possession_norm)
-            weights.append(0.40)
-        if passes_norm is not None:
-            values.append(passes_norm)
-            weights.append(0.35)
-        if accuracy_norm is not None:
-            values.append(accuracy_norm)
-            weights.append(0.25)
-        
-        if not values:
-            return None, None
-        
-        total_weight = sum(weights)
-        if total_weight == 0:
-            return None, None
-        
-        norm = sum(v * w for v, w in zip(values, weights)) / total_weight
-        
-        # Вычисляем стандартное отклонение для каждого показателя
-        possession_std = _std(possession_history)
-        passes_std = _std(passes_history)
-        accuracy_std = _std(accuracy_history)
-        
-        # Нормализуем std
-        possession_std_norm = possession_std / 50.0 if possession_std is not None else None
-        passes_std_norm = passes_std / 300.0 if passes_std is not None else None
-        accuracy_std_norm = accuracy_std / 30.0 if accuracy_std is not None else None
-        
-        # Агрегируем std
-        std_values = []
-        std_weights = []
-        
-        if possession_std_norm is not None:
-            std_values.append(possession_std_norm)
-            std_weights.append(0.40)
-        if passes_std_norm is not None:
-            std_values.append(passes_std_norm)
-            std_weights.append(0.35)
-        if accuracy_std_norm is not None:
-            std_values.append(accuracy_std_norm)
-            std_weights.append(0.25)
-        
-        if not std_values:
-            return norm, None
-        
-        total_std_weight = sum(std_weights)
-        if total_std_weight == 0:
-            return norm, None
-        
-        std = sum(v * w for v, w in zip(std_values, std_weights)) / total_std_weight
-        
-        return norm, std
-    
-    def _calculate_z_score(
-        self,
-        possession_history: List[Optional[float]],
-        passes_history: List[Optional[float]],
-        accuracy_history: List[Optional[float]],
-        norm: Optional[float],
-        std: Optional[float],
+        possession: Sequence[Optional[float]],
+        passes: Sequence[Optional[float]],
+        accuracy: Sequence[Optional[float]],
     ) -> Optional[float]:
         """
-        Вычисляет Z-score текущего состояния относительно нормы.
+        Собственная историческая норма.
+
+        Никаких league baselines.
+        Никаких rating baselines.
         """
-        if norm is None:
-            return None
-        
-        # Вычисляем текущее состояние (последние 6 матчей с весом)
-        possession_recent = possession_history[-6:] if possession_history else []
-        passes_recent = passes_history[-6:] if passes_history else []
-        accuracy_recent = accuracy_history[-6:] if accuracy_history else []
-        
-        possession_current = _weighted_advantage(
-            possession_recent, [50.0] * len(possession_recent)
+
+        possession_mean = _mean(
+            possession
         )
-        passes_current = _weighted_advantage(
-            passes_recent, [300.0] * len(passes_recent)
+
+        passes_mean = _mean(
+            passes
         )
-        accuracy_current = _weighted_advantage(
-            accuracy_recent, [60.0] * len(accuracy_recent)
+
+        accuracy_mean = _mean(
+            accuracy
         )
-        
-        # Агрегируем текущее состояние
-        values = []
-        weights = []
-        
-        if possession_current is not None:
-            values.append(possession_current)
-            weights.append(0.40)
-        if passes_current is not None:
-            values.append(passes_current)
-            weights.append(0.35)
-        if accuracy_current is not None:
-            values.append(accuracy_current)
-            weights.append(0.25)
-        
-        if not values:
+
+        components: List[
+            Tuple[Optional[float], float]
+        ] = []
+
+        if possession_mean is not None:
+            components.append(
+                (
+                    possession_mean,
+                    CONTROL_POSSESSION_WEIGHT,
+                )
+            )
+
+        if passes_mean is not None:
+            components.append(
+                (
+                    passes_mean,
+                    CONTROL_PASSES_WEIGHT,
+                )
+            )
+
+        if accuracy_mean is not None:
+            components.append(
+                (
+                    accuracy_mean,
+                    CONTROL_ACCURACY_WEIGHT,
+                )
+            )
+
+        if not components:
             return None
-        
-        total_weight = sum(weights)
-        if total_weight == 0:
+
+        return (
+            sum(
+                value * weight
+                for value, weight in components
+            )
+            /
+            sum(
+                weight
+                for _, weight in components
+            )
+        )
+
+    # ========================================================
+    # SELF STD
+    # ========================================================
+
+    def _self_std(
+        self,
+        possession: Sequence[Optional[float]],
+        passes: Sequence[Optional[float]],
+        accuracy: Sequence[Optional[float]],
+    ) -> Optional[float]:
+        """
+        Диагностическая агрегированная вариативность.
+
+        Не используется как скрытый multiplier.
+        """
+
+        stds: List[
+            Tuple[float, float]
+        ] = []
+
+        possession_std = _std(
+            possession
+        )
+
+        passes_std = _std(
+            passes
+        )
+
+        accuracy_std = _std(
+            accuracy
+        )
+
+        if possession_std is not None:
+            stds.append(
+                (
+                    possession_std,
+                    CONTROL_POSSESSION_WEIGHT,
+                )
+            )
+
+        if passes_std is not None:
+            stds.append(
+                (
+                    passes_std,
+                    CONTROL_PASSES_WEIGHT,
+                )
+            )
+
+        if accuracy_std is not None:
+            stds.append(
+                (
+                    accuracy_std,
+                    CONTROL_ACCURACY_WEIGHT,
+                )
+            )
+
+        if not stds:
             return None
-        
-        current = sum(v * w for v, w in zip(values, weights)) / total_weight
-        
-        # Z-score
-        if std is not None and std > SELF_EPS:
-            return (current - norm) / std
-        else:
-            return (current - norm) / SELF_BASELINE_STD
-    
-    def _calculate_self_signal(self, z_score: Optional[float]) -> Optional[float]:
-        """
-        Вычисляет SelfSignal из Z-score.
-        
-        Formula:
-            SelfSignal = tanh(K * z_score)
-        """
-        if z_score is None:
+
+        denominator = sum(
+            weight
+            for _, weight in stds
+        )
+
+        if denominator <= EPSILON:
             return None
-        return math.tanh(SELF_K * z_score)
-    
-    # ============================================================
-    # SIGNAL COMBINATION
-    # ============================================================
-    
-    def _apply_tanh(self, value: Optional[float]) -> Optional[float]:
+
+        return (
+            sum(
+                value * weight
+                for value, weight in stds
+            )
+            / denominator
+        )
+
+    # ========================================================
+    # SELF Z-SCORE
+    # ========================================================
+
+    def _self_z_score(
+        self,
+        self_signal: Optional[float],
+        self_std: Optional[float],
+    ) -> Optional[float]:
         """
-        Применяет tanh для ограничения сигнала.
-        
-        tanh(x) ∈ [-1, 1]
+        Диагностический показатель.
+
+        Важно:
+        это не вероятность и не confidence.
         """
+
+        if self_signal is None:
+            return None
+
+        if (
+            self_std is None
+            or self_std <= EPSILON
+        ):
+            return None
+
+        return (
+            self_signal
+            / self_std
+        )
+
+    # ========================================================
+    # TANH
+    # ========================================================
+
+    def _apply_tanh(
+        self,
+        value: Optional[float],
+    ) -> Optional[float]:
+
         if value is None:
             return None
-        return math.tanh(value)
-    
+
+        return _clamp(
+            math.tanh(value)
+        )
+
+    # ========================================================
+    # SIGNAL COMBINATION
+    # ========================================================
+
     def _combine_signals(
         self,
         opponent_signal: Optional[float],
         self_signal: Optional[float],
     ) -> Optional[float]:
         """
-        Комбинирует сигналы: 65% vs соперник + 35% vs собственная норма.
+        Internal FormControl synthesis:
+
+            65% opponent evidence
+            35% self-state evidence
+
+        Это всё ещё FormControl evidence.
+
+        Это НЕ Winner synthesis.
         """
-        if opponent_signal is None and self_signal is None:
+
+        return _combine_optional(
+            (
+                (
+                    opponent_signal,
+                    OPPONENT_WEIGHT,
+                ),
+                (
+                    self_signal,
+                    SELF_WEIGHT,
+                ),
+            )
+        )
+
+    # ========================================================
+    # DATA QUALITY
+    # ========================================================
+
+    def _data_quality(
+        self,
+        components: Dict[
+            str,
+            Optional[float],
+        ],
+    ) -> Optional[float]:
+        """
+        Покрытие доступных component evidence.
+        """
+
+        if not components:
             return None
-        
-        result = 0.0
-        total_weight = 0.0
-        
-        if opponent_signal is not None:
-            result += OPPONENT_WEIGHT * opponent_signal
-            total_weight += OPPONENT_WEIGHT
-        
-        if self_signal is not None:
-            result += SELF_WEIGHT * self_signal
-            total_weight += SELF_WEIGHT
-        
-        if total_weight == 0:
+
+        available = [
+            value
+            for value in components.values()
+            if value is not None
+        ]
+
+        if not available:
             return None
-        
-        return result / total_weight
-    
-    # ============================================================
+
+        return (
+            len(available)
+            / len(components)
+        )
+
+    # ========================================================
+    # SAMPLE SIZE
+    # ========================================================
+
+    def _sample_size(
+        self,
+        components: Dict[
+            str,
+            Optional[float],
+        ],
+    ) -> int:
+        """
+        Для ControlResult это число доступных evidence
+        components, а не число матчей.
+
+        Реальный sample size каждой истории определяется
+        исходным FormContext и диагностикой конкретного блока.
+        """
+
+        return sum(
+            value is not None
+            for value in components.values()
+        )
+
+    # ========================================================
     # DIAGNOSTICS
-    # ============================================================
-    
+    # ========================================================
+
     def _build_diagnostics(
         self,
-        raw_components: Dict[str, Optional[float]],
+        *,
+        raw_components: Dict[
+            str,
+            Optional[float],
+        ],
         control_block: Optional[ControlBlock],
         progression_block: Optional[ControlBlock],
         pressure_block: Optional[ControlBlock],
         control_raw: Optional[float],
-        control_signal: Optional[float],
         opponent_signal: Optional[float],
         self_signal: Optional[float],
+        final_signal: Optional[float],
         self_norm: Optional[float],
         self_std: Optional[float],
         self_z_score: Optional[float],
         corners_adv: Optional[float],
-        target_team: str,
-        opponent_team: str,
-        venue: str,
+        target_team: Optional[str],
+        opponent_team: Optional[str],
+        venue: Optional[str],
     ) -> Dict[str, Any]:
-        """
-        Строит диагностический блок.
-        """
+
         return {
+
             "model": "FormControl",
+
             "version": self.VERSION,
-            "formula_status": self.FORMULA_STATUS,
+
+            "formula_status": (
+                self.FORMULA_STATUS
+            ),
+
+            "model_role": (
+                "control_evidence_organ"
+            ),
+
             "target_team": target_team,
+
             "opponent_team": opponent_team,
+
             "venue": venue,
+
+            # ------------------------------------------------
+            # RAW COMPONENTS
+            # ------------------------------------------------
+
             "raw_components": raw_components,
-            "control_block": control_block.to_dict() if control_block else None,
-            "progression_block": progression_block.to_dict() if progression_block else None,
-            "pressure_block": pressure_block.to_dict() if pressure_block else None,
-            "corners_signal": corners_adv,  # Только диагностика
+
+            # ------------------------------------------------
+            # BLOCKS
+            # ------------------------------------------------
+
+            "control_block": (
+                control_block.to_dict()
+                if control_block
+                else None
+            ),
+
+            "progression_block": (
+                progression_block.to_dict()
+                if progression_block
+                else None
+            ),
+
+            "pressure_block": (
+                pressure_block.to_dict()
+                if pressure_block
+                else None
+            ),
+
+            # ------------------------------------------------
+            # SIGNALS
+            # ------------------------------------------------
+
             "control_raw": control_raw,
-            "control_signal": control_signal,
+
             "opponent_signal": opponent_signal,
+
             "self_signal": self_signal,
+
+            "final_signal": final_signal,
+
+            # ------------------------------------------------
+            # SELF DIAGNOSTICS
+            # ------------------------------------------------
+
             "self_norm": self_norm,
+
             "self_std": self_std,
+
             "self_z_score": self_z_score,
+
             "self_k": SELF_K,
-            "opponent_weight": OPPONENT_WEIGHT,
+
+            # ------------------------------------------------
+            # INTERNAL WEIGHTS
+            # ------------------------------------------------
+
+            "opponent_weight": (
+                OPPONENT_WEIGHT
+            ),
+
             "self_weight": SELF_WEIGHT,
-            "control_weight": CONTROL_WEIGHT,
-            "progression_weight": PROGRESSION_WEIGHT,
-            "pressure_weight": PRESSURE_WEIGHT,
-            "temporal_weights": list(TEMPORAL_WEIGHTS),
-            "max_influence": MAX_CONTROL_INFLUENCE,
-            "status": "RESEARCH_FORMULA",
-            "note": "ControlSignal ограничен через tanh. Влияние на Brain не более ±5%.",
-            "corners_excluded_from_raw": True,
+
+            "control_weight": (
+                CONTROL_WEIGHT
+            ),
+
+            "progression_weight": (
+                PROGRESSION_WEIGHT
+            ),
+
+            "pressure_weight": (
+                PRESSURE_WEIGHT
+            ),
+
+            "temporal_weights": list(
+                self.temporal_weights
+            ),
+
+            # ------------------------------------------------
+            # CORNERS
+            # ------------------------------------------------
+
+            "corners_signal": corners_adv,
+
+            "corners_excluded_from_control_raw": (
+                True
+            ),
+
+            # ------------------------------------------------
+            # PROHIBITED DEPENDENCIES
+            # ------------------------------------------------
+
+            "form_win_used": False,
+
+            "goal_model_used": False,
+
+            "probability_model_used": False,
+
+            "score_predictor_used": False,
+
+            "rating_used": False,
+
+            "database_used": False,
+
+            "future_result_used": False,
+
+            "winner_prediction_generated": False,
+
+            "winner_probability_generated": False,
+
+            "confidence_generated": False,
+
+            "risk_generated": False,
+
+            # ------------------------------------------------
+            # DATA CONTRACT
+            # ------------------------------------------------
+
+            "missing_is_zero": False,
+
+            "none_is_zero": False,
+
+            "absolute_league_baseline_used": False,
+
+            "hidden_brain_multiplier": False,
+
+            # ------------------------------------------------
+            # ARCHITECTURE
+            # ------------------------------------------------
+
+            "winner_synthesis_owner": (
+                "FAJBrain/AnalysisEngine"
+            ),
+
+            "state_role": (
+                "diagnostic_evidence"
+            ),
+
+            "contract": (
+                "MATHEMATICAL_CONTRACT_V1"
+            ),
+
+            "status": (
+                "RESEARCH_FORMULA"
+            ),
         }
 
 
@@ -975,79 +2103,117 @@ class FormControl:
 # ============================================================
 
 def analyze_control(
-    context: Dict[str, Any],
-    target_team: str,
-    opponent_team: str,
-    venue: str = "home",
+    context: Any,
+    target_team: Optional[str] = None,
+    opponent_team: Optional[str] = None,
+    venue: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Удобная обёртка для FormControl.analyze().
-    
-    Example
-    -------
-    result = analyze_control(
-        home_enriched_context,
-        target_team="Зенит",
-        opponent_team="Спартак",
-        venue="home",
-    )
-    result["control_signal"]
-    """
-    model = FormControl()
-    return model.analyze(context, target_team, opponent_team, venue).to_dict()
+    Удобная функциональная оболочка.
 
+    Example:
+
+        result = analyze_control(
+            context,
+            target_team="Зенит",
+            opponent_team="Спартак",
+            venue="home",
+        )
+
+        signal = result["control_signal"]
+    """
+
+    model = FormControl()
+
+    return model.analyze(
+        context,
+        target_team=target_team,
+        opponent_team=opponent_team,
+        venue=venue,
+    ).to_dict()
+
+
+# ============================================================
+# COMPARE CONTROL
+# ============================================================
 
 def compare_control(
-    context: Dict[str, Any],
-    home_team: str,
-    away_team: str,
+    home_context: Any,
+    away_context: Any,
+    home_team: Optional[str] = None,
+    away_team: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Сравнивает контроль двух команд.
-    
-    Returns
-    -------
-    {
-        "home_control": ...,
-        "away_control": ...,
-        "control_advantage": "HOME" | "AWAY" | "EQUAL",
-        "control_strength": ...,
-    }
+    Сравнение FormControl двух отдельных контекстов.
+
+    ВАЖНО:
+
+    Эта функция НЕ выдаёт winner.
+
+    Она возвращает только:
+
+        home signal
+        away signal
+        relative evidence
+
+    Это необходимо для последующего Brain/AnalysisEngine.
     """
-    home_result = analyze_control(context, home_team, away_team, venue="home")
-    away_result = analyze_control(context, away_team, home_team, venue="away")
-    
-    home_signal = home_result.get("control_signal")
-    away_signal = away_result.get("control_signal")
-    
-    if home_signal is None and away_signal is None:
-        advantage = "EQUAL"
-        strength = 0.0
-    elif home_signal is None:
-        advantage = "AWAY"
-        strength = abs(away_signal) if away_signal is not None else 0.0
-    elif away_signal is None:
-        advantage = "HOME"
-        strength = abs(home_signal) if home_signal is not None else 0.0
+
+    model = FormControl()
+
+    home_result = model.analyze(
+        home_context,
+        target_team=home_team,
+        opponent_team=away_team,
+        venue="home",
+    )
+
+    away_result = model.analyze(
+        away_context,
+        target_team=away_team,
+        opponent_team=home_team,
+        venue="away",
+    )
+
+    home_signal = (
+        home_result.control_signal
+    )
+
+    away_signal = (
+        away_result.control_signal
+    )
+
+    if (
+        home_signal is None
+        or away_signal is None
+    ):
+        relative = None
+
     else:
-        diff = home_signal - away_signal
-        if diff > 0.10:
-            advantage = "HOME"
-            strength = min(abs(diff), 1.0)
-        elif diff < -0.10:
-            advantage = "AWAY"
-            strength = min(abs(diff), 1.0)
-        else:
-            advantage = "EQUAL"
-            strength = abs(diff)
-    
+        relative = _clamp(
+            home_signal
+            - away_signal
+        )
+
     return {
-        "home_control": home_result,
-        "away_control": away_result,
-        "control_advantage": advantage,
-        "control_strength": strength,
+
+        "home_control": (
+            home_result.to_dict()
+        ),
+
+        "away_control": (
+            away_result.to_dict()
+        ),
+
         "home_signal": home_signal,
+
         "away_signal": away_signal,
+
+        "relative_control": relative,
+
+        "control_evidence_available": (
+            relative is not None
+        ),
     }
 
 
@@ -1058,10 +2224,10 @@ def compare_control(
 __all__ = [
     "FORM_CONTROL_VERSION",
     "FORMULA_STATUS",
-    "MAX_CONTROL_INFLUENCE",
-    "FormControl",
+    "TEMPORAL_WEIGHTS",
     "ControlBlock",
     "ControlResult",
+    "FormControl",
     "analyze_control",
     "compare_control",
 ]
