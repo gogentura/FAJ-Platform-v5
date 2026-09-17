@@ -4,121 +4,120 @@
 """
 ============================================================
 FAJ PLATFORM v12.1
-FORM MODEL v1.2
+FORM MODEL v1.3
 ============================================================
 
-НАЗНАЧЕНИЕ
-----------
+ROLE
+----
 
-FormModel v1 НЕ ПРОГНОЗИРУЕТ.
+FormModel is a diagnostic STATE organ.
 
-Он измеряет текущее состояние команды на основании
-истории последних матчей, переданной FormContext.
+It measures the current state of a team from FormContext.
 
-Архитектура:
+It DOES NOT:
+
+    - predict match outcome;
+    - calculate probabilities;
+    - calculate GoalModel;
+    - modify xG;
+    - modify FAJ Rating;
+    - learn parameters;
+    - write to SQLite;
+    - use bookmaker odds;
+    - estimate opponent strength;
+    - create composite Form Score;
+    - apply multipliers;
+    - modify another State.
+
+Architecture:
 
     MatchRecord
         ↓
-    FormContext v1.4
+    FormContext
         ↓
-    PatternState
-        ↓
-    FormModel v1
+    FormModel
         ↓
     FormModelResult
+        ↓
+    Brain / Analysis layer
 
-FormModel НЕ:
+Main principle:
 
-    - прогнозирует исход;
-    - рассчитывает вероятности;
-    - рассчитывает GoalModel;
-    - изменяет xG;
-    - изменяет FAJ Rating;
-    - обучает модель;
-    - пишет в SQLite;
-    - использует bookmaker odds;
-    - определяет силу соперника;
-    - создаёт composite Form Score;
-    - применяет EffectSignal как multiplier.
+    FACTS → STATE
+
+NOT:
+
+    FORM → COEFFICIENT → xG
 
 ------------------------------------------------------------
-МАТЕМАТИЧЕСКИЙ ПРИНЦИП
+STATE CHANNELS
 ------------------------------------------------------------
 
-FormModel измеряет четыре независимых состояния:
+FormModel exposes independent descriptive channels:
 
     RESULT
     PERFORMANCE
     DYNAMICS
     VENUE
-
-и отдельно предоставляет:
-
     PATTERN / EFFECT EVIDENCE
 
-Никакие каналы не смешиваются в один score.
+Channels are NOT collapsed into one predictive score.
 
 ------------------------------------------------------------
-ИЗМЕНЕНИЯ В V1.2
+HARD RULES
 ------------------------------------------------------------
 
-- Добавлены shots_avg, shots_against_avg,
-  shots_on_target_avg, shots_on_target_against_avg
+1. None != 0.
 
-- Это позволяет GoalModel использовать SOT dominance
+2. Missing observations are excluded only from the
+   corresponding calculation.
 
-------------------------------------------------------------
-ИЗМЕНЕНИЯ В V1.1
-------------------------------------------------------------
+3. History is expected oldest → newest.
 
-- xg_recent / xga_recent теперь вычисляются как
-  temporally weighted mean (веса 1..6), а не копия xg_avg
+4. Maximum working history is 6 matches.
 
-- Это позволяет GoalModel использовать свежее состояние xG
-  вместо шестиматчевого среднего
+5. Recency weights are a research parameter:
 
-------------------------------------------------------------
-ВАЖНЫЕ ПРАВИЛА
-------------------------------------------------------------
+       1, 2, 3, 4, 5, 6
 
-1. None никогда не превращается в 0.
+6. xG and goals are independent channels.
 
-2. Отсутствующие значения исключаются только
-   из соответствующего среднего.
+7. Difficulty is descriptive only.
 
-3. История xG сохраняется полностью.
+8. Difficulty is NOT opponent strength.
 
-4. xG и goals — независимые каналы.
+9. ResultStrength = RecentPointsRate.
 
-5. Difficulty не является силой соперника.
+10. FormScore is undefined in v1.x.
 
-6. Difficulty используется только для описания
-   фактической результативности команды в bucket.
+11. Strength fields remain None without a defensible
+    external baseline.
 
-7. ResultStrength = RecentPointsRate.
+12. Trend is raw OLS slope.
 
-8. FormScore в v1 не определён.
+13. Trend labels are disabled until a calibrated threshold
+    exists.
 
-9. Strength в v1 не определён без baseline.
+14. Effect signals are descriptive evidence only.
 
-10. Trend — OLS slope без искусственной нормализации.
+15. Effect signals NEVER modify GoalModel.
 
-11. Trend label отделён от numerical slope.
+16. FormModel does not know the future result.
 
-12. Effect signals не изменяют GoalModel.
+17. FormModel does not use odds.
 
-13. Dark Horse / Lukaku / Kepa / Haaland
-    требуют baseline и поэтому в v1 не активируются.
+18. FormModel does not use FAJ Rating.
 
-14. Temporal weights 1..6 являются
-    RESEARCH_PARAMETER.
+19. FormModel does not write to DB.
+
+20. FormModel does not perform parameter fitting.
 
 ============================================================
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from math import sqrt
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -127,14 +126,23 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 # VERSION / PARAMETERS
 # ============================================================
 
-FORM_MODEL_VERSION = "1.2"
+FORM_MODEL_VERSION = "1.3"
+
+MAX_HISTORY = 6
 
 # Research parameter.
-# История передаётся от старого к новому:
 #
-# M1 -> M2 -> ... -> M6
+# History:
 #
-# Поэтому последний матч получает максимальный вес.
+#     oldest → newest
+#
+# Therefore:
+#
+#     M1 = 1
+#     M2 = 2
+#     ...
+#     M6 = 6
+#
 TEMPORAL_WEIGHTS: Tuple[float, ...] = (
     1.0,
     2.0,
@@ -144,18 +152,32 @@ TEMPORAL_WEIGHTS: Tuple[float, ...] = (
     6.0,
 )
 
+# Intentionally undefined until calibrated.
 TREND_THRESHOLD: Optional[float] = None
 
+
+# ============================================================
+# DESCRIPTIVE EFFECT THRESHOLDS
+# ============================================================
+#
+# These are evidence detectors only.
+#
+# They do NOT alter prediction mathematics.
+#
+
 GLADIATOR_MIN_WINS = 5
+
 FORTRESS_MIN_HOME_MATCHES = 5
 FORTRESS_MIN_HOME_UNBEATEN = 4
+
 LEICESTER_MIN_AWAY_MATCHES = 5
 LEICESTER_MIN_AWAY_WINS = 4
+
 GOD_KISS_MIN_AWAY_STREAK = 3
 
 
 # ============================================================
-# ENUM-LIKE CONSTANTS
+# RESULT CONSTANTS
 # ============================================================
 
 RESULT_POINTS = {
@@ -177,7 +199,9 @@ RESULT_TREND_VALUE = {
 
 def _safe_float(value: Any) -> Optional[float]:
     """
-    None / empty / invalid -> None.
+    Convert value to float.
+
+    Invalid / empty / missing -> None.
 
     Missing data NEVER becomes zero.
     """
@@ -204,7 +228,9 @@ def _safe_float(value: Any) -> Optional[float]:
 
 def _safe_int(value: Any) -> Optional[int]:
     """
-    Safe integer conversion.
+    Convert value to int.
+
+    Invalid / empty / missing -> None.
     """
 
     if value is None:
@@ -220,7 +246,14 @@ def _safe_int(value: Any) -> Optional[int]:
         return None
 
 
-def _get_value(record: Any, *keys: str) -> Any:
+# ============================================================
+# GENERIC OBJECT ACCESS
+# ============================================================
+
+def _get_value(
+    record: Any,
+    *keys: str,
+) -> Any:
     """
     Unified access for:
 
@@ -234,25 +267,46 @@ def _get_value(record: Any, *keys: str) -> Any:
 
     for key in keys:
 
+        # ----------------------------------------------------
+        # dict
+        # ----------------------------------------------------
+
         if isinstance(record, dict):
 
             if key in record:
                 return record[key]
+
+        # ----------------------------------------------------
+        # sqlite3.Row / mapping-like
+        # ----------------------------------------------------
 
         try:
 
             keys_method = record.keys
 
             if key in keys_method():
+
                 return record[key]
 
-        except (AttributeError, TypeError):
+        except (
+            AttributeError,
+            TypeError,
+        ):
             pass
 
+        # ----------------------------------------------------
+        # object / dataclass
+        # ----------------------------------------------------
+
         try:
-            return getattr(record, key)
+
+            return getattr(
+                record,
+                key,
+            )
 
         except AttributeError:
+
             pass
 
     return None
@@ -262,7 +316,9 @@ def _get_value(record: Any, *keys: str) -> Any:
 # RESULT HELPERS
 # ============================================================
 
-def _result_to_points(result: Optional[str]) -> Optional[float]:
+def _result_to_points(
+    result: Optional[str],
+) -> Optional[float]:
     """
     W = 3
     D = 1
@@ -270,6 +326,7 @@ def _result_to_points(result: Optional[str]) -> Optional[float]:
     """
 
     if result not in RESULT_POINTS:
+
         return None
 
     return RESULT_POINTS[result]
@@ -278,15 +335,21 @@ def _result_to_points(result: Optional[str]) -> Optional[float]:
 def _result_to_trend_value(
     result: Optional[str],
 ) -> Optional[float]:
+    """
+    W = +1
+    D =  0
+    L = -1
+    """
 
     if result not in RESULT_TREND_VALUE:
+
         return None
 
     return RESULT_TREND_VALUE[result]
 
 
 # ============================================================
-# GENERIC MEAN
+# MEAN
 # ============================================================
 
 def _mean(
@@ -295,9 +358,9 @@ def _mean(
     """
     Arithmetic mean.
 
-    None values are excluded.
+    None observations are excluded.
 
-    Empty collection -> None.
+    Empty input -> None.
     """
 
     valid = [
@@ -307,6 +370,7 @@ def _mean(
     ]
 
     if not valid:
+
         return None
 
     return sum(valid) / len(valid)
@@ -323,17 +387,32 @@ def _weighted_mean(
     """
     Weighted mean.
 
-    None observations are excluded together
-    with their corresponding weights.
+    None observation excludes only its own weight.
+
+    Example:
+
+        values  = [1.0, None, 2.0]
+        weights = [1.0, 2.0, 3.0]
+
+    result:
+
+        (1*1 + 2*3) / (1+3)
     """
 
     pairs = [
-        (float(value), float(weight))
-        for value, weight in zip(values, weights)
+        (
+            float(value),
+            float(weight),
+        )
+        for value, weight in zip(
+            values,
+            weights,
+        )
         if value is not None
     ]
 
     if not pairs:
+
         return None
 
     numerator = sum(
@@ -347,6 +426,7 @@ def _weighted_mean(
     )
 
     if denominator == 0:
+
         return None
 
     return numerator / denominator
@@ -362,51 +442,76 @@ def _ols_slope(
     """
     Ordinary Least Squares slope.
 
-    Для наблюдений:
+    IMPORTANT:
 
-        y1 ... yN
+    Original temporal positions are preserved.
 
-    используются последовательные временные индексы:
+    Example:
 
-        x = 0 ... N-1
+        [1.0, None, 3.0]
 
-    None observations исключаются.
+    uses:
 
-    ВАЖНО:
+        x = [0, 2]
 
-        slope НЕ нормализуется.
+    NOT:
 
-    Возвращается реальный OLS slope
-    в единицах исходного показателя за один шаг времени.
+        x = [0, 1]
+
+    This prevents missing matches from artificially
+    compressing the time axis.
+
+    No normalization is applied.
+
+    Returned slope is expressed in source units
+    per one match-step.
     """
 
-    observations = [
-        float(value)
-        for value in values
+    indexed = [
+        (
+            index,
+            float(value),
+        )
+        for index, value in enumerate(values)
         if value is not None
     ]
 
-    n = len(observations)
+    n = len(indexed)
 
     if n < 2:
+
         return None
 
-    x_values = list(
-        range(n)
+    x_values = [
+        item[0]
+        for item in indexed
+    ]
+
+    y_values = [
+        item[1]
+        for item in indexed
+    ]
+
+    x_mean = (
+        sum(x_values)
+        / n
     )
 
-    x_mean = sum(x_values) / n
-    y_mean = sum(observations) / n
+    y_mean = (
+        sum(y_values)
+        / n
+    )
 
     numerator = sum(
         (
             x - x_mean
-        ) * (
+        )
+        * (
             y - y_mean
         )
         for x, y in zip(
             x_values,
-            observations,
+            y_values,
         )
     )
 
@@ -418,6 +523,7 @@ def _ols_slope(
     )
 
     if denominator == 0:
+
         return None
 
     return numerator / denominator
@@ -433,11 +539,7 @@ def _population_std(
     """
     Population standard deviation.
 
-    sigma =
-        sqrt(
-            1/N *
-            sum((x - mean)^2)
-        )
+    Empty input -> None.
     """
 
     valid = [
@@ -447,9 +549,13 @@ def _population_std(
     ]
 
     if not valid:
+
         return None
 
-    mean = sum(valid) / len(valid)
+    mean = (
+        sum(valid)
+        / len(valid)
+    )
 
     variance = sum(
         (
@@ -470,16 +576,10 @@ def _trend_label(
     threshold: Optional[float],
 ) -> Optional[str]:
     """
-    Converts numerical trend slope into label.
+    Convert numerical trend into a label.
 
-    threshold is intentionally optional.
-
-    Without calibrated/research threshold:
-
-        no label is produced.
-
-    This prevents arbitrary numerical thresholds
-    from becoming hidden model logic.
+    Until a calibrated threshold exists,
+    no qualitative label is generated.
     """
 
     if slope is None:
@@ -489,15 +589,14 @@ def _trend_label(
         return None
 
     if abs(slope) <= threshold:
+
         return "stable"
 
     if slope > threshold:
+
         return "improving"
 
-    if slope < -threshold:
-        return "declining"
-
-    return "stable"
+    return "declining"
 
 
 # ============================================================
@@ -508,7 +607,9 @@ def _trend_label(
 class DifficultyState:
 
     matches: int = 0
-    points: float = 0.0
+
+    points: Optional[float] = None
+
     points_rate: Optional[float] = None
 
     adjustment: Optional[float] = None
@@ -544,7 +645,7 @@ class EffectSignal:
 class FormModelResult:
 
     # --------------------------------------------------------
-    # Metadata
+    # METADATA
     # --------------------------------------------------------
 
     version: str
@@ -588,7 +689,7 @@ class FormModelResult:
     easy_recent_points_rate: Optional[float]
 
     # --------------------------------------------------------
-    # PERFORMANCE STATE — GOALS
+    # PERFORMANCE — GOALS
     # --------------------------------------------------------
 
     goals_for_avg: Optional[float]
@@ -596,16 +697,23 @@ class FormModelResult:
     goals_against_avg: Optional[float]
 
     # --------------------------------------------------------
-    # PERFORMANCE STATE — xG
+    # PERFORMANCE — xG
     # --------------------------------------------------------
 
     xg_avg: Optional[float]
 
     xga_avg: Optional[float]
 
-    xg_history: Tuple[Optional[float], ...]
+    xg_history: Tuple[
+        Optional[float],
+        ...
 
-    xga_history: Tuple[Optional[float], ...]
+    ]
+
+    xga_history: Tuple[
+        Optional[float],
+        ...
+    ]
 
     xg_recent: Optional[float]
 
@@ -616,7 +724,7 @@ class FormModelResult:
     xga_trend: Optional[float]
 
     # --------------------------------------------------------
-    # PERFORMANCE STATE — SHOTS
+    # PERFORMANCE — SHOTS
     # --------------------------------------------------------
 
     shots_avg: Optional[float]
@@ -687,7 +795,10 @@ class FormModelResult:
     # EFFECTS
     # --------------------------------------------------------
 
-    effects: Tuple[EffectSignal, ...]
+    effects: Tuple[
+        EffectSignal,
+        ...
+    ]
 
 
 # ============================================================
@@ -696,20 +807,14 @@ class FormModelResult:
 
 class FormModel:
     """
-    FormModel v1.2.
+    FormModel v1.3.
 
-    Главный принцип:
+    Independent diagnostic state.
 
-        MEASURE STATE.
-        DO NOT PREDICT.
+    It measures facts from FormContext and returns
+    descriptive evidence.
 
-    Input:
-
-        FormContext v1.4 dictionary/object.
-
-    Output:
-
-        FormModelResult.
+    It does not predict.
     """
 
     def __init__(
@@ -720,6 +825,7 @@ class FormModel:
         trend_threshold: Optional[
             float
         ] = TREND_THRESHOLD,
+        max_history: int = MAX_HISTORY,
     ) -> None:
 
         self.temporal_weights = tuple(
@@ -728,6 +834,11 @@ class FormModel:
 
         self.trend_threshold = (
             trend_threshold
+        )
+
+        self.max_history = max(
+            1,
+            int(max_history),
         )
 
     # ========================================================
@@ -742,9 +853,11 @@ class FormModel:
         """
         Analyze FormContext.
 
-        next_venue is optional contextual input.
+        History is normalized to:
 
-        FormModel itself does not query DB.
+            oldest → newest
+
+        and limited to the latest MAX_HISTORY observations.
         """
 
         team = _get_value(
@@ -762,127 +875,155 @@ class FormModel:
             matches,
         )
 
-        goals_for = self._extract_history(
-            form_context,
-            matches,
-            (
-                "goals_for",
-                "team_goals",
-            ),
-        )
-
-        goals_against = self._extract_history(
-            form_context,
-            matches,
-            (
-                "goals_against",
-                "opponent_goals",
-            ),
-        )
-
-        xg_history = self._extract_xg_history(
-            form_context,
-            matches,
-            "recent_xg",
-            "team_xg",
-        )
-
-        xga_history = self._extract_xg_history(
-            form_context,
-            matches,
-            "recent_xga",
-            "opponent_xg",
-        )
-
-        # ========================================================
-        # SHOTS HISTORY
-        # ========================================================
-
-        shots_values = self._extract_history(
-            form_context,
-            matches,
-            (
-                "shots",
-                "shots_for",
-                "team_shots",
-            ),
-        )
-
-        shots_against_values = self._extract_history(
-            form_context,
-            matches,
-            (
-                "shots_against",
-                "shots_conceded",
-                "opponent_shots",
-            ),
-        )
-
-        sot_values = self._extract_history(
-            form_context,
-            matches,
-            (
-                "shots_on_target",
-                "sot",
-                "shots_on_target_for",
-                "team_sot",
-            ),
-        )
-
-        sot_against_values = self._extract_history(
-            form_context,
-            matches,
-            (
-                "shots_on_target_against",
-                "sot_against",
-                "opponent_shots_on_target",
-                "opponent_sot",
-            ),
-        )
-
-        venues = self._extract_history(
-            form_context,
-            matches,
-            (
-                "venue",
-                "home_away",
-            ),
-        )
-
-        difficulties = self._extract_history(
-            form_context,
-            matches,
-            (
-                "difficulty",
-            ),
-        )
-
         # ----------------------------------------------------
-        # RESULT
+        # Limit all histories consistently.
+        #
+        # FormContext is expected oldest -> newest.
+        # Keep the latest max_history observations.
         # ----------------------------------------------------
+
+        results = self._limit_history(
+            results
+        )
+
+        goals_for = self._limit_history(
+            self._extract_history(
+                form_context,
+                matches,
+                (
+                    "goals_for",
+                    "team_goals",
+                ),
+            )
+        )
+
+        goals_against = self._limit_history(
+            self._extract_history(
+                form_context,
+                matches,
+                (
+                    "goals_against",
+                    "opponent_goals",
+                ),
+            )
+        )
+
+        xg_history = self._limit_history(
+            self._extract_xg_history(
+                form_context,
+                matches,
+                "recent_xg",
+                "team_xg",
+            )
+        )
+
+        xga_history = self._limit_history(
+            self._extract_xg_history(
+                form_context,
+                matches,
+                "recent_xga",
+                "opponent_xg",
+            )
+        )
+
+        shots_values = self._limit_history(
+            self._extract_history(
+                form_context,
+                matches,
+                (
+                    "shots",
+                    "shots_for",
+                    "team_shots",
+                ),
+            )
+        )
+
+        shots_against_values = (
+            self._limit_history(
+                self._extract_history(
+                    form_context,
+                    matches,
+                    (
+                        "shots_against",
+                        "shots_conceded",
+                        "opponent_shots",
+                    ),
+                )
+            )
+        )
+
+        sot_values = self._limit_history(
+            self._extract_history(
+                form_context,
+                matches,
+                (
+                    "shots_on_target",
+                    "sot",
+                    "shots_on_target_for",
+                    "team_sot",
+                ),
+            )
+        )
+
+        sot_against_values = (
+            self._limit_history(
+                self._extract_history(
+                    form_context,
+                    matches,
+                    (
+                        "shots_on_target_against",
+                        "sot_against",
+                        "opponent_shots_on_target",
+                        "opponent_sot",
+                    ),
+                )
+            )
+        )
+
+        venues = self._limit_history(
+            self._extract_history(
+                form_context,
+                matches,
+                (
+                    "venue",
+                    "home_away",
+                ),
+            )
+        )
+
+        difficulties = self._limit_history(
+            self._extract_history(
+                form_context,
+                matches,
+                (
+                    "difficulty",
+                ),
+            )
+        )
+
+        # ====================================================
+        # RESULT STATE
+        # ====================================================
 
         result_points = [
             _result_to_points(result)
             for result in results
         ]
 
+        valid_result_points = [
+            value
+            for value in result_points
+            if value is not None
+        ]
+
         raw_points = (
-            sum(
-                value
-                for value in result_points
-                if value is not None
-            )
-            if any(
-                value is not None
-                for value in result_points
-            )
+            sum(valid_result_points)
+            if valid_result_points
             else None
         )
 
-        valid_result_count = sum(
-            1
-            for value in result_points
-            if value is not None
+        valid_result_count = len(
+            valid_result_points
         )
 
         points_rate = (
@@ -918,9 +1059,9 @@ class FormModel:
             recent_points_rate
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # DIFFICULTY
-        # ----------------------------------------------------
+        # ====================================================
 
         hard = self._difficulty_state(
             difficulties,
@@ -943,21 +1084,31 @@ class FormModel:
             points_rate,
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # GOALS
-        # ----------------------------------------------------
+        # ====================================================
+
+        goals_for_values = [
+            _safe_float(value)
+            for value in goals_for
+        ]
+
+        goals_against_values = [
+            _safe_float(value)
+            for value in goals_against
+        ]
 
         goals_for_avg = _mean(
-            goals_for
+            goals_for_values
         )
 
         goals_against_avg = _mean(
-            goals_against
+            goals_against_values
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # SHOTS
-        # ----------------------------------------------------
+        # ====================================================
 
         shots_avg = _mean(
             [
@@ -987,9 +1138,19 @@ class FormModel:
             ]
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # xG
-        # ----------------------------------------------------
+        # ====================================================
+
+        xg_history = [
+            _safe_float(value)
+            for value in xg_history
+        ]
+
+        xga_history = [
+            _safe_float(value)
+            for value in xga_history
+        ]
 
         xg_avg = _mean(
             xg_history
@@ -999,34 +1160,18 @@ class FormModel:
             xga_history
         )
 
-        # ------------------------------------------------------------
-        # TEMPORAL xG STATE
-        # ------------------------------------------------------------
-        #
-        # xg_avg / xga_avg:
-        #     historical six-match arithmetic baseline.
-        #
-        # xg_recent / xga_recent:
-        #     temporally weighted current state.
-        #
-        # M1 = oldest
-        # M6 = newest
-        #
-        # weights = 1..6
-        #
-        # Missing observations remain missing and their
-        # corresponding weight is excluded by _weighted_mean().
-        #
-        # This does NOT replace the historical baseline.
-        # It creates a separate recent-state signal.
-        # ------------------------------------------------------------
         xg_recent = _weighted_mean(
             xg_history,
-            self._weights_for(len(xg_history)),
+            self._weights_for(
+                len(xg_history)
+            ),
         )
+
         xga_recent = _weighted_mean(
             xga_history,
-            self._weights_for(len(xga_history)),
+            self._weights_for(
+                len(xga_history)
+            ),
         )
 
         xg_trend = _ols_slope(
@@ -1037,9 +1182,9 @@ class FormModel:
             xga_history
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # REALIZATION
-        # ----------------------------------------------------
+        # ====================================================
 
         finishing_delta = (
             goals_for_avg - xg_avg
@@ -1063,9 +1208,9 @@ class FormModel:
             else None
         )
 
-        # ----------------------------------------------------
-        # RESULT TREND
-        # ----------------------------------------------------
+        # ====================================================
+        # RESULT DYNAMICS
+        # ====================================================
 
         result_trend_values = [
             _result_to_trend_value(result)
@@ -1080,10 +1225,6 @@ class FormModel:
             trend_score,
             self.trend_threshold,
         )
-
-        # ----------------------------------------------------
-        # CONSISTENCY
-        # ----------------------------------------------------
 
         result_std = _population_std(
             result_trend_values
@@ -1105,9 +1246,9 @@ class FormModel:
                 ),
             )
 
-        # ----------------------------------------------------
+        # ====================================================
         # VENUE
-        # ----------------------------------------------------
+        # ====================================================
 
         home_points_rate = (
             self._venue_points_rate(
@@ -1141,8 +1282,9 @@ class FormModel:
             ) == "гости"
         )
 
-        total_window = len(
-            results
+        total_window = max(
+            len(results),
+            len(venues),
         )
 
         home_coverage = (
@@ -1157,16 +1299,14 @@ class FormModel:
             else None
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # EFFECTS
-        # ----------------------------------------------------
+        # ====================================================
 
         effects = self._detect_effects(
             results=results,
             venues=venues,
             next_venue=next_venue,
-            difficulties=difficulties,
-            result_points=result_points,
             goals_for_avg=goals_for_avg,
             goals_against_avg=goals_against_avg,
             xg_avg=xg_avg,
@@ -1176,9 +1316,9 @@ class FormModel:
             defensive_delta=defensive_delta,
         )
 
-        # ----------------------------------------------------
-        # RESULT
-        # ----------------------------------------------------
+        # ====================================================
+        # FINAL STATE
+        # ====================================================
 
         return FormModelResult(
 
@@ -1190,7 +1330,9 @@ class FormModel:
                 else None
             ),
 
-            matches_count=len(results),
+            matches_count=len(
+                results
+            ),
 
             # RESULT
             raw_points=raw_points,
@@ -1244,8 +1386,14 @@ class FormModel:
             # SHOTS
             shots_avg=shots_avg,
             shots_against_avg=shots_against_avg,
-            shots_on_target_avg=shots_on_target_avg,
-            shots_on_target_against_avg=shots_on_target_against_avg,
+
+            shots_on_target_avg=(
+                shots_on_target_avg
+            ),
+
+            shots_on_target_against_avg=(
+                shots_on_target_against_avg
+            ),
 
             # REALIZATION
             finishing_delta=finishing_delta,
@@ -1284,6 +1432,37 @@ class FormModel:
         )
 
     # ========================================================
+    # HISTORY LIMIT
+    # ========================================================
+
+    def _limit_history(
+        self,
+        values: List[Any],
+    ) -> List[Any]:
+        """
+        Keep latest MAX_HISTORY observations.
+
+        Expected order:
+
+            oldest → newest
+
+        Therefore slicing from the end preserves
+        chronological order.
+        """
+
+        if not values:
+
+            return []
+
+        if len(values) <= self.max_history:
+
+            return list(values)
+
+        return list(
+            values[-self.max_history:]
+        )
+
+    # ========================================================
     # EXTRACTION
     # ========================================================
 
@@ -1298,12 +1477,15 @@ class FormModel:
         )
 
         if matches is None:
+
             return []
 
         try:
+
             return list(matches)
 
         except TypeError:
+
             return []
 
     @staticmethod
@@ -1313,7 +1495,7 @@ class FormModel:
         context_keys: Tuple[str, ...],
     ) -> List[Any]:
         """
-        Prefer explicit history from FormContext.
+        Prefer explicit FormContext history.
 
         Fallback to match-level records.
         """
@@ -1353,6 +1535,13 @@ class FormModel:
         form_context: Any,
         matches: List[Any],
     ) -> List[Optional[str]]:
+        """
+        Extract result history.
+
+        Expected order:
+
+            oldest → newest
+        """
 
         direct = _get_value(
             form_context,
@@ -1365,7 +1554,7 @@ class FormModel:
 
                 return [
                     (
-                        str(value)
+                        str(value).strip().upper()
                         if value is not None
                         else None
                     )
@@ -1373,15 +1562,31 @@ class FormModel:
                 ]
 
             except TypeError:
+
                 pass
 
-        return [
-            _get_value(
+        values = []
+
+        for match in matches:
+
+            value = _get_value(
                 match,
                 "result",
             )
-            for match in matches
-        ]
+
+            if value is None:
+
+                values.append(None)
+
+            else:
+
+                values.append(
+                    str(value)
+                    .strip()
+                    .upper()
+                )
+
+        return values
 
     @staticmethod
     def _extract_xg_history(
@@ -1391,12 +1596,9 @@ class FormModel:
         match_key: str,
     ) -> List[Optional[float]]:
         """
-        Explicit FormContext v1.4 history has priority.
+        Prefer explicit complete xG history from FormContext.
 
-        IMPORTANT:
-
-            recent_xg / recent_xga contain the complete
-            history and are NOT reconstructed from averages.
+        Never reconstruct xG history from averages.
         """
 
         direct = _get_value(
@@ -1414,6 +1616,7 @@ class FormModel:
                 ]
 
             except TypeError:
+
                 pass
 
         values = []
@@ -1432,7 +1635,7 @@ class FormModel:
         return values
 
     # ========================================================
-    # WEIGHTS
+    # TEMPORAL WEIGHTS
     # ========================================================
 
     def _weights_for(
@@ -1440,21 +1643,23 @@ class FormModel:
         count: int,
     ) -> Tuple[float, ...]:
         """
-        Generates temporal weights.
+        Return temporal weights for a history.
 
-        Research baseline:
+        For N <= 6:
 
-            1,2,3,4,5,6
+            N=1 -> [6]
+            N=2 -> [5,6]
+            N=3 -> [4,5,6]
+            ...
+            N=6 -> [1,2,3,4,5,6]
 
-        For fewer observations the latest observation
-        receives the largest weight.
+        This preserves the principle:
 
-        For the normal six-match FormContext:
-
-            1,2,3,4,5,6
+            newest observation = maximum weight.
         """
 
         if count <= 0:
+
             return ()
 
         if count <= len(
@@ -1465,11 +1670,16 @@ class FormModel:
                 -count:
             ]
 
+        # Defensive extension if a caller deliberately
+        # supplies a larger history.
+        #
+        # Normal FAJ contract never exceeds 6.
+        #
+
         start = (
             len(
                 self.temporal_weights
-            )
-            + 1
+            ) + 1
         )
 
         return tuple(
@@ -1494,12 +1704,11 @@ class FormModel:
         overall_points_rate: Optional[float],
     ) -> DifficultyState:
         """
-        Calculates descriptive statistics for one
-        difficulty bucket.
+        Descriptive statistics for a difficulty bucket.
 
-        Difficulty is NOT opponent strength.
+        Difficulty does not represent opponent strength.
 
-        No arbitrary difficulty weight is applied.
+        No difficulty coefficient is applied.
         """
 
         normalized = [
@@ -1516,21 +1725,37 @@ class FormModel:
             if value == bucket
         ]
 
-        points = [
-            result_points[index]
-            for index in indexes
-            if index < len(
-                result_points
-            )
-            and result_points[index]
-            is not None
-        ]
+        bucket_points = []
 
-        matches = len(points)
+        bucket_positions = []
+
+        for index in indexes:
+
+            if index >= len(
+                result_points
+            ):
+                continue
+
+            point = result_points[index]
+
+            if point is None:
+                continue
+
+            bucket_points.append(
+                point
+            )
+
+            bucket_positions.append(
+                index
+            )
+
+        matches = len(
+            bucket_points
+        )
 
         total_points = (
-            sum(points)
-            if points
+            sum(bucket_points)
+            if bucket_points
             else None
         )
 
@@ -1540,8 +1765,8 @@ class FormModel:
                 3.0
                 * matches
             )
-            if matches > 0
-            and total_points is not None
+            if total_points is not None
+            and matches > 0
             else None
         )
 
@@ -1553,40 +1778,41 @@ class FormModel:
             else None
         )
 
-        bucket_values = [
-            (
-                point / 3.0
-                if point is not None
-                else None
-            )
-            for point in points
-        ]
+        # ----------------------------------------------------
+        # Recent bucket rate.
+        #
+        # IMPORTANT:
+        # weights remain attached to the original temporal
+        # positions.
+        # ----------------------------------------------------
 
-        bucket_weights = self._weights_for(
-            len(
-                result_points
-            )
+        full_weights = self._weights_for(
+            len(result_points)
         )
 
-        bucket_recent_values = [
-            result_points[index] / 3.0
-            for index in indexes
-            if index < len(
-                result_points
-            )
-            and result_points[index]
-            is not None
-        ]
+        bucket_recent_values = []
 
-        bucket_recent_weights = [
-            bucket_weights[index]
-            for index in indexes
-            if index < len(
-                result_points
+        bucket_recent_weights = []
+
+        for index in bucket_positions:
+
+            if index >= len(
+                full_weights
+            ):
+                continue
+
+            point = result_points[index]
+
+            if point is None:
+                continue
+
+            bucket_recent_values.append(
+                point / 3.0
             )
-            and result_points[index]
-            is not None
-        ]
+
+            bucket_recent_weights.append(
+                full_weights[index]
+            )
 
         recent_points_rate = (
             _weighted_mean(
@@ -1599,11 +1825,7 @@ class FormModel:
 
         return DifficultyState(
             matches=matches,
-            points=(
-                total_points
-                if total_points is not None
-                else 0.0
-            ),
+            points=total_points,
             points_rate=points_rate,
             adjustment=adjustment,
             recent_points_rate=(
@@ -1621,17 +1843,21 @@ class FormModel:
     ) -> Optional[str]:
 
         if venue is None:
+
             return None
 
-        value = str(
-            venue
-        ).strip().lower()
+        value = (
+            str(venue)
+            .strip()
+            .lower()
+        )
 
         if value in (
             "home",
             "дома",
             "h",
         ):
+
             return "дома"
 
         if value in (
@@ -1640,6 +1866,7 @@ class FormModel:
             "гостях",
             "a",
         ):
+
             return "гости"
 
         return None
@@ -1667,19 +1894,25 @@ class FormModel:
                 == target
                 and point is not None
             ):
+
                 points.append(
                     point
                 )
 
         if not points:
+
             return None
 
-        return sum(points) / (
-            3.0 * len(points)
+        return (
+            sum(points)
+            / (
+                3.0
+                * len(points)
+            )
         )
 
     # ========================================================
-    # NORMALIZATION
+    # DIFFICULTY NORMALIZATION
     # ========================================================
 
     @staticmethod
@@ -1688,13 +1921,17 @@ class FormModel:
     ) -> Optional[str]:
 
         if difficulty is None:
+
             return None
 
-        value = str(
-            difficulty
-        ).strip().lower()
+        value = (
+            str(difficulty)
+            .strip()
+            .lower()
+        )
 
         aliases = {
+
             "easy": "easy",
             "лёгкий": "easy",
             "легкий": "easy",
@@ -1724,10 +1961,6 @@ class FormModel:
         results: List[Optional[str]],
         venues: List[Any],
         next_venue: Optional[str],
-        difficulties: List[Any],
-        result_points: List[
-            Optional[float]
-        ],
         goals_for_avg: Optional[float],
         goals_against_avg: Optional[float],
         xg_avg: Optional[float],
@@ -1736,17 +1969,24 @@ class FormModel:
         finishing_ratio: Optional[float],
         defensive_delta: Optional[float],
     ) -> List[EffectSignal]:
+        """
+        Evidence-only pattern detectors.
+
+        IMPORTANT:
+
+            effects never modify any predictive State.
+        """
 
         effects: List[
             EffectSignal
         ] = []
 
-        # ----------------------------------------------------
+        # ====================================================
         # GLADIATOR
-        # ----------------------------------------------------
+        # ====================================================
 
         consecutive_wins = (
-            self._leading_streak(
+            self._trailing_streak(
                 results,
                 "W",
             )
@@ -1782,26 +2022,28 @@ class FormModel:
             )
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # FORTRESS
-        # ----------------------------------------------------
+        # ====================================================
 
         home_results = [
             result
-            for venue, result
-            in zip(
+            for venue, result in zip(
                 venues,
                 results,
             )
-            if self._normalize_venue(
-                venue
-            ) == "дома"
+            if (
+                self._normalize_venue(
+                    venue
+                )
+                == "дома"
+            )
+            and result is not None
         ]
 
         home_unbeaten = sum(
             1
-            for result
-            in home_results
+            for result in home_results
             if result in ("W", "D")
         )
 
@@ -1845,20 +2087,23 @@ class FormModel:
             )
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # LEICESTER
-        # ----------------------------------------------------
+        # ====================================================
 
         away_results = [
             result
-            for venue, result
-            in zip(
+            for venue, result in zip(
                 venues,
                 results,
             )
-            if self._normalize_venue(
-                venue
-            ) == "гости"
+            if (
+                self._normalize_venue(
+                    venue
+                )
+                == "гости"
+            )
+            and result is not None
         ]
 
         away_matches = len(
@@ -1913,18 +2158,21 @@ class FormModel:
             )
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # GOD KISS
-        # ----------------------------------------------------
+        # ====================================================
 
         consecutive_away = (
-            self._leading_streak(
+            self._trailing_streak(
                 [
                     (
                         "A"
-                        if self._normalize_venue(
-                            venue
-                        ) == "гости"
+                        if (
+                            self._normalize_venue(
+                                venue
+                            )
+                            == "гости"
+                        )
                         else "H"
                     )
                     for venue in venues
@@ -1951,9 +2199,11 @@ class FormModel:
                 name="God Kiss",
                 detected=(
                     god_kiss_detected
-                    if consecutive_away > 0
-                    and normalized_next_venue
-                    is not None
+                    if (
+                        consecutive_away > 0
+                        and normalized_next_venue
+                        is not None
+                    )
                     else None
                 ),
                 signal=(
@@ -1961,9 +2211,11 @@ class FormModel:
                     if god_kiss_detected
                     else 0.0
                 )
-                if consecutive_away > 0
-                and normalized_next_venue
-                is not None
+                if (
+                    consecutive_away > 0
+                    and normalized_next_venue
+                    is not None
+                )
                 else None,
                 confidence=None,
                 evidence={
@@ -1977,12 +2229,9 @@ class FormModel:
             )
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # DARK HORSE
-        # ----------------------------------------------------
-        #
-        # Requires league baseline.
-        #
+        # ====================================================
 
         effects.append(
             EffectSignal(
@@ -2005,9 +2254,9 @@ class FormModel:
             )
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # LUKAKU
-        # ----------------------------------------------------
+        # ====================================================
 
         effects.append(
             EffectSignal(
@@ -2030,9 +2279,9 @@ class FormModel:
             )
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # HAALAND
-        # ----------------------------------------------------
+        # ====================================================
 
         effects.append(
             EffectSignal(
@@ -2055,9 +2304,9 @@ class FormModel:
             )
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # KEPA
-        # ----------------------------------------------------
+        # ====================================================
 
         effects.append(
             EffectSignal(
@@ -2081,33 +2330,35 @@ class FormModel:
         return effects
 
     # ========================================================
-    # STREAK
+    # TRAILING STREAK
     # ========================================================
 
     @staticmethod
-    def _leading_streak(
+    def _trailing_streak(
         values: List[Any],
         target: Any,
     ) -> int:
         """
-        Counts consecutive target values
-        starting from the newest observation.
+        Count consecutive target observations
+        from the NEWEST match backwards.
 
-        FormContext must therefore be ordered:
+        History contract:
 
-            newest -> oldest
+            oldest → newest
 
-        This function does not reorder history.
+        Therefore streak inspection starts at the end.
         """
 
         count = 0
 
-        for value in values:
+        for value in reversed(values):
 
             if value == target:
+
                 count += 1
 
             else:
+
                 break
 
         return count
@@ -2121,16 +2372,14 @@ def form_model_result_to_dict(
     result: FormModelResult,
 ) -> Dict[str, Any]:
     """
-    Convert FormModelResult into plain dictionary.
+    Convert FormModelResult into a plain dictionary.
 
-    EffectSignal dataclasses are also converted.
+    Nested EffectSignal dataclasses are also serialized.
     """
 
-    data = asdict(
+    return asdict(
         result
     )
-
-    return data
 
 
 # ============================================================
@@ -2150,7 +2399,7 @@ def build_form_model(
     """
     Convenience API.
 
-    Returns a serializable dictionary.
+    Returns serializable dictionary.
     """
 
     model = FormModel(
@@ -2178,9 +2427,12 @@ if __name__ == "__main__":
 
         "team": "Зенит",
 
+        # ----------------------------------------------------
         # IMPORTANT:
-        # For FormModel calculations history is expected
-        # from oldest -> newest.
+        #
+        # History is oldest -> newest.
+        # FormModel will keep only the latest 6.
+        # ----------------------------------------------------
 
         "results": (
             "L",
@@ -2225,6 +2477,42 @@ if __name__ == "__main__":
             0.90,
             1.10,
             0.70,
+        ),
+
+        "shots": (
+            7,
+            9,
+            10,
+            13,
+            14,
+            16,
+        ),
+
+        "shots_against": (
+            15,
+            12,
+            11,
+            9,
+            8,
+            7,
+        ),
+
+        "shots_on_target": (
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+        ),
+
+        "shots_on_target_against": (
+            6,
+            5,
+            4,
+            3,
+            3,
+            2,
         ),
 
         "venue": (
