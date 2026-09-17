@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ PLATFORM v12.1
-FORM WIN v1.3
+FORM WIN v1.4
 ============================================================
 
 МАТЕМАТИЧЕСКИЙ ОРГАН FAJ
@@ -13,9 +13,11 @@ FORM WIN v1.3
 ----------
 
 FormWin измеряет состояние команды по фактам последних матчей,
-которые связаны с созданием предпосылок для победы.
+которые могут формировать предпосылки для победы.
 
-FormWin НЕ прогнозирует победителя.
+FormWin = EVIDENCE ORGAN
+
+FormWin НЕ является Winner Predictor.
 
 Архитектура:
 
@@ -27,18 +29,18 @@ FormWin НЕ прогнозирует победителя.
         ↓
     FormWinState
         ↓
-    WinnerState
+    FAJBrain / AnalysisEngine
         ↓
-    FAJ Brain
+    Winner synthesis
 
 Главный принцип:
 
     FormWin = evidence
-    WinnerState = synthesis
+    Winner synthesis = отдельный уровень FAJBrain/AnalysisEngine
 
 FormWin НЕ:
 
-    - выбирает HOME/AWAY/DRAW;
+    - выбирает HOME/AWAY/DRAW как окончательный прогноз;
     - рассчитывает вероятность победы;
     - рассчитывает Poisson;
     - изменяет GoalModel lambda;
@@ -47,22 +49,44 @@ FormWin НЕ:
     - обращается к Soccer365;
     - изменяет Rating;
     - изменяет Team Passport;
-    - обучается на текущем результате.
+    - обучается на текущем результате;
+    - изменяет ProbabilityModel;
+    - изменяет ScorePredictor.
+
+ВАЖНО
+-----
+
+FormWin может вернуть win_form_score и relative_form_win.
+
+Это НЕ probability.
+
+Это ограниченное [-1, +1] evidence.
 
 None != 0
 """
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from math import isfinite, tanh
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
-FORM_WIN_VERSION = "1.3"
+FORM_WIN_VERSION = "1.4"
 
 EPSILON = 1e-9
 
+
+# ============================================================
+# TEMPORAL WEIGHTS
+#
+# История:
+#
+# oldest → newest
+#
+# Для N матчей используются первые N весов.
+# При N < 6 используются только существующие веса.
+# ============================================================
 
 TEMPORAL_WEIGHTS: Tuple[float, ...] = (
     1.0,
@@ -75,10 +99,15 @@ TEMPORAL_WEIGHTS: Tuple[float, ...] = (
 
 
 # ============================================================
-# INTERNAL STRUCTURAL WEIGHTS
+# INTERNAL FORM-WIN WEIGHTS
 #
-# Эти веса относятся только к формированию FormWin evidence.
-# Они НЕ являются WinnerState weights.
+# Эти веса относятся ТОЛЬКО к внутреннему evidence FormWin.
+#
+# Они НЕ являются:
+#   - WinnerState weights;
+#   - Probability weights;
+#   - GoalModel multipliers;
+#   - confidence weights.
 # ============================================================
 
 ATTACK_WEIGHTS = {
@@ -117,6 +146,12 @@ VENUE_SHRINKAGE_K = 4.0
 # ============================================================
 
 def _safe_float(value: Any) -> Optional[float]:
+    """
+    Безопасное числовое преобразование.
+
+    None остаётся None.
+    bool не считается числом.
+    """
 
     if value is None:
         return None
@@ -135,7 +170,13 @@ def _safe_float(value: Any) -> Optional[float]:
     return result
 
 
-def _get_value(obj: Any, *names: str) -> Any:
+def _get_value(
+    obj: Any,
+    *names: str,
+) -> Any:
+    """
+    Получает значение из dict / mapping / dataclass / object.
+    """
 
     if obj is None:
         return None
@@ -147,13 +188,16 @@ def _get_value(obj: Any, *names: str) -> Any:
 
         try:
             keys = obj.keys()
+
             if name in keys:
                 return obj[name]
+
         except (AttributeError, TypeError):
             pass
 
         try:
             return getattr(obj, name)
+
         except AttributeError:
             pass
 
@@ -165,13 +209,20 @@ def _clamp(
     low: float = -1.0,
     high: float = 1.0,
 ) -> float:
-
-    return max(low, min(high, value))
+    return max(
+        low,
+        min(high, value),
+    )
 
 
 def _mean(
     values: Iterable[Optional[float]],
 ) -> Optional[float]:
+    """
+    Обычное среднее только по существующим значениям.
+
+    None не участвует.
+    """
 
     clean = [
         value
@@ -189,8 +240,16 @@ def _weighted_mean(
     values: Sequence[Optional[float]],
     weights: Sequence[float] = TEMPORAL_WEIGHTS,
 ) -> Optional[float]:
+    """
+    Взвешенное среднее.
 
-    pairs = []
+    История предполагается oldest → newest.
+
+    Веса сохраняют позиционную recency-структуру.
+    None не получает веса и не входит в denominator.
+    """
+
+    pairs: List[Tuple[float, float]] = []
 
     for value, weight in zip(values, weights):
 
@@ -200,7 +259,10 @@ def _weighted_mean(
             continue
 
         pairs.append(
-            (numeric, float(weight))
+            (
+                numeric,
+                float(weight),
+            )
         )
 
     if not pairs:
@@ -223,8 +285,14 @@ def _weighted_mean(
 def _ols_slope(
     values: Sequence[Optional[float]],
 ) -> Optional[float]:
+    """
+    OLS slope по фактически существующим наблюдениям.
 
-    observations = []
+    Индекс сохраняется относительно исходной последовательности,
+    чтобы пропуски не сжимали временную шкалу.
+    """
+
+    observations: List[Tuple[float, float]] = []
 
     for index, value in enumerate(values):
 
@@ -234,14 +302,24 @@ def _ols_slope(
             continue
 
         observations.append(
-            (float(index), numeric)
+            (
+                float(index),
+                numeric,
+            )
         )
 
     if len(observations) < 2:
         return None
 
-    x = [item[0] for item in observations]
-    y = [item[1] for item in observations]
+    x = [
+        item[0]
+        for item in observations
+    ]
+
+    y = [
+        item[1]
+        for item in observations
+    ]
 
     x_mean = sum(x) / len(x)
     y_mean = sum(y) / len(y)
@@ -262,28 +340,23 @@ def _ols_slope(
     return numerator / denominator
 
 
-def _normalize_signal(
-    value: Optional[float],
-    scale: Optional[float] = None,
-) -> Optional[float]:
-
-    if value is None:
-        return None
-
-    if scale is not None and scale > EPSILON:
-        return _clamp(tanh(value / scale))
-
-    return _clamp(tanh(value))
-
-
 def _combine_optional(
     components: Sequence[
         Tuple[Optional[float], float]
     ],
 ) -> Optional[float]:
+    """
+    Взвешенное объединение только существующих evidence.
+
+    Отсутствующий компонент НЕ заменяется нулём.
+    Вес отсутствующего компонента исключается из denominator.
+    """
 
     available = [
-        (value, weight)
+        (
+            value,
+            weight,
+        )
         for value, weight in components
         if value is not None
     ]
@@ -313,6 +386,11 @@ def _extract_history(
     context: Any,
     *names: str,
 ) -> List[Optional[float]]:
+    """
+    Извлекает числовую историю.
+
+    Источник обязан передавать историю oldest → newest.
+    """
 
     for name in names:
 
@@ -324,10 +402,103 @@ def _extract_history(
         if value is None:
             continue
 
-        if isinstance(value, (list, tuple)):
-
+        if isinstance(
+            value,
+            (list, tuple),
+        ):
             return [
                 _safe_float(item)
+                for item in value
+            ]
+
+    return []
+
+
+def _normalize_result_code(
+    value: Any,
+) -> Optional[float]:
+    """
+    Нормализация результата матча в signal:
+
+        W = +1
+        D =  0
+        L = -1
+
+    Поддерживаются:
+        W / D / L
+        WIN / DRAW / LOSS
+        1 / X / 2
+        числовые -1 / 0 / +1
+
+    Числовые значения вне [-1, +1] не принимаются.
+    """
+
+    if value is None:
+        return None
+
+    if isinstance(value, bool):
+        return None
+
+    if isinstance(value, str):
+
+        code = value.strip().upper()
+
+        mapping = {
+            "W": 1.0,
+            "WIN": 1.0,
+            "1": 1.0,
+
+            "D": 0.0,
+            "DRAW": 0.0,
+            "X": 0.0,
+
+            "L": -1.0,
+            "LOSS": -1.0,
+            "LOST": -1.0,
+            "2": -1.0,
+        }
+
+        if code in mapping:
+            return mapping[code]
+
+        numeric = _safe_float(code)
+
+    else:
+        numeric = _safe_float(value)
+
+    if numeric is None:
+        return None
+
+    if numeric in (-1.0, 0.0, 1.0):
+        return numeric
+
+    return None
+
+
+def _extract_result_history(
+    context: Any,
+    *names: str,
+) -> List[Optional[float]]:
+    """
+    Отдельный extractor для W/D/L result history.
+    """
+
+    for name in names:
+
+        value = _get_value(
+            context,
+            name,
+        )
+
+        if value is None:
+            continue
+
+        if isinstance(
+            value,
+            (list, tuple),
+        ):
+            return [
+                _normalize_result_code(item)
                 for item in value
             ]
 
@@ -340,6 +511,9 @@ def _extract_history(
 
 @dataclass
 class FormWinSignals:
+    """
+    Низкоуровневые evidence-сигналы FormWin.
+    """
 
     attack_signal: Optional[float] = None
 
@@ -372,6 +546,14 @@ class FormWinSignals:
 
 @dataclass
 class FormWinState:
+    """
+    Состояние FormWin.
+
+    win_form_score:
+        итоговое внутреннее evidence FormWin [-1, +1].
+
+    Это НЕ вероятность победы.
+    """
 
     version: str
 
@@ -404,11 +586,27 @@ class FormWinState:
 
     sample_size: int
 
-    diagnostics: Dict[str, Any]
+    diagnostics: Dict[str, Any] = field(
+        default_factory=dict
+    )
 
 
 @dataclass
 class FormWinComparison:
+    """
+    Сравнение FormWin двух команд.
+
+    relative_*:
+
+        HOME - AWAY
+
+    Это относительное evidence.
+
+    Это НЕ:
+        - Winner probability;
+        - окончательный winner;
+        - draw probability.
+    """
 
     home_form_win: Optional[float]
 
@@ -432,12 +630,28 @@ class FormWinComparison:
 
     evidence_sources: Optional[List[str]] = None
 
+    evidence_conflicts: Optional[List[str]] = None
+
 
 # ============================================================
 # FORM WIN
 # ============================================================
 
 class FormWin:
+    """
+    FormWin evidence organ.
+
+    FormWin получает только контекст фактов.
+
+    Он не знает:
+        - GoalModel;
+        - ProbabilityModel;
+        - ScorePredictor;
+        - CornersModel;
+        - CardsModel;
+        - Database;
+        - текущий факт будущего матча.
+    """
 
     def __init__(
         self,
@@ -447,10 +661,25 @@ class FormWin:
         ] = TEMPORAL_WEIGHTS,
     ) -> None:
 
-        self.temporal_weights = tuple(
+        weights = tuple(
             float(weight)
             for weight in temporal_weights
         )
+
+        if not weights:
+            raise ValueError(
+                "temporal_weights must not be empty"
+            )
+
+        if any(
+            weight <= 0.0
+            for weight in weights
+        ):
+            raise ValueError(
+                "temporal_weights must be positive"
+            )
+
+        self.temporal_weights = weights
 
     # ========================================================
     # HISTORIES
@@ -459,7 +688,16 @@ class FormWin:
     def _histories(
         self,
         context: Any,
-    ) -> Dict[str, List[Optional[float]]]:
+    ) -> Dict[
+        str,
+        List[Optional[float]],
+    ]:
+        """
+        Получение фактических историй из FormContext.
+
+        FormContext считается уже нормализованным
+        и упорядоченным oldest → newest.
+        """
 
         return {
 
@@ -520,10 +758,11 @@ class FormWin:
                 "goals_for_history",
             ),
 
-            "results": _extract_history(
+            "results": _extract_result_history(
                 context,
                 "result_codes",
                 "result_signal_history",
+                "results",
             ),
 
             "venue": _extract_history(
@@ -538,10 +777,15 @@ class FormWin:
 
     def _attack_signal(
         self,
-        histories: Dict[str, List[Optional[float]]],
+        histories: Dict[
+            str,
+            List[Optional[float]],
+        ],
     ) -> Optional[float]:
 
-        components = []
+        components: List[
+            Tuple[Optional[float], float]
+        ] = []
 
         for key, weight in ATTACK_WEIGHTS.items():
 
@@ -555,7 +799,10 @@ class FormWin:
             )
 
             components.append(
-                (signal, weight)
+                (
+                    signal,
+                    weight,
+                )
             )
 
         return _combine_optional(
@@ -568,10 +815,15 @@ class FormWin:
 
     def _control_signal(
         self,
-        histories: Dict[str, List[Optional[float]]],
+        histories: Dict[
+            str,
+            List[Optional[float]],
+        ],
     ) -> Optional[float]:
 
-        components = []
+        components: List[
+            Tuple[Optional[float], float]
+        ] = []
 
         for key, weight in CONTROL_WEIGHTS.items():
 
@@ -585,7 +837,10 @@ class FormWin:
             )
 
             components.append(
-                (signal, weight)
+                (
+                    signal,
+                    weight,
+                )
             )
 
         return _combine_optional(
@@ -598,7 +853,10 @@ class FormWin:
 
     def _outcome_signal(
         self,
-        histories: Dict[str, List[Optional[float]]],
+        histories: Dict[
+            str,
+            List[Optional[float]],
+        ],
     ) -> Optional[float]:
 
         results = histories.get(
@@ -606,24 +864,20 @@ class FormWin:
             [],
         )
 
-        if not results:
+        if results:
 
-            goals = histories.get(
-                "goals",
-                [],
+            return _weighted_mean(
+                results,
+                self.temporal_weights,
             )
 
-            if not goals:
-                return None
+        # Если результатов нет, НЕ подменяем их голами.
+        #
+        # Goals ≠ Result.
+        #
+        # Это принципиальная защита от смешения сущностей.
 
-            return self._positive_state_signal(
-                goals
-            )
-
-        return _weighted_mean(
-            results,
-            self.temporal_weights,
-        )
+        return None
 
     # ========================================================
     # MOMENTUM
@@ -631,7 +885,10 @@ class FormWin:
 
     def _momentum_signal(
         self,
-        histories: Dict[str, List[Optional[float]]],
+        histories: Dict[
+            str,
+            List[Optional[float]],
+        ],
     ) -> Optional[float]:
 
         shots = histories.get(
@@ -649,7 +906,9 @@ class FormWin:
             [],
         )
 
-        components = []
+        components: List[
+            Tuple[Optional[float], float]
+        ] = []
 
         shots_trend = self._positive_trend(
             shots
@@ -685,13 +944,35 @@ class FormWin:
         )
 
     # ========================================================
-    # POSITIVE SIGNAL
+    # POSITIVE STATE SIGNAL
     # ========================================================
 
     def _positive_state_signal(
         self,
         values: Sequence[Optional[float]],
     ) -> Optional[float]:
+        """
+        Формирует bounded evidence относительно собственного
+        среднего состояния команды.
+
+        Это НЕ абсолютная сила команды.
+
+        Пример:
+
+            stable history
+                ↓
+            signal ≈ 0
+
+        recent increase
+                ↓
+            positive signal
+
+        recent decrease
+                ↓
+            negative signal
+
+        Это намеренно diagnostic/evidence behaviour.
+        """
 
         clean = [
             value
@@ -745,7 +1026,9 @@ class FormWin:
         values: Sequence[Optional[float]],
     ) -> Optional[float]:
 
-        slope = _ols_slope(values)
+        slope = _ols_slope(
+            values
+        )
 
         if slope is None:
             return None
@@ -759,8 +1042,13 @@ class FormWin:
         if len(clean) < 2:
             return None
 
+        mean_value = _mean(clean)
+
+        if mean_value is None:
+            return None
+
         scale = max(
-            abs(_mean(clean) or 0.0),
+            abs(mean_value),
             1.0,
         )
 
@@ -845,8 +1133,16 @@ class FormWin:
             List[Optional[float]],
         ],
     ) -> Optional[float]:
+        """
+        Среднее покрытие доступных FormWin histories.
 
-        relevant = []
+        Отсутствующая история полностью исключается.
+
+        None внутри существующей истории считается отсутствующим
+        наблюдением.
+        """
+
+        relevant: List[float] = []
 
         for key in (
             "shots",
@@ -866,14 +1162,20 @@ class FormWin:
                 [],
             )
 
-            if values:
-                relevant.append(
-                    sum(
-                        value is not None
-                        for value in values
-                    )
-                    / len(values)
+            if not values:
+                continue
+
+            coverage = (
+                sum(
+                    value is not None
+                    for value in values
                 )
+                / len(values)
+            )
+
+            relevant.append(
+                coverage
+            )
 
         if not relevant:
             return None
@@ -882,9 +1184,68 @@ class FormWin:
             0.0,
             min(
                 1.0,
-                sum(relevant) / len(relevant),
+                sum(relevant)
+                / len(relevant),
             ),
         )
+
+    # ========================================================
+    # SAMPLE SIZE
+    # ========================================================
+
+    def _sample_size(
+        self,
+        histories: Dict[
+            str,
+            List[Optional[float]],
+        ],
+    ) -> int:
+        """
+        Sample size FormWin.
+
+        Берём максимальное количество фактически существующих
+        наблюдений среди историй, которые действительно относятся
+        к FormWin.
+
+        Это не matches_count из общего контекста.
+        """
+
+        relevant_keys = (
+            "shots",
+            "sot",
+            "blocked",
+            "crosses",
+            "corners",
+            "possession",
+            "passes",
+            "pass_accuracy",
+            "goals",
+            "results",
+        )
+
+        sizes = []
+
+        for key in relevant_keys:
+
+            values = histories.get(
+                key,
+                [],
+            )
+
+            valid_count = sum(
+                value is not None
+                for value in values
+            )
+
+            if valid_count > 0:
+                sizes.append(
+                    valid_count
+                )
+
+        if not sizes:
+            return 0
+
+        return max(sizes)
 
     # ========================================================
     # CALCULATE
@@ -900,6 +1261,10 @@ class FormWin:
         histories = self._histories(
             context
         )
+
+        # ----------------------------------------------------
+        # PRIMARY EVIDENCE
+        # ----------------------------------------------------
 
         attack_signal = self._attack_signal(
             histories
@@ -920,6 +1285,13 @@ class FormWin:
         venue_signal = self._venue_signal(
             context
         )
+
+        # ----------------------------------------------------
+        # INTERNAL FORM-WIN EVIDENCE
+        #
+        # Это НЕ WinnerState.
+        # Это только объединённый evidence FormWin.
+        # ----------------------------------------------------
 
         win_form_score = _combine_optional(
             (
@@ -947,11 +1319,21 @@ class FormWin:
         )
 
         if win_form_score is not None:
-            win_form_score = tanh(
-                win_form_score
+
+            win_form_score = _clamp(
+                tanh(
+                    win_form_score
+                )
             )
 
-        evidence_vector = {
+        # ----------------------------------------------------
+        # EVIDENCE VECTOR
+        # ----------------------------------------------------
+
+        evidence_vector: Dict[
+            str,
+            Optional[float],
+        ] = {
             "attack": attack_signal,
             "control": control_signal,
             "outcome": outcome_signal,
@@ -961,7 +1343,8 @@ class FormWin:
 
         evidence_sources = [
             key
-            for key, value in evidence_vector.items()
+            for key, value
+            in evidence_vector.items()
             if value is not None
         ]
 
@@ -971,93 +1354,180 @@ class FormWin:
             )
         )
 
+        # ----------------------------------------------------
+        # DATA QUALITY
+        # ----------------------------------------------------
+
         data_quality = self._data_quality(
             histories
         )
 
-        sample_size = max(
-            (
-                len(value)
-                for value in histories.values()
-            ),
-            default=0,
+        sample_size = self._sample_size(
+            histories
         )
+
+        # ----------------------------------------------------
+        # LOW-LEVEL SIGNALS
+        # ----------------------------------------------------
 
         signals = FormWinSignals(
+
             attack_signal=attack_signal,
+
             control_signal=control_signal,
+
             outcome_signal=outcome_signal,
+
             momentum_signal=momentum_signal,
+
             venue_signal=venue_signal,
 
-            shots_signal=self._positive_state_signal(
-                histories["shots"]
+            shots_signal=(
+                self._positive_state_signal(
+                    histories["shots"]
+                )
             ),
 
-            sot_signal=self._positive_state_signal(
-                histories["sot"]
+            sot_signal=(
+                self._positive_state_signal(
+                    histories["sot"]
+                )
             ),
 
-            blocked_signal=self._positive_state_signal(
-                histories["blocked"]
+            blocked_signal=(
+                self._positive_state_signal(
+                    histories["blocked"]
+                )
             ),
 
-            crosses_signal=self._positive_state_signal(
-                histories["crosses"]
+            crosses_signal=(
+                self._positive_state_signal(
+                    histories["crosses"]
+                )
             ),
 
-            corners_signal=self._positive_state_signal(
-                histories["corners"]
+            corners_signal=(
+                self._positive_state_signal(
+                    histories["corners"]
+                )
             ),
 
-            possession_signal=self._positive_state_signal(
-                histories["possession"]
+            possession_signal=(
+                self._positive_state_signal(
+                    histories["possession"]
+                )
             ),
 
-            passes_signal=self._positive_state_signal(
-                histories["passes"]
+            passes_signal=(
+                self._positive_state_signal(
+                    histories["passes"]
+                )
             ),
 
-            pass_accuracy_signal=self._positive_state_signal(
-                histories["pass_accuracy"]
+            pass_accuracy_signal=(
+                self._positive_state_signal(
+                    histories["pass_accuracy"]
+                )
             ),
 
-            result_trend_signal=self._positive_trend(
-                histories["results"]
+            result_trend_signal=(
+                self._positive_trend(
+                    histories["results"]
+                )
             ),
         )
 
+        # ----------------------------------------------------
+        # STATE
+        # ----------------------------------------------------
+
         return FormWinState(
+
             version=FORM_WIN_VERSION,
+
             team=team_name,
+
             signals=signals,
 
             attack_signal=attack_signal,
+
             control_signal=control_signal,
+
             outcome_signal=outcome_signal,
+
             momentum_signal=momentum_signal,
+
             venue_signal=venue_signal,
 
             win_form_score=win_form_score,
 
             evidence_vector=evidence_vector,
+
             evidence_sources=evidence_sources,
+
             evidence_conflicts=evidence_conflicts,
 
             data_quality=data_quality,
+
             sample_size=sample_size,
 
             diagnostics={
+
                 "version": FORM_WIN_VERSION,
-                "model_role": "winner_evidence",
+
+                "model_role": (
+                    "winner_evidence_organ"
+                ),
+
+                # ------------------------------------------------
+                # ARCHITECTURE
+                # ------------------------------------------------
+
                 "winner_state_generated": False,
+
                 "winner_direction_generated": False,
+
                 "winner_probability_generated": False,
+
+                "winner_synthesis_owner": (
+                    "FAJBrain/AnalysisEngine"
+                ),
+
+                # ------------------------------------------------
+                # PROHIBITED DEPENDENCIES
+                # ------------------------------------------------
+
                 "poisson_used": False,
+
                 "goalmodel_modified": False,
+
+                "probability_model_modified": False,
+
+                "score_predictor_modified": False,
+
                 "future_result_used": False,
-                "missing_is_zero": False,
+
+                "database_used": False,
+
+                "rating_used": False,
+
+                "passport_used": False,
+
+                "odds_used": False,
+
                 "winner_override": False,
+
+                # ------------------------------------------------
+                # MISSING DATA CONTRACT
+                # ------------------------------------------------
+
+                "missing_is_zero": False,
+
+                "none_is_zero": False,
+
+                # ------------------------------------------------
+                # INTERNAL FORM-WIN WEIGHTS
+                # ------------------------------------------------
 
                 "attack_weights": dict(
                     ATTACK_WEIGHTS
@@ -1075,8 +1545,20 @@ class FormWin:
                     FINAL_WEIGHTS
                 ),
 
+                "venue_shrinkage_k": (
+                    VENUE_SHRINKAGE_K
+                ),
+
+                # ------------------------------------------------
+                # CONTRACT
+                # ------------------------------------------------
+
                 "contract": (
                     "MATHEMATICAL_CONTRACT_V1"
+                ),
+
+                "state_role": (
+                    "diagnostic_evidence"
                 ),
             },
         )
@@ -1111,6 +1593,22 @@ class FormWin:
         home_team: Optional[str] = None,
         away_team: Optional[str] = None,
     ) -> FormWinComparison:
+        """
+        Сравнивает FormWin двух команд.
+
+        Все relative значения:
+
+            HOME - AWAY
+
+        Они являются evidence.
+
+        Они НЕ являются:
+
+            Home probability
+            Draw probability
+            Away probability
+            final winner
+        """
 
         home = self.calculate(
             home_context,
@@ -1170,31 +1668,108 @@ class FormWin:
         sources = [
             name
             for name, value in (
-                ("form_win", relative_form_win),
-                ("attack", relative_attack),
-                ("control", relative_control),
-                ("outcome", relative_outcome),
-                ("momentum", relative_momentum),
-                ("venue", relative_venue),
+                (
+                    "form_win",
+                    relative_form_win,
+                ),
+                (
+                    "attack",
+                    relative_attack,
+                ),
+                (
+                    "control",
+                    relative_control,
+                ),
+                (
+                    "outcome",
+                    relative_outcome,
+                ),
+                (
+                    "momentum",
+                    relative_momentum,
+                ),
+                (
+                    "venue",
+                    relative_venue,
+                ),
             )
             if value is not None
         ]
 
+        conflicts: List[str] = []
+
+        relative_evidence = {
+            "form_win": relative_form_win,
+            "attack": relative_attack,
+            "control": relative_control,
+            "outcome": relative_outcome,
+            "momentum": relative_momentum,
+            "venue": relative_venue,
+        }
+
+        available = [
+            value
+            for value
+            in relative_evidence.values()
+            if value is not None
+        ]
+
+        if (
+            len(available) >= 2
+            and any(
+                value > 0.15
+                for value in available
+            )
+            and any(
+                value < -0.15
+                for value in available
+            )
+        ):
+            conflicts.append(
+                "home_away_form_win_evidence_conflict"
+            )
+
         return FormWinComparison(
-            home_form_win=home.win_form_score,
-            away_form_win=away.win_form_score,
-            relative_form_win=relative_form_win,
+
+            home_form_win=(
+                home.win_form_score
+            ),
+
+            away_form_win=(
+                away.win_form_score
+            ),
+
+            relative_form_win=(
+                relative_form_win
+            ),
 
             home_state=home,
+
             away_state=away,
 
-            relative_attack=relative_attack,
-            relative_control=relative_control,
-            relative_outcome=relative_outcome,
-            relative_momentum=relative_momentum,
-            relative_venue=relative_venue,
+            relative_attack=(
+                relative_attack
+            ),
+
+            relative_control=(
+                relative_control
+            ),
+
+            relative_outcome=(
+                relative_outcome
+            ),
+
+            relative_momentum=(
+                relative_momentum
+            ),
+
+            relative_venue=(
+                relative_venue
+            ),
 
             evidence_sources=sources,
+
+            evidence_conflicts=conflicts,
         )
 
     # ========================================================
@@ -1206,7 +1781,9 @@ class FormWin:
         state: FormWinState,
     ) -> Dict[str, Any]:
 
-        return asdict(state)
+        return asdict(
+            state
+        )
 
 
 # ============================================================
