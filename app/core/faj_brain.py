@@ -1271,14 +1271,23 @@ def _run_defence(
     """
     Defence v2.0 exact contract.
 
-    Public API:
+    Public API (per current defence.py):
 
-        analyze(
+        calculate(
             context,
             team_name=...
         )
 
+    Brain adapts strictly to this signature.
+
     Defence is evidence only.
+
+    It MUST NOT:
+        - modify lambda
+        - modify GoalModel
+        - modify ProbabilityModel
+        - create probability
+        - override winner
     """
 
     if Defence is None:
@@ -1293,12 +1302,12 @@ def _run_defence(
 
         model = Defence()
 
-        home_state = model.analyze(
+        home_state = model.calculate(
             home_context,
             team_name=home_team,
         )
 
-        away_state = model.analyze(
+        away_state = model.calculate(
             away_context,
             team_name=away_team,
         )
@@ -2330,6 +2339,41 @@ class FAJBrain:
         diagnostics["organ_contracts"] = {
             "FormWin": {
                 "api": "calculate(context, team_name=...)",
+                "role": "evidence",
+                "modifies_goal_model": False,
+                "modifies_probability": False,
+                "winner_override": False,
+            },
+
+            "Defence": {
+                "api": "calculate(context, team_name=...)",
+                "role": "evidence",
+                "modifies_goal_model": False,
+                "modifies_probability": False,
+                "winner_override": False,
+            },
+
+            "FormControl": {
+                "api": (
+                    "analyze(context, target_team=..., "
+                    "opponent_team=..., venue=...)"
+                ),
+                "role": "evidence",
+                "modifies_goal_model": False,
+                "modifies_probability": False,
+                "winner_override": False,
+            },
+
+            "FormAnomaly": {
+                "api": "analyze(context)",
+                "role": "evidence",
+                "modifies_goal_model": False,
+                "modifies_probability": False,
+                "winner_override": False,
+            },
+
+            "FormSpecial": {
+                "api": "analyze(context, team_name=...)",
                 "role": "evidence",
                 "modifies_goal_model": False,
                 "modifies_probability": False,
