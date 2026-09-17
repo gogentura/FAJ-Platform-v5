@@ -3,464 +3,179 @@
 
 """
 ============================================================
-FAJ PREDICTOR — NEW ANALYTICAL INTERFACE
+FAJ PLATFORM v12.1
+FAJ PREDICTOR — NEW BRAIN INTERFACE
 ============================================================
 
-Новая независимая страница прогнозирования FAJ.
+UI / FACT COLLECTION LAYER
 
-АРХИТЕКТУРА:
+Архитектура:
 
     Soccer365
         ↓
     FACT COLLECTION
         ↓
-    FAJBrain.predict()
+    historical records
+        ↓
+    FAJBrain v4.0
         ↓
     BrainPrediction
         ↓
-    ТОЛЬКО ОТОБРАЖЕНИЕ
+    UI
 
-Страница НЕ рассчитывает ничего математически:
+ВАЖНО:
 
-    ❌ Poisson
-    ❌ score_distribution
-    ❌ result_probabilities
-    ❌ total_probabilities
-    ❌ over_probability
-    ❌ GoalModel
-    ❌ FormModel
-    ❌ FormWin
-    ❌ Defence
-    ❌ CornersModel
-    ❌ CardsModel
-    ❌ PairRating calculation
-    ❌ Winner Signal calculation
-    ❌ confidence calculation
-    ❌ risk calculation
-    ❌ Football Data API
+Predictor НЕ считает:
 
-Единственный источник математического результата —
-FAJ Brain.
+    - xG
+    - lambda
+    - Poisson
+    - 1X2
+    - BTTS
+    - totals
+    - score probabilities
+    - Winner Override
+    - confidence
+    - risk
 
-FAJ Club Rating:
-    только отображается.
+Вся математика принадлежит FAJ Brain и его State/Model.
 
-Winner Synthesis:
-    НЕ используется.
-    НЕ рассчитывается.
-    НЕ отображается.
+Predictor только:
 
-Pair Rating:
-    НЕ используется.
-    НЕ рассчитывается.
-    НЕ отображается.
+    1. получает FACTS;
+    2. нормализует историю;
+    3. передаёт history в Brain;
+    4. отображает BrainPrediction.
 
-НЕ ИСПОЛЬЗУЕТ:
+FAJ Brain v4.0:
 
-    ETC
-    Learning
-    LearningEngine
-    LearningMemory
-    PredictionErrorAnalyzer
-    old FAJ Core
-    bookmaker odds
-    predictions.save_prediction()
-    старые prediction-поля SQLite
+    FACTS
+      ↓
+    FormContext
+      ↓
+    FormModel
+      ↓
+    GoalModel
+      ↓
+    ProbabilityModel
+      ↓
+    ScorePredictor
+      ↓
+    FINAL BRAIN
 
-SQLite здесь вообще не нужен.
+Параллельно:
+
+    FormWin
+    Defence
+    FormControl
+    FormAnomaly
+    FormSpecial
+    CornersModel
+    CardsModel
 
 ============================================================
 """
 
 from __future__ import annotations
 
-import math
-import re
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import asdict, is_dataclass
+from datetime import datetime
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import streamlit as st
-import streamlit.components.v1 as components
+
 
 # ============================================================
-# PARSER
+# PROJECT IMPORTS
 # ============================================================
+
+from app.core.faj_brain import (
+    FAJBrain,
+    BRAIN_VERSION,
+)
 
 from app.parsers.soccer365_parser import Soccer365Parser
 
-# ============================================================
-# FAJ BRAIN — единственный источник математики
-# ============================================================
-
-from app.core.faj_brain import FAJBrain
 
 # ============================================================
-# CLUB RATING (display only)
+# OPTIONAL RATING
+#
+# Rating is DISPLAY ONLY.
+# It is NEVER passed into FAJBrain.
 # ============================================================
 
-from app.faj_club_ratings import get_team_rating
+try:
+    from app.database import get_team_rating
+except Exception:
+    get_team_rating = None
 
 
 # ============================================================
-# VERSION
+# CONSTANTS
 # ============================================================
-
-PREDICTOR_VERSION = "FAJ-PREDICTOR-1.3"
 
 HISTORY_SIZE = 6
 
 
 # ============================================================
-# PAGE CONFIG
+# PAGE
 # ============================================================
 
 st.set_page_config(
     page_title="FAJ Predictor",
     page_icon="⚽",
     layout="wide",
-    initial_sidebar_state="collapsed",
 )
 
 
 # ============================================================
-# MOBILE CSS
+# GENERIC HELPERS
 # ============================================================
 
-st.markdown(
+def _get(
+    obj: Any,
+    *names: str,
+) -> Any:
     """
-<style>
+    Universal reader.
 
-    /* --------------------------------------------------------
-       GLOBAL
-    -------------------------------------------------------- */
+    Supports:
 
-    .block-container {
-        max-width: 1100px;
-        padding-top: 1rem;
-        padding-left: 0.75rem;
-        padding-right: 0.75rem;
-        padding-bottom: 2rem;
-    }
-
-    #MainMenu {
-        visibility: hidden;
-    }
-
-    footer {
-        visibility: hidden;
-    }
-
-    header {
-        visibility: hidden;
-    }
-
-    /* --------------------------------------------------------
-       HEADER
-    -------------------------------------------------------- */
-
-    .faj-header {
-        padding: 12px 14px;
-        margin-bottom: 10px;
-        border-radius: 18px;
-        border: 1px solid rgba(128,128,128,.18);
-        background: rgba(128,128,128,.06);
-    }
-
-    .faj-title {
-        font-size: 26px;
-        font-weight: 800;
-        line-height: 1.1;
-    }
-
-    .faj-subtitle {
-        font-size: 12px;
-        opacity: .60;
-        margin-top: 4px;
-    }
-
-    /* --------------------------------------------------------
-       TEAM CARD
-    -------------------------------------------------------- */
-
-    .team-card {
-        border-radius: 18px;
-        padding: 14px;
-        border: 1px solid rgba(128,128,128,.18);
-        background: rgba(128,128,128,.045);
-        margin-bottom: 8px;
-    }
-
-    .team-name {
-        font-size: 18px;
-        font-weight: 750;
-    }
-
-    .team-meta {
-        font-size: 11px;
-        opacity: .55;
-        margin-top: 3px;
-    }
-
-    /* --------------------------------------------------------
-       RESULT CARD
-    -------------------------------------------------------- */
-
-    .result-card {
-        border-radius: 20px;
-        padding: 14px;
-        border: 1px solid rgba(128,128,128,.20);
-        background: rgba(128,128,128,.055);
-        margin: 6px 0;
-    }
-
-    .result-main {
-        font-size: 30px;
-        font-weight: 850;
-        text-align: center;
-    }
-
-    .result-caption {
-        text-align: center;
-        font-size: 11px;
-        opacity: .55;
-        margin-top: 2px;
-    }
-
-    /* --------------------------------------------------------
-       COMPACT METRIC
-    -------------------------------------------------------- */
-
-    .metric {
-        border-radius: 14px;
-        padding: 10px 8px;
-        border: 1px solid rgba(128,128,128,.16);
-        background: rgba(128,128,128,.035);
-        text-align: center;
-        margin-bottom: 6px;
-    }
-
-    .metric-value {
-        font-size: 19px;
-        font-weight: 800;
-    }
-
-    .metric-label {
-        font-size: 10px;
-        opacity: .55;
-        margin-top: 2px;
-    }
-
-    /* --------------------------------------------------------
-       SCORE
-    -------------------------------------------------------- */
-
-    .score-card {
-        border-radius: 15px;
-        padding: 11px;
-        text-align: center;
-        border: 1px solid rgba(128,128,128,.16);
-        background: rgba(128,128,128,.04);
-    }
-
-    .score {
-        font-size: 22px;
-        font-weight: 800;
-    }
-
-    .score-label {
-        font-size: 9px;
-        opacity: .5;
-    }
-
-    /* --------------------------------------------------------
-       SECTION
-    -------------------------------------------------------- */
-
-    .section-title {
-        font-size: 16px;
-        font-weight: 800;
-        margin-top: 12px;
-        margin-bottom: 7px;
-    }
-
-    /* --------------------------------------------------------
-       CONCLUSION
-    -------------------------------------------------------- */
-
-    .conclusion {
-        border-radius: 18px;
-        padding: 14px;
-        border: 1px solid rgba(128,128,128,.18);
-        background: rgba(128,128,128,.06);
-        font-size: 14px;
-        line-height: 1.45;
-    }
-
-    /* --------------------------------------------------------
-       FACT ROW
-    -------------------------------------------------------- */
-
-    .fact-row {
-        display: flex;
-        justify-content: space-between;
-        padding: 5px 0;
-        border-bottom: 1px solid rgba(128,128,128,.10);
-        font-size: 12px;
-    }
-
-    .fact-name {
-        opacity: .60;
-    }
-
-    .fact-value {
-        font-weight: 700;
-    }
-
-    /* --------------------------------------------------------
-       DIAGNOSTICS BLOCK
-    -------------------------------------------------------- */
-
-    .diag-block {
-        border-radius: 14px;
-        padding: 12px 14px;
-        border: 1px solid rgba(128,128,128,.20);
-        background: rgba(128,128,128,.05);
-        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        font-size: 12px;
-        line-height: 1.55;
-        white-space: pre-wrap;
-        word-break: break-word;
-    }
-
-    .diag-block .diag-header {
-        font-weight: 800;
-        font-size: 13px;
-        margin-bottom: 8px;
-        opacity: .85;
-    }
-
-    /* --------------------------------------------------------
-       MOBILE
-    -------------------------------------------------------- */
-
-    @media (max-width: 700px) {
-
-        .block-container {
-            padding-left: 0.45rem;
-            padding-right: 0.45rem;
-            padding-top: 0.4rem;
-        }
-
-        .faj-title {
-            font-size: 22px;
-        }
-
-        .team-name {
-            font-size: 16px;
-        }
-
-        .metric-value {
-            font-size: 17px;
-        }
-
-        .result-main {
-            font-size: 27px;
-        }
-
-        .section-title {
-            font-size: 14px;
-        }
-
-        .diag-block {
-            font-size: 11px;
-        }
-    }
-
-</style>
-""",
-    unsafe_allow_html=True,
-)
-
-
-# ============================================================
-# HELPERS
-# ============================================================
-
-def safe_float(value: Any) -> Optional[float]:
-
-    if value is None:
-        return None
-
-    if isinstance(value, bool):
-        return None
-
-    try:
-
-        value = float(value)
-
-        if math.isfinite(value):
-            return value
-
-    except (TypeError, ValueError):
-        pass
-
-    return None
-
-
-def safe_int(value: Any) -> Optional[int]:
-
-    value = safe_float(value)
-
-    if value is None:
-        return None
-
-    return int(round(value))
-
-
-def probability(value: Optional[float]) -> Optional[float]:
+        dict
+        Mapping
+        sqlite3.Row-like
+        dataclass
+        normal object
     """
-    Клампит значение в [0, 100].
-
-    ВАЖНО:
-        BrainPrediction уже отдаёт *проценты* для
-        *_probability полей (home_win_probability,
-        btts_probability, over25_probability и т.д.),
-        поэтому повторное умножение на 100 здесь
-        НЕ делается.
-    """
-
-    if value is None:
-        return None
-
-    return round(
-        max(0.0, min(100.0, float(value))),
-        1,
-    )
-
-
-def value(obj: Any, *names: str) -> Any:
 
     if obj is None:
         return None
 
     for name in names:
 
-        if isinstance(obj, dict):
+        if isinstance(obj, Mapping):
 
             if name in obj:
                 return obj[name]
 
         try:
-
             keys = obj.keys()
 
             if name in keys:
                 return obj[name]
 
-        except (AttributeError, TypeError):
+        except (
+            AttributeError,
+            TypeError,
+        ):
             pass
 
         try:
-            return getattr(obj, name)
+
+            return getattr(
+                obj,
+                name,
+            )
 
         except AttributeError:
             pass
@@ -468,16 +183,225 @@ def value(obj: Any, *names: str) -> Any:
     return None
 
 
-def nested(
+def _as_dict(
+    obj: Any,
+) -> Dict[str, Any]:
+    """
+    Convert BrainPrediction / State / dataclass
+    into a normal dictionary.
+    """
+
+    if obj is None:
+        return {}
+
+    if isinstance(obj, dict):
+        return dict(obj)
+
+    if isinstance(obj, Mapping):
+        return dict(obj)
+
+    if is_dataclass(obj):
+
+        try:
+            return asdict(obj)
+
+        except Exception:
+            pass
+
+    to_dict = getattr(
+        obj,
+        "to_dict",
+        None,
+    )
+
+    if callable(to_dict):
+
+        try:
+
+            result = to_dict()
+
+            if isinstance(result, Mapping):
+                return dict(result)
+
+        except Exception:
+            pass
+
+    try:
+        return dict(vars(obj))
+
+    except Exception:
+        return {}
+
+
+def _serialize(
+    obj: Any,
+) -> Any:
+    """
+    Recursive serialization for diagnostics.
+    """
+
+    if obj is None:
+        return None
+
+    if isinstance(obj, Mapping):
+
+        return {
+            key: _serialize(value)
+            for key, value in obj.items()
+        }
+
+    if isinstance(obj, (list, tuple)):
+
+        return [
+            _serialize(value)
+            for value in obj
+        ]
+
+    if is_dataclass(obj):
+
+        try:
+            return _serialize(
+                asdict(obj)
+            )
+
+        except Exception:
+            pass
+
+    to_dict = getattr(
+        obj,
+        "to_dict",
+        None,
+    )
+
+    if callable(to_dict):
+
+        try:
+            return _serialize(
+                to_dict()
+            )
+
+        except Exception:
+            pass
+
+    return obj
+
+
+def safe_float(
+    value: Any,
+) -> Optional[float]:
+
+    if value is None:
+        return None
+
+    try:
+        return float(value)
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return None
+
+
+def safe_int(
+    value: Any,
+) -> Optional[int]:
+
+    if value is None:
+        return None
+
+    try:
+        return int(value)
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return None
+
+
+def probability(
+    value: Any,
+) -> Optional[float]:
+    """
+    Convert an already calculated probability
+    to percentage for UI.
+
+    Does NOT calculate probability.
+    """
+
+    number = safe_float(value)
+
+    if number is None:
+        return None
+
+    if number <= 1.0:
+        return number * 100.0
+
+    if number <= 100.0:
+        return number
+
+    return None
+
+
+def fmt_probability(
+    value: Any,
+) -> str:
+
+    p = probability(value)
+
+    if p is None:
+        return "—"
+
+    return f"{p:.1f}%"
+
+
+def fmt_number(
+    value: Any,
+    digits: int = 2,
+) -> str:
+
+    number = safe_float(value)
+
+    if number is None:
+        return "—"
+
+    return f"{number:.{digits}f}"
+
+
+def fmt_int(
+    value: Any,
+) -> str:
+
+    number = safe_int(value)
+
+    if number is None:
+        return "—"
+
+    return str(number)
+
+
+def value(
     obj: Any,
     *names: str,
 ) -> Any:
 
+    return _get(
+        obj,
+        *names,
+    )
+
+
+def nested(
+    obj: Any,
+    *path: str,
+) -> Any:
+
     current = obj
 
-    for name in names:
+    for name in path:
 
-        current = value(
+        current = _get(
             current,
             name,
         )
@@ -489,175 +413,153 @@ def nested(
 
 
 # ============================================================
-# PARSER → MATCH FACT
+# DATE HELPERS
+# ============================================================
+
+def _date_key(
+    value: Any,
+) -> str:
+    """
+    Stable chronological key.
+
+    Missing dates go last.
+    """
+
+    if value is None:
+        return "9999-99-99"
+
+    text = str(value).strip()
+
+    if not text:
+        return "9999-99-99"
+
+    return text
+
+
+# ============================================================
+# MATCH PARSER
 # ============================================================
 
 def parse_match(
     parser: Soccer365Parser,
     url: str,
 ) -> Dict[str, Any]:
+    """
+    Parse one Soccer365 match.
 
-    url = (url or "").strip()
+    Parser remains FACT source.
 
-    if not url:
-        raise ValueError("Пустой URL.")
+    Predictor does not calculate derived football metrics.
+    """
 
-    result = parser.parse(url)
+    parsed = parser.parse(url)
 
-    if result.get("error"):
+    if parsed is None:
         raise ValueError(
-            str(result["error"])
+            f"Parser returned None: {url}"
         )
 
-    stats = result.get(
-        "stats",
-        {},
-    )
+    data = _as_dict(parsed)
 
-    if not isinstance(stats, dict):
-        stats = {}
+    if not data:
+        raise ValueError(
+            f"Empty parsed match: {url}"
+        )
 
-    result["stats"] = stats
-
-    return result
+    return data
 
 
 # ============================================================
-# BUILD TEAM MATCH RECORD
+# TEAM RECORD
 # ============================================================
 
 def build_team_record(
-    parsed: Dict[str, Any],
+    match: Mapping[str, Any],
     team_name: str,
-) -> Optional[Dict[str, Any]]:
+) -> Dict[str, Any]:
+    """
+    Convert parsed Soccer365 match into the canonical
+    team-centric historical record consumed by FormContext.
 
-    home_team = parsed.get(
-        "home_team"
+    IMPORTANT:
+
+        missing -> None
+
+    Never:
+
+        missing -> 0
+    """
+
+    home_team = value(
+        match,
+        "home_team",
+        "home",
     )
 
-    away_team = parsed.get(
-        "away_team"
+    away_team = value(
+        match,
+        "away_team",
+        "away",
     )
 
-    if not home_team or not away_team:
-        return None
+    home_score = value(
+        match,
+        "home_score",
+        "home_goals",
+        "score_home",
+    )
 
-    team_name_low = team_name.strip().lower()
+    away_score = value(
+        match,
+        "away_score",
+        "away_goals",
+        "score_away",
+    )
 
-    home_low = str(
-        home_team
-    ).strip().lower()
+    # --------------------------------------------------------
+    # Determine venue
+    # --------------------------------------------------------
 
-    away_low = str(
+    is_home = (
+        str(home_team).strip()
+        == str(team_name).strip()
+    )
+
+    opponent = (
         away_team
-    ).strip().lower()
-
-    if team_name_low == home_low:
-
-        is_home = True
-
-        team = home_team
-        opponent = away_team
-
-        side = "home"
-
-        goals_for = None
-        goals_against = None
-
-        score = parsed.get(
-            "score"
-        )
-
-        if score:
-
-            parts = re.split(
-                r"[:\-]",
-                score,
-            )
-
-            if len(parts) >= 2:
-
-                goals_for = safe_int(
-                    parts[0]
-                )
-
-                goals_against = safe_int(
-                    parts[1]
-                )
-
-    elif team_name_low == away_low:
-
-        is_home = False
-
-        team = away_team
-        opponent = home_team
-
-        side = "away"
-
-        goals_for = None
-        goals_against = None
-
-        score = parsed.get(
-            "score"
-        )
-
-        if score:
-
-            parts = re.split(
-                r"[:\-]",
-                score,
-            )
-
-            if len(parts) >= 2:
-
-                goals_for = safe_int(
-                    parts[1]
-                )
-
-                goals_against = safe_int(
-                    parts[0]
-                )
-
-    else:
-
-        return None
-
-    stats = parsed.get(
-        "stats",
-        {},
+        if is_home
+        else home_team
     )
 
-    def stat(name: str) -> Any:
+    # --------------------------------------------------------
+    # Goals
+    # --------------------------------------------------------
 
-        home_key = (
-            f"home_{name}"
-        )
+    home_goals = safe_int(
+        home_score
+    )
 
-        away_key = (
-            f"away_{name}"
-        )
+    away_goals = safe_int(
+        away_score
+    )
 
-        if is_home:
-            return stats.get(home_key)
+    goals_for = (
+        home_goals
+        if is_home
+        else away_goals
+    )
 
-        return stats.get(away_key)
+    goals_against = (
+        away_goals
+        if is_home
+        else home_goals
+    )
 
-    def opponent_stat(name: str) -> Any:
+    # --------------------------------------------------------
+    # Result
+    # --------------------------------------------------------
 
-        home_key = (
-            f"home_{name}"
-        )
-
-        away_key = (
-            f"away_{name}"
-        )
-
-        if is_home:
-            return stats.get(away_key)
-
-        return stats.get(home_key)
-
-    result_code = None
+    result = None
 
     if (
         goals_for is not None
@@ -665,292 +567,692 @@ def build_team_record(
     ):
 
         if goals_for > goals_against:
-            result_code = "W"
+            result = "W"
 
         elif goals_for < goals_against:
-            result_code = "L"
+            result = "L"
 
         else:
-            result_code = "D"
+            result = "D"
 
     # --------------------------------------------------------
     # xG
     # --------------------------------------------------------
 
-    xg = safe_float(
-        stat("xg")
+    home_xg = safe_float(
+        value(
+            match,
+            "home_xg",
+            "xg_home",
+        )
     )
 
-    opponent_xg = safe_float(
-        opponent_stat("xg")
+    away_xg = safe_float(
+        value(
+            match,
+            "away_xg",
+            "xg_away",
+        )
+    )
+
+    xg = (
+        home_xg
+        if is_home
+        else away_xg
+    )
+
+    xga = (
+        away_xg
+        if is_home
+        else home_xg
     )
 
     # --------------------------------------------------------
-    # Extra factual statistics
+    # Generic directional helper
     # --------------------------------------------------------
 
-    extra = {
+    def side_value(
+        home_names: Sequence[str],
+        away_names: Sequence[str],
+    ) -> Optional[float]:
 
-        "opponent_xg":
-            opponent_xg,
+        home_value = safe_float(
+            value(
+                match,
+                *home_names,
+            )
+        )
 
-        "shots":
-            safe_int(
-                stat("shots")
-            ),
+        away_value = safe_float(
+            value(
+                match,
+                *away_names,
+            )
+        )
 
-        "opponent_shots":
-            safe_int(
-                opponent_stat("shots")
-            ),
+        return (
+            home_value
+            if is_home
+            else away_value
+        )
 
-        "shots_on_target":
-            safe_int(
-                stat("shots_on_target")
-            ),
+    def opponent_value(
+        home_names: Sequence[str],
+        away_names: Sequence[str],
+    ) -> Optional[float]:
 
-        "opponent_shots_on_target":
-            safe_int(
-                opponent_stat(
-                    "shots_on_target"
-                )
-            ),
+        home_value = safe_float(
+            value(
+                match,
+                *home_names,
+            )
+        )
 
-        "blocked_shots":
-            safe_int(
-                stat("blocked_shots")
-            ),
+        away_value = safe_float(
+            value(
+                match,
+                *away_names,
+            )
+        )
 
-        "opponent_blocked_shots":
-            safe_int(
-                opponent_stat(
-                    "blocked_shots"
-                )
-            ),
+        return (
+            away_value
+            if is_home
+            else home_value
+        )
 
-        "big_chances":
-            safe_int(
-                stat("big_chances")
-            ),
+    # --------------------------------------------------------
+    # Main statistics
+    # --------------------------------------------------------
 
-        "opponent_big_chances":
-            safe_int(
-                opponent_stat(
-                    "big_chances"
-                )
-            ),
+    shots = side_value(
+        (
+            "home_shots",
+            "shots_home",
+        ),
+        (
+            "away_shots",
+            "shots_away",
+        ),
+    )
 
-        "possession":
-            safe_float(
-                stat("possession")
-            ),
+    opponent_shots = opponent_value(
+        (
+            "home_shots",
+            "shots_home",
+        ),
+        (
+            "away_shots",
+            "shots_away",
+        ),
+    )
 
-        "opponent_possession":
-            safe_float(
-                opponent_stat(
-                    "possession"
-                )
-            ),
+    shots_on_target = side_value(
+        (
+            "home_shots_on_target",
+            "home_sot",
+            "sot_home",
+        ),
+        (
+            "away_shots_on_target",
+            "away_sot",
+            "sot_away",
+        ),
+    )
 
-        "corners":
-            safe_int(
-                stat("corners")
-            ),
+    opponent_shots_on_target = opponent_value(
+        (
+            "home_shots_on_target",
+            "home_sot",
+            "sot_home",
+        ),
+        (
+            "away_shots_on_target",
+            "away_sot",
+            "sot_away",
+        ),
+    )
 
-        "opponent_corners":
-            safe_int(
-                opponent_stat(
-                    "corners"
-                )
-            ),
+    blocked_shots = side_value(
+        (
+            "home_blocked_shots",
+            "blocked_home",
+        ),
+        (
+            "away_blocked_shots",
+            "blocked_away",
+        ),
+    )
 
-        "passes":
-            safe_int(
-                stat("total_passes")
-            ),
+    opponent_blocked_shots = opponent_value(
+        (
+            "home_blocked_shots",
+            "blocked_home",
+        ),
+        (
+            "away_blocked_shots",
+            "blocked_away",
+        ),
+    )
 
-        "opponent_passes":
-            safe_int(
-                opponent_stat(
-                    "total_passes"
-                )
-            ),
+    big_chances = side_value(
+        (
+            "home_big_chances",
+            "big_chances_home",
+        ),
+        (
+            "away_big_chances",
+            "big_chances_away",
+        ),
+    )
 
-        "pass_accuracy":
-            safe_float(
-                stat("pass_accuracy")
-            ),
+    opponent_big_chances = opponent_value(
+        (
+            "home_big_chances",
+            "big_chances_home",
+        ),
+        (
+            "away_big_chances",
+            "big_chances_away",
+        ),
+    )
 
-        "opponent_pass_accuracy":
-            safe_float(
-                opponent_stat(
-                    "pass_accuracy"
-                )
-            ),
+    possession = side_value(
+        (
+            "home_possession",
+            "possession_home",
+        ),
+        (
+            "away_possession",
+            "possession_away",
+        ),
+    )
 
-        "fouls":
-            safe_int(
-                stat("fouls")
-            ),
+    opponent_possession = opponent_value(
+        (
+            "home_possession",
+            "possession_home",
+        ),
+        (
+            "away_possession",
+            "possession_away",
+        ),
+    )
 
-        "offsides":
-            safe_int(
-                stat("offsides")
-            ),
+    passes = side_value(
+        (
+            "home_passes",
+            "passes_home",
+        ),
+        (
+            "away_passes",
+            "passes_away",
+        ),
+    )
 
-        "yellow_cards":
-            safe_int(
-                stat("yellow_cards")
-            ),
+    opponent_passes = opponent_value(
+        (
+            "home_passes",
+            "passes_home",
+        ),
+        (
+            "away_passes",
+            "passes_away",
+        ),
+    )
 
-        "opponent_yellow_cards":
-            safe_int(
-                opponent_stat(
-                    "yellow_cards"
-                )
-            ),
+    pass_accuracy = side_value(
+        (
+            "home_pass_accuracy",
+            "pass_accuracy_home",
+        ),
+        (
+            "away_pass_accuracy",
+            "pass_accuracy_away",
+        ),
+    )
 
-        "red_cards":
-            safe_int(
-                stat("red_cards")
-            ),
+    opponent_pass_accuracy = opponent_value(
+        (
+            "home_pass_accuracy",
+            "pass_accuracy_home",
+        ),
+        (
+            "away_pass_accuracy",
+            "pass_accuracy_away",
+        ),
+    )
 
-        "crosses":
-            safe_int(
-                stat("crosses")
-            ),
+    corners = side_value(
+        (
+            "home_corners",
+            "corners_home",
+        ),
+        (
+            "away_corners",
+            "corners_away",
+        ),
+    )
 
-        "opponent_crosses":
-            safe_int(
-                opponent_stat("crosses")
-            ),
-    }
+    opponent_corners = opponent_value(
+        (
+            "home_corners",
+            "corners_home",
+        ),
+        (
+            "away_corners",
+            "corners_away",
+        ),
+    )
 
-    return {
+    yellow_cards = side_value(
+        (
+            "home_yellow_cards",
+            "yellow_cards_home",
+            "home_yellows",
+        ),
+        (
+            "away_yellow_cards",
+            "yellow_cards_away",
+            "away_yellows",
+        ),
+    )
 
-        "team":
-            team,
+    opponent_yellow_cards = opponent_value(
+        (
+            "home_yellow_cards",
+            "yellow_cards_home",
+            "home_yellows",
+        ),
+        (
+            "away_yellow_cards",
+            "yellow_cards_away",
+            "away_yellows",
+        ),
+    )
 
-        "team_name":
-            team,
+    red_cards = side_value(
+        (
+            "home_red_cards",
+            "red_cards_home",
+        ),
+        (
+            "away_red_cards",
+            "red_cards_away",
+        ),
+    )
 
-        "opponent":
-            opponent,
+    opponent_red_cards = opponent_value(
+        (
+            "home_red_cards",
+            "red_cards_home",
+        ),
+        (
+            "away_red_cards",
+            "red_cards_away",
+        ),
+    )
 
-        "is_home":
-            is_home,
+    fouls = side_value(
+        (
+            "home_fouls",
+            "fouls_home",
+        ),
+        (
+            "away_fouls",
+            "fouls_away",
+        ),
+    )
 
-        "venue":
+    opponent_fouls = opponent_value(
+        (
+            "home_fouls",
+            "fouls_home",
+        ),
+        (
+            "away_fouls",
+            "fouls_away",
+        ),
+    )
+
+    offsides = side_value(
+        (
+            "home_offsides",
+            "offsides_home",
+        ),
+        (
+            "away_offsides",
+            "offsides_away",
+        ),
+    )
+
+    opponent_offsides = opponent_value(
+        (
+            "home_offsides",
+            "offsides_home",
+        ),
+        (
+            "away_offsides",
+            "offsides_away",
+        ),
+    )
+
+    crosses = side_value(
+        (
+            "home_crosses",
+            "crosses_home",
+        ),
+        (
+            "away_crosses",
+            "crosses_away",
+        ),
+    )
+
+    opponent_crosses = opponent_value(
+        (
+            "home_crosses",
+            "crosses_home",
+        ),
+        (
+            "away_crosses",
+            "crosses_away",
+        ),
+    )
+
+    # --------------------------------------------------------
+    # Date / competition
+    # --------------------------------------------------------
+
+    match_date = value(
+        match,
+        "match_date",
+        "date",
+        "datetime",
+    )
+
+    competition = value(
+        match,
+        "competition",
+        "league",
+        "tournament",
+    )
+
+    # --------------------------------------------------------
+    # Canonical team record
+    # --------------------------------------------------------
+
+    record = {
+
+        "team": team_name,
+        "team_name": team_name,
+
+        "opponent": opponent,
+
+        "is_home": is_home,
+
+        "venue": (
             "home"
             if is_home
-            else "away",
+            else "away"
+        ),
 
-        "goals_for":
-            goals_for,
+        # ----------------------------------------------------
+        # Result / goals
+        # ----------------------------------------------------
 
-        "goals_against":
-            goals_against,
+        "goals_for": goals_for,
+        "goals_against": goals_against,
 
-        "result":
-            result_code,
+        "result": result,
 
-        "xg":
-            xg,
+        # ----------------------------------------------------
+        # xG
+        # ----------------------------------------------------
 
-        "xga":
-            opponent_xg,
+        "xg": xg,
+        "xga": xga,
+
+        "opponent_xg": xga,
+
+        # ----------------------------------------------------
+        # Shots
+        # ----------------------------------------------------
+
+        "shots": shots,
+        "opponent_shots": opponent_shots,
+
+        "shots_on_target":
+            shots_on_target,
+
+        "opponent_shots_on_target":
+            opponent_shots_on_target,
+
+        "blocked_shots":
+            blocked_shots,
+
+        "opponent_blocked_shots":
+            opponent_blocked_shots,
+
+        "big_chances":
+            big_chances,
+
+        "opponent_big_chances":
+            opponent_big_chances,
+
+        # ----------------------------------------------------
+        # Control
+        # ----------------------------------------------------
+
+        "possession":
+            possession,
+
+        "opponent_possession":
+            opponent_possession,
+
+        "passes":
+            passes,
+
+        "opponent_passes":
+            opponent_passes,
+
+        "pass_accuracy":
+            pass_accuracy,
+
+        "opponent_pass_accuracy":
+            opponent_pass_accuracy,
+
+        # ----------------------------------------------------
+        # Corners
+        # ----------------------------------------------------
 
         "corners":
-            extra["corners"],
+            corners,
 
         "opponent_corners":
-            extra["opponent_corners"],
+            opponent_corners,
+
+        # ----------------------------------------------------
+        # Cards
+        # ----------------------------------------------------
 
         "yellow_cards":
-            extra["yellow_cards"],
+            yellow_cards,
 
         "opponent_yellow_cards":
-            extra[
-                "opponent_yellow_cards"
-            ],
+            opponent_yellow_cards,
+
+        "red_cards":
+            red_cards,
+
+        "opponent_red_cards":
+            opponent_red_cards,
+
+        # ----------------------------------------------------
+        # Other
+        # ----------------------------------------------------
+
+        "fouls":
+            fouls,
+
+        "opponent_fouls":
+            opponent_fouls,
+
+        "offsides":
+            offsides,
+
+        "opponent_offsides":
+            opponent_offsides,
+
+        "crosses":
+            crosses,
+
+        "opponent_crosses":
+            opponent_crosses,
+
+        # ----------------------------------------------------
+        # Metadata
+        # ----------------------------------------------------
 
         "match_date":
-            parsed.get(
-                "match_date"
-            ),
+            match_date,
 
         "competition":
-            parsed.get(
-                "competition"
-            ),
+            competition,
 
-        "extra":
-            extra,
+        # ----------------------------------------------------
+        # Raw directional metadata
+        # ----------------------------------------------------
+
+        "extra": {
+            "opponent_xg":
+                xga,
+
+            "shots":
+                shots,
+
+            "opponent_shots":
+                opponent_shots,
+
+            "shots_on_target":
+                shots_on_target,
+
+            "opponent_shots_on_target":
+                opponent_shots_on_target,
+
+            "blocked_shots":
+                blocked_shots,
+
+            "opponent_blocked_shots":
+                opponent_blocked_shots,
+
+            "big_chances":
+                big_chances,
+
+            "opponent_big_chances":
+                opponent_big_chances,
+
+            "possession":
+                possession,
+
+            "opponent_possession":
+                opponent_possession,
+
+            "passes":
+                passes,
+
+            "opponent_passes":
+                opponent_passes,
+
+            "pass_accuracy":
+                pass_accuracy,
+
+            "opponent_pass_accuracy":
+                opponent_pass_accuracy,
+
+            "corners":
+                corners,
+
+            "opponent_corners":
+                opponent_corners,
+
+            "yellow_cards":
+                yellow_cards,
+
+            "opponent_yellow_cards":
+                opponent_yellow_cards,
+
+            "red_cards":
+                red_cards,
+
+            "opponent_red_cards":
+                opponent_red_cards,
+
+            "fouls":
+                fouls,
+
+            "opponent_fouls":
+                opponent_fouls,
+
+            "offsides":
+                offsides,
+
+            "opponent_offsides":
+                opponent_offsides,
+
+            "crosses":
+                crosses,
+
+            "opponent_crosses":
+                opponent_crosses,
+        },
     }
+
+    return record
 
 
 # ============================================================
-# COLLECT HISTORY
+# HISTORY COLLECTION
 # ============================================================
 
 def collect_history(
     parser: Soccer365Parser,
     team_name: str,
-    urls: List[str],
-) -> Tuple[
-    List[Dict[str, Any]],
-    List[str],
-]:
+    urls: Sequence[str],
+) -> List[Dict[str, Any]]:
+    """
+    Parse supplied Soccer365 URLs.
 
-    records = []
+    Output:
 
-    errors = []
+        oldest -> newest
 
-    for index, url in enumerate(
-        urls,
-        start=1,
-    ):
+    Maximum:
 
-        url = (
-            url or ""
-        ).strip()
+        6 matches
+    """
 
-        if not url:
+    records: List[Dict[str, Any]] = []
+
+    for index, url in enumerate(urls, start=1):
+
+        clean_url = str(url).strip()
+
+        if not clean_url:
             continue
 
         try:
 
-            parsed = parse_match(
+            match = parse_match(
                 parser,
-                url,
+                clean_url,
             )
 
             record = build_team_record(
-                parsed,
+                match,
                 team_name,
             )
 
-            if record is None:
-
-                errors.append(
-                    f"Матч {index}: "
-                    f"{team_name} не найден "
-                    f"на странице."
-                )
-
-                continue
-
-            # ====================================================
-            # TEAM METADATA
-            # ====================================================
-
-            record["team"] = team_name
-            record["team_name"] = team_name
-
-            if record.get("is_home") is True:
-                record["venue"] = "home"
-            elif record.get("is_home") is False:
-                record["venue"] = "away"
+            record["_source_url"] = clean_url
 
             records.append(
                 record
@@ -958,1592 +1260,1693 @@ def collect_history(
 
         except Exception as exc:
 
-            errors.append(
-                f"Матч {index}: {exc}"
+            st.warning(
+                f"{team_name}: матч #{index} "
+                f"не удалось разобрать: {exc}"
             )
 
-    # ====================================================
-    # CANONICAL HISTORY ORDER
-    # ====================================================
+    # --------------------------------------------------------
+    # Canonical chronology
+    # --------------------------------------------------------
 
     records.sort(
-        key=lambda item: (
-            item.get(
-                "match_date"
-            )
-            or ""
+        key=lambda row: _date_key(
+            row.get("match_date")
         )
     )
 
-    records = records[
-        -HISTORY_SIZE:
-    ]
+    # --------------------------------------------------------
+    # Keep latest N after sorting.
+    #
+    # Result remains oldest -> newest.
+    # --------------------------------------------------------
 
-    return (
-        records,
-        errors,
-    )
+    if len(records) > HISTORY_SIZE:
+
+        records = records[
+            -HISTORY_SIZE:
+        ]
+
+    return records
 
 
 # ============================================================
-# FAJ BRAIN — CANONICAL PREDICTION
+# BRAIN CALL
 # ============================================================
 
 def calculate_prediction(
     home_team: str,
     away_team: str,
-    home_records: List[Dict[str, Any]],
-    away_records: List[Dict[str, Any]],
+    home_records: Sequence[Mapping[str, Any]],
+    away_records: Sequence[Mapping[str, Any]],
 ) -> Dict[str, Any]:
     """
-    Единственная точка математического расчёта страницы.
+    Run FAJ Brain v4.0.
 
-    Все xG / Poisson / 1X2 / BTTS / totals /
-    exact scores / Corners / Cards / confidence
+    IMPORTANT:
 
-    приходят только из FAJBrain.
+    Brain v4.0 requires:
 
-    Predictor ничего не пересчитывает.
+        home_history
+        away_history
+
+    NOT:
+
+        home_matches
+        away_matches
+
+    BrainPrediction is converted to dict here
+    for compatibility with Streamlit UI.
     """
+
+    if not home_records:
+        raise ValueError(
+            f"Нет истории для {home_team}"
+        )
+
+    if not away_records:
+        raise ValueError(
+            f"Нет истории для {away_team}"
+        )
 
     brain = FAJBrain()
 
     result = brain.predict(
         home_team=home_team,
         away_team=away_team,
-        home_matches=home_records,
-        away_matches=away_records,
+        home_history=list(home_records),
+        away_history=list(away_records),
     )
 
-    if not isinstance(result, dict):
+    if result is None:
         raise TypeError(
-            "FAJBrain.predict() должен вернуть dict."
+            "FAJBrain.predict() вернул None."
+        )
+
+    result_dict = _as_dict(
+        result
+    )
+
+    if not result_dict:
+        raise TypeError(
+            "FAJBrain.predict() "
+            "вернул объект, который нельзя "
+            "преобразовать в dict."
+        )
+
+    return result_dict
+
+
+# ============================================================
+# RESULT ACCESS
+# ============================================================
+
+def _goal_state(
+    prediction: Mapping[str, Any],
+) -> Dict[str, Any]:
+
+    return _as_dict(
+        prediction.get(
+            "goal_state"
+        )
+    )
+
+
+def _probability_state(
+    prediction: Mapping[str, Any],
+) -> Dict[str, Any]:
+
+    return _as_dict(
+        prediction.get(
+            "probability_state"
+        )
+    )
+
+
+def _score_state(
+    prediction: Mapping[str, Any],
+) -> Dict[str, Any]:
+
+    return _as_dict(
+        prediction.get(
+            "score_state"
+        )
+    )
+
+
+def _parallel_state(
+    prediction: Mapping[str, Any],
+    name: str,
+) -> Any:
+
+    return prediction.get(
+        name
+    )
+
+
+# ============================================================
+# SCORE HELPERS
+# ============================================================
+
+def _score_rows(
+    prediction: Mapping[str, Any],
+) -> List[Dict[str, Any]]:
+    """
+    Read ScorePredictor v1.1 output.
+
+    Preferred source:
+
+        prediction["top_scores"]
+
+    Fallback:
+
+        score_state["top_scores"]
+
+    Probability field:
+
+        raw_probability
+
+    Compatibility:
+
+        probability
+    """
+
+    rows = prediction.get(
+        "top_scores"
+    )
+
+    if not isinstance(rows, list):
+
+        score_state = _score_state(
+            prediction
+        )
+
+        rows = score_state.get(
+            "top_scores",
+            [],
+        )
+
+    if not isinstance(rows, list):
+        return []
+
+    result = []
+
+    for row in rows:
+
+        if not isinstance(
+            row,
+            Mapping,
+        ):
+            continue
+
+        score = _get(
+            row,
+            "score",
+        )
+
+        raw_probability = _get(
+            row,
+            "raw_probability",
+            "probability",
+            "score_probability",
+        )
+
+        winner_class = _get(
+            row,
+            "winner_class",
+        )
+
+        total_goals = _get(
+            row,
+            "total_goals",
+        )
+
+        btts = _get(
+            row,
+            "btts",
+        )
+
+        result.append(
+            {
+                "score":
+                    score,
+
+                "raw_probability":
+                    raw_probability,
+
+                "winner_class":
+                    winner_class,
+
+                "total_goals":
+                    total_goals,
+
+                "btts":
+                    btts,
+            }
         )
 
     return result
 
 
 # ============================================================
-# SESSION STATE
+# STATE QUALITY
 # ============================================================
 
-if "faj_prediction" not in st.session_state:
-    st.session_state.faj_prediction = None
+def _state_quality(
+    state: Any,
+) -> Any:
 
-if "faj_home_records" not in st.session_state:
-    st.session_state.faj_home_records = []
+    data = _as_dict(
+        state
+    )
 
-if "faj_away_records" not in st.session_state:
-    st.session_state.faj_away_records = []
-
-if "faj_collection_errors" not in st.session_state:
-    st.session_state.faj_collection_errors = []
+    return _get(
+        data,
+        "data_quality",
+        "score_data_quality",
+        "quality",
+    )
 
 
 # ============================================================
-# HEADER
+# OPTIONAL STATE RENDER
 # ============================================================
 
-st.markdown(
+def _render_state_summary(
+    title: str,
+    state: Any,
+) -> None:
+
+    if state is None:
+
+        st.caption(
+            f"{title}: нет данных"
+        )
+
+        return
+
+    data = _as_dict(
+        state
+    )
+
+    if not data:
+
+        st.caption(
+            f"{title}: нет данных"
+        )
+
+        return
+
+    quality = _state_quality(
+        state
+    )
+
+    if quality is not None:
+
+        st.caption(
+            f"{title} · data quality: "
+            f"{fmt_number(quality, 2)}"
+        )
+
+    with st.expander(
+        f"{title} — raw state",
+        expanded=False,
+    ):
+
+        st.json(
+            _serialize(data)
+        )
+
+
+# ============================================================
+# RATING DISPLAY
+# ============================================================
+
+def get_display_rating(
+    team_name: str,
+) -> Optional[Any]:
     """
-<div class="faj-header">
-    <div class="faj-title">⚽ FAJ Predictor</div>
-    <div class="faj-subtitle">
-        Единый математический мозг — FAJ Brain · Form · Defence · xG · Score · Corners · Cards
-    </div>
-</div>
-""",
-    unsafe_allow_html=True,
+    Rating is informational only.
+
+    It does NOT enter Brain.
+    """
+
+    if get_team_rating is None:
+        return None
+
+    try:
+
+        return get_team_rating(
+            team_name
+        )
+
+    except Exception:
+        return None
+
+
+# ============================================================
+# PAGE HEADER
+# ============================================================
+
+st.title(
+    "⚽ FAJ Predictor"
+)
+
+st.caption(
+    "FAJ Brain v4.0 · CONTRACT_V1 · "
+    "FACTS → STATE → PROBABILITIES → SYNTHESIS"
+)
+
+st.info(
+    "Predictor является интерфейсом сбора FACTS и "
+    "отображения BrainPrediction. "
+    "Математика выполняется внутри FAJ Brain."
 )
 
 
 # ============================================================
-# MATCH INPUT
+# INPUT
 # ============================================================
 
-left, right = st.columns(
-    2,
-    gap="small",
-)
+col_home, col_away = st.columns(2)
 
-with left:
+with col_home:
 
     home_team = st.text_input(
         "Хозяева",
-        placeholder="Динамо Махачкала",
+        value="",
         key="faj_home_team",
     )
 
-with right:
+with col_away:
 
     away_team = st.text_input(
         "Гости",
-        placeholder="Краснодар",
+        value="",
         key="faj_away_team",
     )
 
 
 # ============================================================
-# FAJ CLUB RATING (display only)
+# URL INPUT
 # ============================================================
 
-_home_club_rating = (
-    get_team_rating(home_team.strip())
-    if home_team.strip()
-    else None
+st.subheader(
+    "Последние матчи"
 )
 
-_away_club_rating = (
-    get_team_rating(away_team.strip())
-    if away_team.strip()
-    else None
+st.caption(
+    f"Для каждой команды можно передать до "
+    f"{HISTORY_SIZE} матчей Soccer365. "
+    f"Порядок будет нормализован в oldest → newest."
 )
 
-st.markdown(
-    '<div class="section-title">FAJ Club Rating</div>',
-    unsafe_allow_html=True,
-)
-
-club_c1, club_c2 = st.columns(2, gap="small")
-
-with club_c1:
-
-    st.markdown(
-        f"""
-        <div class="metric">
-            <div class="metric-value">
-                {_home_club_rating if _home_club_rating is not None else "—"}
-            </div>
-            <div class="metric-label">
-                {home_team or "Хозяева"}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-with club_c2:
-
-    st.markdown(
-        f"""
-        <div class="metric">
-            <div class="metric-value">
-                {_away_club_rating if _away_club_rating is not None else "—"}
-            </div>
-            <div class="metric-label">
-                {away_team or "Гости"}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-# ============================================================
-# HISTORY INPUT
-# ============================================================
-
-st.markdown(
-    '<div class="section-title">История хозяев — последние 6 матчей</div>',
-    unsafe_allow_html=True,
-)
-
-home_url_text = st.text_area(
-    "Soccer365 URL",
-    placeholder=(
-        "Вставь 6 URL, по одному на строку.\n"
-        "Старые сверху, новые снизу."
-    ),
-    height=125,
+home_urls_text = st.text_area(
+    "Soccer365 — последние матчи хозяев",
+    value="",
+    height=180,
     key="faj_home_urls",
-    label_visibility="collapsed",
-)
-
-st.markdown(
-    '<div class="section-title">История гостей — последние 6 матчей</div>',
-    unsafe_allow_html=True,
-)
-
-away_url_text = st.text_area(
-    "Soccer365 URL",
     placeholder=(
-        "Вставь 6 URL, по одному на строку.\n"
-        "Старые сверху, новые снизу."
+        "https://soccer365.ru/games/...\n"
+        "https://soccer365.ru/games/...\n"
+        "..."
     ),
-    height=125,
+)
+
+away_urls_text = st.text_area(
+    "Soccer365 — последние матчи гостей",
+    value="",
+    height=180,
     key="faj_away_urls",
-    label_visibility="collapsed",
+    placeholder=(
+        "https://soccer365.ru/games/...\n"
+        "https://soccer365.ru/games/...\n"
+        "..."
+    ),
 )
 
 
 # ============================================================
-# ACTION
+# URL PARSER
 # ============================================================
 
-predict_clicked = st.button(
-    "🔮 СОБРАТЬ ДАННЫЕ И РАССЧИТАТЬ",
+def _parse_urls(
+    text: str,
+) -> List[str]:
+
+    if not text:
+        return []
+
+    lines = []
+
+    for line in text.splitlines():
+
+        clean = line.strip()
+
+        if not clean:
+            continue
+
+        lines.append(
+            clean
+        )
+
+    return lines
+
+
+# ============================================================
+# RUN
+# ============================================================
+
+run_prediction = st.button(
+    "🚀 Рассчитать FAJ Prediction",
     type="primary",
     use_container_width=True,
 )
 
 
-# ============================================================
-# PREDICT
-# ============================================================
-
-if predict_clicked:
+if run_prediction:
 
     if not home_team.strip():
         st.error(
-            "Укажи команду хозяев."
+            "Укажите команду хозяев."
         )
         st.stop()
 
     if not away_team.strip():
         st.error(
-            "Укажи команду гостей."
+            "Укажите команду гостей."
         )
         st.stop()
 
-    home_urls = [
-        item.strip()
-        for item in home_url_text.splitlines()
-        if item.strip()
-    ]
+    home_urls = _parse_urls(
+        home_urls_text
+    )
 
-    away_urls = [
-        item.strip()
-        for item in away_url_text.splitlines()
-        if item.strip()
-    ]
+    away_urls = _parse_urls(
+        away_urls_text
+    )
 
     if not home_urls:
         st.error(
-            "Нет URL истории хозяев."
+            f"Нет URL истории для {home_team}."
         )
         st.stop()
 
     if not away_urls:
         st.error(
-            "Нет URL истории гостей."
+            f"Нет URL истории для {away_team}."
         )
         st.stop()
 
     parser = Soccer365Parser()
 
-    progress = st.progress(
-        0,
-        text="Собираю факты Soccer365…",
-    )
-
     # --------------------------------------------------------
-    # HOME
+    # FACT COLLECTION
     # --------------------------------------------------------
 
-    home_records, home_errors = (
-        collect_history(
-            parser,
-            home_team.strip(),
-            home_urls,
+    with st.spinner(
+        "Собираю FACTS Soccer365..."
+    ):
+
+        home_records = collect_history(
+            parser=parser,
+            team_name=home_team,
+            urls=home_urls,
         )
-    )
 
-    progress.progress(
-        45,
-        text="История хозяев собрана…",
-    )
-
-    # --------------------------------------------------------
-    # AWAY
-    # --------------------------------------------------------
-
-    away_records, away_errors = (
-        collect_history(
-            parser,
-            away_team.strip(),
-            away_urls,
+        away_records = collect_history(
+            parser=parser,
+            team_name=away_team,
+            urls=away_urls,
         )
-    )
-
-    progress.progress(
-        75,
-        text="История гостей собрана…",
-    )
-
-    all_errors = (
-        home_errors
-        + away_errors
-    )
 
     if not home_records:
 
-        progress.empty()
-
         st.error(
-            "Не удалось собрать историю хозяев."
+            f"Не удалось получить историю "
+            f"для {home_team}."
         )
-
-        if all_errors:
-
-            for error in all_errors:
-                st.warning(error)
 
         st.stop()
 
     if not away_records:
 
-        progress.empty()
-
         st.error(
-            "Не удалось собрать историю гостей."
+            f"Не удалось получить историю "
+            f"для {away_team}."
         )
-
-        if all_errors:
-
-            for error in all_errors:
-                st.warning(error)
 
         st.stop()
 
     # --------------------------------------------------------
-    # CANONICAL CALCULATION — FAJ BRAIN ONLY
+    # SHOW FACT COLLECTION
+    # --------------------------------------------------------
+
+    st.subheader(
+        "FACT Collection"
+    )
+
+    fact_col1, fact_col2 = st.columns(2)
+
+    with fact_col1:
+
+        st.metric(
+            f"{home_team} — matches",
+            len(home_records),
+        )
+
+    with fact_col2:
+
+        st.metric(
+            f"{away_team} — matches",
+            len(away_records),
+        )
+
+    # --------------------------------------------------------
+    # DEBUG HISTORY
+    # --------------------------------------------------------
+
+    with st.expander(
+        "Проверить историю, переданную Brain",
+        expanded=False,
+    ):
+
+        st.write(
+            f"{home_team} — oldest → newest"
+        )
+
+        st.dataframe(
+            home_records,
+            use_container_width=True,
+        )
+
+        st.write(
+            f"{away_team} — oldest → newest"
+        )
+
+        st.dataframe(
+            away_records,
+            use_container_width=True,
+        )
+
+    # --------------------------------------------------------
+    # BRAIN
     # --------------------------------------------------------
 
     try:
 
-        prediction = calculate_prediction(
-            home_team.strip(),
-            away_team.strip(),
-            home_records,
-            away_records,
-        )
+        with st.spinner(
+            "FAJ Brain v4.0 считает прогноз..."
+        ):
+
+            prediction = calculate_prediction(
+                home_team=home_team,
+                away_team=away_team,
+                home_records=home_records,
+                away_records=away_records,
+            )
 
     except Exception as exc:
 
-        progress.empty()
-
         st.error(
-            f"Ошибка расчёта FAJ Brain: {exc}"
+            "FAJ Brain не смог завершить расчёт."
         )
 
-        st.exception(exc)
+        st.exception(
+            exc
+        )
 
         st.stop()
 
-    progress.progress(
-        100,
-        text="FAJ Brain расчёт завершён.",
+    # ========================================================
+    # MAIN RESULT
+    # ========================================================
+
+    st.divider()
+
+    st.subheader(
+        "FAJ Brain Prediction"
     )
 
-    progress.empty()
+    # --------------------------------------------------------
+    # CORE VALUES
+    # --------------------------------------------------------
 
-    st.session_state.faj_prediction = (
+    home_lambda = prediction.get(
+        "home_lambda"
+    )
+
+    away_lambda = prediction.get(
+        "away_lambda"
+    )
+
+    total_lambda = prediction.get(
+        "total_lambda"
+    )
+
+    home_win = prediction.get(
+        "home_win_probability"
+    )
+
+    draw = prediction.get(
+        "draw_probability"
+    )
+
+    away_win = prediction.get(
+        "away_win_probability"
+    )
+
+    btts = prediction.get(
+        "btts_probability"
+    )
+
+    over25 = prediction.get(
+        "over_25_probability"
+    )
+
+    under25 = prediction.get(
+        "under_25_probability"
+    )
+
+    over35 = prediction.get(
+        "over_35_probability"
+    )
+
+    under35 = prediction.get(
+        "under_35_probability"
+    )
+
+    predicted_score = prediction.get(
+        "predicted_score"
+    )
+
+    second_score = prediction.get(
+        "second_score"
+    )
+
+    third_score = prediction.get(
+        "third_score"
+    )
+
+    score_probability = prediction.get(
+        "predicted_score_probability"
+    )
+
+    # --------------------------------------------------------
+    # XG / LAMBDA
+    # --------------------------------------------------------
+
+    st.markdown(
+        "### Expected Goals / Lambda"
+    )
+
+    xg1, xg2, xg3 = st.columns(3)
+
+    with xg1:
+
+        st.metric(
+            home_team,
+            fmt_number(
+                home_lambda
+            ),
+        )
+
+    with xg2:
+
+        st.metric(
+            "Total λ",
+            fmt_number(
+                total_lambda
+            ),
+        )
+
+    with xg3:
+
+        st.metric(
+            away_team,
+            fmt_number(
+                away_lambda
+            ),
+        )
+
+    # --------------------------------------------------------
+    # 1X2
+    # --------------------------------------------------------
+
+    st.markdown(
+        "### 1X2"
+    )
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+
+        st.metric(
+            f"{home_team} — HOME",
+            fmt_probability(
+                home_win
+            ),
+        )
+
+    with c2:
+
+        st.metric(
+            "DRAW",
+            fmt_probability(
+                draw
+            ),
+        )
+
+    with c3:
+
+        st.metric(
+            f"{away_team} — AWAY",
+            fmt_probability(
+                away_win
+            ),
+        )
+
+    # --------------------------------------------------------
+    # PRIMARY OUTCOME
+    # --------------------------------------------------------
+
+    primary_outcome = prediction.get(
+        "primary_outcome"
+    )
+
+    if primary_outcome:
+
+        labels = {
+            "HOME": home_team,
+            "DRAW": "Ничья",
+            "AWAY": away_team,
+        }
+
+        st.info(
+            f"Primary outcome: "
+            f"**{labels.get(primary_outcome, primary_outcome)}**"
+        )
+
+    # --------------------------------------------------------
+    # BTTS / TOTALS
+    # --------------------------------------------------------
+
+    st.markdown(
+        "### Goals"
+    )
+
+    g1, g2, g3, g4, g5 = st.columns(5)
+
+    with g1:
+
+        st.metric(
+            "BTTS",
+            fmt_probability(
+                btts
+            ),
+        )
+
+    with g2:
+
+        st.metric(
+            "Over 2.5",
+            fmt_probability(
+                over25
+            ),
+        )
+
+    with g3:
+
+        st.metric(
+            "Under 2.5",
+            fmt_probability(
+                under25
+            ),
+        )
+
+    with g4:
+
+        st.metric(
+            "Over 3.5",
+            fmt_probability(
+                over35
+            ),
+        )
+
+    with g5:
+
+        st.metric(
+            "Under 3.5",
+            fmt_probability(
+                under35
+            ),
+        )
+
+    # --------------------------------------------------------
+    # SCORE
+    # --------------------------------------------------------
+
+    st.markdown(
+        "### Exact Score"
+    )
+
+    s1, s2, s3 = st.columns(3)
+
+    with s1:
+
+        st.metric(
+            "Primary",
+            predicted_score or "—",
+        )
+
+        st.caption(
+            f"P = {fmt_probability(score_probability)}"
+        )
+
+    with s2:
+
+        st.metric(
+            "Second",
+            second_score or "—",
+        )
+
+    with s3:
+
+        st.metric(
+            "Third",
+            third_score or "—",
+        )
+
+    # --------------------------------------------------------
+    # TOP SCORES
+    # --------------------------------------------------------
+
+    score_rows = _score_rows(
         prediction
     )
 
-    st.session_state.faj_home_records = (
-        home_records
-    )
+    if score_rows:
 
-    st.session_state.faj_away_records = (
-        away_records
-    )
+        st.markdown(
+            "#### Top Score Distribution"
+        )
 
-    st.session_state.faj_collection_errors = (
-        all_errors
-    )
+        table_rows = []
 
+        for index, row in enumerate(
+            score_rows,
+            start=1,
+        ):
 
-# ============================================================
-# RESULT
-# ============================================================
+            table_rows.append(
+                {
+                    "#":
+                        index,
 
-prediction = (
-    st.session_state.faj_prediction
-)
+                    "Score":
+                        row.get(
+                            "score"
+                        ) or "—",
 
-if prediction is None:
+                    "Raw probability":
+                        fmt_probability(
+                            row.get(
+                                "raw_probability"
+                            )
+                        ),
 
-    st.info(
-        "Введи команды и URL последних матчей, "
-        "затем запусти расчёт."
-    )
+                    "Winner":
+                        row.get(
+                            "winner_class"
+                        ) or "—",
 
-    st.stop()
+                    "Goals":
+                        row.get(
+                            "total_goals"
+                        ),
 
-
-# ============================================================
-# ERRORS / WARNINGS
-# ============================================================
-
-collection_errors = (
-    st.session_state.faj_collection_errors
-)
-
-if collection_errors:
-
-    with st.expander(
-        "⚠️ Замечания при сборе данных",
-        expanded=False,
-    ):
-
-        for error in collection_errors:
-            st.write(
-                f"• {error}"
+                    "BTTS":
+                        row.get(
+                            "btts"
+                        ),
+                }
             )
 
-
-# ============================================================
-# META EXTRACTION
-# ============================================================
-
-_meta = prediction.get(
-    "calculation_meta",
-    {},
-) or {}
-
-_score_forecast = _meta.get(
-    "score_forecast",
-) or {}
-
-_goal_model_meta = _meta.get(
-    "goal_model",
-) or {}
-
-_top_scores = _score_forecast.get(
-    "top_scores",
-) or []
-
-
-# ============================================================
-# TOP MATCH CARD
-# ============================================================
-
-st.markdown(
-    f"""
-<div class="result-card">
-
-    <div class="result-main">
-        {prediction.get("home_team", "—")}
-        &nbsp; — &nbsp;
-        {prediction.get("away_team", "—")}
-    </div>
-
-    <div class="result-caption">
-        {prediction.get("analysis_mode", "—")}
-        · история {prediction.get("home_matches", 0)} / {prediction.get("away_matches", 0)}
-    </div>
-
-</div>
-""",
-    unsafe_allow_html=True,
-)
-
-
-# ============================================================
-# 1X2
-# ============================================================
-
-st.markdown(
-    '<div class="section-title">Результат</div>',
-    unsafe_allow_html=True,
-)
-
-c1, c2, c3 = st.columns(
-    3,
-    gap="small",
-)
-
-with c1:
-
-    _hp = probability(prediction.get("home_win_probability"))
-    st.markdown(
-        f"""
-        <div class="metric">
-            <div class="metric-value">
-                {f"{_hp:.1f}%" if _hp is not None else "—"}
-            </div>
-            <div class="metric-label">
-                {prediction.get("home_team", "—")}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-with c2:
-
-    _dp = probability(prediction.get("draw_probability"))
-    st.markdown(
-        f"""
-        <div class="metric">
-            <div class="metric-value">
-                {f"{_dp:.1f}%" if _dp is not None else "—"}
-            </div>
-            <div class="metric-label">
-                НИЧЬЯ
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-with c3:
-
-    _ap = probability(prediction.get("away_win_probability"))
-    st.markdown(
-        f"""
-        <div class="metric">
-            <div class="metric-value">
-                {f"{_ap:.1f}%" if _ap is not None else "—"}
-            </div>
-            <div class="metric-label">
-                {prediction.get("away_team", "—")}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-# ============================================================
-# XG
-# ============================================================
-
-st.markdown(
-    '<div class="section-title">xG</div>',
-    unsafe_allow_html=True,
-)
-
-x1, x2, x3 = st.columns(
-    3,
-    gap="small",
-)
-
-_hxg = safe_float(prediction.get("home_xg"))
-_axg = safe_float(prediction.get("away_xg"))
-_total_xg = (
-    _hxg + _axg
-    if _hxg is not None and _axg is not None
-    else None
-)
-
-with x1:
-
-    st.markdown(
-        f"""
-        <div class="metric">
-            <div class="metric-value">
-                {f"{_hxg:.2f}" if _hxg is not None else "—"}
-            </div>
-            <div class="metric-label">
-                {prediction.get("home_team", "—")}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-with x2:
-
-    st.markdown(
-        f"""
-        <div class="metric">
-            <div class="metric-value">
-                {f"{_total_xg:.2f}" if _total_xg is not None else "—"}
-            </div>
-            <div class="metric-label">
-                TOTAL xG
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-with x3:
-
-    st.markdown(
-        f"""
-        <div class="metric">
-            <div class="metric-value">
-                {f"{_axg:.2f}" if _axg is not None else "—"}
-            </div>
-            <div class="metric-label">
-                {prediction.get("away_team", "—")}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-# ============================================================
-# SCORES
-# ============================================================
-
-st.markdown(
-    '<div class="section-title">Наиболее вероятные счета</div>',
-    unsafe_allow_html=True,
-)
-
-score_cols = st.columns(
-    3,
-    gap="small",
-)
-
-for column, item, index in zip(
-    score_cols,
-    _top_scores[:3],
-    range(1, 4),
-):
-
-    with column:
-
-        _score_value = (
-            item.get("score")
-            if isinstance(item, dict)
-            else None
+        st.dataframe(
+            table_rows,
+            use_container_width=True,
+            hide_index=True,
         )
 
-        _score_prob = (
-            safe_float(item.get("probability"))
-            if isinstance(item, dict)
-            else None
+    # ========================================================
+    # CORNERS
+    # ========================================================
+
+    st.divider()
+
+    st.subheader(
+        "Corners State"
+    )
+
+    corners_state = prediction.get(
+        "corners_state"
+    )
+
+    if corners_state is None:
+
+        st.info(
+            "CornersModel не вернул отдельный state."
         )
 
-        _score_pct = (
-            round(_score_prob * 100.0, 1)
-            if _score_prob is not None
-            else None
+    else:
+
+        corners_data = _as_dict(
+            corners_state
         )
 
-        st.markdown(
-            f"""
-            <div class="score-card">
-                <div class="score">
-                    {_score_value or "—"}
-                </div>
-                <div class="score-label">
-                    #{index} · {f"{_score_pct:.1f}%" if _score_pct is not None else "—"}
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+        # Try common current field names.
+        home_corners = _get(
+            corners_data,
+            "home_corners",
+            "expected_home_corners",
+            "home_mean",
+            "home_xg",
         )
 
-
-# ============================================================
-# GOALS
-# ============================================================
-
-st.markdown(
-    '<div class="section-title">Голы</div>',
-    unsafe_allow_html=True,
-)
-
-g1, g2, g3 = st.columns(
-    3,
-    gap="small",
-)
-
-_btts = probability(prediction.get("btts_probability"))
-_o25 = probability(prediction.get("over25_probability"))
-_o35 = probability(prediction.get("over35_probability"))
-
-with g1:
-
-    st.markdown(
-        f"""
-        <div class="metric">
-            <div class="metric-value">
-                {f"{_btts:.1f}%" if _btts is not None else "—"}
-            </div>
-            <div class="metric-label">
-                BTTS
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-with g2:
-
-    st.markdown(
-        f"""
-        <div class="metric">
-            <div class="metric-value">
-                {f"{_o25:.1f}%" if _o25 is not None else "—"}
-            </div>
-            <div class="metric-label">
-                ТБ 2.5
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-with g3:
-
-    st.markdown(
-        f"""
-        <div class="metric">
-            <div class="metric-value">
-                {f"{_o35:.1f}%" if _o35 is not None else "—"}
-            </div>
-            <div class="metric-label">
-                ТБ 3.5
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-# ============================================================
-# CORNERS
-# ============================================================
-
-st.markdown(
-    '<div class="section-title">Угловые</div>',
-    unsafe_allow_html=True,
-)
-
-_hc = safe_float(prediction.get("home_corners_expected"))
-_ac = safe_float(prediction.get("away_corners_expected"))
-_tc = safe_float(prediction.get("corners_expected"))
-
-c1, c2, c3 = st.columns(
-    3,
-    gap="small",
-)
-
-with c1:
-
-    st.markdown(
-        f"""
-        <div class="metric">
-            <div class="metric-value">
-                {f"{_hc:.2f}" if _hc is not None else "—"}
-            </div>
-            <div class="metric-label">
-                {prediction.get("home_team", "—")}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-with c2:
-
-    st.markdown(
-        f"""
-        <div class="metric">
-            <div class="metric-value">
-                {f"{_tc:.2f}" if _tc is not None else "—"}
-            </div>
-            <div class="metric-label">
-                TOTAL
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-with c3:
-
-    st.markdown(
-        f"""
-        <div class="metric">
-            <div class="metric-value">
-                {f"{_ac:.2f}" if _ac is not None else "—"}
-            </div>
-            <div class="metric-label">
-                {prediction.get("away_team", "—")}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-corner_cols = st.columns(
-    4,
-    gap="small",
-)
-
-corner_lines = [
-    ("ТБ 7.5", probability(prediction.get("over75_corners_probability"))),
-    ("ТБ 8.5", probability(prediction.get("over85_corners_probability"))),
-    ("ТБ 9.5", probability(prediction.get("over95_corners_probability"))),
-    ("ТБ 10.5", probability(prediction.get("over105_corners_probability"))),
-]
-
-for column, (
-    label,
-    p,
-) in zip(
-    corner_cols,
-    corner_lines,
-):
-
-    with column:
-
-        st.markdown(
-            f"""
-            <div class="metric">
-                <div class="metric-value">
-                    {f"{p:.1f}%" if p is not None else "—"}
-                </div>
-                <div class="metric-label">
-                    {label}
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+        away_corners = _get(
+            corners_data,
+            "away_corners",
+            "expected_away_corners",
+            "away_mean",
+            "away_xg",
         )
 
-
-# ============================================================
-# CARDS
-# ============================================================
-
-st.markdown(
-    '<div class="section-title">Карточки</div>',
-    unsafe_allow_html=True,
-)
-
-_hcards = safe_float(prediction.get("home_cards_expected"))
-_acards = safe_float(prediction.get("away_cards_expected"))
-_tcards = safe_float(prediction.get("cards_expected"))
-
-card_cols = st.columns(
-    3,
-    gap="small",
-)
-
-with card_cols[0]:
-
-    st.markdown(
-        f"""
-        <div class="metric">
-            <div class="metric-value">
-                {f"{_hcards:.2f}" if _hcards is not None else "—"}
-            </div>
-            <div class="metric-label">
-                {prediction.get("home_team", "—")}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-with card_cols[1]:
-
-    st.markdown(
-        f"""
-        <div class="metric">
-            <div class="metric-value">
-                {f"{_tcards:.2f}" if _tcards is not None else "—"}
-            </div>
-            <div class="metric-label">
-                TOTAL
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-with card_cols[2]:
-
-    st.markdown(
-        f"""
-        <div class="metric">
-            <div class="metric-value">
-                {f"{_acards:.2f}" if _acards is not None else "—"}
-            </div>
-            <div class="metric-label">
-                {prediction.get("away_team", "—")}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-card_lines = [
-    ("ТБ 2.5", probability(prediction.get("over25_cards_probability"))),
-    ("ТБ 3.5", probability(prediction.get("over35_cards_probability"))),
-    ("ТБ 4.5", probability(prediction.get("over45_cards_probability"))),
-]
-
-card_probability_cols = st.columns(
-    3,
-    gap="small",
-)
-
-for column, (
-    label,
-    p,
-) in zip(
-    card_probability_cols,
-    card_lines,
-):
-
-    with column:
-
-        st.markdown(
-            f"""
-            <div class="metric">
-                <div class="metric-value">
-                    {f"{p:.1f}%" if p is not None else "—"}
-                </div>
-                <div class="metric-label">
-                    {label}
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+        total_corners = _get(
+            corners_data,
+            "total_corners",
+            "expected_total_corners",
+            "total_mean",
         )
 
+        cc1, cc2, cc3 = st.columns(3)
 
-# ============================================================
-# CONFIDENCE / RISK
-# ============================================================
+        with cc1:
 
-st.markdown(
-    '<div class="section-title">Надёжность анализа</div>',
-    unsafe_allow_html=True,
-)
+            st.metric(
+                home_team,
+                fmt_number(
+                    home_corners
+                ),
+            )
 
-_conf_raw = safe_float(prediction.get("confidence"))
-_conf_pct = (
-    round(_conf_raw * 100.0, 1)
-    if _conf_raw is not None
-    else None
-)
+        with cc2:
 
-_dq = safe_float(prediction.get("data_quality"))
-_risk = prediction.get("risk") or "—"
+            st.metric(
+                "Total",
+                fmt_number(
+                    total_corners
+                ),
+            )
 
-q1, q2, q3 = st.columns(
-    3,
-    gap="small",
-)
+        with cc3:
 
-with q1:
+            st.metric(
+                away_team,
+                fmt_number(
+                    away_corners
+                ),
+            )
 
-    st.markdown(
-        f"""
-        <div class="metric">
-            <div class="metric-value">
-                {f"{_conf_pct:.1f}%" if _conf_pct is not None else "—"}
-            </div>
-            <div class="metric-label">
-                CONFIDENCE
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+        with st.expander(
+            "Corners raw state",
+            expanded=False,
+        ):
+
+            st.json(
+                _serialize(
+                    corners_data
+                )
+            )
+
+    # ========================================================
+    # CARDS
+    # ========================================================
+
+    st.subheader(
+        "Cards State"
     )
 
-with q2:
-
-    st.markdown(
-        f"""
-        <div class="metric">
-            <div class="metric-value">
-                {f"{_dq:.1f}%" if _dq is not None else "—"}
-            </div>
-            <div class="metric-label">
-                DATA QUALITY
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    cards_state = prediction.get(
+        "cards_state"
     )
 
-with q3:
+    if cards_state is None:
 
-    st.markdown(
-        f"""
-        <div class="metric">
-            <div class="metric-value">
-                {_risk}
-            </div>
-            <div class="metric-label">
-                RISK
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+        st.info(
+            "CardsModel не вернул отдельный state."
+        )
+
+    else:
+
+        cards_data = _as_dict(
+            cards_state
+        )
+
+        home_yellow = _get(
+            cards_data,
+            "home_yellow",
+            "home_yellows",
+            "home_yellow_cards",
+            "home_mean_yellow",
+        )
+
+        away_yellow = _get(
+            cards_data,
+            "away_yellow",
+            "away_yellows",
+            "away_yellow_cards",
+            "away_mean_yellow",
+        )
+
+        total_yellow = _get(
+            cards_data,
+            "total_yellow",
+            "total_yellows",
+            "total_yellow_cards",
+            "total_mean_yellow",
+        )
+
+        home_red = _get(
+            cards_data,
+            "home_red",
+            "home_red_cards",
+        )
+
+        away_red = _get(
+            cards_data,
+            "away_red",
+            "away_red_cards",
+        )
+
+        total_red = _get(
+            cards_data,
+            "total_red",
+            "total_red_cards",
+        )
+
+        card_cols = st.columns(3)
+
+        with card_cols[0]:
+
+            st.metric(
+                f"{home_team} — yellow",
+                fmt_number(
+                    home_yellow
+                ),
+            )
+
+        with card_cols[1]:
+
+            st.metric(
+                "Yellow total",
+                fmt_number(
+                    total_yellow
+                ),
+            )
+
+        with card_cols[2]:
+
+            st.metric(
+                f"{away_team} — yellow",
+                fmt_number(
+                    away_yellow
+                ),
+            )
+
+        red_cols = st.columns(3)
+
+        with red_cols[0]:
+
+            st.metric(
+                f"{home_team} — red",
+                fmt_number(
+                    home_red
+                ),
+            )
+
+        with red_cols[1]:
+
+            st.metric(
+                "Red total",
+                fmt_number(
+                    total_red
+                ),
+            )
+
+        with red_cols[2]:
+
+            st.metric(
+                f"{away_team} — red",
+                fmt_number(
+                    away_red
+                ),
+            )
+
+        with st.expander(
+            "Cards raw state",
+            expanded=False,
+        ):
+
+            st.json(
+                _serialize(
+                    cards_data
+                )
+            )
+
+    # ========================================================
+    # DIAGNOSTIC STATES
+    # ========================================================
+
+    st.divider()
+
+    st.subheader(
+        "Analytical States"
     )
 
-
-# ============================================================
-# CONCLUSION
-# ============================================================
-
-st.markdown(
-    '<div class="section-title">Вывод FAJ</div>',
-    unsafe_allow_html=True,
-)
-
-st.markdown(
-    f"""
-<div class="conclusion">
-
-{prediction.get("conclusion") or ""}
-
-</div>
-""",
-    unsafe_allow_html=True,
-)
-
-
-# ============================================================
-# FAJ BRAIN DIAGNOSTICS
-# ============================================================
-
-st.markdown(
-    '<div class="section-title">FAJ Brain Diagnostics</div>',
-    unsafe_allow_html=True,
-)
-
-_b1, _b2, _b3, _b4 = st.columns(
-    4,
-    gap="small",
-)
-
-with _b1:
-    st.metric(
-        "Brain λ Home",
-        f"{_hxg:.3f}" if _hxg is not None else "—",
+    st.caption(
+        "Эти состояния являются диагностическими. "
+        "Brain v4.0 не использует их для изменения "
+        "lambda, Poisson, вероятностей или ranking score."
     )
 
-with _b2:
-    st.metric(
-        "Brain λ Away",
-        f"{_axg:.3f}" if _axg is not None else "—",
+    # --------------------------------------------------------
+    # Form
+    # --------------------------------------------------------
+
+    form_col1, form_col2 = st.columns(2)
+
+    with form_col1:
+
+        _render_state_summary(
+            f"FormModel — {home_team}",
+            prediction.get(
+                "home_form"
+            ),
+        )
+
+    with form_col2:
+
+        _render_state_summary(
+            f"FormModel — {away_team}",
+            prediction.get(
+                "away_form"
+            ),
+        )
+
+    # --------------------------------------------------------
+    # FormWin
+    # --------------------------------------------------------
+
+    fw_col1, fw_col2 = st.columns(2)
+
+    form_win = prediction.get(
+        "form_win",
+        {},
     )
 
-with _b3:
-    st.metric(
-        "Confidence",
-        (
-            f"{_conf_pct:.1f}%"
-            if _conf_pct is not None
-            else "—"
+    with fw_col1:
+
+        _render_state_summary(
+            f"FormWin — {home_team}",
+            _get(
+                form_win,
+                "home",
+            ),
+        )
+
+    with fw_col2:
+
+        _render_state_summary(
+            f"FormWin — {away_team}",
+            _get(
+                form_win,
+                "away",
+            ),
+        )
+
+    # --------------------------------------------------------
+    # Defence
+    # --------------------------------------------------------
+
+    def_col1, def_col2 = st.columns(2)
+
+    defence = prediction.get(
+        "defence",
+        {},
+    )
+
+    with def_col1:
+
+        _render_state_summary(
+            f"Defence — {home_team}",
+            _get(
+                defence,
+                "home",
+            ),
+        )
+
+    with def_col2:
+
+        _render_state_summary(
+            f"Defence — {away_team}",
+            _get(
+                defence,
+                "away",
+            ),
+        )
+
+    # --------------------------------------------------------
+    # Control
+    # --------------------------------------------------------
+
+    ctrl_col1, ctrl_col2 = st.columns(2)
+
+    control = prediction.get(
+        "control",
+        {},
+    )
+
+    with ctrl_col1:
+
+        _render_state_summary(
+            f"Control — {home_team}",
+            _get(
+                control,
+                "home",
+            ),
+        )
+
+    with ctrl_col2:
+
+        _render_state_summary(
+            f"Control — {away_team}",
+            _get(
+                control,
+                "away",
+            ),
+        )
+
+    # --------------------------------------------------------
+    # Anomaly
+    # --------------------------------------------------------
+
+    an_col1, an_col2 = st.columns(2)
+
+    anomaly = prediction.get(
+        "anomaly",
+        {},
+    )
+
+    with an_col1:
+
+        _render_state_summary(
+            f"Anomaly — {home_team}",
+            _get(
+                anomaly,
+                "home",
+            ),
+        )
+
+    with an_col2:
+
+        _render_state_summary(
+            f"Anomaly — {away_team}",
+            _get(
+                anomaly,
+                "away",
+            ),
+        )
+
+    # --------------------------------------------------------
+    # Special Form
+    # --------------------------------------------------------
+
+    sf_col1, sf_col2 = st.columns(2)
+
+    special_form = prediction.get(
+        "special_form",
+        {},
+    )
+
+    with sf_col1:
+
+        _render_state_summary(
+            f"SpecialForm — {home_team}",
+            _get(
+                special_form,
+                "home",
+            ),
+        )
+
+    with sf_col2:
+
+        _render_state_summary(
+            f"SpecialForm — {away_team}",
+            _get(
+                special_form,
+                "away",
+            ),
+        )
+
+    # ========================================================
+    # GOAL / PROBABILITY / SCORE RAW STATES
+    # ========================================================
+
+    st.divider()
+
+    st.subheader(
+        "Core Mathematical States"
+    )
+
+    _render_state_summary(
+        "GoalModel / Goal State",
+        prediction.get(
+            "goal_state"
         ),
     )
 
-with _b4:
-    st.metric(
-        "Model version",
-        str(prediction.get("model_version", "—")),
+    _render_state_summary(
+        "ProbabilityModel / Probability State",
+        prediction.get(
+            "probability_state"
+        ),
     )
 
-with st.expander(
-    "Score Forecast",
-    expanded=False,
-):
-    st.json(_score_forecast or {})
-
-with st.expander(
-    "Goal Model Diagnostics",
-    expanded=False,
-):
-    st.json(_goal_model_meta or {})
-
-with st.expander(
-    "Brain calculation meta (full)",
-    expanded=False,
-):
-    st.json(_meta)
-
-
-# ============================================================
-# FACT HISTORY
-# ============================================================
-
-st.markdown(
-    '<div class="section-title">Использованная история</div>',
-    unsafe_allow_html=True,
-)
-
-with st.expander(
-    "Показать факты матчей",
-    expanded=False,
-):
-
-    home_records = (
-        st.session_state.faj_home_records
+    _render_state_summary(
+        "ScorePredictor / Score State",
+        prediction.get(
+            "score_state"
+        ),
     )
 
-    away_records = (
-        st.session_state.faj_away_records
+    # ========================================================
+    # CONFIDENCE / RISK
+    # ========================================================
+
+    st.divider()
+
+    st.subheader(
+        "Confidence / Risk"
     )
 
-    st.markdown(
-        f"### {prediction.get('home_team', '—')}"
+    confidence = prediction.get(
+        "confidence"
     )
 
-    for record in home_records:
+    risk = prediction.get(
+        "risk"
+    )
 
-        score_text = (
-            f"{record.get('goals_for')}:"
-            f"{record.get('goals_against')}"
-            if (
-                record.get("goals_for")
-                is not None
-                and record.get("goals_against")
-                is not None
+    cr1, cr2 = st.columns(2)
+
+    with cr1:
+
+        st.metric(
+            "Confidence",
+            fmt_probability(
+                confidence
             )
-            else "—"
+            if confidence is not None
+            else "—",
         )
 
-        xg_text = (
-            f"{record.get('xg'):.2f}"
-            if record.get("xg") is not None
-            else "—"
+    with cr2:
+
+        st.metric(
+            "Risk",
+            fmt_probability(
+                risk
+            )
+            if risk is not None
+            else "—",
         )
 
-        st.markdown(
-            f"""
-            <div class="fact-row">
-                <span class="fact-name">
-                    {record.get("match_date") or "—"}
-                    ·
-                    {record.get("opponent") or "—"}
-                </span>
+    st.caption(
+        "Brain v4.0 намеренно возвращает "
+        "confidence=None и risk=None. "
+        "Они не заменяются искусственными значениями."
+    )
 
-                <span class="fact-value">
-                    {score_text}
-                    · xG {xg_text}
-                </span>
-            </div>
-            """,
-            unsafe_allow_html=True,
+    # ========================================================
+    # DIAGNOSTICS
+    # ========================================================
+
+    st.divider()
+
+    st.subheader(
+        "Brain Diagnostics"
+    )
+
+    diagnostics = prediction.get(
+        "diagnostics",
+        {},
+    )
+
+    if diagnostics:
+
+        d1, d2, d3 = st.columns(3)
+
+        with d1:
+
+            st.metric(
+                "Brain",
+                str(
+                    diagnostics.get(
+                        "brain_version",
+                        BRAIN_VERSION,
+                    )
+                ),
+            )
+
+        with d2:
+
+            st.metric(
+                "Core quality",
+                fmt_number(
+                    diagnostics.get(
+                        "core_data_quality"
+                    ),
+                    2,
+                ),
+            )
+
+        with d3:
+
+            st.metric(
+                "History",
+                (
+                    f"{diagnostics.get('home_history_size', '—')}"
+                    f" / "
+                    f"{diagnostics.get('away_history_size', '—')}"
+                ),
+            )
+
+        with st.expander(
+            "Full Brain diagnostics",
+            expanded=False,
+        ):
+
+            st.json(
+                _serialize(
+                    diagnostics
+                )
+            )
+
+    # ========================================================
+    # ERRORS
+    # ========================================================
+
+    errors = prediction.get(
+        "errors",
+        [],
+    )
+
+    if errors:
+
+        st.warning(
+            "В диагностических органах "
+            "обнаружены ошибки. "
+            "Core prediction при этом не изменялась."
         )
 
-    st.markdown(
-        f"### {prediction.get('away_team', '—')}"
+        with st.expander(
+            "Brain diagnostic errors",
+            expanded=False,
+        ):
+
+            for error in errors:
+
+                st.write(
+                    f"• {error}"
+                )
+
+    # ========================================================
+    # RATING — DISPLAY ONLY
+    # ========================================================
+
+    st.divider()
+
+    st.subheader(
+        "FAJ Rating — informational only"
     )
 
-    for record in away_records:
+    st.caption(
+        "Рейтинг не передавался в Brain "
+        "и не участвовал в математике прогноза."
+    )
 
-        score_text = (
-            f"{record.get('goals_for')}:"
-            f"{record.get('goals_against')}"
-            if (
-                record.get("goals_for")
-                is not None
-                and record.get("goals_against")
-                is not None
-            )
-            else "—"
+    rating_col1, rating_col2 = st.columns(2)
+
+    with rating_col1:
+
+        home_rating = get_display_rating(
+            home_team
         )
 
-        xg_text = (
-            f"{record.get('xg'):.2f}"
-            if record.get("xg") is not None
-            else "—"
+        st.metric(
+            home_team,
+            (
+                fmt_number(home_rating)
+                if home_rating is not None
+                else "—"
+            ),
         )
 
-        st.markdown(
-            f"""
-            <div class="fact-row">
-                <span class="fact-name">
-                    {record.get("match_date") or "—"}
-                    ·
-                    {record.get("opponent") or "—"}
-                </span>
+    with rating_col2:
 
-                <span class="fact-value">
-                    {score_text}
-                    · xG {xg_text}
-                </span>
-            </div>
-            """,
-            unsafe_allow_html=True,
+        away_rating = get_display_rating(
+            away_team
         )
 
+        st.metric(
+            away_team,
+            (
+                fmt_number(away_rating)
+                if away_rating is not None
+                else "—"
+            ),
+        )
 
-# ============================================================
-# 🔬 GOALMODEL v6.0 DIAGNOSTICS
-# ============================================================
+    # ========================================================
+    # RAW BRAIN PREDICTION
+    # ========================================================
 
-st.markdown(
-    '<div class="section-title">🔬 GoalModel v6.0 Diagnostics</div>',
-    unsafe_allow_html=True,
-)
+    st.divider()
 
-_diagnostics = (
-    _goal_model_meta.get("diagnostics")
-    if isinstance(_goal_model_meta, dict)
-    else None
-)
+    with st.expander(
+        "Full BrainPrediction",
+        expanded=False,
+    ):
 
-if _diagnostics is None or not isinstance(_diagnostics, dict):
+        st.json(
+            _serialize(
+                prediction
+            )
+        )
 
-    st.info("GoalModel diagnostics недоступны.")
+    # ========================================================
+    # COPYABLE DIAGNOSTIC REPORT
+    # ========================================================
 
-else:
+    report_lines = [
 
-    _version_val = _diagnostics.get("version", "—")
-    _status_val = _diagnostics.get("status", "—")
+        "============================================================",
+        "FAJ BRAIN PREDICTION",
+        "============================================================",
+        f"Brain: {prediction.get('version', BRAIN_VERSION)}",
+        "",
+        f"HOME: {home_team}",
+        f"AWAY: {away_team}",
+        "",
+        "LAMBDA",
+        f"Home: {fmt_number(home_lambda)}",
+        f"Away: {fmt_number(away_lambda)}",
+        f"Total: {fmt_number(total_lambda)}",
+        "",
+        "1X2",
+        f"Home: {fmt_probability(home_win)}",
+        f"Draw: {fmt_probability(draw)}",
+        f"Away: {fmt_probability(away_win)}",
+        "",
+        "GOALS",
+        f"BTTS: {fmt_probability(btts)}",
+        f"Over 2.5: {fmt_probability(over25)}",
+        f"Under 2.5: {fmt_probability(under25)}",
+        f"Over 3.5: {fmt_probability(over35)}",
+        f"Under 3.5: {fmt_probability(under35)}",
+        "",
+        "EXACT SCORE",
+        f"1: {predicted_score or '—'} "
+        f"({fmt_probability(score_probability)})",
+        f"2: {second_score or '—'}",
+        f"3: {third_score or '—'}",
+        "",
+        f"PRIMARY OUTCOME: "
+        f"{prediction.get('primary_outcome') or '—'}",
+        f"PRIMARY SCENARIO: "
+        f"{prediction.get('primary_scenario') or '—'}",
+        "",
+        "CONFIDENCE",
+        "—",
+        "",
+        "RISK",
+        "—",
+        "",
+        "IMPORTANT",
+        "Diagnostic states do not modify Core prediction.",
+        "No rating multiplier.",
+        "No form multiplier.",
+        "No control multiplier.",
+        "No defence multiplier.",
+        "No anomaly multiplier.",
+        "No special-form multiplier.",
+        "No Winner Override.",
+        "No future result.",
+        "No database write.",
+        "============================================================",
+    ]
 
-    st.write(
-        f"**Version:** {_version_val}  ·  "
-        f"**Status:** {_status_val}"
+    diagnostic_report = "\n".join(
+        report_lines
     )
 
-    # ------------------------------------------------
-    # HOME
-    # ------------------------------------------------
+    with st.expander(
+        "Copyable FAJ diagnostic report",
+        expanded=False,
+    ):
 
-    _home_diag = _diagnostics.get("home", {}) or {}
-
-    if _home_diag:
-
-        st.markdown("**Home**")
-
-        _h1, _h2, _h3 = st.columns(3)
-
-        with _h1:
-            st.metric(
-                "Structural Attack",
-                f"{safe_float(_home_diag.get('structural_attack')):.3f}"
-                if safe_float(_home_diag.get("structural_attack")) is not None
-                else "—",
-            )
-
-        with _h2:
-            st.metric(
-                "Recent Attack",
-                f"{safe_float(_home_diag.get('recent_attack')):.3f}"
-                if safe_float(_home_diag.get("recent_attack")) is not None
-                else "—",
-            )
-
-        with _h3:
-            st.metric(
-                "Effective Attack",
-                f"{safe_float(_home_diag.get('effective_attack')):.3f}"
-                if safe_float(_home_diag.get("effective_attack")) is not None
-                else "—",
-            )
-
-        _h4, _h5, _h6 = st.columns(3)
-
-        with _h4:
-            st.metric(
-                "Match Attack",
-                f"{safe_float(_home_diag.get('match_attack')):.3f}"
-                if safe_float(_home_diag.get("match_attack")) is not None
-                else "—",
-            )
-
-        with _h5:
-            st.metric(
-                "Venue Attack xG",
-                f"{safe_float(_home_diag.get('venue_attack_xg')):.3f}"
-                if safe_float(_home_diag.get("venue_attack_xg")) is not None
-                else "—",
-            )
-
-        with _h6:
-            st.metric(
-                "Effective xGA",
-                f"{safe_float(_home_diag.get('effective_xga')):.3f}"
-                if safe_float(_home_diag.get("effective_xga")) is not None
-                else "—",
-            )
-
-    # ------------------------------------------------
-    # AWAY
-    # ------------------------------------------------
-
-    _away_diag = _diagnostics.get("away", {}) or {}
-
-    if _away_diag:
-
-        st.markdown("**Away**")
-
-        _a1, _a2, _a3 = st.columns(3)
-
-        with _a1:
-            st.metric(
-                "Structural Attack",
-                f"{safe_float(_away_diag.get('structural_attack')):.3f}"
-                if safe_float(_away_diag.get("structural_attack")) is not None
-                else "—",
-            )
-
-        with _a2:
-            st.metric(
-                "Recent Attack",
-                f"{safe_float(_away_diag.get('recent_attack')):.3f}"
-                if safe_float(_away_diag.get("recent_attack")) is not None
-                else "—",
-            )
-
-        with _a3:
-            st.metric(
-                "Effective Attack",
-                f"{safe_float(_away_diag.get('effective_attack')):.3f}"
-                if safe_float(_away_diag.get("effective_attack")) is not None
-                else "—",
-            )
-
-        _a4, _a5, _a6 = st.columns(3)
-
-        with _a4:
-            st.metric(
-                "Match Attack",
-                f"{safe_float(_away_diag.get('match_attack')):.3f}"
-                if safe_float(_away_diag.get("match_attack")) is not None
-                else "—",
-            )
-
-        with _a5:
-            st.metric(
-                "Venue Attack xG",
-                f"{safe_float(_away_diag.get('venue_attack_xg')):.3f}"
-                if safe_float(_away_diag.get("venue_attack_xg")) is not None
-                else "—",
-            )
-
-        with _a6:
-            st.metric(
-                "Effective xGA",
-                f"{safe_float(_away_diag.get('effective_xga')):.3f}"
-                if safe_float(_away_diag.get("effective_xga")) is not None
-                else "—",
-            )
-
-    # ------------------------------------------------
-    # VENUE
-    # ------------------------------------------------
-
-    _venue_diag = _diagnostics.get("venue", {}) or {}
-
-    if _venue_diag:
-
-        st.markdown("**Venue**")
-
-        _v1, _v2, _v3 = st.columns(3)
-
-        with _v1:
-            st.metric(
-                "Split Available",
-                "YES" if _venue_diag.get("venue_split_available") else "NO",
-            )
-
-        with _v2:
-            st.metric(
-                "HA Applied",
-                "YES" if _venue_diag.get("home_advantage_applied") else "NO",
-            )
-
-        with _v3:
-            st.metric(
-                "HA Fallback",
-                f"{safe_float(_venue_diag.get('home_advantage_fallback')):.3f}"
-                if safe_float(_venue_diag.get("home_advantage_fallback")) is not None
-                else "—",
-            )
-
-    # ------------------------------------------------
-    # LAMBDA
-    # ------------------------------------------------
-
-    _lambda_data = _diagnostics.get("lambda", {}) or {}
-
-    if _lambda_data:
-
-        st.markdown("**Final Lambda**")
-
-        _l1, _l2, _l3 = st.columns(3)
-
-        with _l1:
-            st.metric(
-                "λ Home",
-                f"{safe_float(_lambda_data.get('home')):.3f}"
-                if safe_float(_lambda_data.get("home")) is not None
-                else "—",
-            )
-
-        with _l2:
-            st.metric(
-                "λ Away",
-                f"{safe_float(_lambda_data.get('away')):.3f}"
-                if safe_float(_lambda_data.get("away")) is not None
-                else "—",
-            )
-
-        with _l3:
-            st.metric(
-                "λ Total",
-                f"{safe_float(_lambda_data.get('total')):.3f}"
-                if safe_float(_lambda_data.get("total")) is not None
-                else "—",
-            )
-
-    # ------------------------------------------------
-    # FULL JSON
-    # ------------------------------------------------
-
-    with st.expander("📋 Полный diagnostics (JSON)", expanded=False):
-        st.json(_diagnostics)
-
-    # ------------------------------------------------
-    # COPY BUTTON
-    # ------------------------------------------------
-
-    _report_lines = []
-    _report_lines.append("FAJ GOALMODEL v6.0 DIAGNOSTICS")
-    _report_lines.append("================================")
-    _report_lines.append(
-        f"Match: {prediction.get('home_team', '—')} — {prediction.get('away_team', '—')}"
-    )
-    _report_lines.append(
-        f"Model: GoalModel v{_version_val} ({_status_val})"
-    )
-    _report_lines.append("")
-
-    _report_lines.append("HOME")
-    _report_lines.append(
-        f"Structural Attack: {safe_float(_home_diag.get('structural_attack')):.3f}"
-        if safe_float(_home_diag.get("structural_attack")) is not None
-        else "Structural Attack: —"
-    )
-    _report_lines.append(
-        f"Recent Attack:     {safe_float(_home_diag.get('recent_attack')):.3f}"
-        if safe_float(_home_diag.get("recent_attack")) is not None
-        else "Recent Attack:     —"
-    )
-    _report_lines.append(
-        f"Effective Attack:  {safe_float(_home_diag.get('effective_attack')):.3f}"
-        if safe_float(_home_diag.get("effective_attack")) is not None
-        else "Effective Attack:  —"
-    )
-    _report_lines.append("")
-
-    _report_lines.append("AWAY")
-    _report_lines.append(
-        f"Structural Attack: {safe_float(_away_diag.get('structural_attack')):.3f}"
-        if safe_float(_away_diag.get("structural_attack")) is not None
-        else "Structural Attack: —"
-    )
-    _report_lines.append(
-        f"Recent Attack:     {safe_float(_away_diag.get('recent_attack')):.3f}"
-        if safe_float(_away_diag.get("recent_attack")) is not None
-        else "Recent Attack:     —"
-    )
-    _report_lines.append(
-        f"Effective Attack:  {safe_float(_away_diag.get('effective_attack')):.3f}"
-        if safe_float(_away_diag.get("effective_attack")) is not None
-        else "Effective Attack:  —"
-    )
-    _report_lines.append("")
-
-    _report_lines.append("LAMBDA")
-    _report_lines.append(
-        f"λ Home:  {safe_float(_lambda_data.get('home')):.3f}"
-        if safe_float(_lambda_data.get("home")) is not None
-        else "λ Home:  —"
-    )
-    _report_lines.append(
-        f"λ Away:  {safe_float(_lambda_data.get('away')):.3f}"
-        if safe_float(_lambda_data.get("away")) is not None
-        else "λ Away:  —"
-    )
-    _report_lines.append(
-        f"λ Total: {safe_float(_lambda_data.get('total')):.3f}"
-        if safe_float(_lambda_data.get("total")) is not None
-        else "λ Total: —"
-    )
-
-    _report_text = "\n".join(_report_lines)
-
-    _copy_payload = (
-        _report_text
-        .replace("\\", "\\\\")
-        .replace("`", "\\`")
-        .replace("${", "\\${")
-    )
-
-    _copy_html = f"""
-<div style="margin-top:8px;">
-<button id="faj-copy-btn" style="
-    width:100%;
-    padding:10px 14px;
-    border-radius:12px;
-    border:1px solid rgba(128,128,128,.35);
-    background:rgba(128,128,128,.10);
-    color:inherit;
-    font-size:14px;
-    font-weight:700;
-    cursor:pointer;
-">📋 СКОПИРОВАТЬ ДИАГНОСТИКУ</button>
-<div id="faj-copy-status" style="
-    margin-top:6px;
-    font-size:11px;
-    opacity:.6;
-    text-align:center;
-"></div>
-</div>
-<script>
-(function() {{
-    const text = `{_copy_payload}`;
-    const btn = document.getElementById('faj-copy-btn');
-    const status = document.getElementById('faj-copy-status');
-    if (!btn) return;
-    btn.addEventListener('click', async function() {{
-        try {{
-            if (navigator.clipboard && window.isSecureContext) {{
-                await navigator.clipboard.writeText(text);
-            }} else {{
-                const ta = document.createElement('textarea');
-                ta.value = text;
-                ta.style.position = 'fixed';
-                ta.style.opacity = '0';
-                document.body.appendChild(ta);
-                ta.focus();
-                ta.select();
-                document.execCommand('copy');
-                document.body.removeChild(ta);
-            }}
-            status.innerText = '✅ Скопировано';
-            setTimeout(function() {{ status.innerText = ''; }}, 2000);
-        }} catch (e) {{
-            status.innerText = '❌ Ошибка копирования';
-        }}
-    }});
-}})();
-</script>
-"""
-
-    components.html(
-        _copy_html,
-        height=90,
-    )
+        st.code(
+            diagnostic_report,
+            language="text",
+        )
 
 
 # ============================================================
 # FOOTER
 # ============================================================
 
-st.markdown(
-    """
-<div style="
-    text-align:center;
-    opacity:.35;
-    font-size:10px;
-    padding-top:15px;
-">
-    FAJ Predictor 1.3 · Single source of truth: FAJ Brain ·
-    No Winner Synthesis · No Pair Rating ·
-    No ETC · No Learning · No bookmaker odds · No Football Data API
-</div>
-""",
-    unsafe_allow_html=True,
+st.divider()
+
+st.caption(
+    "FAJ Platform v12.1 · "
+    "FAJ Brain v4.0 · CONTRACT_V1 · "
+    "SQLite / FACTS / STATE / PROBABILITIES / SYNTHESIS"
+)
+
+st.caption(
+    "Prediction ≠ Fact · "
+    "Missing ≠ 0 · "
+    "Brain does not learn · "
+    "Brain does not write database · "
+    "Diagnostic States do not override Core mathematics"
 )
