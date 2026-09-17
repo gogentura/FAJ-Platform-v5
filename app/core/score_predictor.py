@@ -4,21 +4,21 @@
 """
 ============================================================
 FAJ Platform v12.1
-SCORE PREDICTOR v1.0
+SCORE PREDICTOR v1.1
 ============================================================
 
-Назначение
-----------
+ROLE
+----
+
 ScorePredictor формирует Score State из уже рассчитанного
 ProbabilityModel распределения точных счетов.
 
-Архитектура:
+ARCHITECTURE
 
     GoalModel
         │
         ▼
-    home_lambda
-    away_lambda
+    home_lambda / away_lambda
         │
         ▼
     ProbabilityModel
@@ -34,8 +34,10 @@ ProbabilityModel распределения точных счетов.
         ├── third_score
         └── ranked_scores
 
-КРИТИЧЕСКИЙ ПРИНЦИП
--------------------
+MATHEMATICAL CONTRACT
+---------------------
+
+    predicted_score = argmax P(score)
 
 ProbabilityModel является единственным владельцем
 вероятностей точных счетов.
@@ -43,6 +45,8 @@ ProbabilityModel является единственным владельцем
 ScorePredictor:
 
     НЕ пересчитывает Poisson
+    НЕ пересчитывает P(score)
+    НЕ нормализует распределение
     НЕ меняет P(score)
     НЕ применяет бонусы
     НЕ применяет штрафы
@@ -52,14 +56,28 @@ ScorePredictor:
     НЕ использует Anomaly
     НЕ использует SpecialForm
     НЕ использует WinnerState
+    НЕ использует Confidence
+    НЕ использует Risk
     НЕ использует ScoreUtility
 
-Математика:
+ScorePredictor является ranking/state layer.
 
-    predicted_score = argmax P(score)
+LOW-SCORE CORRECTION
+--------------------
 
-ScorePredictor является ranking / state layer,
-а не второй probability model.
+Архитектурно зарезервирована, но в v1.1 НЕ применяется.
+
+Важно:
+
+    Score State ≠ Probability State
+    Score State ≠ Winner State
+    Score State ≠ Confidence State
+    Score State ≠ Risk State
+
+Все значения вероятности берутся непосредственно
+из ProbabilityModel.
+
+None != 0.
 ============================================================
 """
 
@@ -74,7 +92,7 @@ import math
 # VERSION
 # ============================================================
 
-VERSION = "1.0"
+VERSION = "1.1"
 FORMULA_STATUS = "CONTRACT_V1"
 
 TOP_SCORES_COUNT = 10
@@ -87,13 +105,16 @@ TOP_SCORES_COUNT = 10
 @dataclass
 class ScorePrediction:
     """
-    Score State v1.
+    Score State v1.1.
 
-    Основной математический результат:
+    Основные результаты:
 
         predicted_score
         probability_score
-        ranked_scores
+        top_scores
+
+    ProbabilityScore является RAW P(score), полученной
+    от ProbabilityModel.
 
     Старые поля сохранены как compatibility API.
     """
@@ -117,13 +138,17 @@ class ScorePrediction:
         default_factory=list
     )
 
-    # Compatibility.
+    # Compatibility / diagnostic metadata.
     home_lambda: Optional[float] = None
     away_lambda: Optional[float] = None
 
-    # Старые имена API.
     home_xg: Optional[float] = None
     away_xg: Optional[float] = None
+
+    # Explicit Score State metadata.
+    low_score_state: Optional[str] = None
+    score_data_quality: Optional[float] = None
+    sample_size: Optional[int] = None
 
     # Старые compatibility fields.
     outcome_fit_score: Optional[float] = None
@@ -150,7 +175,7 @@ class ScorePredictor:
     """
     Pure Score State layer.
 
-    Источник вероятности:
+    Источник P(score):
 
         ProbabilityModel.score_distribution
 
@@ -170,11 +195,15 @@ class ScorePredictor:
         """
         Rank scores directly from ProbabilityModel.
 
-        Compatibility:
-            home_xg / away_xg могут быть переданы вместо
-            home_lambda / away_lambda.
+        ВАЖНО:
 
-        Внутри используются именно lambda.
+        home_lambda / away_lambda НЕ являются обязательными
+        для ranking уже существующего score_distribution.
+
+        Они используются только как metadata.
+
+        Если distribution отсутствует или не содержит
+        валидных score probabilities — Score State unavailable.
         """
 
         # ----------------------------------------------------
@@ -196,22 +225,6 @@ class ScorePredictor:
         )
 
         # ----------------------------------------------------
-        # Lambda validation
-        # ----------------------------------------------------
-
-        if (
-            home_lambda is None
-            or away_lambda is None
-            or home_lambda < 0.0
-            or away_lambda < 0.0
-        ):
-            return self._unavailable_prediction(
-                home_lambda=home_lambda,
-                away_lambda=away_lambda,
-                reason="INVALID_LAMBDA",
-            )
-
-        # ----------------------------------------------------
         # Read ProbabilityModel distribution
         # ----------------------------------------------------
 
@@ -229,8 +242,9 @@ class ScorePredictor:
         # ----------------------------------------------------
         # IMPORTANT:
         #
-        # No normalization.
-        # No probability modification.
+        # NO normalization.
+        # NO Poisson.
+        # NO probability modification.
         #
         # ProbabilityModel owns P(score).
         # ----------------------------------------------------
@@ -238,7 +252,7 @@ class ScorePredictor:
         ranked = sorted(
             candidates,
             key=lambda item: (
-                -item["probability"],
+                -item["raw_probability"],
                 item["home_goals"],
                 item["away_goals"],
             ),
@@ -291,27 +305,28 @@ class ScorePredictor:
         )
 
         primary_probability = (
-            primary["probability"]
+            primary["raw_probability"]
             if primary
             else None
         )
 
         second_probability = (
-            second["probability"]
+            second["raw_probability"]
             if second
             else None
         )
 
         third_probability = (
-            third["probability"]
+            third["raw_probability"]
             if third
             else None
         )
 
         # ----------------------------------------------------
-        # Diagnostic probability summary only.
+        # Probability summary
         #
-        # Never used to modify score ranking.
+        # Diagnostic only.
+        # NEVER affects score ranking.
         # ----------------------------------------------------
 
         probability_summary = (
@@ -320,6 +335,18 @@ class ScorePredictor:
             )
         )
 
+        # ----------------------------------------------------
+        # Score data quality
+        #
+        # This is quality of received Score State data,
+        # NOT confidence in the prediction.
+        #
+        # If probabilities are present, quality is 1.0.
+        # If no distribution exists, result is unavailable.
+        # ----------------------------------------------------
+
+        score_data_quality = 1.0
+
         diagnostics = {
             "version": VERSION,
             "formula_status": FORMULA_STATUS,
@@ -327,7 +354,6 @@ class ScorePredictor:
             "home_lambda": home_lambda,
             "away_lambda": away_lambda,
 
-            # Compatibility names.
             "home_xg": home_lambda,
             "away_xg": away_lambda,
 
@@ -352,14 +378,25 @@ class ScorePredictor:
             ),
 
             # ------------------------------------------------
-            # Explicit architectural contract.
+            # Probability ownership
             # ------------------------------------------------
 
             "probability_recalculated": False,
             "probability_modified": False,
+            "probability_normalized": False,
 
             "poisson_recalculated": False,
+
+            # ------------------------------------------------
+            # Reserved correction
+            # ------------------------------------------------
+
+            "low_score_correction_available": True,
             "low_score_correction_used": False,
+
+            # ------------------------------------------------
+            # Secondary evidence
+            # ------------------------------------------------
 
             "secondary_signals_used": False,
 
@@ -371,12 +408,23 @@ class ScorePredictor:
             "anomaly_used": False,
             "special_used": False,
 
+            "confidence_used": False,
+            "risk_used": False,
+
             "outcome_fit_used": False,
             "margin_fit_used": False,
             "btts_fit_used": False,
             "total_fit_used": False,
             "scenario_fit_used": False,
             "score_utility_used": False,
+
+            # ------------------------------------------------
+            # Contract
+            # ------------------------------------------------
+
+            "ranking_is_probability_argmax": True,
+            "raw_probability_preserved": True,
+            "score_state_only": True,
         }
 
         return ScorePrediction(
@@ -402,6 +450,11 @@ class ScorePredictor:
             home_xg=home_lambda,
             away_xg=away_lambda,
 
+            low_score_state="NOT_APPLIED",
+            score_data_quality=score_data_quality,
+            sample_size=len(candidates),
+
+            # Compatibility fields.
             outcome_fit_score=None,
             margin_fit_score=None,
             btts_fit_score=None,
@@ -429,10 +482,11 @@ class ScorePredictor:
 
         IMPORTANT:
 
-        Probabilities are NOT normalized and NOT recalculated.
+        Probability values are NOT normalized
+        and NOT recalculated.
 
-        The numeric P(score) received from ProbabilityModel
-        is preserved.
+        Supplied P(score) is preserved exactly
+        apart from numeric conversion to float.
         """
 
         if score_probabilities is None:
@@ -443,7 +497,7 @@ class ScorePredictor:
         ] = []
 
         # ----------------------------------------------------
-        # Dict:
+        # Dict
         #
         # {
         #     "1:0": 0.18,
@@ -496,10 +550,15 @@ class ScorePredictor:
                     )
 
                     probability = (
-                        item.get("probability")
-                        if "probability" in item
-                        else item.get("prob")
+                        item.get("raw_probability")
+                        if "raw_probability" in item
+                        else item.get("probability")
                     )
+
+                    if probability is None:
+                        probability = item.get(
+                            "prob"
+                        )
 
                 else:
                     score = (
@@ -520,9 +579,17 @@ class ScorePredictor:
                     probability = (
                         self._get_value(
                             item,
-                            "probability",
+                            "raw_probability",
                         )
                     )
+
+                    if probability is None:
+                        probability = (
+                            self._get_value(
+                                item,
+                                "probability",
+                            )
+                        )
 
                     if probability is None:
                         probability = (
@@ -539,10 +606,11 @@ class ScorePredictor:
                 )
 
         # ----------------------------------------------------
-        # ProbabilityResult / object wrapper
+        # Object / wrapper
         # ----------------------------------------------------
 
         else:
+
             nested = self._get_value(
                 score_probabilities,
                 "score_distribution",
@@ -574,10 +642,13 @@ class ScorePredictor:
                 )
 
         # ----------------------------------------------------
-        # Merge duplicates WITHOUT changing total probability
+        # Merge duplicate scores.
         #
-        # Duplicate score records represent the same state.
-        # Their supplied probabilities are summed.
+        # If the same score is represented more than once,
+        # probabilities are summed because they refer to
+        # the same exact-score state.
+        #
+        # No normalization is performed.
         # ----------------------------------------------------
 
         merged: Dict[
@@ -588,7 +659,7 @@ class ScorePredictor:
         for item in candidates:
 
             score = item["score"]
-            probability = item["probability"]
+            probability = item["raw_probability"]
 
             merged[score] = (
                 merged.get(score, 0.0)
@@ -648,7 +719,7 @@ class ScorePredictor:
         candidates.append(
             {
                 "score": score_text,
-                "probability": probability_value,
+                "raw_probability": probability_value,
                 "home_goals": home_goals,
                 "away_goals": away_goals,
             }
@@ -666,7 +737,7 @@ class ScorePredictor:
         """
         Add descriptive scenario metadata.
 
-        No probability modification occurs here.
+        Probability is not changed.
         """
 
         home_goals, away_goals = (
@@ -704,6 +775,11 @@ class ScorePredictor:
 
         return {
             "score": score,
+
+            # Contract name.
+            "raw_probability": probability,
+
+            # Compatibility name.
             "probability": probability,
 
             "home_goals": home_goals,
@@ -956,8 +1032,11 @@ class ScorePredictor:
 
             "probability_recalculated": False,
             "probability_modified": False,
+            "probability_normalized": False,
 
             "poisson_recalculated": False,
+
+            "low_score_correction_available": True,
             "low_score_correction_used": False,
 
             "secondary_signals_used": False,
@@ -970,12 +1049,19 @@ class ScorePredictor:
             "anomaly_used": False,
             "special_used": False,
 
+            "confidence_used": False,
+            "risk_used": False,
+
             "outcome_fit_used": False,
             "margin_fit_used": False,
             "btts_fit_used": False,
             "total_fit_used": False,
             "scenario_fit_used": False,
             "score_utility_used": False,
+
+            "ranking_is_probability_argmax": True,
+            "raw_probability_preserved": True,
+            "score_state_only": True,
 
             "error": reason,
         }
@@ -1002,6 +1088,10 @@ class ScorePredictor:
 
             home_xg=home_lambda,
             away_xg=away_lambda,
+
+            low_score_state=None,
+            score_data_quality=None,
+            sample_size=None,
 
             outcome_fit_score=None,
             margin_fit_score=None,
