@@ -3,249 +3,486 @@
 
 """
 ============================================================
-FAJ Platform v12.1
-SPECIAL FORM v1.0
+FAJ PLATFORM v12.1
+SPECIAL FORM v2.0
 ============================================================
 
-Purpose
--------
-Special Form converts eight special football effects into
-measurable, evidence-aware signals.
+ROLE
+----
+Independent research/evidence organ.
 
-Architecture
+Architecture:
+
+    FormContext
+        ↓
+    FormSpecial
+        ├── Gladiator
+        ├── Fortress
+        ├── Leicester
+        ├── God Kiss
+        ├── Dark Horse
+        ├── Lukaku
+        ├── Kepa
+        └── Haaland
+        ↓
+    SpecialFormResult
+        ↓
+    FAJBrain / future synthesis
+
+IMPORTANT
+---------
+SpecialForm is an evidence organ.
+
+It DOES NOT:
+- calculate Poisson;
+- calculate probabilities;
+- calculate score distribution;
+- modify GoalModel;
+- modify xG;
+- modify λ;
+- modify FormWin;
+- modify Defence;
+- modify Control;
+- modify ProbabilityModel;
+- modify ScorePredictor;
+- apply Winner Signal Override;
+- calculate confidence of the final prediction;
+- calculate risk;
+- write to database;
+- learn parameters;
+- use future results.
+
+A detected effect is evidence.
+An evidence signal is NOT a multiplier.
+
+Missing != 0
 ------------
-FormContext
-    ↓
-SpecialForm
-    ├── Gladiator
-    ├── Fortress
-    ├── Leicester
-    ├── God Kiss
-    ├── Dark Horse
-    ├── Lukaku
-    ├── Kepa
-    └── Haaland
-    ↓
-SpecialFormResult
-    ↓
-FAJBrain
+Missing observations remain None.
 
-Important
----------
-Special Form does NOT:
-- calculate probabilities
-- calculate Poisson
-- modify xG
-- modify FormWin
-- modify Defence
-- modify GoalModel
-- make predictions
-- train parameters
-- directly change team rating
+History
+-------
+FormContext is expected to provide:
 
-A signal is an observation.
-A signal is NOT a multiplier.
+    M1 -> M2 -> ... -> M6
 
-None != 0
----------
-Missing observations remain missing and are excluded from
-mathematical calculations.
+oldest -> newest.
 
-History convention
--------------------
-M1 = oldest
-M6 = newest
+This module NEVER reverses history.
 
-Research parameters are intentionally isolated below.
-They are priors for later calibration/backtesting.
-They must not be tuned against a single match.
+MATHEMATICAL CONTRACT
+---------------------
+FACTS -> STATE/EVIDENCE
+
+Each effect produces:
+    signal ∈ [-1, +1] when measurable
+    signal = None when evidence is insufficient
+
+The sign is effect-specific and documented below.
+
+No arbitrary predictive weighting is used to create a
+match prediction.
+
+Research thresholds are explicitly isolated and must not
+be treated as calibrated coefficients.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from math import isfinite
-from statistics import mean
+from statistics import median
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
-VERSION = "1.0"
+# ============================================================
+# VERSION
+# ============================================================
+
+SPECIAL_FORM_VERSION = "2.0"
+VERSION = SPECIAL_FORM_VERSION
+
+FORMULA_STATUS = "DIAGNOSTIC_RESEARCH_EVIDENCE"
+
+CONTRACT = "MATHEMATICAL_CONTRACT_V1"
 
 
 # ============================================================
-# RESEARCH PARAMETERS
+# CONTRACT CONSTANTS
 # ============================================================
 
-# General
-MIN_HISTORY = 3
 MAX_HISTORY = 6
-COMPOSITE_MIN = -0.30
-COMPOSITE_MAX = 0.30
+MIN_HISTORY = 3
 
-# Gladiator
+SIGNAL_MIN = -1.0
+SIGNAL_MAX = 1.0
+
+EPSILON = 1e-9
+
+
+# ============================================================
+# RESEARCH HYPOTHESES
+# ============================================================
+#
+# These are detection thresholds, not prediction coefficients.
+#
+# They describe research hypotheses already present in the
+# Special Form concept.
+#
+# They must NOT be converted into xG/probability multipliers.
+# ============================================================
+
 GLADIATOR_MIN_WINS = 4
-GLADIATOR_FULL_STREAK = 6
-GLADIATOR_ADJUSTMENT_MAX = 0.12
 
-# Fortress
 FORTRESS_MIN_UNBEATEN = 4
-FORTRESS_FULL_STREAK = 6
-FORTRESS_ADJUSTMENT_MAX = 0.08
 
-# Leicester / away strength
 LEICESTER_MIN_WINS = 3
 LEICESTER_MIN_MATCHES = 3
 LEICESTER_WINDOW = 5
-LEICESTER_ADJUSTMENT_MAX = 0.10
 
-# God Kiss
 GOD_KISS_MIN_AWAY_STREAK = 3
-GOD_KISS_FULL_STREAK = 6
-GOD_KISS_ADJUSTMENT_MAX = 0.10
 
-# Finishing
 DARK_HORSE_THRESHOLD = 1.20
+
 LUKAKU_THRESHOLD = 0.80
-FINISHING_NORMAL_RATIO = 1.00
-FINISHING_STRENGTH_SCALE = 0.80
 
-DARK_HORSE_ADJUSTMENT_MAX = 0.10
-LUKAKU_ADJUSTMENT_MAX = 0.10
-
-# Defensive vulnerability
 KEPA_THRESHOLD = 1.30
-KEPA_STRENGTH_SCALE = 1.00
-KEPA_ADJUSTMENT_MAX = 0.08
 
-# Haaland / attack level
-HAALAND_GOALS_BASELINE = 2.50
-HAALAND_XG_BASELINE = 2.50
-HAALAND_SHOTS_BASELINE = 20.0
-HAALAND_SOT_BASELINE = 8.0
-HAALAND_BIG_CHANCES_BASELINE = 4.0
-
-HAALAND_GOALS_WEIGHT = 0.30
-HAALAND_XG_WEIGHT = 0.25
-HAALAND_SHOTS_WEIGHT = 0.20
-HAALAND_SOT_WEIGHT = 0.15
-HAALAND_BIG_CHANCES_WEIGHT = 0.10
-
+# Haaland is intentionally retained as a research signal.
+# The old arbitrary component weights are removed.
 HAALAND_DETECTION_THRESHOLD = 0.50
-HAALAND_ADJUSTMENT_MAX = 0.10
-
-# Evidence
-HIGH_CONFIDENCE = 0.80
-MEDIUM_CONFIDENCE = 0.50
-LOW_CONFIDENCE = 0.30
 
 
 # ============================================================
-# DATA CONTRACT
+# EFFECT SIGNAL
 # ============================================================
 
-@dataclass
+@dataclass(frozen=True)
 class EffectSignal:
     """
-    One measurable special-form effect.
+    One Special Form evidence signal.
+
+    signal:
+        Signed evidence in [-1, +1].
+
+        Positive:
+            effect supports stronger attacking/result state.
+
+        Negative:
+            effect indicates adverse attacking/defensive condition.
+
+        None:
+            insufficient evidence.
+
+    detected:
+        Whether the explicit research detection condition
+        has been met.
 
     strength:
-        magnitude of the observed effect, 0..1
+        Absolute magnitude of signal.
 
-    confidence:
-        reliability of the signal, 0..1
+    evidence_quality:
+        Coverage/reliability of the underlying observations.
 
     adjustment:
-        research parameter only.
-        SpecialForm NEVER applies it to xG or probability.
+        Kept for compatibility with old consumers.
+
+        ALWAYS None in v2.0.
+
+        SpecialForm never applies an adjustment.
     """
 
     name: str
     detected: bool
     direction: str
-    strength: float
-    confidence: float
+
+    signal: Optional[float]
+    strength: Optional[float]
+
+    evidence_quality: Optional[float]
+
     evidence: Dict[str, Any]
+
     adjustment: Optional[float] = None
 
+    @property
+    def confidence(self) -> Optional[float]:
+        """
+        Compatibility alias.
 
-@dataclass
+        In v2.0 this means evidence quality only.
+
+        It is NOT final prediction confidence.
+        """
+        return self.evidence_quality
+
+
+# ============================================================
+# RESULT
+# ============================================================
+
+@dataclass(frozen=True)
 class SpecialFormResult:
     """
-    Complete Special Form output for one team.
+    Complete Special Form evidence state for one team.
     """
 
     team: str
+
     signals: Dict[str, EffectSignal]
+
     composite_signal: Optional[float]
+
     diagnostics: Dict[str, Any] = field(default_factory=dict)
 
 
 # ============================================================
-# GENERAL HELPERS
+# BASIC HELPERS
 # ============================================================
 
-def _safe_float(value: Any) -> Optional[float]:
-    """Convert value to finite float without inventing data."""
+def _safe_float(
+    value: Any,
+) -> Optional[float]:
 
-    if value is None:
+    if value is None or isinstance(value, bool):
         return None
 
     try:
-        result = float(value)
+        number = float(
+            str(value).strip().replace(",", ".")
+        )
     except (TypeError, ValueError):
         return None
 
-    if not isfinite(result):
+    if not isfinite(number):
         return None
 
-    return result
+    return number
 
 
-def _clean_numeric(values: Sequence[Any]) -> List[float]:
-    """
-    Keep only real numeric observations.
-
-    None is excluded, never converted to 0.
-    """
+def _clean_numeric(
+    values: Sequence[Any],
+) -> List[float]:
 
     result: List[float] = []
 
     for value in values:
         number = _safe_float(value)
+
         if number is not None:
             result.append(number)
 
     return result
 
 
-def _last_six(values: Sequence[Any]) -> List[Any]:
-    """Return the latest six observations preserving chronological order."""
+def _mean(
+    values: Sequence[Any],
+) -> Optional[float]:
 
-    return list(values[-MAX_HISTORY:])
-
-
-def _mean(values: Sequence[Any]) -> Optional[float]:
     numbers = _clean_numeric(values)
 
     if not numbers:
         return None
 
-    return mean(numbers)
+    return sum(numbers) / len(numbers)
 
 
-def _clamp(value: float, low: float, high: float) -> float:
-    return max(low, min(high, value))
+def _median(
+    values: Sequence[Any],
+) -> Optional[float]:
+
+    numbers = _clean_numeric(values)
+
+    if not numbers:
+        return None
+
+    return median(numbers)
 
 
-def _normalise_result(result: Any) -> Optional[str]:
+def _clamp(
+    value: float,
+    low: float = SIGNAL_MIN,
+    high: float = SIGNAL_MAX,
+) -> float:
+
+    return max(
+        low,
+        min(high, float(value)),
+    )
+
+
+def _sign(
+    value: Optional[float],
+) -> Optional[int]:
+
+    if value is None:
+        return None
+
+    if value > EPSILON:
+        return 1
+
+    if value < -EPSILON:
+        return -1
+
+    return 0
+
+
+# ============================================================
+# HISTORY
+# ============================================================
+
+def _as_sequence(
+    value: Any,
+) -> Tuple[Any, ...]:
+
+    if value is None:
+        return ()
+
+    if isinstance(value, (str, bytes)):
+        return (value,)
+
+    try:
+        return tuple(value)
+    except TypeError:
+        return (value,)
+
+
+def _history(
+    values: Any,
+) -> Tuple[Any, ...]:
     """
-    Normalise common result representations.
+    FormContext already supplies canonical M1 -> M6.
 
-    Supported:
-        W / D / L
-        В / Н / П
-        win / draw / loss
+    Never reverse.
+
+    Never select the last six from a longer canonical sequence.
+    The module consumes the first six positions.
     """
+
+    return _as_sequence(values)[:MAX_HISTORY]
+
+
+# ============================================================
+# CONTEXT EXTRACTION
+# ============================================================
+
+def _extract_field(
+    context: Any,
+    *names: str,
+) -> Any:
+
+    if context is None:
+        return None
+
+    for name in names:
+
+        if isinstance(context, dict):
+            if name in context:
+                return context[name]
+
+        try:
+            keys = context.keys()
+
+            if name in keys:
+                return context[name]
+
+        except (AttributeError, TypeError):
+            pass
+
+        try:
+            return getattr(context, name)
+        except AttributeError:
+            pass
+
+    return None
+
+
+def _get_history(
+    context: Any,
+    *names: str,
+) -> Tuple[Any, ...]:
+
+    value = _extract_field(
+        context,
+        *names,
+    )
+
+    return _history(value)
+
+
+def _align_histories(
+    context: Any,
+) -> Dict[str, Tuple[Any, ...]]:
+    """
+    Extract SpecialForm inputs.
+
+    All histories remain M1 -> M6.
+    """
+
+    return {
+        "results": _get_history(
+            context,
+            "results_history",
+            "results",
+            "result_history",
+        ),
+
+        "venue": _get_history(
+            context,
+            "venue_history",
+        ),
+
+        "goals_for": _get_history(
+            context,
+            "goals_for_history",
+        ),
+
+        "goals_against": _get_history(
+            context,
+            "goals_against_history",
+        ),
+
+        "xg": _get_history(
+            context,
+            "team_xg_history",
+            "recent_xg",
+            "xg_history",
+        ),
+
+        "xga": _get_history(
+            context,
+            "opponent_xg_history",
+            "recent_xga",
+            "xga_history",
+        ),
+
+        "shots": _get_history(
+            context,
+            "shots_history",
+            "recent_shots",
+        ),
+
+        "shots_on_target": _get_history(
+            context,
+            "shots_on_target_history",
+            "sot_history",
+            "recent_shots_on_target",
+        ),
+
+        "big_chances": _get_history(
+            context,
+            "big_chances_history",
+            "recent_big_chances",
+        ),
+    }
+
+
+# ============================================================
+# NORMALIZATION
+# ============================================================
+
+def _normalise_result(
+    result: Any,
+) -> Optional[str]:
 
     if result is None:
         return None
@@ -256,28 +493,26 @@ def _normalise_result(result: Any) -> Optional[str]:
         "W": "W",
         "WIN": "W",
         "В": "W",
+        "ПОБЕДА": "W",
 
         "D": "D",
         "DRAW": "D",
         "Н": "D",
+        "НИЧЬЯ": "D",
 
         "L": "L",
         "LOSS": "L",
         "LOSE": "L",
         "П": "L",
+        "ПОРАЖЕНИЕ": "L",
     }
 
     return mapping.get(value)
 
 
-def _normalise_venue(venue: Any) -> Optional[str]:
-    """
-    Normalise venue values.
-
-    Supported:
-        home / h / дома
-        away / a / в гостях
-    """
+def _normalise_venue(
+    venue: Any,
+) -> Optional[str]:
 
     if venue is None:
         return None
@@ -287,8 +522,8 @@ def _normalise_venue(venue: Any) -> Optional[str]:
     if value in {
         "home",
         "h",
-        "дома",
         "дом",
+        "дома",
     }:
         return "home"
 
@@ -304,276 +539,272 @@ def _normalise_venue(venue: Any) -> Optional[str]:
     return None
 
 
-def _missing_signal(
-    name: str,
-    evidence: Optional[Dict[str, Any]] = None,
-) -> EffectSignal:
-    """Create a neutral non-detected signal."""
+# ============================================================
+# QUALITY
+# ============================================================
 
-    return EffectSignal(
-        name=name,
-        detected=False,
-        direction="neutral",
-        strength=0.0,
-        confidence=0.0,
-        evidence=evidence or {},
-        adjustment=None,
+def _quality(
+    values: Sequence[Any],
+) -> Optional[float]:
+    """
+    Valid-observation coverage.
+
+    This is NOT prediction confidence.
+    """
+
+    values = tuple(values)[:MAX_HISTORY]
+
+    if not values:
+        return None
+
+    valid = sum(
+        _safe_float(value) is not None
+        for value in values
+    )
+
+    return valid / len(values)
+
+
+def _result_quality(
+    values: Sequence[Any],
+) -> Optional[float]:
+
+    values = tuple(values)[:MAX_HISTORY]
+
+    if not values:
+        return None
+
+    valid = sum(
+        _normalise_result(value) is not None
+        for value in values
+    )
+
+    return valid / len(values)
+
+
+def _average_quality(
+    qualities: Sequence[Optional[float]],
+) -> Optional[float]:
+
+    values = [
+        value
+        for value in qualities
+        if value is not None
+    ]
+
+    if not values:
+        return None
+
+    return sum(values) / len(values)
+
+
+def _confidence_from_count(
+    count: int,
+    target: int = MAX_HISTORY,
+) -> Optional[float]:
+
+    if count <= 0:
+        return None
+
+    return _clamp(
+        count / float(target),
+        0.0,
+        1.0,
     )
 
 
-def _confidence_from_count(count: int, target: int = 6) -> float:
-    if count <= 0:
-        return 0.0
-
-    return _clamp(count / float(target), 0.0, 1.0)
-
+# ============================================================
+# PAIRING
+# ============================================================
 
 def _paired_values(
     first: Sequence[Any],
     second: Sequence[Any],
 ) -> Tuple[List[float], List[float]]:
     """
-    Align two histories by position.
+    Pair observations by chronological position.
 
-    Only pairs where BOTH observations exist are retained.
+    Missing pair members are skipped.
 
-    This preserves chronological identity and avoids replacing
-    missing values with zero.
+    No missing value becomes zero.
     """
 
     first_result: List[float] = []
     second_result: List[float] = []
 
-    for a, b in zip(first, second):
-        a_value = _safe_float(a)
-        b_value = _safe_float(b)
+    for value_a, value_b in zip(
+        first,
+        second,
+    ):
 
-        if a_value is None or b_value is None:
+        number_a = _safe_float(value_a)
+        number_b = _safe_float(value_b)
+
+        if number_a is None or number_b is None:
             continue
 
-        first_result.append(a_value)
-        second_result.append(b_value)
+        first_result.append(number_a)
+        second_result.append(number_b)
 
-    return first_result, second_result
-
-
-def calculate_consistency(
-    first: Sequence[Any],
-    second: Sequence[Any],
-) -> float:
-    """
-    Estimate consistency of a finishing/defensive relationship.
-
-    For each available match:
-        ratio = first / second
-
-    The signal is considered consistent when the majority of
-    observations remain on the same side of the neutral ratio 1.0.
-
-    Returns 0..1.
-    """
-
-    paired_first, paired_second = _paired_values(first, second)
-
-    if len(paired_first) < MIN_HISTORY:
-        return _confidence_from_count(len(paired_first))
-
-    ratios: List[float] = []
-
-    for value_a, value_b in zip(paired_first, paired_second):
-        if value_b <= 0:
-            continue
-
-        ratios.append(value_a / value_b)
-
-    if len(ratios) < MIN_HISTORY:
-        return _confidence_from_count(len(ratios))
-
-    above = sum(1 for ratio in ratios if ratio > FINISHING_NORMAL_RATIO)
-    below = sum(1 for ratio in ratios if ratio < FINISHING_NORMAL_RATIO)
-
-    dominant = max(above, below)
-
-    directional_consistency = dominant / len(ratios)
-    evidence_confidence = _confidence_from_count(len(ratios))
-
-    return _clamp(
-        directional_consistency * evidence_confidence,
-        0.0,
-        1.0,
+    return (
+        first_result,
+        second_result,
     )
 
 
-def _get_history(
-    context: Any,
-    *names: str,
-) -> List[Any]:
+# ============================================================
+# GENERIC EFFECT
+# ============================================================
+
+def _effect(
+    name: str,
+    signal: Optional[float],
+    detected: bool,
+    evidence_quality: Optional[float],
+    evidence: Dict[str, Any],
+) -> EffectSignal:
+
+    if signal is None:
+        return EffectSignal(
+            name=name,
+            detected=False,
+            direction="unknown",
+            signal=None,
+            strength=None,
+            evidence_quality=evidence_quality,
+            evidence=evidence,
+            adjustment=None,
+        )
+
+    signal = _clamp(signal)
+
+    if signal > EPSILON:
+        direction = "positive"
+
+    elif signal < -EPSILON:
+        direction = "negative"
+
+    else:
+        direction = "neutral"
+
+    return EffectSignal(
+        name=name,
+        detected=detected,
+        direction=direction,
+        signal=signal,
+        strength=abs(signal),
+        evidence_quality=evidence_quality,
+        evidence=evidence,
+        adjustment=None,
+    )
+
+
+def _undetected_effect(
+    name: str,
+    evidence: Dict[str, Any],
+    evidence_quality: Optional[float] = None,
+) -> EffectSignal:
     """
-    Retrieve the first available history field from FormContext.
+    Explicitly measurable but detection condition not met.
 
-    Primary fields are those used by FormContext v1.7.
-    Aliases are kept for compatibility.
+    signal=0 means:
+        the defined hypothesis is not currently detected.
+
+    This is different from:
+        signal=None
+
+    None = insufficient evidence.
+    0 = sufficient evidence but no directional effect.
     """
 
-    for name in names:
-        if hasattr(context, name):
-            value = getattr(context, name)
-
-            if value is not None:
-                try:
-                    return list(value)
-                except TypeError:
-                    pass
-
-    return []
-
-
-def _align_histories(
-    context: Any,
-) -> Dict[str, List[Any]]:
-    """
-    Extract all histories required by Special Form.
-
-    Histories remain in the original M1 -> M6 order.
-    """
-
-    return {
-        "results": _last_six(
-            _get_history(
-                context,
-                "results_history",
-                "results",
-                "result_history",
-            )
-        ),
-        "venue": _last_six(
-            _get_history(
-                context,
-                "venue_history",
-            )
-        ),
-        "goals_for": _last_six(
-            _get_history(
-                context,
-                "goals_for_history",
-            )
-        ),
-        "goals_against": _last_six(
-            _get_history(
-                context,
-                "goals_against_history",
-            )
-        ),
-        "xg": _last_six(
-            _get_history(
-                context,
-                "team_xg_history",
-                "recent_xg",
-                "xg_history",
-            )
-        ),
-        "xga": _last_six(
-            _get_history(
-                context,
-                "opponent_xg_history",
-                "recent_xga",
-                "xga_history",
-            )
-        ),
-        "shots": _last_six(
-            _get_history(
-                context,
-                "shots_history",
-                "recent_shots",
-            )
-        ),
-        "shots_on_target": _last_six(
-            _get_history(
-                context,
-                "shots_on_target_history",
-                "sot_history",
-                "recent_shots_on_target",
-            )
-        ),
-        "big_chances": _last_six(
-            _get_history(
-                context,
-                "big_chances_history",
-                "recent_big_chances",
-            )
-        ),
-    }
+    return EffectSignal(
+        name=name,
+        detected=False,
+        direction="neutral",
+        signal=0.0,
+        strength=0.0,
+        evidence_quality=evidence_quality,
+        evidence=evidence,
+        adjustment=None,
+    )
 
 
 # ============================================================
-# EFFECT 1 — GLADIATOR
+# GLADIATOR
 # ============================================================
 
 def detect_gladiator(
     results_history: Sequence[Any],
 ) -> EffectSignal:
     """
-    Gladiator:
+    Gladiator hypothesis:
+
         4+ consecutive wins.
 
-    Strength:
+    Signal:
         streak / 6
 
-    Confidence:
-        streak / 5
+    Direction:
+        positive.
+
+    This does not predict the next match.
     """
 
     results = [
-        _normalise_result(result)
-        for result in _last_six(results_history)
+        _normalise_result(value)
+        for value in tuple(results_history)[:MAX_HISTORY]
     ]
 
-    win_streak = 0
+    valid_count = sum(
+        value is not None
+        for value in results
+    )
+
+    streak = 0
 
     for result in reversed(results):
+
         if result == "W":
-            win_streak += 1
+            streak += 1
         else:
             break
 
+    quality = _confidence_from_count(
+        valid_count
+    )
+
     evidence = {
-        "win_streak": win_streak,
-        "matches_available": len(
-            [result for result in results if result is not None]
-        ),
+        "win_streak": streak,
+        "valid_results": valid_count,
+        "threshold": GLADIATOR_MIN_WINS,
     }
 
-    if win_streak < GLADIATOR_MIN_WINS:
-        return _missing_or_neutral_effect(
-            name="gladiator",
-            evidence=evidence,
+    if valid_count < MIN_HISTORY:
+        return _effect(
+            "gladiator",
+            None,
+            False,
+            quality,
+            evidence,
         )
 
-    strength = _clamp(
-        win_streak / GLADIATOR_FULL_STREAK,
+    signal = _clamp(
+        streak / float(MAX_HISTORY),
         0.0,
         1.0,
     )
 
-    confidence = _clamp(
-        win_streak / 5.0,
-        0.0,
-        1.0,
-    )
-
-    return EffectSignal(
-        name="gladiator",
-        detected=True,
-        direction="positive",
-        strength=strength,
-        confidence=confidence,
-        evidence=evidence,
-        adjustment=strength * GLADIATOR_ADJUSTMENT_MAX,
+    return _effect(
+        "gladiator",
+        signal,
+        streak >= GLADIATOR_MIN_WINS,
+        quality,
+        evidence,
     )
 
 
 # ============================================================
-# EFFECT 2 — FORTRESS
+# FORTRESS
 # ============================================================
 
 def detect_fortress(
@@ -581,70 +812,79 @@ def detect_fortress(
     results_history: Sequence[Any],
 ) -> EffectSignal:
     """
-    Fortress:
+    Fortress hypothesis:
+
         4+ consecutive home matches without defeat.
 
-    Important:
-        Only actual home matches are counted.
-        Away matches do not break the home sequence.
+    Away matches are not treated as home observations.
     """
 
-    paired: List[Tuple[str, str]] = []
+    venues = tuple(venue_history)[:MAX_HISTORY]
+    results = tuple(results_history)[:MAX_HISTORY]
+
+    home_results: List[str] = []
 
     for venue, result in zip(
-        _last_six(venue_history),
-        _last_six(results_history),
+        venues,
+        results,
     ):
+
         normalised_venue = _normalise_venue(venue)
         normalised_result = _normalise_result(result)
 
-        if normalised_venue == "home" and normalised_result is not None:
-            paired.append((normalised_venue, normalised_result))
+        if (
+            normalised_venue == "home"
+            and normalised_result is not None
+        ):
+            home_results.append(
+                normalised_result
+            )
 
-    home_unbeaten = 0
+    streak = 0
 
-    for _, result in reversed(paired):
-        if result in ("W", "D"):
-            home_unbeaten += 1
+    for result in reversed(home_results):
+
+        if result in {"W", "D"}:
+            streak += 1
         else:
             break
 
+    quality = _confidence_from_count(
+        len(home_results)
+    )
+
     evidence = {
-        "home_unbeaten": home_unbeaten,
-        "home_matches": len(paired),
+        "home_matches": len(home_results),
+        "home_unbeaten_streak": streak,
+        "threshold": FORTRESS_MIN_UNBEATEN,
     }
 
-    if home_unbeaten < FORTRESS_MIN_UNBEATEN:
-        return _missing_or_neutral_effect(
-            name="fortress",
-            evidence=evidence,
+    if len(home_results) < MIN_HISTORY:
+        return _effect(
+            "fortress",
+            None,
+            False,
+            quality,
+            evidence,
         )
 
-    strength = _clamp(
-        home_unbeaten / FORTRESS_FULL_STREAK,
+    signal = _clamp(
+        streak / float(MAX_HISTORY),
         0.0,
         1.0,
     )
 
-    confidence = _clamp(
-        home_unbeaten / 5.0,
-        0.0,
-        1.0,
-    )
-
-    return EffectSignal(
-        name="fortress",
-        detected=True,
-        direction="positive",
-        strength=strength,
-        confidence=confidence,
-        evidence=evidence,
-        adjustment=strength * FORTRESS_ADJUSTMENT_MAX,
+    return _effect(
+        "fortress",
+        signal,
+        streak >= FORTRESS_MIN_UNBEATEN,
+        quality,
+        evidence,
     )
 
 
 # ============================================================
-# EFFECT 3 — LEICESTER
+# LEICESTER
 # ============================================================
 
 def detect_leicester(
@@ -652,140 +892,158 @@ def detect_leicester(
     results_history: Sequence[Any],
 ) -> EffectSignal:
     """
-    Leicester:
-        At least 3 away wins in at least 3 away matches.
+    Leicester hypothesis:
 
-    Uses the latest five available away matches.
+        3+ away wins in at least 3 away matches.
+
+    Latest available five away observations are examined.
     """
 
-    paired: List[Tuple[str, str]] = []
+    venues = tuple(venue_history)[:MAX_HISTORY]
+    results = tuple(results_history)[:MAX_HISTORY]
 
-    venues = _last_six(venue_history)
-    results = _last_six(results_history)
+    away_results: List[str] = []
 
-    for venue, result in zip(venues, results):
+    for venue, result in zip(
+        venues,
+        results,
+    ):
+
         normalised_venue = _normalise_venue(venue)
         normalised_result = _normalise_result(result)
 
-        if normalised_venue == "away" and normalised_result is not None:
-            paired.append((normalised_venue, normalised_result))
+        if (
+            normalised_venue == "away"
+            and normalised_result is not None
+        ):
+            away_results.append(
+                normalised_result
+            )
 
-    away_window = paired[-LEICESTER_WINDOW:]
+    away_window = away_results[-LEICESTER_WINDOW:]
 
-    away_wins = sum(
-        1
-        for _, result in away_window
-        if result == "W"
+    wins = sum(
+        result == "W"
+        for result in away_window
     )
 
-    away_matches = len(away_window)
+    matches = len(away_window)
+
+    quality = _confidence_from_count(
+        matches,
+        target=LEICESTER_WINDOW,
+    )
 
     evidence = {
-        "away_wins": away_wins,
-        "away_matches": away_matches,
+        "away_matches": matches,
+        "away_wins": wins,
         "window": LEICESTER_WINDOW,
+        "min_matches": LEICESTER_MIN_MATCHES,
+        "min_wins": LEICESTER_MIN_WINS,
     }
 
-    if (
-        away_matches < LEICESTER_MIN_MATCHES
-        or away_wins < LEICESTER_MIN_WINS
-    ):
-        return _missing_or_neutral_effect(
-            name="leicester",
-            evidence=evidence,
+    if matches < LEICESTER_MIN_MATCHES:
+        return _effect(
+            "leicester",
+            None,
+            False,
+            quality,
+            evidence,
         )
 
-    strength = _clamp(
-        away_wins / float(LEICESTER_WINDOW),
+    signal = _clamp(
+        wins / float(
+            max(
+                matches,
+                1,
+            )
+        ),
         0.0,
         1.0,
     )
 
-    confidence = _clamp(
-        away_matches / float(LEICESTER_WINDOW),
-        0.0,
-        1.0,
-    )
-
-    return EffectSignal(
-        name="leicester",
-        detected=True,
-        direction="positive",
-        strength=strength,
-        confidence=confidence,
-        evidence=evidence,
-        adjustment=strength * LEICESTER_ADJUSTMENT_MAX,
+    return _effect(
+        "leicester",
+        signal,
+        wins >= LEICESTER_MIN_WINS,
+        quality,
+        evidence,
     )
 
 
 # ============================================================
-# EFFECT 4 — GOD KISS
+# GOD KISS
 # ============================================================
 
 def detect_god_kiss(
     venue_history: Sequence[Any],
 ) -> EffectSignal:
     """
-    God Kiss:
-        3+ consecutive away matches immediately preceding
-        the current point in history.
+    God Kiss hypothesis:
 
-    This is a contextual home-return signal.
+        3+ consecutive away matches at the end of history.
 
-    It does not itself mean the next home match must be won.
+    Interpretation:
+        contextual schedule pattern.
+
+    It does NOT imply a future home win.
     """
 
     venues = [
-        _normalise_venue(venue)
-        for venue in _last_six(venue_history)
+        _normalise_venue(value)
+        for value in tuple(venue_history)[:MAX_HISTORY]
     ]
+
+    valid_count = sum(
+        value is not None
+        for value in venues
+    )
 
     away_streak = 0
 
     for venue in reversed(venues):
+
         if venue == "away":
             away_streak += 1
         else:
             break
 
+    quality = _confidence_from_count(
+        valid_count
+    )
+
     evidence = {
         "away_streak": away_streak,
-        "matches_available": len(
-            [venue for venue in venues if venue is not None]
-        ),
+        "valid_venue_observations": valid_count,
+        "threshold": GOD_KISS_MIN_AWAY_STREAK,
     }
 
-    if away_streak < GOD_KISS_MIN_AWAY_STREAK:
-        return _missing_or_neutral_effect(
-            name="god_kiss",
-            evidence=evidence,
+    if valid_count < MIN_HISTORY:
+        return _effect(
+            "god_kiss",
+            None,
+            False,
+            quality,
+            evidence,
         )
 
-    strength = _clamp(
-        away_streak / GOD_KISS_FULL_STREAK,
+    signal = _clamp(
+        away_streak / float(MAX_HISTORY),
         0.0,
         1.0,
     )
 
-    confidence = _clamp(
-        away_streak / 5.0,
-        0.0,
-        1.0,
-    )
-
-    return EffectSignal(
-        name="god_kiss",
-        detected=True,
-        direction="positive",
-        strength=strength,
-        confidence=confidence,
-        evidence=evidence,
-        adjustment=strength * GOD_KISS_ADJUSTMENT_MAX,
+    return _effect(
+        "god_kiss",
+        signal,
+        away_streak >= GOD_KISS_MIN_AWAY_STREAK,
+        quality,
+        evidence,
     )
 
 
 # ============================================================
-# EFFECT 5 — DARK HORSE
+# DARK HORSE
 # ============================================================
 
 def detect_dark_horse(
@@ -793,84 +1051,87 @@ def detect_dark_horse(
     xg_history: Sequence[Any],
 ) -> EffectSignal:
     """
-    Dark Horse:
-        Low/ordinary xG combined with sustained overperformance
-        in goals relative to xG.
+    Dark Horse hypothesis:
 
-    ratio = goals_avg / xG_avg
+        goals / xG > 1.20
 
-    Detection:
-        ratio > 1.20
+    This is a finishing-overperformance observation.
+
+    It does NOT create a permanent finishing bonus.
     """
 
-    goals = _last_six(goals_for)
-    xg = _last_six(xg_history)
+    goals, xg = _paired_values(
+        goals_for,
+        xg_history,
+    )
 
-    paired_goals, paired_xg = _paired_values(goals, xg)
+    quality = _confidence_from_count(
+        len(goals)
+    )
 
     evidence: Dict[str, Any] = {
-        "observations": len(paired_goals),
+        "paired_observations": len(goals),
+        "threshold": DARK_HORSE_THRESHOLD,
     }
 
-    if len(paired_goals) < MIN_HISTORY:
-        return _missing_or_neutral_effect(
-            name="dark_horse",
-            evidence=evidence,
+    if len(goals) < MIN_HISTORY:
+        return _effect(
+            "dark_horse",
+            None,
+            False,
+            quality,
+            evidence,
         )
 
-    goals_avg = _mean(paired_goals)
-    xg_avg = _mean(paired_xg)
+    goals_avg = _mean(goals)
+    xg_avg = _mean(xg)
 
-    if goals_avg is None or xg_avg is None or xg_avg <= 0:
+    if (
+        goals_avg is None
+        or xg_avg is None
+        or xg_avg <= EPSILON
+    ):
         evidence.update({
             "goals_avg": goals_avg,
             "xg_avg": xg_avg,
         })
 
-        return _missing_or_neutral_effect(
-            name="dark_horse",
-            evidence=evidence,
+        return _effect(
+            "dark_horse",
+            None,
+            False,
+            quality,
+            evidence,
         )
 
-    finishing_ratio = goals_avg / xg_avg
+    ratio = goals_avg / xg_avg
 
     evidence.update({
         "goals_avg": goals_avg,
         "xg_avg": xg_avg,
-        "finishing_ratio": finishing_ratio,
+        "finishing_ratio": ratio,
     })
 
-    if finishing_ratio <= DARK_HORSE_THRESHOLD:
-        return _missing_or_neutral_effect(
-            name="dark_horse",
-            evidence=evidence,
-        )
-
-    strength = _clamp(
-        (finishing_ratio - FINISHING_NORMAL_RATIO)
-        / FINISHING_STRENGTH_SCALE,
-        0.0,
+    # Map ratio to a bounded research signal.
+    # 1.20 is the detection threshold.
+    # No xG adjustment is produced.
+    signal = _clamp(
+        (ratio - 1.0) / 1.0,
+        -1.0,
         1.0,
     )
 
-    confidence = calculate_consistency(
-        paired_goals,
-        paired_xg,
-    )
-
-    return EffectSignal(
-        name="dark_horse",
-        detected=True,
-        direction="positive",
-        strength=strength,
-        confidence=confidence,
-        evidence=evidence,
-        adjustment=strength * DARK_HORSE_ADJUSTMENT_MAX,
+    return _effect(
+        "dark_horse",
+        signal,
+        ratio >= DARK_HORSE_THRESHOLD,
+        quality,
+        evidence,
     )
 
 
 # ============================================================
-# EFFECT 6 — LUKAKU
+# LUKAKU
 # ============================================================
 
 def detect_lukaku(
@@ -878,83 +1139,82 @@ def detect_lukaku(
     xg_history: Sequence[Any],
 ) -> EffectSignal:
     """
-    Lukaku:
-        Sustained underperformance in finishing.
+    Lukaku hypothesis:
 
-    ratio = goals_avg / xG_avg
+        goals / xG < 0.80
 
-    Detection:
-        ratio < 0.80
+    This is finishing-underperformance evidence.
     """
 
-    goals = _last_six(goals_for)
-    xg = _last_six(xg_history)
+    goals, xg = _paired_values(
+        goals_for,
+        xg_history,
+    )
 
-    paired_goals, paired_xg = _paired_values(goals, xg)
+    quality = _confidence_from_count(
+        len(goals)
+    )
 
     evidence: Dict[str, Any] = {
-        "observations": len(paired_goals),
+        "paired_observations": len(goals),
+        "threshold": LUKAKU_THRESHOLD,
     }
 
-    if len(paired_goals) < MIN_HISTORY:
-        return _missing_or_neutral_effect(
-            name="lukaku",
-            evidence=evidence,
+    if len(goals) < MIN_HISTORY:
+        return _effect(
+            "lukaku",
+            None,
+            False,
+            quality,
+            evidence,
         )
 
-    goals_avg = _mean(paired_goals)
-    xg_avg = _mean(paired_xg)
+    goals_avg = _mean(goals)
+    xg_avg = _mean(xg)
 
-    if goals_avg is None or xg_avg is None or xg_avg <= 0:
+    if (
+        goals_avg is None
+        or xg_avg is None
+        or xg_avg <= EPSILON
+    ):
         evidence.update({
             "goals_avg": goals_avg,
             "xg_avg": xg_avg,
         })
 
-        return _missing_or_neutral_effect(
-            name="lukaku",
-            evidence=evidence,
+        return _effect(
+            "lukaku",
+            None,
+            False,
+            quality,
+            evidence,
         )
 
-    finishing_ratio = goals_avg / xg_avg
+    ratio = goals_avg / xg_avg
 
     evidence.update({
         "goals_avg": goals_avg,
         "xg_avg": xg_avg,
-        "finishing_ratio": finishing_ratio,
+        "finishing_ratio": ratio,
     })
 
-    if finishing_ratio >= LUKAKU_THRESHOLD:
-        return _missing_or_neutral_effect(
-            name="lukaku",
-            evidence=evidence,
-        )
-
-    strength = _clamp(
-        (FINISHING_NORMAL_RATIO - finishing_ratio)
-        / FINISHING_STRENGTH_SCALE,
-        0.0,
+    signal = _clamp(
+        (ratio - 1.0) / 1.0,
+        -1.0,
         1.0,
     )
 
-    confidence = calculate_consistency(
-        paired_goals,
-        paired_xg,
-    )
-
-    return EffectSignal(
-        name="lukaku",
-        detected=True,
-        direction="negative",
-        strength=strength,
-        confidence=confidence,
-        evidence=evidence,
-        adjustment=-strength * LUKAKU_ADJUSTMENT_MAX,
+    return _effect(
+        "lukaku",
+        signal,
+        ratio <= LUKAKU_THRESHOLD,
+        quality,
+        evidence,
     )
 
 
 # ============================================================
-# EFFECT 7 — KEPA
+# KEPA
 # ============================================================
 
 def detect_kepa(
@@ -962,87 +1222,120 @@ def detect_kepa(
     xga_history: Sequence[Any],
 ) -> EffectSignal:
     """
-    Kepa:
-        Goals conceded materially exceed expected goals conceded.
+    Kepa hypothesis:
 
-    ratio = goals_against_avg / xGA_avg
+        goals_against / xGA > 1.30
 
-    Detection:
-        ratio > 1.30
+    Positive ratio means worse defensive outcome.
+
+    Therefore the SpecialForm signal is negative.
     """
 
-    goals_against_values = _last_six(goals_against)
-    xga_values = _last_six(xga_history)
+    goals_against_values, xga = _paired_values(
+        goals_against,
+        xga_history,
+    )
 
-    paired_ga, paired_xga = _paired_values(
-        goals_against_values,
-        xga_values,
+    quality = _confidence_from_count(
+        len(goals_against_values)
     )
 
     evidence: Dict[str, Any] = {
-        "observations": len(paired_ga),
+        "paired_observations": len(
+            goals_against_values
+        ),
+        "threshold": KEPA_THRESHOLD,
     }
 
-    if len(paired_ga) < MIN_HISTORY:
-        return _missing_or_neutral_effect(
-            name="kepa",
-            evidence=evidence,
+    if len(goals_against_values) < MIN_HISTORY:
+        return _effect(
+            "kepa",
+            None,
+            False,
+            quality,
+            evidence,
         )
 
-    ga_avg = _mean(paired_ga)
-    xga_avg = _mean(paired_xga)
+    ga_avg = _mean(
+        goals_against_values
+    )
 
-    if ga_avg is None or xga_avg is None or xga_avg <= 0:
+    xga_avg = _mean(xga)
+
+    if (
+        ga_avg is None
+        or xga_avg is None
+        or xga_avg <= EPSILON
+    ):
         evidence.update({
-            "ga_avg": ga_avg,
+            "goals_against_avg": ga_avg,
             "xga_avg": xga_avg,
         })
 
-        return _missing_or_neutral_effect(
-            name="kepa",
-            evidence=evidence,
+        return _effect(
+            "kepa",
+            None,
+            False,
+            quality,
+            evidence,
         )
 
-    defensive_ratio = ga_avg / xga_avg
+    ratio = ga_avg / xga_avg
 
     evidence.update({
-        "ga_avg": ga_avg,
+        "goals_against_avg": ga_avg,
         "xga_avg": xga_avg,
-        "defensive_ratio": defensive_ratio,
+        "defensive_ratio": ratio,
     })
 
-    if defensive_ratio <= KEPA_THRESHOLD:
-        return _missing_or_neutral_effect(
-            name="kepa",
-            evidence=evidence,
-        )
+    # Higher GA/xGA = negative defensive evidence.
+    signal = _clamp(
+        -(ratio - 1.0),
+        -1.0,
+        1.0,
+    )
 
-    strength = _clamp(
-        (defensive_ratio - FINISHING_NORMAL_RATIO)
-        / KEPA_STRENGTH_SCALE,
+    return _effect(
+        "kepa",
+        signal,
+        ratio >= KEPA_THRESHOLD,
+        quality,
+        evidence,
+    )
+
+
+# ============================================================
+# HAALAND
+# ============================================================
+
+def _normalized_level(
+    average: Optional[float],
+    baseline: Optional[float],
+) -> Optional[float]:
+    """
+    Normalise an observed attacking level against an explicitly
+    defined research baseline.
+
+    Returns:
+        None if input/baseline is unavailable.
+        Otherwise bounded 0..1.
+
+    This is descriptive research evidence only.
+    """
+
+    if (
+        average is None
+        or baseline is None
+        or baseline <= EPSILON
+    ):
+        return None
+
+    return _clamp(
+        average / baseline,
         0.0,
         1.0,
     )
 
-    confidence = calculate_consistency(
-        paired_ga,
-        paired_xga,
-    )
-
-    return EffectSignal(
-        name="kepa",
-        detected=True,
-        direction="negative",
-        strength=strength,
-        confidence=confidence,
-        evidence=evidence,
-        adjustment=-strength * KEPA_ADJUSTMENT_MAX,
-    )
-
-
-# ============================================================
-# EFFECT 8 — HAALAND
-# ============================================================
 
 def detect_haaland(
     goals_for: Sequence[Any],
@@ -1052,328 +1345,243 @@ def detect_haaland(
     big_chances: Sequence[Any],
 ) -> EffectSignal:
     """
-    Haaland:
-        Composite attacking power signal.
+    Haaland hypothesis:
 
-    Components:
-        goals           30%
-        xG              25%
-        shots           20%
-        shots on target 15%
-        big chances     10%
+        unusually strong attacking state.
 
-    All components are normalised against research baselines.
+    IMPORTANT
+    ---------
+    The previous version used arbitrary weights:
 
-    The signal is observational only.
+        goals 30%
+        xG 25%
+        shots 20%
+        SOT 15%
+        big chances 10%
+
+    Those weights are removed.
+
+    v2.0 treats each attacking dimension as independent
+    evidence and combines available dimensions using the
+    median.
+
+    Research baselines remain explicit and are not converted
+    into xG/probability adjustments.
     """
 
-    goals = _last_six(goals_for)
-    xg = _last_six(xg_history)
-    shots = _last_six(shots_history)
-    sot = _last_six(shots_on_target)
-    big = _last_six(big_chances)
+    goals = tuple(goals_for)[:MAX_HISTORY]
+    xg = tuple(xg_history)[:MAX_HISTORY]
+    shots = tuple(shots_history)[:MAX_HISTORY]
+    sot = tuple(shots_on_target)[:MAX_HISTORY]
+    big = tuple(big_chances)[:MAX_HISTORY]
 
-    component_values: Dict[str, Optional[float]] = {
-        "goals_avg": _mean(goals),
-        "xg_avg": _mean(xg),
-        "shots_avg": _mean(shots),
-        "sot_avg": _mean(sot),
-        "big_chances_avg": _mean(big),
-    }
+    goals_avg = _mean(goals)
+    xg_avg = _mean(xg)
+    shots_avg = _mean(shots)
+    sot_avg = _mean(sot)
+    big_avg = _mean(big)
 
-    available_components = sum(
-        value is not None
-        for value in component_values.values()
-    )
-
-    if component_values["goals_avg"] is None:
-        return _missing_or_neutral_effect(
-            name="haaland",
-            evidence={
-                **component_values,
-                "available_components": available_components,
-            },
-        )
-
-    scores: Dict[str, Optional[float]] = {
-        "goals_score": (
-            _clamp(
-                component_values["goals_avg"]
-                / HAALAND_GOALS_BASELINE,
-                0.0,
-                1.0,
-            )
-            if component_values["goals_avg"] is not None
-            else None
+    # Research baselines retained from v1.0.
+    #
+    # They are descriptive thresholds, not league strengths.
+    #
+    # Goals and xG are deliberately not invented if absent.
+    levels = [
+        _normalized_level(
+            goals_avg,
+            2.5,
         ),
-        "xg_score": (
-            _clamp(
-                component_values["xg_avg"]
-                / HAALAND_XG_BASELINE,
-                0.0,
-                1.0,
-            )
-            if component_values["xg_avg"] is not None
-            else None
+        _normalized_level(
+            xg_avg,
+            2.5,
         ),
-        "shots_score": (
-            _clamp(
-                component_values["shots_avg"]
-                / HAALAND_SHOTS_BASELINE,
-                0.0,
-                1.0,
-            )
-            if component_values["shots_avg"] is not None
-            else None
+        _normalized_level(
+            shots_avg,
+            20.0,
         ),
-        "sot_score": (
-            _clamp(
-                component_values["sot_avg"]
-                / HAALAND_SOT_BASELINE,
-                0.0,
-                1.0,
-            )
-            if component_values["sot_avg"] is not None
-            else None
+        _normalized_level(
+            sot_avg,
+            8.0,
         ),
-        "big_chances_score": (
-            _clamp(
-                component_values["big_chances_avg"]
-                / HAALAND_BIG_CHANCES_BASELINE,
-                0.0,
-                1.0,
-            )
-            if component_values["big_chances_avg"] is not None
-            else None
+        _normalized_level(
+            big_avg,
+            4.0,
         ),
-    }
-
-    weighted_components = [
-        ("goals_score", HAALAND_GOALS_WEIGHT),
-        ("xg_score", HAALAND_XG_WEIGHT),
-        ("shots_score", HAALAND_SHOTS_WEIGHT),
-        ("sot_score", HAALAND_SOT_WEIGHT),
-        ("big_chances_score", HAALAND_BIG_CHANCES_WEIGHT),
     ]
 
-    numerator = 0.0
-    denominator = 0.0
+    available_levels = [
+        value
+        for value in levels
+        if value is not None
+    ]
 
-    for key, weight in weighted_components:
-        value = scores[key]
+    qualities = [
+        _quality(goals),
+        _quality(xg),
+        _quality(shots),
+        _quality(sot),
+        _quality(big),
+    ]
 
-        if value is None:
-            continue
-
-        numerator += value * weight
-        denominator += weight
-
-    if denominator <= 0:
-        return _missing_or_neutral_effect(
-            name="haaland",
-            evidence={
-                **component_values,
-                **scores,
-                "available_components": available_components,
-            },
-        )
-
-    attack_level = _clamp(
-        numerator / denominator,
-        0.0,
-        1.0,
+    evidence_quality = _average_quality(
+        qualities
     )
 
-    # Confidence has two components:
-    # 1. how many observations exist for the primary history
-    # 2. how many attack dimensions are available
-    primary_count = len(
-        _clean_numeric(goals)
-    )
+    evidence: Dict[str, Any] = {
+        "goals_avg": goals_avg,
+        "xg_avg": xg_avg,
+        "shots_avg": shots_avg,
+        "sot_avg": sot_avg,
+        "big_chances_avg": big_avg,
 
-    history_confidence = _confidence_from_count(
-        primary_count
-    )
+        "goals_level": levels[0],
+        "xg_level": levels[1],
+        "shots_level": levels[2],
+        "sot_level": levels[3],
+        "big_chances_level": levels[4],
 
-    component_confidence = _clamp(
-        available_components / 5.0,
-        0.0,
-        1.0,
-    )
+        "available_dimensions": len(
+            available_levels
+        ),
 
-    confidence = (
-        0.70 * history_confidence
-        + 0.30 * component_confidence
-    )
+        "baselines": {
+            "goals": 2.5,
+            "xg": 2.5,
+            "shots": 20.0,
+            "sot": 8.0,
+            "big_chances": 4.0,
+        },
 
-    detected = attack_level >= HAALAND_DETECTION_THRESHOLD
-
-    evidence = {
-        **component_values,
-        **scores,
-        "available_components": available_components,
-        "attack_level": attack_level,
+        "detection_threshold": (
+            HAALAND_DETECTION_THRESHOLD
+        ),
     }
 
-    return EffectSignal(
-        name="haaland",
-        detected=detected,
-        direction="positive" if detected else "neutral",
-        strength=attack_level,
-        confidence=confidence,
-        evidence=evidence,
-        adjustment=(
-            attack_level * HAALAND_ADJUSTMENT_MAX
-            if detected
-            else None
-        ),
+    if len(available_levels) < 2:
+        return _effect(
+            "haaland",
+            None,
+            False,
+            evidence_quality,
+            evidence,
+        )
+
+    # Median = no arbitrary component weighting.
+    level = _clamp(
+        median(available_levels),
+        0.0,
+        1.0,
+    )
+
+    evidence["attack_level"] = level
+
+    # Convert 0..1 attacking level into signed evidence.
+    #
+    # 0.5 = neutral reference.
+    # Above 0.5 = positive.
+    # Below 0.5 = negative.
+    #
+    # This is descriptive only.
+    signal = _clamp(
+        2.0 * (level - 0.5),
+        -1.0,
+        1.0,
+    )
+
+    detected = (
+        level >= HAALAND_DETECTION_THRESHOLD
+    )
+
+    return _effect(
+        "haaland",
+        signal,
+        detected,
+        evidence_quality,
+        evidence,
     )
 
 
 # ============================================================
-# INTERNAL NEUTRAL EFFECT
-# ============================================================
-
-def _missing_or_neutral_effect(
-    name: str,
-    evidence: Dict[str, Any],
-) -> EffectSignal:
-    """
-    Return neutral signal while preserving evidence.
-
-    detected=False does NOT mean the effect is disproved.
-    It means the defined detection condition is not currently met.
-    """
-
-    return EffectSignal(
-        name=name,
-        detected=False,
-        direction="neutral",
-        strength=0.0,
-        confidence=0.0,
-        evidence=evidence,
-        adjustment=None,
-    )
-
-
-# ============================================================
-# AGGREGATION
+# COMPOSITE SPECIAL FORM SIGNAL
 # ============================================================
 
 def aggregate_signals(
     signals: Dict[str, EffectSignal],
 ) -> Optional[float]:
     """
-    Aggregate detected special effects.
+    Robust descriptive aggregation of SpecialForm evidence.
 
-    Each signal contributes:
+    Only measurable signals are used.
 
-        strength × confidence
+    Median is used instead of fixed effect weights.
 
-    Positive effects and negative effects are separated.
+    This prevents:
+        Gladiator = 15%
+        Fortress = 20%
+        etc.
 
-    The result is bounded to:
-        [-0.30, +0.30]
+    from becoming hidden prediction coefficients.
 
-    Important:
-        This is a descriptive composite signal.
-        It is NOT an xG multiplier.
+    IMPORTANT:
+        composite_signal is an evidence summary.
+
+        It is NOT:
+        - xG multiplier;
+        - probability multiplier;
+        - winner probability;
+        - confidence;
+        - risk.
     """
 
-    positive_values: List[float] = []
-    negative_values: List[float] = []
+    values: List[float] = []
 
     for signal in signals.values():
-        if not signal.detected:
+
+        if signal.signal is None:
             continue
 
-        contribution = (
-            _clamp(signal.strength, 0.0, 1.0)
-            * _clamp(signal.confidence, 0.0, 1.0)
+        values.append(
+            _clamp(signal.signal)
         )
 
-        if signal.direction == "positive":
-            positive_values.append(contribution)
-
-        elif signal.direction == "negative":
-            negative_values.append(contribution)
-
-    if not positive_values and not negative_values:
+    if not values:
         return None
 
-    positive_mean = (
-        mean(positive_values)
-        if positive_values
-        else 0.0
-    )
-
-    negative_mean = (
-        mean(negative_values)
-        if negative_values
-        else 0.0
-    )
-
-    composite = positive_mean - negative_mean
-
     return _clamp(
-        composite,
-        COMPOSITE_MIN,
-        COMPOSITE_MAX,
+        median(values)
     )
 
 
 # ============================================================
-# SPECIAL FORM
+# SPECIAL FORM ORGAN
 # ============================================================
 
 class FormSpecial:
     """
-    Special Form analytical organ.
-
-    It consumes FormContext and produces measurable special
-    effect signals.
-
-    It does not modify context or any other FAJ model.
+    Independent SpecialForm evidence organ.
     """
 
-    VERSION = VERSION
+    VERSION = SPECIAL_FORM_VERSION
 
     def analyze(
         self,
         context: Any,
         team_name: Optional[str] = None,
     ) -> SpecialFormResult:
-        """
-        Analyse one team's special form.
-
-        Parameters
-        ----------
-        context:
-            FormContext instance.
-
-        team_name:
-            Optional explicit team name.
-
-        Returns
-        -------
-        SpecialFormResult
-        """
 
         if team_name is None:
-            team_name = getattr(
+            team_name = _extract_field(
                 context,
                 "team",
-                None,
+                "team_name",
             )
 
         if team_name is None:
-            team_name = getattr(
-                context,
-                "team_name",
-                "unknown",
-            )
+            team_name = "unknown"
 
-        histories = _align_histories(context)
+        histories = _align_histories(
+            context
+        )
 
         signals: Dict[str, EffectSignal] = {}
 
@@ -1451,62 +1659,204 @@ class FormSpecial:
         )
 
         # ----------------------------------------------------
-        # Composite
+        # Composite evidence
         # ----------------------------------------------------
 
-        composite = aggregate_signals(signals)
+        composite_signal = aggregate_signals(
+            signals
+        )
+
+        detected_effects = [
+            name
+            for name, signal in signals.items()
+            if signal.detected
+        ]
+
+        measurable_effects = [
+            name
+            for name, signal in signals.items()
+            if signal.signal is not None
+        ]
+
+        positive_effects = [
+            name
+            for name, signal in signals.items()
+            if signal.signal is not None
+            and signal.signal > EPSILON
+        ]
+
+        negative_effects = [
+            name
+            for name, signal in signals.items()
+            if signal.signal is not None
+            and signal.signal < -EPSILON
+        ]
+
+        unknown_effects = [
+            name
+            for name, signal in signals.items()
+            if signal.signal is None
+        ]
 
         # ----------------------------------------------------
         # Diagnostics
         # ----------------------------------------------------
 
-        detected_names = [
-            name
-            for name, signal in signals.items()
-            if signal.detected
-        ]
+        diagnostics: Dict[str, Any] = {
 
-        positive_names = [
-            name
-            for name, signal in signals.items()
-            if signal.detected
-            and signal.direction == "positive"
-        ]
-
-        negative_names = [
-            name
-            for name, signal in signals.items()
-            if signal.detected
-            and signal.direction == "negative"
-        ]
-
-        diagnostics = {
             "version": self.VERSION,
-            "history_order": "M1 -> M6",
-            "history_length": {
-                key: len(value)
-                for key, value in histories.items()
-            },
-            "detected_effects": detected_names,
-            "positive_effects": positive_names,
-            "negative_effects": negative_names,
-            "detected_count": len(detected_names),
-            "positive_count": len(positive_names),
-            "negative_count": len(negative_names),
-            "composite_signal": composite,
-            "composite_range": [
-                COMPOSITE_MIN,
-                COMPOSITE_MAX,
+
+            "formula_status": FORMULA_STATUS,
+
+            "contract": CONTRACT,
+
+            "model_role": (
+                "independent_special_form_evidence"
+            ),
+
+            "history_order": "M1->M6",
+
+            "history_max_size": MAX_HISTORY,
+
+            "missing_is_zero": False,
+
+            # ----------------------------------------------
+            # Architecture
+            # ----------------------------------------------
+
+            "prediction_generated": False,
+
+            "probability_generated": False,
+
+            "poisson_used": False,
+
+            "score_generated": False,
+
+            "goal_model_modified": False,
+
+            "form_win_modified": False,
+
+            "defence_modified": False,
+
+            "control_modified": False,
+
+            "probability_model_modified": False,
+
+            "score_predictor_modified": False,
+
+            # ----------------------------------------------
+            # Forbidden coupling
+            # ----------------------------------------------
+
+            "xg_multiplier_applied": False,
+
+            "lambda_multiplier_applied": False,
+
+            "winner_override": False,
+
+            "confidence_generated": False,
+
+            "risk_generated": False,
+
+            "learning_performed": False,
+
+            "database_accessed": False,
+
+            "future_result_used": False,
+
+            "known_result_as_prediction_input": False,
+
+            # ----------------------------------------------
+            # Other states
+            # ----------------------------------------------
+
+            "corners_used": False,
+
+            "cards_used": False,
+
+            # ----------------------------------------------
+            # Research coefficients
+            # ----------------------------------------------
+
+            "fixed_predictive_weights": False,
+
+            "effect_weights_used": False,
+
+            "composite_method": (
+                "median_of_measurable_effect_signals"
+            ),
+
+            "composite_is_prediction": False,
+
+            "composite_is_probability": False,
+
+            "composite_is_xg_adjustment": False,
+
+            # ----------------------------------------------
+            # Results
+            # ----------------------------------------------
+
+            "detected_effects": detected_effects,
+
+            "measurable_effects": measurable_effects,
+
+            "positive_effects": positive_effects,
+
+            "negative_effects": negative_effects,
+
+            "unknown_effects": unknown_effects,
+
+            "detected_count": len(
+                detected_effects
+            ),
+
+            "measurable_count": len(
+                measurable_effects
+            ),
+
+            # ----------------------------------------------
+            # Contract
+            # ----------------------------------------------
+
+            "signal_range": [
+                SIGNAL_MIN,
+                SIGNAL_MAX,
             ],
-            "adjustments_are_applied": False,
+
+            "none_semantics": (
+                "insufficient evidence"
+            ),
+
+            "zero_semantics": (
+                "measurable neutral state"
+            ),
+
+            "adjustment_semantics": (
+                "compatibility field only; always None"
+            ),
+
+            "state_changes_other_state": False,
+
+            "state_is_winner_state": False,
+
+            "state_is_probability_state": False,
+
+            "state_is_score_state": False,
         }
 
         return SpecialFormResult(
             team=str(team_name),
+
             signals=signals,
-            composite_signal=composite,
+
+            composite_signal=composite_signal,
+
             diagnostics=diagnostics,
         )
+
+    # --------------------------------------------------------
+    # COMPARE
+    # --------------------------------------------------------
 
     def compare(
         self,
@@ -1516,53 +1866,64 @@ class FormSpecial:
         away_team: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Compare Special Form of two teams.
+        Descriptive comparison only.
 
-        This method remains descriptive.
-
-        It does NOT calculate match probability.
-        It does NOT modify xG.
+        Does not calculate match probability.
         """
 
-        home_result = self.analyze(
+        home = self.analyze(
             home_context,
             team_name=home_team,
         )
 
-        away_result = self.analyze(
+        away = self.analyze(
             away_context,
             team_name=away_team,
         )
 
-        home_signal = home_result.composite_signal
-        away_signal = away_result.composite_signal
-
-        differential: Optional[float]
-
-        if home_signal is None or away_signal is None:
+        if (
+            home.composite_signal is None
+            or away.composite_signal is None
+        ):
             differential = None
+
         else:
             differential = _clamp(
-                home_signal - away_signal,
-                COMPOSITE_MIN,
-                COMPOSITE_MAX,
+                home.composite_signal
+                - away.composite_signal
             )
 
         return {
-            "home": home_result,
-            "away": away_result,
+            "home": home,
+            "away": away,
             "differential": differential,
+
             "diagnostics": {
-                "home_composite": home_signal,
-                "away_composite": away_signal,
+                "comparison_is_prediction": False,
+
+                "winner_direction_generated": False,
+
+                "winner_probability_generated": False,
+
+                "probability_generated": False,
+
+                "xg_modified": False,
+
+                "home_composite": (
+                    home.composite_signal
+                ),
+
+                "away_composite": (
+                    away.composite_signal
+                ),
+
                 "differential": differential,
-                "used_for_prediction": False,
             },
         }
 
 
 # ============================================================
-# CONVENIENCE FUNCTION
+# PUBLIC CONVENIENCE API
 # ============================================================
 
 def analyze_special(
@@ -1570,7 +1931,7 @@ def analyze_special(
     team_name: Optional[str] = None,
 ) -> SpecialFormResult:
     """
-    Convenience wrapper.
+    Public convenience wrapper.
     """
 
     return FormSpecial().analyze(
@@ -1584,13 +1945,19 @@ def analyze_special(
 # ============================================================
 
 __all__ = [
+    "SPECIAL_FORM_VERSION",
     "VERSION",
+    "FORMULA_STATUS",
+    "CONTRACT",
+
     "EffectSignal",
     "SpecialFormResult",
+
     "FormSpecial",
+
     "analyze_special",
     "aggregate_signals",
-    "calculate_consistency",
+
     "detect_gladiator",
     "detect_fortress",
     "detect_leicester",
