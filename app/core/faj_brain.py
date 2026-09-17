@@ -990,111 +990,521 @@ def _run_score_predictor(
 
 
 # ============================================================
-# DIAGNOSTIC ORGAN HELPERS
+# EXPLICIT ANALYTICAL ORGAN ADAPTERS
+# ============================================================
+#
+# IMPORTANT:
+#
+# Brain does NOT guess public APIs.
+#
+# Each organ is called according to its actual contract.
+#
+# Diagnostic organs:
+#
+#     FormWin      -> evidence
+#     Defence      -> evidence
+#     FormControl  -> evidence
+#     FormAnomaly  -> evidence
+#     FormSpecial  -> evidence
+#     CornersModel -> separate state
+#     CardsModel   -> separate state
+#
+# None from an analytical organ is NOT converted to 0.
+# Failure of an analytical organ does NOT destroy Core prediction.
 # ============================================================
 
-def _run_optional(
-    name: str,
-    constructor: Any,
-    calls: Sequence[Dict[str, Any]],
+
+def _record_organ_error(
     errors: List[str],
-) -> Any:
+    name: str,
+    exc: Exception,
+) -> None:
     """
-    Run an analytical organ without allowing it
-    to contaminate Core mathematics.
-
-    The function supports several public method names
-    used by the current FAJ organs:
-
-        analyze
-        calculate
-        compare
-        predict
-
-    No fallback numeric value is generated.
+    Preserve diagnostic organ failure without contaminating
+    the mandatory Brain Core.
     """
 
-    if constructor is None:
+    errors.append(
+        f"{name}: {type(exc).__name__}: {exc}"
+    )
+
+
+# ============================================================
+# FORMWIN
+# ============================================================
+
+def _run_form_win(
+    home_context: Dict[str, Any],
+    away_context: Dict[str, Any],
+    home_team: str,
+    away_team: str,
+    errors: List[str],
+) -> Dict[str, Any]:
+    """
+    FormWin v1.4 exact contract.
+
+    Public API:
+
+        calculate(
+            context,
+            team_name=...
+        )
+
+    and:
+
+        compare(
+            home_context,
+            away_context,
+            home_team=...,
+            away_team=...
+        )
+
+    FormWin is evidence only.
+
+    It MUST NOT:
+        - modify lambda
+        - modify GoalModel
+        - modify ProbabilityModel
+        - create probability
+        - override winner
+    """
+
+    if FormWin is None:
 
         errors.append(
-            f"{name}: MODULE_UNAVAILABLE"
+            "FormWin: MODULE_UNAVAILABLE"
+        )
+
+        return {}
+
+    try:
+
+        model = FormWin()
+
+        home_state = model.calculate(
+            home_context,
+            team_name=home_team,
+        )
+
+        away_state = model.calculate(
+            away_context,
+            team_name=away_team,
+        )
+
+        result = {
+            "home": _serialize(home_state),
+            "away": _serialize(away_state),
+        }
+
+        # Optional pair comparison.
+        #
+        # It is evidence synthesis inside FormWin,
+        # NOT final Brain winner synthesis.
+        compare_method = getattr(
+            model,
+            "compare",
+            None,
+        )
+
+        if callable(compare_method):
+
+            comparison = compare_method(
+                home_context,
+                away_context,
+                home_team=home_team,
+                away_team=away_team,
+            )
+
+            result["comparison"] = _serialize(
+                comparison
+            )
+
+        return result
+
+    except Exception as exc:
+
+        _record_organ_error(
+            errors,
+            "FormWin",
+            exc,
+        )
+
+        return {}
+
+
+# ============================================================
+# CORNERS
+# ============================================================
+
+def _run_corners(
+    home_context: Dict[str, Any],
+    away_context: Dict[str, Any],
+    errors: List[str],
+) -> Optional[Dict[str, Any]]:
+    """
+    CornersModel v1.3 exact contract.
+
+    Public API:
+
+        analyze(context)
+
+    Brain deliberately calls analyze() separately for each team.
+
+    We DO NOT call synthesize_match() here because the current
+    mathematical contract is being separated into CornerState.
+
+    No GoalModel / lambda / probability modification.
+    """
+
+    if CornersModel is None:
+
+        errors.append(
+            "CornersModel: MODULE_UNAVAILABLE"
         )
 
         return None
 
     try:
 
-        instance = constructor()
+        model = CornersModel()
+
+        home_state = model.analyze(
+            home_context
+        )
+
+        away_state = model.analyze(
+            away_context
+        )
+
+        return {
+            "home": _serialize(home_state),
+            "away": _serialize(away_state),
+            "state_type": "CornerState",
+        }
 
     except Exception as exc:
 
-        errors.append(
-            f"{name}: INIT_FAILED: {exc}"
+        _record_organ_error(
+            errors,
+            "CornersModel",
+            exc,
         )
 
         return None
 
-    methods = (
-        "analyze",
-        "calculate",
-        "compare",
-        "predict",
-    )
 
-    method = None
+# ============================================================
+# CARDS
+# ============================================================
 
-    for method_name in methods:
+def _run_cards(
+    home_context: Dict[str, Any],
+    away_context: Dict[str, Any],
+    errors: List[str],
+) -> Optional[Dict[str, Any]]:
+    """
+    CardsModel v1.3 exact contract.
 
-        candidate = getattr(
-            instance,
-            method_name,
-            None,
-        )
+    Public API:
 
-        if callable(candidate):
+        analyze(context)
 
-            method = candidate
-            break
+    Brain deliberately calls analyze() separately for each team.
 
-    if method is None:
+    Cards remain a separate event state.
+
+    No:
+        lambda modification
+        probability modification
+        winner override
+        score modification
+    """
+
+    if CardsModel is None:
 
         errors.append(
-            f"{name}: NO_SUPPORTED_PUBLIC_METHOD"
+            "CardsModel: MODULE_UNAVAILABLE"
         )
 
         return None
 
-    last_error: Optional[Exception] = None
+    try:
 
-    for kwargs in calls:
+        model = CardsModel()
 
-        try:
-
-            return method(
-                **kwargs
-            )
-
-        except TypeError as exc:
-
-            last_error = exc
-
-            continue
-
-        except Exception as exc:
-
-            errors.append(
-                f"{name}: {exc}"
-            )
-
-            return None
-
-    if last_error is not None:
-
-        errors.append(
-            f"{name}: {last_error}"
+        home_state = model.analyze(
+            home_context
         )
 
-    return None
+        away_state = model.analyze(
+            away_context
+        )
+
+        return {
+            "home": _serialize(home_state),
+            "away": _serialize(away_state),
+            "state_type": "CardState",
+        }
+
+    except Exception as exc:
+
+        _record_organ_error(
+            errors,
+            "CardsModel",
+            exc,
+        )
+
+        return None
+
+
+# ============================================================
+# DEFENCE
+# ============================================================
+
+def _run_defence(
+    home_context: Dict[str, Any],
+    away_context: Dict[str, Any],
+    home_team: str,
+    away_team: str,
+    errors: List[str],
+) -> Dict[str, Any]:
+    """
+    Defence v2.0 exact contract.
+
+    Public API:
+
+        analyze(
+            context,
+            team_name=...
+        )
+
+    Defence is evidence only.
+    """
+
+    if Defence is None:
+
+        errors.append(
+            "Defence: MODULE_UNAVAILABLE"
+        )
+
+        return {}
+
+    try:
+
+        model = Defence()
+
+        home_state = model.analyze(
+            home_context,
+            team_name=home_team,
+        )
+
+        away_state = model.analyze(
+            away_context,
+            team_name=away_team,
+        )
+
+        return {
+            "home": _serialize(home_state),
+            "away": _serialize(away_state),
+        }
+
+    except Exception as exc:
+
+        _record_organ_error(
+            errors,
+            "Defence",
+            exc,
+        )
+
+        return {}
+
+
+# ============================================================
+# FORM CONTROL
+# ============================================================
+
+def _run_form_control(
+    home_context: Dict[str, Any],
+    away_context: Dict[str, Any],
+    home_team: str,
+    away_team: str,
+    errors: List[str],
+) -> Dict[str, Any]:
+    """
+    FormControl v1.2 exact contract.
+
+    Public API:
+
+        analyze(
+            context,
+            target_team=...,
+            opponent_team=...,
+            venue=...
+        )
+
+    FormControl is evidence only.
+    """
+
+    if FormControl is None:
+
+        errors.append(
+            "FormControl: MODULE_UNAVAILABLE"
+        )
+
+        return {}
+
+    try:
+
+        model = FormControl()
+
+        home_state = model.analyze(
+            home_context,
+            target_team=home_team,
+            opponent_team=away_team,
+            venue="home",
+        )
+
+        away_state = model.analyze(
+            away_context,
+            target_team=away_team,
+            opponent_team=home_team,
+            venue="away",
+        )
+
+        return {
+            "home": _serialize(home_state),
+            "away": _serialize(away_state),
+        }
+
+    except Exception as exc:
+
+        _record_organ_error(
+            errors,
+            "FormControl",
+            exc,
+        )
+
+        return {}
+
+
+# ============================================================
+# FORM ANOMALY
+# ============================================================
+
+def _run_form_anomaly(
+    home_context: Dict[str, Any],
+    away_context: Dict[str, Any],
+    errors: List[str],
+) -> Dict[str, Any]:
+    """
+    FormAnomaly v2.0 exact contract.
+
+    Public API:
+
+        analyze(context)
+
+    FormAnomaly is evidence only.
+    """
+
+    if FormAnomaly is None:
+
+        errors.append(
+            "FormAnomaly: MODULE_UNAVAILABLE"
+        )
+
+        return {}
+
+    try:
+
+        model = FormAnomaly()
+
+        home_state = model.analyze(
+            home_context
+        )
+
+        away_state = model.analyze(
+            away_context
+        )
+
+        return {
+            "home": _serialize(home_state),
+            "away": _serialize(away_state),
+        }
+
+    except Exception as exc:
+
+        _record_organ_error(
+            errors,
+            "FormAnomaly",
+            exc,
+        )
+
+        return {}
+
+
+# ============================================================
+# FORM SPECIAL
+# ============================================================
+
+def _run_form_special(
+    home_context: Dict[str, Any],
+    away_context: Dict[str, Any],
+    home_team: str,
+    away_team: str,
+    errors: List[str],
+) -> Dict[str, Any]:
+    """
+    FormSpecial v2.0 exact contract.
+
+    Public API:
+
+        analyze(
+            context,
+            team_name=...
+        )
+
+    FormSpecial is evidence only.
+
+    Its composite is NOT probability,
+    NOT xG adjustment, NOT prediction.
+    """
+
+    if FormSpecial is None:
+
+        errors.append(
+            "FormSpecial: MODULE_UNAVAILABLE"
+        )
+
+        return {}
+
+    try:
+
+        model = FormSpecial()
+
+        home_state = model.analyze(
+            home_context,
+            team_name=home_team,
+        )
+
+        away_state = model.analyze(
+            away_context,
+            team_name=away_team,
+        )
+
+        return {
+            "home": _serialize(home_state),
+            "away": _serialize(away_state),
+        }
+
+    except Exception as exc:
+
+        _record_organ_error(
+            errors,
+            "FormSpecial",
+            exc,
+        )
+
+        return {}
 
 
 # ============================================================
@@ -1118,6 +1528,9 @@ def _run_parallel_states(
         GoalModel
         ProbabilityModel
         ScorePredictor
+
+    Each organ is called by its own explicit contract.
+    No universal kwargs-guessing adapter is used.
     """
 
     errors: List[str] = []
@@ -1167,228 +1580,102 @@ def _run_parallel_states(
     # FORM WIN
     # --------------------------------------------------------
 
-    result["form_win"]["home"] = _run_optional(
-        "FormWin.home",
-        FormWin,
-        [
-            {
-                "form_context": home_context,
-                "next_venue": "home",
-            },
-            {
-                "context": home_context,
-                "next_venue": "home",
-            },
-        ],
-        errors,
+    form_win = _run_form_win(
+        home_context=home_context,
+        away_context=away_context,
+        home_team=home_team,
+        away_team=away_team,
+        errors=errors,
     )
 
-    result["form_win"]["away"] = _run_optional(
-        "FormWin.away",
-        FormWin,
-        [
-            {
-                "form_context": away_context,
-                "next_venue": "away",
-            },
-            {
-                "context": away_context,
-                "next_venue": "away",
-            },
-        ],
-        errors,
-    )
+    if isinstance(form_win, dict):
+
+        result["form_win"] = {
+            "home": form_win.get("home"),
+            "away": form_win.get("away"),
+        }
+
+        if "comparison" in form_win:
+            result["form_win"]["comparison"] = (
+                form_win["comparison"]
+            )
 
     # --------------------------------------------------------
     # DEFENCE
     # --------------------------------------------------------
 
-    result["defence"]["home"] = _run_optional(
-        "Defence.home",
-        Defence,
-        [
-            {
-                "context": home_context,
-                "team_name": home_team,
-            },
-            {
-                "form_context": home_context,
-                "team_name": home_team,
-            },
-        ],
-        errors,
+    defence = _run_defence(
+        home_context=home_context,
+        away_context=away_context,
+        home_team=home_team,
+        away_team=away_team,
+        errors=errors,
     )
 
-    result["defence"]["away"] = _run_optional(
-        "Defence.away",
-        Defence,
-        [
-            {
-                "context": away_context,
-                "team_name": away_team,
-            },
-            {
-                "form_context": away_context,
-                "team_name": away_team,
-            },
-        ],
-        errors,
-    )
+    if isinstance(defence, dict):
+        result["defence"] = defence
 
     # --------------------------------------------------------
     # CONTROL
     # --------------------------------------------------------
 
-    result["control"]["home"] = _run_optional(
-        "FormControl.home",
-        FormControl,
-        [
-            {
-                "context": home_context,
-                "target_team": home_team,
-                "opponent_team": away_team,
-                "venue": "home",
-            },
-            {
-                "form_context": home_context,
-                "target_team": home_team,
-                "opponent_team": away_team,
-                "venue": "home",
-            },
-        ],
-        errors,
+    control = _run_form_control(
+        home_context=home_context,
+        away_context=away_context,
+        home_team=home_team,
+        away_team=away_team,
+        errors=errors,
     )
 
-    result["control"]["away"] = _run_optional(
-        "FormControl.away",
-        FormControl,
-        [
-            {
-                "context": away_context,
-                "target_team": away_team,
-                "opponent_team": home_team,
-                "venue": "away",
-            },
-            {
-                "form_context": away_context,
-                "target_team": away_team,
-                "opponent_team": home_team,
-                "venue": "away",
-            },
-        ],
-        errors,
-    )
+    if isinstance(control, dict):
+        result["control"] = control
 
     # --------------------------------------------------------
     # ANOMALY
     # --------------------------------------------------------
 
-    result["anomaly"]["home"] = _run_optional(
-        "FormAnomaly.home",
-        FormAnomaly,
-        [
-            {
-                "context": home_context,
-            },
-            {
-                "form_context": home_context,
-            },
-        ],
-        errors,
+    anomaly = _run_form_anomaly(
+        home_context=home_context,
+        away_context=away_context,
+        errors=errors,
     )
 
-    result["anomaly"]["away"] = _run_optional(
-        "FormAnomaly.away",
-        FormAnomaly,
-        [
-            {
-                "context": away_context,
-            },
-            {
-                "form_context": away_context,
-            },
-        ],
-        errors,
-    )
+    if isinstance(anomaly, dict):
+        result["anomaly"] = anomaly
 
     # --------------------------------------------------------
     # SPECIAL FORM
     # --------------------------------------------------------
 
-    result["special_form"]["home"] = _run_optional(
-        "FormSpecial.home",
-        FormSpecial,
-        [
-            {
-                "context": home_context,
-                "team_name": home_team,
-            },
-            {
-                "form_context": home_context,
-                "team_name": home_team,
-            },
-        ],
-        errors,
+    special_form = _run_form_special(
+        home_context=home_context,
+        away_context=away_context,
+        home_team=home_team,
+        away_team=away_team,
+        errors=errors,
     )
 
-    result["special_form"]["away"] = _run_optional(
-        "FormSpecial.away",
-        FormSpecial,
-        [
-            {
-                "context": away_context,
-                "team_name": away_team,
-            },
-            {
-                "form_context": away_context,
-                "team_name": away_team,
-            },
-        ],
-        errors,
-    )
+    if isinstance(special_form, dict):
+        result["special_form"] = special_form
 
     # --------------------------------------------------------
     # CORNERS
     # --------------------------------------------------------
 
-    result["corners"] = _run_optional(
-        "CornersModel",
-        CornersModel,
-        [
-            {
-                "home_context": home_context,
-                "away_context": away_context,
-                "home_team": home_team,
-                "away_team": away_team,
-            },
-            {
-                "home_context": home_context,
-                "away_context": away_context,
-            },
-        ],
-        errors,
+    result["corners"] = _run_corners(
+        home_context=home_context,
+        away_context=away_context,
+        errors=errors,
     )
 
     # --------------------------------------------------------
     # CARDS
     # --------------------------------------------------------
 
-    result["cards"] = _run_optional(
-        "CardsModel",
-        CardsModel,
-        [
-            {
-                "home_context": home_context,
-                "away_context": away_context,
-                "home_team": home_team,
-                "away_team": away_team,
-            },
-            {
-                "home_context": home_context,
-                "away_context": away_context,
-            },
-        ],
-        errors,
+    result["cards"] = _run_cards(
+        home_context=home_context,
+        away_context=away_context,
+        errors=errors,
     )
 
     return result
@@ -1664,6 +1951,8 @@ class FAJBrain:
         #
         # Run BEFORE final synthesis,
         # but NEVER feed them back into Core.
+        #
+        # Each organ is called by its own explicit contract.
         # ----------------------------------------------------
 
         parallel = _run_parallel_states(
@@ -2033,6 +2322,55 @@ class FAJBrain:
             "contract",
             {},
         )
+
+        # ----------------------------------------------------
+        # EXPLICIT ORGAN CONTRACTS
+        # ----------------------------------------------------
+
+        diagnostics["organ_contracts"] = {
+            "FormWin": {
+                "api": "calculate(context, team_name=...)",
+                "role": "evidence",
+                "modifies_goal_model": False,
+                "modifies_probability": False,
+                "winner_override": False,
+            },
+
+            "CornersModel": {
+                "api": "analyze(context)",
+                "role": "separate_state",
+                "modifies_goal_model": False,
+                "modifies_probability": False,
+                "winner_override": False,
+            },
+
+            "CardsModel": {
+                "api": "analyze(context)",
+                "role": "separate_state",
+                "modifies_goal_model": False,
+                "modifies_probability": False,
+                "winner_override": False,
+            },
+        }
+
+        # ----------------------------------------------------
+        # CORE INTEGRITY
+        # ----------------------------------------------------
+
+        diagnostics["core_integrity"] = {
+            "goal_model_owner_of_lambda": True,
+            "probability_model_owner_of_probability": True,
+            "score_predictor_owner_of_score_ranking": True,
+
+            "diagnostic_organs_modify_lambda": False,
+            "diagnostic_organs_modify_probability": False,
+            "diagnostic_organs_modify_score_distribution": False,
+
+            "none_is_zero": False,
+            "future_result_used": False,
+            "database_write": False,
+            "learning": False,
+        }
 
         # ----------------------------------------------------
         # FINAL OBJECT
