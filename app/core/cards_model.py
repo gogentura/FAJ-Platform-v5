@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ PLATFORM v12.1
-CARDS MODEL v1.3
+CARDS MODEL v1.4
 ============================================================
 
 Назначение
@@ -36,8 +36,68 @@ CardsModel анализирует фактическую историю карт
 может стать OBSERVED PATTERN CANDIDATE
 на уровне Pattern/Analysis.
 
-Но CardsModel v1.3 не создаёт
+Но CardsModel v1.4 не создаёт
 математического штрафа.
+
+============================================================
+CHANGES IN V1.4
+============================================================
+
+Это исследовательская правка наблюдаемого занижения
+карточек по итогам 8 контрольных матчей.
+
+Изменены только 5 констант:
+
+    CARDS_CONTEXT_FACTOR:    1.08  -> 1.30
+    CARDS_AVG_WEIGHT:        0.65  -> 0.55
+    CARDS_RECENT_WEIGHT:     0.35  -> 0.45
+    CARDS_TREND_COEFFICIENT: 0.08  -> 0.20
+    CARDS_TREND_CLIP:        0.25  -> 0.50
+
+Обоснование направления:
+
+    - 7 из 8 контрольных матчей показали
+      систематическое занижение ожидаемых
+      карточек относительно факта;
+    - средний факт 6.75;
+    - средний прогноз v1.3 4.63;
+    - разрыв ~2.12 карточки.
+
+ВАЖНО:
+
+    Эти правки эвристические, обоснованные
+    футбольной аналитикой и наблюдаемым
+    разрывом, но НЕ гарантируют улучшение MAE.
+
+    Требуется проверка на 8 контрольных матчах.
+
+    Если MAE, bias или over/under-структура
+    ухудшатся — правки не накапливаются
+    дополнительными коэффициентами поверх v1.4.
+
+Архитектура входов:
+
+    НЕ менялась.
+
+    team_cards_history
+    opponent_cards_history
+    results
+    points_rate
+    recent_points_rate
+
+    остаются теми же полями FormContext.
+
+Contract v1:
+
+    CardsModel не влияет на:
+
+        - GoalModel
+        - ProbabilityModel
+        - ScorePredictor
+
+    Никакие новые сигналы (opponent-strength,
+    rating, class, referee signal) в v1.4
+    не вводятся.
 
 ============================================================
 CHANGES IN V1.3
@@ -70,19 +130,19 @@ from typing import Any, Dict, Iterable, List, Optional
 import math
 
 
-CARDS_MODEL_VERSION = "1.3"
+CARDS_MODEL_VERSION = "1.4"
 
 MAX_HISTORY_MATCHES = 6
 
 # ============================================================
-# RESEARCH PARAMETERS — V1.3
+# RESEARCH PARAMETERS — V1.4
 # ============================================================
 
-CARDS_AVG_WEIGHT = 0.65
-CARDS_RECENT_WEIGHT = 0.35
-CARDS_TREND_COEFFICIENT = 0.08
-CARDS_TREND_CLIP = 0.25
-CARDS_CONTEXT_FACTOR = 1.08
+CARDS_AVG_WEIGHT = 0.55
+CARDS_RECENT_WEIGHT = 0.45
+CARDS_TREND_COEFFICIENT = 0.20
+CARDS_TREND_CLIP = 0.50
+CARDS_CONTEXT_FACTOR = 1.30
 
 
 # ============================================================
@@ -436,14 +496,14 @@ class CardsModel:
     """
     Чистая математическая модель карточек.
 
-    Формула v1.3:
+    Формула v1.4:
 
-        level = 0.65 * avg + 0.35 * recent3
+        level = 0.55 * avg + 0.45 * recent3
         expected = (home_team_level + away_opponent_level) / 2
-                   + 0.08 * home_team_trend
-                   + 0.08 * away_opponent_trend
-        context_factor = 1.08
-        trend clip: ±0.25
+                   + 0.20 * home_team_trend
+                   + 0.20 * away_opponent_trend
+        context_factor = 1.30
+        trend clip: ±0.50
     """
 
     VERSION = CARDS_MODEL_VERSION
@@ -666,11 +726,11 @@ class CardsModel:
                 ),
 
             "formula":
-                "level = 0.65 * avg + 0.35 * recent3; "
+                "level = 0.55 * avg + 0.45 * recent3; "
                 "expected = (home_team_level + "
                 "away_opponent_level) / 2 "
-                "+ 0.08 * home_team_trend + 0.08 * away_opponent_trend; "
-                "context_factor = 1.08",
+                "+ 0.20 * home_team_trend + 0.20 * away_opponent_trend; "
+                "context_factor = 1.30",
 
             "recent_window": 3,
             "recent_weight": CARDS_RECENT_WEIGHT,
@@ -774,8 +834,8 @@ class CardsModel:
         # ----------------------------------------------------
         # LEVEL
         #
-        # Full history = 65%
-        # Recent 3     = 35%
+        # Full history = 55%
+        # Recent 3     = 45%
         #
         # Если recent отсутствует, используется full average.
         # ----------------------------------------------------
@@ -835,9 +895,9 @@ class CardsModel:
         #
         # Correction:
         #
-        #     0.08 * trend
+        #     0.20 * trend
         #
-        # capped at ±0.25.
+        # capped at ±0.50.
         #
         # None (missing trend) остаётся None и НЕ превращается
         # в наблюдение 0. Отсутствие trend-adjustment
