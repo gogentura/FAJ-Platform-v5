@@ -35,15 +35,6 @@ Streamlit НЕ считает:
 
 Всё приходит из FAJBrain v4.0 как BrainPrediction.
 
-Контракт Brain v4.0:
-
-    brain.predict(
-        home_team=...,
-        away_team=...,
-        home_history=[...],
-        away_history=[...],
-    )
-
 Pair Rating:
     ручной исследовательский сигнал / display only.
     В Brain v4.0 НЕ передаётся.
@@ -52,6 +43,7 @@ Pair Rating:
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import asdict
@@ -89,6 +81,99 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
+# PAGE CONFIG
+# ============================================================
+
+st.set_page_config(
+    page_title=PAGE_TITLE,
+    page_icon=PAGE_ICON,
+    layout=LAYOUT,
+    initial_sidebar_state="collapsed",
+)
+
+
+# ============================================================
+# UI STYLE
+# ============================================================
+
+st.markdown(
+    """
+    <style>
+
+    .block-container {
+        max-width: 1200px;
+        padding-top: 1.5rem;
+        padding-bottom: 3rem;
+    }
+
+    .faj-match-title {
+        text-align: center;
+        font-size: 1.75rem;
+        font-weight: 700;
+        margin: 0.4rem 0 1.2rem 0;
+    }
+
+    .faj-section {
+        font-size: 1.15rem;
+        font-weight: 650;
+        margin-top: 1rem;
+        margin-bottom: 0.65rem;
+    }
+
+    .faj-score-main {
+        text-align: center;
+        font-size: 2.15rem;
+        font-weight: 800;
+        margin: 0.2rem 0;
+    }
+
+    .faj-score-prob {
+        text-align: center;
+        opacity: 0.72;
+        font-size: 0.9rem;
+    }
+
+    .faj-prob-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.55rem 0.2rem;
+        border-bottom: 1px solid rgba(128,128,128,0.14);
+    }
+
+    .faj-prob-name {
+        font-size: 1rem;
+    }
+
+    .faj-prob-value {
+        font-size: 1rem;
+        font-weight: 700;
+    }
+
+    .faj-history-row {
+        padding: 0.35rem 0;
+        border-bottom: 1px solid rgba(128,128,128,0.10);
+    }
+
+    .faj-muted {
+        opacity: 0.68;
+        font-size: 0.88rem;
+    }
+
+    .faj-main-result {
+        border: 1px solid rgba(128,128,128,0.20);
+        border-radius: 14px;
+        padding: 1rem;
+        margin-bottom: 1rem;
+    }
+
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# ============================================================
 # SERVICES
 # ============================================================
 
@@ -122,15 +207,14 @@ def pct(value: Optional[float]) -> str:
     """
     UI formatter for probabilities.
 
-    Brain contract:
-    - probability is normally stored as 0..1
-    - UI displays it as 0..100%
+    Brain:
+        0..1
 
-    Examples:
-        0.308 -> 30.8%
-        0.447 -> 44.7%
-        1.0   -> 100.0%
-        None  -> —
+    UI:
+        0..100%
+
+    None:
+        —
     """
 
     if value is None:
@@ -141,7 +225,6 @@ def pct(value: Optional[float]) -> str:
     except (TypeError, ValueError):
         return "—"
 
-    # Brain probability contract: 0..1
     if 0.0 <= value <= 1.0:
         value *= 100.0
 
@@ -152,6 +235,7 @@ def num(
     value: Optional[float],
     digits: int = 2,
 ) -> str:
+
     if value is None:
         return "—"
 
@@ -162,6 +246,7 @@ def num(
 
 
 def safe_float(value: Any) -> Optional[float]:
+
     if value is None:
         return None
 
@@ -169,6 +254,17 @@ def safe_float(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def first_not_none(
+    *values: Any,
+) -> Any:
+
+    for value in values:
+        if value is not None:
+            return value
+
+    return None
 
 
 def parse_score(
@@ -199,7 +295,10 @@ def parse_score(
         return None, None
 
 
-def parse_date_value(value: Any) -> Optional[date]:
+def parse_date_value(
+    value: Any,
+) -> Optional[date]:
+
     if value is None:
         return None
 
@@ -211,6 +310,7 @@ def parse_date_value(value: Any) -> Optional[date]:
     )
 
     if match:
+
         try:
             return date(
                 int(match.group(1)),
@@ -226,6 +326,7 @@ def parse_date_value(value: Any) -> Optional[date]:
     )
 
     if match:
+
         try:
             return date(
                 int(match.group(3)),
@@ -236,6 +337,80 @@ def parse_date_value(value: Any) -> Optional[date]:
             return None
 
     return None
+
+
+# ============================================================
+# JSON / TECHNICAL DISPLAY ONLY
+# ============================================================
+
+def json_safe(value: Any) -> Any:
+    """
+    Convert internal structures to JSON-safe structures
+    ONLY for Streamlit technical display.
+
+    IMPORTANT:
+        This does not modify Brain data.
+        Tuple keys are converted to strings only here.
+    """
+
+    if isinstance(value, dict):
+
+        result = {}
+
+        for key, item in value.items():
+
+            if isinstance(
+                key,
+                (str, int, float, bool),
+            ) or key is None:
+
+                safe_key = key
+
+            else:
+
+                safe_key = str(key)
+
+            result[safe_key] = json_safe(
+                item
+            )
+
+        return result
+
+    if isinstance(
+        value,
+        (list, tuple),
+    ):
+
+        return [
+            json_safe(item)
+            for item in value
+        ]
+
+    if isinstance(value, set):
+
+        return [
+            json_safe(item)
+            for item in value
+        ]
+
+    if hasattr(
+        value,
+        "__dataclass_fields__",
+    ):
+
+        return json_safe(
+            asdict(value)
+        )
+
+    try:
+
+        json.dumps(value)
+
+        return value
+
+    except Exception:
+
+        return str(value)
 
 
 # ============================================================
@@ -283,18 +458,27 @@ def create_match_slot() -> Dict[str, Any]:
         # Ручной Pair Rating — display / research only.
         # В Brain v4.0 НЕ передаётся.
         # ------------------------------------------------
-        "home_pair_rating": PAIR_RATING_DEFAULT,
-        "away_pair_rating": PAIR_RATING_DEFAULT,
 
-        "urls_home": [""] * MAX_HISTORY_MATCHES,
-        "urls_away": [""] * MAX_HISTORY_MATCHES,
+        "home_pair_rating":
+            PAIR_RATING_DEFAULT,
+
+        "away_pair_rating":
+            PAIR_RATING_DEFAULT,
+
+        "urls_home":
+            [""] * MAX_HISTORY_MATCHES,
+
+        "urls_away":
+            [""] * MAX_HISTORY_MATCHES,
     }
 
 
 def add_match() -> None:
 
     if (
-        len(st.session_state.faj_matches)
+        len(
+            st.session_state.faj_matches
+        )
         >= MAX_ANALYSIS_MATCHES
     ):
 
@@ -310,14 +494,20 @@ def add_match() -> None:
     )
 
 
-def remove_match(index: int) -> None:
+def remove_match(
+    index: int,
+) -> None:
 
     if (
         0 <= index
-        < len(st.session_state.faj_matches)
+        < len(
+            st.session_state.faj_matches
+        )
     ):
 
-        st.session_state.faj_matches.pop(index)
+        st.session_state.faj_matches.pop(
+            index
+        )
 
         st.session_state.faj_collected.pop(
             index,
@@ -345,7 +535,9 @@ def load_teams(
 
     try:
 
-        teams = get_all_teams(league)
+        teams = get_all_teams(
+            league
+        )
 
         return (
             list(teams)
@@ -390,7 +582,11 @@ def build_history_record(
         {},
     )
 
-    if not isinstance(stats, dict):
+    if not isinstance(
+        stats,
+        dict,
+    ):
+
         stats = {}
 
     home_goals, away_goals = parse_score(
@@ -420,6 +616,7 @@ def build_history_record(
         "xg": {
             "home":
                 stats.get("home_xg"),
+
             "away":
                 stats.get("away_xg"),
         },
@@ -427,6 +624,7 @@ def build_history_record(
         "shots": {
             "home":
                 stats.get("home_shots"),
+
             "away":
                 stats.get("away_shots"),
         },
@@ -436,6 +634,7 @@ def build_history_record(
                 stats.get(
                     "home_shots_on_target"
                 ),
+
             "away":
                 stats.get(
                     "away_shots_on_target"
@@ -447,6 +646,7 @@ def build_history_record(
                 stats.get(
                     "home_blocked_shots"
                 ),
+
             "away":
                 stats.get(
                     "away_blocked_shots"
@@ -458,6 +658,7 @@ def build_history_record(
                 stats.get(
                     "home_big_chances"
                 ),
+
             "away":
                 stats.get(
                     "away_big_chances"
@@ -469,6 +670,7 @@ def build_history_record(
                 stats.get(
                     "home_possession"
                 ),
+
             "away":
                 stats.get(
                     "away_possession"
@@ -480,6 +682,7 @@ def build_history_record(
                 stats.get(
                     "home_total_passes"
                 ),
+
             "away":
                 stats.get(
                     "away_total_passes"
@@ -491,6 +694,7 @@ def build_history_record(
                 stats.get(
                     "home_pass_accuracy"
                 ),
+
             "away":
                 stats.get(
                     "away_pass_accuracy"
@@ -499,30 +703,50 @@ def build_history_record(
 
         "crosses": {
             "home":
-                stats.get("home_crosses"),
+                stats.get(
+                    "home_crosses"
+                ),
+
             "away":
-                stats.get("away_crosses"),
+                stats.get(
+                    "away_crosses"
+                ),
         },
 
         "throw_ins": {
             "home":
-                stats.get("home_throw_ins"),
+                stats.get(
+                    "home_throw_ins"
+                ),
+
             "away":
-                stats.get("away_throw_ins"),
+                stats.get(
+                    "away_throw_ins"
+                ),
         },
 
         "fouls": {
             "home":
-                stats.get("home_fouls"),
+                stats.get(
+                    "home_fouls"
+                ),
+
             "away":
-                stats.get("away_fouls"),
+                stats.get(
+                    "away_fouls"
+                ),
         },
 
         "offsides": {
             "home":
-                stats.get("home_offsides"),
+                stats.get(
+                    "home_offsides"
+                ),
+
             "away":
-                stats.get("away_offsides"),
+                stats.get(
+                    "away_offsides"
+                ),
         },
 
         "yellow_cards": {
@@ -530,6 +754,7 @@ def build_history_record(
                 stats.get(
                     "home_yellow_cards"
                 ),
+
             "away":
                 stats.get(
                     "away_yellow_cards"
@@ -541,6 +766,7 @@ def build_history_record(
                 stats.get(
                     "home_red_cards"
                 ),
+
             "away":
                 stats.get(
                     "away_red_cards"
@@ -549,18 +775,25 @@ def build_history_record(
 
         "corners": {
             "home":
-                stats.get("home_corners"),
+                stats.get(
+                    "home_corners"
+                ),
+
             "away":
-                stats.get("away_corners"),
+                stats.get(
+                    "away_corners"
+                ),
         },
 
-        # Compatibility fields
-
         "home_corners":
-            stats.get("home_corners"),
+            stats.get(
+                "home_corners"
+            ),
 
         "away_corners":
-            stats.get("away_corners"),
+            stats.get(
+                "away_corners"
+            ),
 
         "home_yellow_cards":
             stats.get(
@@ -576,7 +809,9 @@ def build_history_record(
             dict(stats),
 
         "source_url":
-            parsed.get("source_url"),
+            parsed.get(
+                "source_url"
+            ),
 
         "quality":
             parsed.get(
@@ -834,7 +1069,7 @@ def collect_team_history(
             record
         )
 
-    # oldest → newest
+    # Старые → новые
 
     records.sort(
         key=lambda item: (
@@ -899,7 +1134,7 @@ def make_form_context(
 
 
 # ============================================================
-# BUILD PREDICTION — FAJ Brain v4.0 adapter
+# BUILD PREDICTION
 # ============================================================
 
 def build_prediction(
@@ -913,16 +1148,7 @@ def build_prediction(
     """
     FAJ Brain v4.0 adapter.
 
-    Streamlit только передаёт фактическую историю.
-    Pair Rating НЕ передаётся в Brain и не участвует
-    в математическом ядре.
-
-    Brain v4.0 принимает только:
-
-        home_team
-        away_team
-        home_history
-        away_history
+    Pair Rating intentionally remains outside Brain.
     """
 
     brain = get_faj_brain()
@@ -934,17 +1160,31 @@ def build_prediction(
         away_history=history_away,
     )
 
-    # BrainPrediction — dataclass.
-    if hasattr(result, "__dataclass_fields__"):
-        prediction = asdict(result)
+    if hasattr(
+        result,
+        "__dataclass_fields__",
+    ):
 
-    elif hasattr(result, "to_dict"):
+        prediction = asdict(
+            result
+        )
+
+    elif hasattr(
+        result,
+        "to_dict",
+    ):
+
         prediction = result.to_dict()
 
-    elif isinstance(result, dict):
+    elif isinstance(
+        result,
+        dict,
+    ):
+
         prediction = dict(result)
 
     else:
+
         raise TypeError(
             "FAJBrain.predict() "
             "вернул неподдерживаемый тип: "
@@ -1181,18 +1421,19 @@ def generate_prediction(
                 history_away=history_away,
             )
 
-        except Exception as exc:
+        except Exception:
 
             logger.exception(
                 "FAJ Brain prediction failed"
             )
 
             st.info(
-                "ℹ️ Один дополнительный аналитический модуль "
-                "временно недоступен."
+                "ℹ️ FAJ не смог завершить "
+                "расчёт этого матча. "
+                "Проверьте техническую диагностику."
             )
 
-            return None
+            return
 
     st.session_state.faj_predictions[
         index
@@ -1324,7 +1565,7 @@ def render_data_summary(
 
 
 # ============================================================
-# FORM CONTEXT CARD
+# HUMAN FORM / HISTORY
 # ============================================================
 
 def render_form_context_card(
@@ -1337,551 +1578,1302 @@ def render_form_context_card(
         Dict[str, Any]
     ],
 ) -> None:
+    """
+    Пользовательский вид формы.
+
+    Никаких внутренних signals / raw / contracts.
+    """
 
     if not home_context and not away_context:
         return
 
-    st.markdown(
-        "### 📊 Форма перед матчем"
-    )
+    with st.expander(
+        "📈 Форма команд",
+        expanded=False,
+    ):
 
-    c1, c2 = st.columns(2)
+        c1, c2 = st.columns(2)
 
-    def format_form(
-        context: Optional[
-            Dict[str, Any]
-        ],
-    ) -> str:
+        def format_form(
+            context: Optional[
+                Dict[str, Any]
+            ],
+        ) -> str:
 
-        if not isinstance(
-            context,
-            dict,
-        ):
+            if not isinstance(
+                context,
+                dict,
+            ):
+
+                return "—"
+
+            form = context.get(
+                "form"
+            )
+
+            if isinstance(
+                form,
+                str,
+            ):
+
+                return (
+                    form.strip()
+                    or "—"
+                )
+
+            if isinstance(
+                form,
+                (list, tuple),
+            ):
+
+                mapping = {
+                    "W": "В",
+                    "WIN": "В",
+                    "D": "Н",
+                    "DRAW": "Н",
+                    "L": "П",
+                    "LOSS": "П",
+                }
+
+                values = []
+
+                for item in form[:6]:
+
+                    value = (
+                        str(item)
+                        .strip()
+                        .upper()
+                    )
+
+                    values.append(
+                        mapping.get(
+                            value,
+                            value,
+                        )
+                    )
+
+                return (
+                    "-".join(values)
+                    if values
+                    else "—"
+                )
+
             return "—"
 
-        form = context.get(
-            "form"
+        with c1:
+
+            st.markdown(
+                f"**🏠 {home_team}**"
+            )
+
+            st.write(
+                f"Последняя форма: "
+                f"**{format_form(home_context)}**"
+            )
+
+            if isinstance(
+                home_context,
+                dict,
+            ):
+
+                xg = first_not_none(
+                    home_context.get(
+                        "xg"
+                    ),
+                    home_context.get(
+                        "xg_avg"
+                    ),
+                )
+
+                xga = first_not_none(
+                    home_context.get(
+                        "xga"
+                    ),
+                    home_context.get(
+                        "xga_avg"
+                    ),
+                )
+
+                st.caption(
+                    f"xG {num(xg)} · "
+                    f"xGA {num(xga)}"
+                )
+
+        with c2:
+
+            st.markdown(
+                f"**✈️ {away_team}**"
+            )
+
+            st.write(
+                f"Последняя форма: "
+                f"**{format_form(away_context)}**"
+            )
+
+            if isinstance(
+                away_context,
+                dict,
+            ):
+
+                xg = first_not_none(
+                    away_context.get(
+                        "xg"
+                    ),
+                    away_context.get(
+                        "xg_avg"
+                    ),
+                )
+
+                xga = first_not_none(
+                    away_context.get(
+                        "xga"
+                    ),
+                    away_context.get(
+                        "xga_avg"
+                    ),
+                )
+
+                st.caption(
+                    f"xG {num(xg)} · "
+                    f"xGA {num(xga)}"
+                )
+
+
+def render_match_history(
+    home_team: str,
+    away_team: str,
+    home_records: List[Dict[str, Any]],
+    away_records: List[Dict[str, Any]],
+) -> None:
+
+    with st.expander(
+        "🗂 Последние матчи",
+        expanded=False,
+    ):
+
+        c1, c2 = st.columns(2)
+
+        def render_team_history(
+            team_name: str,
+            records: List[Dict[str, Any]],
+        ) -> None:
+
+            st.markdown(
+                f"**{team_name}**"
+            )
+
+            if not records:
+
+                st.caption(
+                    "История отсутствует."
+                )
+
+                return
+
+            for record in reversed(
+                records
+            ):
+
+                home = record.get(
+                    "home_team"
+                ) or "—"
+
+                away = record.get(
+                    "away_team"
+                ) or "—"
+
+                score = record.get(
+                    "score"
+                ) or "—"
+
+                match_date = record.get(
+                    "match_date"
+                )
+
+                st.markdown(
+                    f"""
+                    <div class="faj-history-row">
+                        <strong>
+                            {home} {score} {away}
+                        </strong>
+                        <br>
+                        <span class="faj-muted">
+                            {match_date or ""}
+                        </span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                xg = record.get(
+                    "xg",
+                    {},
+                )
+
+                if isinstance(
+                    xg,
+                    dict,
+                ):
+
+                    hxg = xg.get(
+                        "home"
+                    )
+
+                    axg = xg.get(
+                        "away"
+                    )
+
+                    if (
+                        hxg is not None
+                        or
+                        axg is not None
+                    ):
+
+                        st.caption(
+                            f"xG "
+                            f"{num(hxg)} : "
+                            f"{num(axg)}"
+                        )
+
+        with c1:
+
+            render_team_history(
+                home_team,
+                home_records,
+            )
+
+        with c2:
+
+            render_team_history(
+                away_team,
+                away_records,
+            )
+
+
+# ============================================================
+# SCORE EXTRACTION — DISPLAY ONLY
+# ============================================================
+
+def normalize_score_display(
+    value: Any,
+) -> Optional[str]:
+
+    if value is None:
+        return None
+
+    if isinstance(
+        value,
+        str,
+    ):
+
+        text = (
+            value
+            .strip()
+            .replace("-", ":")
+            .replace("–", ":")
         )
 
-        if isinstance(
-            form,
+        if ":" in text:
+
+            parts = text.split(":")
+
+            if len(parts) == 2:
+
+                try:
+
+                    return (
+                        f"{int(parts[0].strip())}"
+                        f" : "
+                        f"{int(parts[1].strip())}"
+                    )
+
+                except ValueError:
+                    pass
+
+        return text
+
+    if isinstance(
+        value,
+        (tuple, list),
+    ) and len(value) >= 2:
+
+        try:
+
+            return (
+                f"{int(value[0])}"
+                f" : "
+                f"{int(value[1])}"
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+
+            return None
+
+    if isinstance(
+        value,
+        dict,
+    ):
+
+        home = first_not_none(
+            value.get("home"),
+            value.get("home_goals"),
+            value.get("h"),
+            value.get("home_score"),
+        )
+
+        away = first_not_none(
+            value.get("away"),
+            value.get("away_goals"),
+            value.get("a"),
+            value.get("away_score"),
+        )
+
+        if (
+            home is not None
+            and
+            away is not None
+        ):
+
+            try:
+
+                return (
+                    f"{int(home)}"
+                    f" : "
+                    f"{int(away)}"
+                )
+
+            except (
+                TypeError,
+                ValueError,
+            ):
+
+                pass
+
+        nested = first_not_none(
+            value.get(
+                "score"
+            ),
+            value.get(
+                "predicted_score"
+            ),
+        )
+
+        return normalize_score_display(
+            nested
+        )
+
+    return None
+
+
+def extract_score_probability(
+    item: Any,
+) -> Optional[float]:
+
+    if isinstance(
+        item,
+        dict,
+    ):
+
+        return first_not_none(
+            item.get(
+                "probability"
+            ),
+            item.get(
+                "score_probability"
+            ),
+            item.get(
+                "p"
+            ),
+        )
+
+    return None
+
+
+def extract_top_three_scores(
+    prediction: Dict[str, Any],
+) -> List[
+    tuple[
+        str,
+        Optional[float],
+    ]
+]:
+
+    result: List[
+        tuple[
             str,
+            Optional[float],
+        ]
+    ] = []
+
+    top_scores = prediction.get(
+        "top_scores"
+    )
+
+    # --------------------------------------------------------
+    # Brain may return dict:
+    #
+    # {
+    #     (0, 1): 0.1397,
+    #     ...
+    # }
+    #
+    # or:
+    #
+    # {
+    #     "0:1": 0.1397
+    # }
+    # --------------------------------------------------------
+
+    if isinstance(
+        top_scores,
+        dict,
+    ):
+
+        for score_key, raw_value in (
+            top_scores.items()
         ):
 
-            return (
-                form.strip()
-                or "—"
+            score = (
+                normalize_score_display(
+                    score_key
+                )
             )
 
-        if isinstance(
-            form,
-            (list, tuple),
-        ):
+            probability = (
+                extract_score_probability(
+                    raw_value
+                )
+            )
 
-            mapping = {
-                "W": "В",
-                "WIN": "В",
-                "D": "Н",
-                "DRAW": "Н",
-                "L": "П",
-                "LOSS": "П",
-            }
+            if (
+                probability is None
+                and
+                isinstance(
+                    raw_value,
+                    (int, float),
+                )
+            ):
 
-            values = []
-
-            for item in form[:6]:
-
-                value = (
-                    str(item)
-                    .strip()
-                    .upper()
+                probability = float(
+                    raw_value
                 )
 
-                values.append(
-                    mapping.get(
-                        value,
-                        value,
+            if score is not None:
+
+                result.append(
+                    (
+                        score,
+                        probability,
                     )
                 )
 
-            return (
-                "-".join(values)
-                if values
-                else "—"
+    # --------------------------------------------------------
+    # Brain may return list.
+    # --------------------------------------------------------
+
+    elif isinstance(
+        top_scores,
+        list,
+    ):
+
+        for item in top_scores:
+
+            score = (
+                normalize_score_display(
+                    item
+                )
             )
 
-        return "—"
+            probability = (
+                extract_score_probability(
+                    item
+                )
+            )
 
-    with c1:
+            if score is not None:
 
-        st.markdown(
-            f"**🏠 {home_team}**"
+                result.append(
+                    (
+                        score,
+                        probability,
+                    )
+                )
+
+    # --------------------------------------------------------
+    # Sort ONLY already supplied score probabilities.
+    # No mathematical recalculation.
+    # --------------------------------------------------------
+
+    if result:
+
+        result.sort(
+            key=lambda item: (
+                item[1]
+                if item[1] is not None
+                else -1.0
+            ),
+            reverse=True,
         )
 
-        st.write(
-            f"Форма: "
-            f"{format_form(home_context)}"
+        return result[:3]
+
+    # --------------------------------------------------------
+    # Explicit Brain score fields.
+    # --------------------------------------------------------
+
+    explicit = [
+        (
+            prediction.get(
+                "predicted_score"
+            ),
+            prediction.get(
+                "predicted_score_probability"
+            ),
+        ),
+        (
+            prediction.get(
+                "second_score"
+            ),
+            prediction.get(
+                "second_score_probability"
+            ),
+        ),
+        (
+            prediction.get(
+                "third_score"
+            ),
+            prediction.get(
+                "third_score_probability"
+            ),
+        ),
+    ]
+
+    for score, probability in explicit:
+
+        normalized = (
+            normalize_score_display(
+                score
+            )
         )
 
-        if isinstance(
-            home_context,
-            dict,
-        ):
+        if normalized is not None:
 
-            st.write(
-                "xG: "
-                +
-                num(
-                    safe_float(
-                        home_context.get(
-                            "xg_avg"
-                        )
-                    )
+            result.append(
+                (
+                    normalized,
+                    probability,
                 )
             )
 
-            st.write(
-                "xGA: "
-                +
-                num(
-                    safe_float(
-                        home_context.get(
-                            "xga_avg"
-                        )
-                    )
-                )
-            )
-
-    with c2:
-
-        st.markdown(
-            f"**✈️ {away_team}**"
-        )
-
-        st.write(
-            f"Форма: "
-            f"{format_form(away_context)}"
-        )
-
-        if isinstance(
-            away_context,
-            dict,
-        ):
-
-            st.write(
-                "xG: "
-                +
-                num(
-                    safe_float(
-                        away_context.get(
-                            "xg_avg"
-                        )
-                    )
-                )
-            )
-
-            st.write(
-                "xGA: "
-                +
-                num(
-                    safe_float(
-                        away_context.get(
-                            "xga_avg"
-                        )
-                    )
-                )
-            )
+    return result[:3]
 
 
 # ============================================================
-# PREDICTION CARD — Brain v4.0
+# CORNERS / CARDS DISPLAY EXTRACTION
 # ============================================================
 
-def render_prediction_card(prediction):
+def extract_expected_value(
+    prediction: Dict[str, Any],
+    names: tuple[str, ...],
+) -> Any:
+
+    for name in names:
+
+        value = prediction.get(
+            name
+        )
+
+        if value is None:
+            continue
+
+        if isinstance(
+            value,
+            (int, float),
+        ):
+
+            return value
+
+        if isinstance(
+            value,
+            dict,
+        ):
+
+            nested = first_not_none(
+                value.get(
+                    "total"
+                ),
+                value.get(
+                    "expected_total"
+                ),
+                value.get(
+                    "expected"
+                ),
+                value.get(
+                    "prediction"
+                ),
+            )
+
+            if nested is not None:
+                return nested
+
+    return None
+
+
+# ============================================================
+# USER-FACING PREDICTION CARD
+# ============================================================
+
+def render_prediction_card(
+    prediction: Dict[str, Any],
+) -> None:
     """
-    User-facing FAJ Brain prediction card.
+    Main user-facing FAJ prediction.
 
     IMPORTANT:
-        - no prediction recalculation here
-        - no threshold-based decisions
-        - no mathematical transformations except display formatting
-        - Brain remains the only prediction source
+
+        This function does not calculate football predictions.
+
+        It only reads Brain output and formats it.
     """
 
     if not prediction:
-        st.info("ℹ️ Прогноз пока недоступен.")
+
+        st.info(
+            "ℹ️ Прогноз пока недоступен."
+        )
+
         return
 
-    # ---------------------------------------------------------
-    # Basic identity
-    # ---------------------------------------------------------
+    # ========================================================
+    # TEAMS
+    # ========================================================
 
     home_team = (
-        prediction.get("home_team")
-        or prediction.get("home")
+        prediction.get(
+            "home_team"
+        )
+        or prediction.get(
+            "home"
+        )
         or "Хозяева"
     )
 
     away_team = (
-        prediction.get("away_team")
-        or prediction.get("away")
+        prediction.get(
+            "away_team"
+        )
+        or prediction.get(
+            "away"
+        )
         or "Гости"
     )
 
     st.markdown(
-        f"## ⚽ {home_team} — {away_team}"
+        f"""
+        <div class="faj-match-title">
+            ⚽ {home_team} — {away_team}
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-    # ---------------------------------------------------------
-    # XG
-    # ---------------------------------------------------------
+    # ========================================================
+    # xG
+    # ========================================================
 
-    home_xg = (
-        prediction.get("home_xg")
-        if prediction.get("home_xg") is not None
-        else prediction.get("home_lambda")
+    home_xg = first_not_none(
+        prediction.get(
+            "home_xg"
+        ),
+        prediction.get(
+            "home_lambda"
+        ),
     )
 
-    away_xg = (
-        prediction.get("away_xg")
-        if prediction.get("away_xg") is not None
-        else prediction.get("away_lambda")
+    away_xg = first_not_none(
+        prediction.get(
+            "away_xg"
+        ),
+        prediction.get(
+            "away_lambda"
+        ),
     )
 
-    col1, col2 = st.columns(2)
+    c1, c2 = st.columns(2)
 
-    with col1:
+    with c1:
+
         st.metric(
             home_team,
-            f"xG {float(home_xg):.2f}"
-            if home_xg is not None
-            else "xG —"
+            (
+                f"xG {num(home_xg)}"
+                if home_xg is not None
+                else "xG —"
+            ),
         )
 
-    with col2:
+    with c2:
+
         st.metric(
             away_team,
-            f"xG {float(away_xg):.2f}"
-            if away_xg is not None
-            else "xG —"
+            (
+                f"xG {num(away_xg)}"
+                if away_xg is not None
+                else "xG —"
+            ),
         )
 
     st.divider()
 
-    # ---------------------------------------------------------
+    # ========================================================
     # 1X2
-    # ---------------------------------------------------------
+    #
+    # REAL BRAIN v4.0 FIELDS
+    # ========================================================
 
-    home_win = prediction.get("home_win")
-    draw = prediction.get("draw")
-    away_win = prediction.get("away_win")
+    home_win = prediction.get(
+        "home_win_probability"
+    )
 
-    # Alternative nested structure, if Brain returns it.
-    one_x_two = prediction.get("1x2")
+    draw = prediction.get(
+        "draw_probability"
+    )
 
-    if isinstance(one_x_two, dict):
-        home_win = (
-            one_x_two.get("home")
-            if one_x_two.get("home") is not None
-            else home_win
+    away_win = prediction.get(
+        "away_win_probability"
+    )
+
+    # Compatibility with possible nested output.
+
+    if (
+        home_win is None
+        and
+        isinstance(
+            prediction.get("1x2"),
+            dict,
         )
-        draw = (
-            one_x_two.get("draw")
-            if one_x_two.get("draw") is not None
-            else draw
-        )
-        away_win = (
-            one_x_two.get("away")
-            if one_x_two.get("away") is not None
-            else away_win
+    ):
+
+        one_x_two = prediction.get(
+            "1x2"
         )
 
-    st.markdown("### 🏆 Исход")
+        home_win = first_not_none(
+            one_x_two.get(
+                "home"
+            ),
+            one_x_two.get(
+                "home_win"
+            ),
+        )
+
+        draw = first_not_none(
+            one_x_two.get(
+                "draw"
+            ),
+            one_x_two.get(
+                "draw_probability"
+            ),
+        )
+
+        away_win = first_not_none(
+            one_x_two.get(
+                "away"
+            ),
+            one_x_two.get(
+                "away_win"
+            ),
+        )
+
+    st.markdown(
+        '<div class="faj-section">🏆 Исход</div>',
+        unsafe_allow_html=True,
+    )
 
     c1, c2, c3 = st.columns(3)
 
     with c1:
-        st.metric(home_team, pct(home_win))
+
+        st.metric(
+            home_team,
+            pct(home_win),
+        )
 
     with c2:
-        st.metric("Ничья", pct(draw))
+
+        st.metric(
+            "Ничья",
+            pct(draw),
+        )
 
     with c3:
-        st.metric(away_team, pct(away_win))
 
-    # ---------------------------------------------------------
-    # Most probable score
-    # ---------------------------------------------------------
+        st.metric(
+            away_team,
+            pct(away_win),
+        )
 
-    top_score = prediction.get("top_score")
+    # ========================================================
+    # TOP 3 SCORES
+    # ========================================================
 
-    if top_score is None:
-        top_scores = prediction.get("top_scores")
+    scores = extract_top_three_scores(
+        prediction
+    )
 
-        if isinstance(top_scores, list) and top_scores:
-            first = top_scores[0]
-
-            if isinstance(first, dict):
-                home_score = first.get("home")
-                away_score = first.get("away")
-
-                if home_score is None:
-                    home_score = first.get("home_goals")
-
-                if away_score is None:
-                    away_score = first.get("away_goals")
-
-                if home_score is not None and away_score is not None:
-                    top_score = f"{home_score} : {away_score}"
-
-            elif isinstance(first, (list, tuple)) and len(first) >= 2:
-                top_score = f"{first[0]} : {first[1]}"
-
-    st.markdown("### ⚽ Наиболее вероятный счёт")
     st.markdown(
-        f"## {top_score if top_score is not None else '—'}"
+        '<div class="faj-section">⚽ Наиболее вероятные счета</div>',
+        unsafe_allow_html=True,
     )
 
-    # ---------------------------------------------------------
+    if not scores:
+
+        st.caption(
+            "Распределение счетов не передано."
+        )
+
+    else:
+
+        score_columns = st.columns(
+            len(scores)
+        )
+
+        for position, (
+            score,
+            probability,
+        ) in enumerate(
+            scores
+        ):
+
+            with score_columns[
+                position
+            ]:
+
+                if position == 0:
+
+                    st.markdown(
+                        f"""
+                        <div class="faj-score-main">
+                            {score}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                else:
+
+                    st.markdown(
+                        f"""
+                        <div class="faj-score-main"
+                             style="font-size:1.45rem;">
+                            {score}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                if probability is not None:
+
+                    st.markdown(
+                        f"""
+                        <div class="faj-score-prob">
+                            {pct(probability)}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+    # ========================================================
     # BTTS
-    # ---------------------------------------------------------
+    # ========================================================
 
-    btts = prediction.get("btts")
-
-    if isinstance(btts, dict):
-        btts_yes = (
-            btts.get("yes")
-            if btts.get("yes") is not None
-            else btts.get("btts_yes")
-        )
-    else:
-        btts_yes = prediction.get("btts_yes")
-
-    st.markdown("### 🔥 Обе забьют")
-
-    if btts_yes is not None:
-        st.write(f"Да — **{pct(btts_yes)}**")
-    else:
-        st.write("Да — **—**")
-
-    # ---------------------------------------------------------
-    # TOTAL 2.5
-    # ---------------------------------------------------------
-
-    over25 = prediction.get("over25")
-
-    if over25 is None:
-        over25 = prediction.get("over_2_5")
-
-    if isinstance(over25, dict):
-        over25_probability = (
-            over25.get("probability")
-            if over25.get("probability") is not None
-            else over25.get("over")
-        )
-    else:
-        over25_probability = over25
-
-    st.markdown("### 📈 Тотал 2.5")
-
-    if over25_probability is not None:
-        st.write(
-            f"Больше — **{pct(over25_probability)}**"
-        )
-    else:
-        st.write("Больше — **—**")
-
-    # ---------------------------------------------------------
-    # CORNERS
-    # ---------------------------------------------------------
-
-    corners = prediction.get("corners")
-
-    if corners is None:
-        corners = prediction.get("corners_state")
-
-    corners_value = None
-
-    if isinstance(corners, dict):
-        for key in (
-            "total",
-            "expected_total",
-            "expected",
-            "prediction",
-        ):
-            if corners.get(key) is not None:
-                corners_value = corners.get(key)
-                break
-
-    elif isinstance(corners, (int, float)):
-        corners_value = corners
-
-    st.markdown("### 🚩 Угловые")
-
-    if corners_value is not None:
-        st.write(f"≈ **{float(corners_value):.1f}**")
-    else:
-        st.write("≈ **—**")
-
-    # ---------------------------------------------------------
-    # CARDS
-    # ---------------------------------------------------------
-
-    cards = prediction.get("cards")
-
-    if cards is None:
-        cards = prediction.get("cards_state")
-
-    cards_value = None
-
-    if isinstance(cards, dict):
-        for key in (
-            "total",
-            "expected_total",
-            "expected",
-            "prediction",
-        ):
-            if cards.get(key) is not None:
-                cards_value = cards.get(key)
-                break
-
-    elif isinstance(cards, (int, float)):
-        cards_value = cards
-
-    st.markdown("### 🟨 Карточки")
-
-    if cards_value is not None:
-        st.write(f"≈ **{float(cards_value):.1f}**")
-    else:
-        st.write("≈ **—**")
-
-    # =========================================================
-    # TECHNICAL / ANALYTICAL DETAILS
-    # =========================================================
-
-    with st.expander("📊 Детали прогноза"):
-        scenario = prediction.get("primary_scenario")
-
-        if scenario:
-            st.write("**Основной сценарий:**")
-            st.write(scenario)
-
-        confidence = prediction.get("confidence")
-
-        if confidence is not None:
-            st.write(f"Confidence: {confidence}")
-
-        risk = prediction.get("risk")
-
-        if risk is not None:
-            st.write(f"Risk: {risk}")
-
-    # ---------------------------------------------------------
-    # FORM
-    # ---------------------------------------------------------
-
-    form_keys = (
-        "form",
-        "form_state",
-        "form_model",
-        "form_win",
-        "form_control",
-        "form_anomaly",
-        "special_form",
+    btts_probability = prediction.get(
+        "btts_probability"
     )
 
-    form_data = {
-        key: prediction.get(key)
-        for key in form_keys
-        if prediction.get(key) is not None
-    }
+    if btts_probability is None:
 
-    with st.expander("📈 Форма"):
-        if form_data:
-            st.json(form_data)
-        else:
-            st.write("Данные формы отсутствуют.")
+        btts = prediction.get(
+            "btts"
+        )
 
-    # ---------------------------------------------------------
-    # DEFENCE
-    # ---------------------------------------------------------
+        if isinstance(
+            btts,
+            dict,
+        ):
 
-    defence = prediction.get("defence")
+            btts_probability = first_not_none(
+                btts.get(
+                    "yes"
+                ),
+                btts.get(
+                    "btts_yes"
+                ),
+            )
 
-    with st.expander("🛡 Защита"):
-        if defence is not None:
-            st.json(defence)
-        else:
-            st.write("Данные защиты отсутствуют.")
+    if btts_probability is not None:
 
-    # ---------------------------------------------------------
-    # PROBABILITIES
-    # ---------------------------------------------------------
+        st.markdown(
+            '<div class="faj-section">🔥 Обе забьют</div>',
+            unsafe_allow_html=True,
+        )
 
-    probability_state = prediction.get("probability_state")
+        btts_no = None
 
-    with st.expander("🎯 Вероятности"):
-        if probability_state is not None:
-            st.json(probability_state)
-        else:
-            st.write("Дополнительные вероятности отсутствуют.")
+        try:
 
-    # ---------------------------------------------------------
-    # SCORE DISTRIBUTION
-    # ---------------------------------------------------------
+            value = float(
+                btts_probability
+            )
 
-    score_distribution = prediction.get("score_distribution")
+            if 0.0 <= value <= 1.0:
 
-    with st.expander("⚽ Распределение счетов"):
-        if score_distribution is not None:
-            st.json(score_distribution)
-        else:
-            st.write("Распределение счетов отсутствует.")
+                btts_no = (
+                    1.0 - value
+                )
 
-    # ---------------------------------------------------------
-    # CORNERS DETAILS
-    # ---------------------------------------------------------
+            elif 0.0 <= value <= 100.0:
 
-    with st.expander("🚩 Угловые"):
-        if corners is not None:
-            st.json(corners)
-        else:
-            st.write("Данные по угловым отсутствуют.")
+                btts_no = (
+                    100.0 - value
+                )
 
-    # ---------------------------------------------------------
-    # CARDS DETAILS
-    # ---------------------------------------------------------
+        except (
+            TypeError,
+            ValueError,
+        ):
 
-    with st.expander("🟨 Карточки"):
-        if cards is not None:
-            st.json(cards)
-        else:
-            st.write("Данные по карточкам отсутствуют.")
+            btts_no = None
 
-    # ---------------------------------------------------------
+        c1, c2 = st.columns(2)
+
+        with c1:
+
+            st.metric(
+                "Да",
+                pct(
+                    btts_probability
+                ),
+            )
+
+        with c2:
+
+            st.metric(
+                "Нет",
+                pct(
+                    btts_no
+                ),
+            )
+
+    # ========================================================
+    # TOTAL 2.5
+    # ========================================================
+
+    over25 = prediction.get(
+        "over_25_probability"
+    )
+
+    under25 = prediction.get(
+        "under_25_probability"
+    )
+
+    if (
+        over25 is not None
+        or
+        under25 is not None
+    ):
+
+        st.markdown(
+            '<div class="faj-section">📈 Тотал 2.5</div>',
+            unsafe_allow_html=True,
+        )
+
+        c1, c2 = st.columns(2)
+
+        with c1:
+
+            st.metric(
+                "Больше",
+                pct(over25),
+            )
+
+        with c2:
+
+            st.metric(
+                "Меньше",
+                pct(under25),
+            )
+
+    # ========================================================
+    # TOTAL 3.5
+    # ========================================================
+
+    over35 = prediction.get(
+        "over_35_probability"
+    )
+
+    under35 = prediction.get(
+        "under_35_probability"
+    )
+
+    if (
+        over35 is not None
+        or
+        under35 is not None
+    ):
+
+        st.markdown(
+            '<div class="faj-section">📈 Тотал 3.5</div>',
+            unsafe_allow_html=True,
+        )
+
+        c1, c2 = st.columns(2)
+
+        with c1:
+
+            st.metric(
+                "Больше",
+                pct(over35),
+            )
+
+        with c2:
+
+            st.metric(
+                "Меньше",
+                pct(under35),
+            )
+
+    # ========================================================
+    # CORNERS
+    # ========================================================
+
+    corners_value = extract_expected_value(
+        prediction,
+        (
+            "corners",
+            "expected_corners",
+            "corners_total",
+            "corners_expected",
+        ),
+    )
+
+    # ========================================================
+    # CARDS
+    # ========================================================
+
+    cards_value = extract_expected_value(
+        prediction,
+        (
+            "cards",
+            "expected_cards",
+            "cards_total",
+            "cards_expected",
+        ),
+    )
+
+    if (
+        corners_value is not None
+        or
+        cards_value is not None
+    ):
+
+        st.markdown(
+            '<div class="faj-section">Дополнительные показатели</div>',
+            unsafe_allow_html=True,
+        )
+
+        available = []
+
+        if corners_value is not None:
+
+            available.append(
+                (
+                    "🚩 Угловые",
+                    corners_value,
+                )
+            )
+
+        if cards_value is not None:
+
+            available.append(
+                (
+                    "🟨 Карточки",
+                    cards_value,
+                )
+            )
+
+        columns = st.columns(
+            len(available)
+        )
+
+        for column, (
+            label,
+            value,
+        ) in zip(
+            columns,
+            available,
+        ):
+
+            with column:
+
+                st.metric(
+                    label,
+                    f"≈ {num(value, 1)}",
+                )
+
+    # ========================================================
+    # SMALL BRAIN SUMMARY
+    # ========================================================
+
+    primary_outcome = prediction.get(
+        "primary_outcome"
+    )
+
+    primary_scenario = prediction.get(
+        "primary_scenario"
+    )
+
+    if (
+        primary_outcome
+        or
+        primary_scenario
+    ):
+
+        outcome_names = {
+            "HOME":
+                home_team,
+
+            "DRAW":
+                "Ничья",
+
+            "AWAY":
+                away_team,
+        }
+
+        readable_outcome = (
+            outcome_names.get(
+                str(
+                    primary_outcome
+                ).upper(),
+                primary_outcome,
+            )
+            if primary_outcome
+            else None
+        )
+
+        with st.expander(
+            "🧠 Основной сценарий FAJ",
+            expanded=False,
+        ):
+
+            if readable_outcome:
+
+                st.write(
+                    f"Исход: **{readable_outcome}**"
+                )
+
+            if primary_scenario:
+
+                scenario = (
+                    normalize_score_display(
+                        primary_scenario
+                    )
+                    or str(
+                        primary_scenario
+                    )
+                )
+
+                st.write(
+                    f"Сценарий: **{scenario}**"
+                )
+
+    # ========================================================
     # TECHNICAL DIAGNOSTICS
-    # ---------------------------------------------------------
+    #
+    # Everything below is intentionally hidden from the
+    # normal user-facing prediction.
+    # ========================================================
 
-    diagnostics = prediction.get("diagnostics")
-    errors = prediction.get("errors")
+    diagnostics = prediction.get(
+        "diagnostics"
+    )
 
-    with st.expander("🔧 Техническая диагностика"):
-        if diagnostics is not None:
-            st.json(diagnostics)
+    errors = prediction.get(
+        "errors"
+    )
+
+    with st.expander(
+        "🔧 Техническая диагностика",
+        expanded=False,
+    ):
 
         if errors:
-            st.write("**Ошибки/предупреждения модулей:**")
-            st.json(errors)
 
-        if diagnostics is None and not errors:
-            st.write("Технических диагностических данных нет.")
+            st.warning(
+                "Во время расчёта были "
+                "технические сообщения."
+            )
 
-    # ---------------------------------------------------------
-    # RAW JSON
-    # ---------------------------------------------------------
+            for error in errors:
 
-    with st.expander("JSON"):
-        st.json(prediction)
+                st.code(
+                    str(error)
+                )
+
+        else:
+
+            st.success(
+                "FAJ Brain завершил расчёт "
+                "без зарегистрированных ошибок."
+            )
+
+        if diagnostics is not None:
+
+            st.json(
+                json_safe(
+                    diagnostics
+                )
+            )
+
+        confidence = prediction.get(
+            "confidence"
+        )
+
+        risk = prediction.get(
+            "risk"
+        )
+
+        if confidence is not None:
+
+            st.write(
+                f"Confidence: {confidence}"
+            )
+
+        if risk is not None:
+
+            st.write(
+                f"Risk: {risk}"
+            )
+
+        # ----------------------------------------------------
+        # Full Brain output.
+        #
+        # JSON is sanitized ONLY for display.
+        # ----------------------------------------------------
+
+        with st.expander(
+            "Полный технический вывод Brain",
+            expanded=False,
+        ):
+
+            st.json(
+                json_safe(
+                    prediction
+                )
+            )
 
 
 # ============================================================
@@ -1948,20 +2940,18 @@ def render_match_setup(
 
     with c1:
 
-        selected_home = (
-            st.selectbox(
-                "🏠 Хозяева",
-                team_names,
-                index=(
-                    team_names.index(
-                        home_current
-                    )
-                    if home_current
-                    in team_names
-                    else 0
-                ),
-                key=f"home_{index}",
-            )
+        selected_home = st.selectbox(
+            "🏠 Хозяева",
+            team_names,
+            index=(
+                team_names.index(
+                    home_current
+                )
+                if home_current
+                in team_names
+                else 0
+            ),
+            key=f"home_{index}",
         )
 
     with c2:
@@ -1972,20 +2962,18 @@ def render_match_setup(
             if name != selected_home
         ]
 
-        selected_away = (
-            st.selectbox(
-                "✈️ Гости",
-                available_away,
-                index=(
-                    available_away.index(
-                        away_current
-                    )
-                    if away_current
-                    in available_away
-                    else 0
-                ),
-                key=f"away_{index}",
-            )
+        selected_away = st.selectbox(
+            "✈️ Гости",
+            available_away,
+            index=(
+                available_away.index(
+                    away_current
+                )
+                if away_current
+                in available_away
+                else 0
+            ),
+            key=f"away_{index}",
         )
 
     match[
@@ -1997,7 +2985,7 @@ def render_match_setup(
     ] = selected_away
 
     # ========================================================
-    # CLUB RATING (display only)
+    # CLUB RATING — DISPLAY ONLY
     # ========================================================
 
     st.markdown(
@@ -2043,7 +3031,7 @@ def render_match_setup(
     )
 
     # ========================================================
-    # FAJ PAIR RATING (manual, research only)
+    # PAIR RATING — RESEARCH ONLY
     # ========================================================
 
     st.markdown(
@@ -2067,12 +3055,18 @@ def render_match_setup(
 
     _home_pr_default = max(
         PAIR_RATING_MIN,
-        min(PAIR_RATING_MAX, _home_pr_default),
+        min(
+            PAIR_RATING_MAX,
+            _home_pr_default,
+        ),
     )
 
     _away_pr_default = max(
         PAIR_RATING_MIN,
-        min(PAIR_RATING_MAX, _away_pr_default),
+        min(
+            PAIR_RATING_MAX,
+            _away_pr_default,
+        ),
     )
 
     pair_c1, pair_c2 = st.columns(2)
@@ -2099,10 +3093,19 @@ def render_match_setup(
             key=f"away_pair_rating_{index}",
         )
 
-    match["home_pair_rating"] = int(home_pair_rating)
-    match["away_pair_rating"] = int(away_pair_rating)
+    match[
+        "home_pair_rating"
+    ] = int(home_pair_rating)
 
-    _gap = int(home_pair_rating) - int(away_pair_rating)
+    match[
+        "away_pair_rating"
+    ] = int(away_pair_rating)
+
+    _gap = (
+        int(home_pair_rating)
+        -
+        int(away_pair_rating)
+    )
 
     if _gap > 0:
 
@@ -2299,6 +3302,23 @@ def render_match_setup(
                 ),
             )
 
+        # ----------------------------------------------------
+        # History is now human-readable and hidden by default.
+        # ----------------------------------------------------
+
+        render_match_history(
+            selected_home,
+            selected_away,
+            collected.get(
+                "home_records",
+                [],
+            ),
+            collected.get(
+                "away_records",
+                [],
+            ),
+        )
+
         errors = collected.get(
             "errors",
             [],
@@ -2307,7 +3327,8 @@ def render_match_setup(
         if errors:
 
             with st.expander(
-                "⚠️ Сообщения сбора"
+                "⚠️ Сообщения сбора",
+                expanded=False,
             ):
 
                 for error in errors:
@@ -2318,6 +3339,8 @@ def render_match_setup(
 
     # ========================================================
     # FORM CONTEXT
+    #
+    # Brain food, not main user-facing output.
     # ========================================================
 
     form_data = (
@@ -2367,7 +3390,9 @@ def render_match_setup(
             key=f"remove_{index}",
         ):
 
-            remove_match(index)
+            remove_match(
+                index
+            )
 
             st.rerun()
 
@@ -2378,11 +3403,8 @@ def render_match_setup(
 
 def main() -> None:
 
-    st.set_page_config(
-        page_title=PAGE_TITLE,
-        page_icon=PAGE_ICON,
-        layout=LAYOUT,
-    )
+    # IMPORTANT:
+    # st.set_page_config() is already called once above.
 
     init_state()
 
@@ -2443,7 +3465,8 @@ def main() -> None:
 
         if (
             selected_competition
-            != st.session_state.faj_competition
+            != st.session_state
+            .faj_competition
         ):
 
             st.session_state.faj_competition = (
@@ -2467,7 +3490,7 @@ def main() -> None:
             st.rerun()
 
     # ========================================================
-    # MATCHES
+    # TEAM SOURCE
     # ========================================================
 
     team_names = load_teams(
@@ -2482,6 +3505,10 @@ def main() -> None:
         )
 
         return
+
+    # ========================================================
+    # MATCHES
+    # ========================================================
 
     if not st.session_state.faj_matches:
 
@@ -2511,9 +3538,12 @@ def main() -> None:
 
     st.markdown("---")
 
-    if len(
-        st.session_state.faj_matches
-    ) < MAX_ANALYSIS_MATCHES:
+    if (
+        len(
+            st.session_state.faj_matches
+        )
+        < MAX_ANALYSIS_MATCHES
+    ):
 
         if st.button(
             "➕ Добавить матч",
@@ -2530,6 +3560,10 @@ def main() -> None:
         f"{MAX_ANALYSIS_MATCHES}"
     )
 
+
+# ============================================================
+# RUN
+# ============================================================
 
 if __name__ == "__main__":
     main()
