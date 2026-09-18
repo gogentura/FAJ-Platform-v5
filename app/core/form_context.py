@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ PLATFORM v12.1
-FORM CONTEXT v1.8
+FORM CONTEXT v1.9
 ============================================================
 
 НАЗНАЧЕНИЕ
@@ -188,6 +188,27 @@ VERSION 1.8
       ProbabilityModel или Prediction
 
     - FormContext остаётся только FACT/context layer
+
+============================================================
+VERSION 1.9
+============================================================
+
+Изменения:
+
+    - Добавлена история ударов в створ (shots on target):
+        shots_on_target_history
+        shots_on_target_against_history
+    - MatchContext расширен полями:
+        shots_on_target
+        opponent_shots_on_target
+    - Источники: прямые поля / statistics-контейнеры /
+      fallback team_shots_on_target / opponent_shots_on_target
+    - None не заменяется на 0
+    - Поле используется Defence (SOT signals), FormWin
+      (sot_signal), FormModel (shots_on_target_avg) и
+      SpecialForm (Haaland dimension) — раньше все они
+      оставались без данных, так как FormContext не отдавал
+      эту историю вообще
 ============================================================
 """
 
@@ -201,7 +222,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 # VERSION
 # ============================================================
 
-FORM_CONTEXT_VERSION = "1.8"
+FORM_CONTEXT_VERSION = "1.9"
 
 DEFAULT_MATCH_LIMIT = 6
 
@@ -712,6 +733,13 @@ class MatchContext:
 
     shots: Optional[float] = None
     opponent_shots: Optional[float] = None
+
+    # --------------------------------------------------------
+    # Shots on target (v1.9)
+    # --------------------------------------------------------
+
+    shots_on_target: Optional[float] = None
+    opponent_shots_on_target: Optional[float] = None
 
     big_chances: Optional[float] = None
     opponent_big_chances: Optional[float] = None
@@ -1237,6 +1265,34 @@ def build_match_context(
         )
     )
 
+    # --------------------------------------------------------
+    # SHOTS ON TARGET (v1.9)
+    # --------------------------------------------------------
+
+    home_shots_on_target = _safe_float(
+        _get_stat_value(
+            record,
+            (
+                "shots_on_target",
+                "sot",
+                "shots_on_target_total",
+            ),
+            "home",
+        )
+    )
+
+    away_shots_on_target = _safe_float(
+        _get_stat_value(
+            record,
+            (
+                "shots_on_target",
+                "sot",
+                "shots_on_target_total",
+            ),
+            "away",
+        )
+    )
+
     home_big_chances = _safe_float(
         _get_stat_value(
             record,
@@ -1288,6 +1344,9 @@ def build_match_context(
         shots = home_shots
         opponent_shots = away_shots
 
+        shots_on_target = home_shots_on_target
+        opponent_shots_on_target = away_shots_on_target
+
         big_chances = home_big_chances
         opponent_big_chances = away_big_chances
 
@@ -1313,6 +1372,9 @@ def build_match_context(
 
         shots = away_shots
         opponent_shots = home_shots
+
+        shots_on_target = away_shots_on_target
+        opponent_shots_on_target = home_shots_on_target
 
         big_chances = away_big_chances
         opponent_big_chances = home_big_chances
@@ -1417,6 +1479,20 @@ def build_match_context(
             )
         )
 
+        shots_on_target = _safe_float(
+            _get_value(
+                record,
+                "team_shots_on_target",
+            )
+        )
+
+        opponent_shots_on_target = _safe_float(
+            _get_value(
+                record,
+                "opponent_shots_on_target",
+            )
+        )
+
         big_chances = _safe_float(
             _get_value(
                 record,
@@ -1485,6 +1561,9 @@ def build_match_context(
 
         shots=shots,
         opponent_shots=opponent_shots,
+
+        shots_on_target=shots_on_target,
+        opponent_shots_on_target=opponent_shots_on_target,
 
         big_chances=big_chances,
         opponent_big_chances=opponent_big_chances,
@@ -1610,6 +1689,12 @@ def build_form_context(
     shots_history: List[Optional[float]] = []
     shots_conceded_history: List[Optional[float]] = []
 
+    # --------------------------------------------------------
+    # SHOTS ON TARGET HISTORY (v1.9)
+    # --------------------------------------------------------
+    shots_on_target_history: List[Optional[float]] = []
+    shots_on_target_against_history: List[Optional[float]] = []
+
     big_chances_history: List[Optional[float]] = []
     big_chances_against_history: List[Optional[float]] = []
 
@@ -1726,6 +1811,18 @@ def build_form_context(
 
         shots_conceded_history.append(
             match.opponent_shots
+        )
+
+        # ------------------------------------------------
+        # SHOTS ON TARGET (v1.9)
+        # ------------------------------------------------
+
+        shots_on_target_history.append(
+            match.shots_on_target
+        )
+
+        shots_on_target_against_history.append(
+            match.opponent_shots_on_target
         )
 
         big_chances_history.append(
@@ -2060,6 +2157,17 @@ def build_form_context(
         ),
         "shots_conceded_history": tuple(
             shots_conceded_history
+        ),
+
+        # ====================================================
+        # SHOTS ON TARGET HISTORY (v1.9)
+        # ====================================================
+
+        "shots_on_target_history": tuple(
+            shots_on_target_history
+        ),
+        "shots_on_target_against_history": tuple(
+            shots_on_target_against_history
         ),
 
         "big_chances_history": tuple(
