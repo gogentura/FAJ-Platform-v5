@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ PLATFORM v12.1
-GOAL MODEL v1.1
+GOAL MODEL v1.2
 ============================================================
 
 НАЗНАЧЕНИЕ
@@ -13,10 +13,27 @@ GOAL MODEL v1.1
 GoalModel преобразует фактическую историю команды
 из FormContext в ожидаемый goal state.
 
-v1.1 расширяет входной контракт:
+v1.2 сохраняет xG как первичную основу λ,
+но впервые подключает уже существующий
+статистический EVIDENCE STATE к λ.
 
-    xG
-    xGA
+PRIMARY STATE
+-------------
+
+Базовая λ:
+
+    Home base λ =
+        (Home XGF_rec + Away XGA_rec) / 2
+
+    Away base λ =
+        (Away XGF_rec + Home XGA_rec) / 2
+
+
+EVIDENCE STATE
+--------------
+
+Используются только уже существующие фактические ряды:
+
     shots
     shots conceded
     shots on target
@@ -24,33 +41,65 @@ v1.1 расширяет входной контракт:
     big chances
     big chances conceded
 
+Evidence формирует три сигнала:
+
+    1. shot volume
+    2. SOT quality
+    3. big-chance quality
+
+Каждый сигнал нормализуется симметрично:
+
+    signal =
+        (team_value - opponent_value)
+        /
+        (team_value + opponent_value)
+
+Диапазон:
+
+    [-1, +1]
+
+Итоговый evidence signal:
+
+    mean(доступных сигналов)
+
+Если отдельный сигнал недоступен,
+он НЕ заменяется нулём.
+
+Если весь evidence недоступен,
+base λ сохраняется без изменения.
+
+
+EVIDENCE INFLUENCE
+------------------
+
+Ограниченное влияние:
+
+    λ =
+        base_λ ×
+        (1 + 0.15 × attack_evidence_signal)
+
+Следовательно:
+
+    максимальный сдвиг = ±15%
+
+Это НЕ rating multiplier,
+НЕ form multiplier,
+НЕ bookmaker adjustment
+и НЕ внешний коэффициент силы команды.
+
+Evidence корректирует только GoalModel λ.
+
+
 ВАЖНО
 ------
 
-v1.1 НЕ вводит произвольные коэффициенты.
+MISSING != 0
 
-Текущая λ остаётся контрольной:
+None остаётся None.
 
-    Home λ =
-        (Home XGF_rec + Away XGA_rec) / 2
+Diagnostic organs не используются.
 
-    Away λ =
-        (Away XGF_rec + Home XGA_rec) / 2
-
-Дополнительная статистика пока является
-EVIDENCE STATE.
-
-Она рассчитывается отдельно и НЕ изменяет λ.
-
-Это сделано намеренно:
-
-    1. сначала подключаем все фактические данные;
-    2. проверяем их наличие и качество;
-    3. анализируем связь с xG;
-    4. только после математического аудита
-       определяем способ влияния на λ.
-
-НЕ используется:
+Не используется:
 
     - FAJ Rating
     - рейтинг лиги
@@ -58,18 +107,19 @@ EVIDENCE STATE.
     - bookmaker odds
     - future result
     - learning
-    - arbitrary multipliers
-    - winner override
-    - form multiplier
-    - control multiplier
-    - defence multiplier
+    - Winner Override
+    - FormWin
+    - Defence
+    - FormControl
+    - FormAnomaly
+    - SpecialForm
+    - CardsModel
+    - CornersModel
+    - ProbabilityModel
+    - ScorePredictor
     - geometric mean
     - finishing bonus
     - home advantage coefficient
-
-MISSING != 0
-
-None остаётся None.
 
 ============================================================
 """
@@ -84,9 +134,16 @@ from typing import Any, Dict, List, Optional
 # VERSION
 # ============================================================
 
-GOAL_MODEL_VERSION = "1.1"
+GOAL_MODEL_VERSION = "1.2"
 
 DEFAULT_MAX_HISTORY = 6
+
+# Максимальное относительное влияние evidence на base λ.
+#
+# Это архитектурный safety bound.
+# Evidence не может изменить λ более чем на ±15%.
+#
+EVIDENCE_LAMBDA_MAX_EFFECT = 0.15
 
 
 # ============================================================
@@ -221,8 +278,6 @@ def weighted_mean(
 
     None НЕ превращается в 0.
 
-    ВАЖНО:
-
     Индекс исходной временной позиции сохраняется.
 
     Например:
@@ -236,9 +291,6 @@ def weighted_mean(
     а не:
 
         1 и 2
-
-    Это сохраняет реальную временную позицию
-    наблюдения.
     """
 
     weighted_sum = 0.0
@@ -300,7 +352,15 @@ class GoalState:
     away_xga_rec: Optional[float]
 
     # --------------------------------------------------------
-    # GOAL LAMBDA
+    # BASE LAMBDA
+    # --------------------------------------------------------
+
+    home_base_lambda: Optional[float]
+
+    away_base_lambda: Optional[float]
+
+    # --------------------------------------------------------
+    # FINAL LAMBDA
     # --------------------------------------------------------
 
     home_lambda: Optional[float]
@@ -370,6 +430,34 @@ class GoalState:
     away_big_chances_per_shot: Optional[float]
 
     # ========================================================
+    # EVIDENCE SIGNALS
+    # ========================================================
+
+    home_shot_volume_signal: Optional[float]
+
+    away_shot_volume_signal: Optional[float]
+
+    home_sot_quality_signal: Optional[float]
+
+    away_sot_quality_signal: Optional[float]
+
+    home_big_chances_quality_signal: Optional[float]
+
+    away_big_chances_quality_signal: Optional[float]
+
+    home_attack_evidence_signal: Optional[float]
+
+    away_attack_evidence_signal: Optional[float]
+
+    # ========================================================
+    # EVIDENCE LAMBDA ADJUSTMENT
+    # ========================================================
+
+    home_lambda_adjustment: Optional[float]
+
+    away_lambda_adjustment: Optional[float]
+
+    # ========================================================
     # SAMPLES
     # ========================================================
 
@@ -413,6 +501,8 @@ class GoalState:
 
     big_chances_available: bool
 
+    attack_evidence_available: bool
+
     # --------------------------------------------------------
     # VALIDITY
     # --------------------------------------------------------
@@ -426,14 +516,22 @@ class GoalState:
 
 class GoalModel:
     """
-    FAJ GoalModel v1.1.
+    FAJ GoalModel v1.2.
 
-    Главный принцип:
+    xG остаётся первичной основой λ.
 
-        xG остаётся первичной математической основой λ.
+    Уже существующий statistical evidence state
+    теперь получает ограниченное влияние на λ.
 
-    Новые статистические ряды подключаются как
-    evidence state, но пока не изменяют λ.
+    Архитектура:
+
+        XG base
+           ↓
+        Evidence
+           ↓
+        bounded adjustment
+           ↓
+        final λ
     """
 
     def __init__(
@@ -463,11 +561,6 @@ class GoalModel:
             M1 -> M6
 
         oldest -> newest
-
-        FormContext v1.9 уже ограничивает историю
-        шестью матчами.
-
-        Здесь сохраняем только защитное ограничение.
         """
 
         value = _get_value(
@@ -478,16 +571,6 @@ class GoalModel:
         values = _to_sequence(
             value
         )
-
-        # ----------------------------------------------------
-        # Контракт FormContext:
-        #
-        # records уже canonical:
-        # oldest -> newest
-        #
-        # Поэтому нельзя брать последние N
-        # через [-N:], если контекст уже ограничен.
-        # ----------------------------------------------------
 
         if len(values) > self.max_history:
 
@@ -666,7 +749,7 @@ class GoalModel:
         )
 
     # ========================================================
-    # LAMBDA
+    # BASE LAMBDA
     # ========================================================
 
     def _calculate_lambda(
@@ -675,12 +758,10 @@ class GoalModel:
         opponent_xga: Optional[float],
     ) -> Optional[float]:
         """
-        КОНТРОЛЬНАЯ формула v1.0.
+        Контрольная xG формула.
 
-        λ =
+        λ_base =
             (attack XGF + opponent XGA) / 2
-
-        Никаких дополнительных коэффициентов.
         """
 
         if (
@@ -696,26 +777,65 @@ class GoalModel:
         ) / 2.0
 
     # ========================================================
-    # DIFFERENTIAL
+    # NORMALIZED DIFFERENCE
     # ========================================================
 
     @staticmethod
-    def _difference(
-        attack: Optional[float],
-        defence: Optional[float],
+    def _normalized_difference(
+        team_value: Optional[float],
+        opponent_value: Optional[float],
     ) -> Optional[float]:
+        """
+        Симметричная нормализация:
+
+            (team - opponent)
+            /
+            (team + opponent)
+
+        Диапазон:
+
+            [-1, +1]
+
+        None != 0.
+
+        Если обе величины равны нулю,
+        сигнал отсутствует.
+        """
 
         if (
-            attack is None
-            or defence is None
+            team_value is None
+            or opponent_value is None
         ):
 
             return None
 
-        return attack - defence
+        denominator = (
+            team_value
+            + opponent_value
+        )
+
+        if denominator <= 0:
+
+            return None
+
+        signal = (
+            team_value
+            - opponent_value
+        ) / denominator
+
+        # Защитное ограничение
+        # математически сигнал уже находится
+        # в [-1, +1].
+        return max(
+            -1.0,
+            min(
+                1.0,
+                signal,
+            ),
+        )
 
     # ========================================================
-    # RATIO
+    # SAFE RATIO
     # ========================================================
 
     @staticmethod
@@ -741,6 +861,203 @@ class GoalModel:
         )
 
     # ========================================================
+    # DIFFERENTIAL
+    # ========================================================
+
+    @staticmethod
+    def _difference(
+        attack: Optional[float],
+        defence: Optional[float],
+    ) -> Optional[float]:
+
+        if (
+            attack is None
+            or defence is None
+        ):
+
+            return None
+
+        return attack - defence
+
+    # ========================================================
+    # MEAN OF AVAILABLE SIGNALS
+    # ========================================================
+
+    @staticmethod
+    def _mean_available(
+        values: List[Optional[float]],
+    ) -> Optional[float]:
+
+        available = [
+            value
+            for value in values
+            if value is not None
+        ]
+
+        if not available:
+
+            return None
+
+        return (
+            sum(available)
+            / len(available)
+        )
+
+    # ========================================================
+    # ATTACK EVIDENCE
+    # ========================================================
+
+    def _calculate_attack_evidence(
+        self,
+        shots: Optional[float],
+        opponent_shots_against: Optional[float],
+        sot_per_shot: Optional[float],
+        opponent_sot_per_shot: Optional[float],
+        big_chances_per_shot: Optional[float],
+        opponent_big_chances_per_shot: Optional[float],
+    ) -> Dict[str, Optional[float]]:
+        """
+        Формирует evidence для одной команды.
+
+        Три компонента:
+
+            1. volume
+            2. SOT quality
+            3. big-chance quality
+
+        Каждый компонент находится в [-1,+1].
+
+        Итоговый signal:
+
+            mean(available components)
+
+        Нет доступных компонентов:
+            None.
+        """
+
+        # ----------------------------------------------------
+        # SHOT VOLUME
+        # ----------------------------------------------------
+
+        shot_volume_signal = (
+            self._normalized_difference(
+                shots,
+                opponent_shots_against,
+            )
+        )
+
+        # ----------------------------------------------------
+        # SOT QUALITY
+        # ----------------------------------------------------
+
+        sot_quality_signal = (
+            self._normalized_difference(
+                sot_per_shot,
+                opponent_sot_per_shot,
+            )
+        )
+
+        # ----------------------------------------------------
+        # BIG CHANCE QUALITY
+        # ----------------------------------------------------
+
+        big_chances_quality_signal = (
+            self._normalized_difference(
+                big_chances_per_shot,
+                opponent_big_chances_per_shot,
+            )
+        )
+
+        # ----------------------------------------------------
+        # COMPOSITE
+        # ----------------------------------------------------
+
+        attack_evidence_signal = (
+            self._mean_available(
+                [
+                    shot_volume_signal,
+                    sot_quality_signal,
+                    big_chances_quality_signal,
+                ]
+            )
+        )
+
+        return {
+
+            "shot_volume_signal":
+                shot_volume_signal,
+
+            "sot_quality_signal":
+                sot_quality_signal,
+
+            "big_chances_quality_signal":
+                big_chances_quality_signal,
+
+            "attack_evidence_signal":
+                attack_evidence_signal,
+        }
+
+    # ========================================================
+    # APPLY EVIDENCE
+    # ========================================================
+
+    @staticmethod
+    def _apply_evidence(
+        base_lambda: Optional[float],
+        evidence_signal: Optional[float],
+    ) -> tuple[
+        Optional[float],
+        Optional[float],
+    ]:
+        """
+        Применяет bounded evidence adjustment.
+
+        λ_final =
+            λ_base ×
+            (1 + 0.15 × evidence_signal)
+
+        evidence_signal ∈ [-1,+1]
+
+        Следовательно:
+
+            λ_final ∈
+                [0.85 × λ_base,
+                 1.15 × λ_base]
+
+        Если evidence отсутствует,
+        λ остаётся равной base λ.
+        """
+
+        if base_lambda is None:
+
+            return (
+                None,
+                None,
+            )
+
+        if evidence_signal is None:
+
+            return (
+                base_lambda,
+                0.0,
+            )
+
+        adjustment = (
+            EVIDENCE_LAMBDA_MAX_EFFECT
+            * evidence_signal
+        )
+
+        final_lambda = (
+            base_lambda
+            * (1.0 + adjustment)
+        )
+
+        return (
+            final_lambda,
+            adjustment,
+        )
+
+    # ========================================================
     # CALCULATE
     # ========================================================
 
@@ -754,12 +1071,13 @@ class GoalModel:
         """
         Рассчитывает полный GoalState.
 
-        ВАЖНО:
+        v1.2:
 
-        Новые статистические данные рассчитываются
-        и сохраняются в state.
+            xG -> base λ
+            evidence -> bounded adjustment
+            final λ
 
-        Они НЕ вмешиваются в λ.
+        Evidence других FAJ органов здесь отсутствует.
         """
 
         # ====================================================
@@ -803,7 +1121,7 @@ class GoalModel:
         )
 
         # ====================================================
-        # ATTACK EVIDENCE
+        # RAW EVIDENCE HISTORIES
         # ====================================================
 
         home_shots_values = (
@@ -847,10 +1165,6 @@ class GoalModel:
                 "big_chances_history",
             )
         )
-
-        # ====================================================
-        # DEFENCE EVIDENCE
-        # ====================================================
 
         home_shots_against_values = (
             self._extract_history(
@@ -947,7 +1261,7 @@ class GoalModel:
         )
 
         # ====================================================
-        # EVIDENCE DIFFERENTIALS
+        # DIFFERENTIALS
         # ====================================================
 
         home_shots_diff = self._difference(
@@ -1004,19 +1318,117 @@ class GoalModel:
             away_shots,
         )
 
+        home_sot_against_per_shot = self._ratio(
+            home_sot_against,
+            home_shots_against,
+        )
+
+        away_sot_against_per_shot = self._ratio(
+            away_sot_against,
+            away_shots_against,
+        )
+
+        home_big_chances_against_per_shot = self._ratio(
+            home_big_chances_against,
+            home_shots_against,
+        )
+
+        away_big_chances_against_per_shot = self._ratio(
+            away_big_chances_against,
+            away_shots_against,
+        )
+
         # ====================================================
-        # LAMBDA
+        # BASE LAMBDA
         # ====================================================
 
-        home_lambda = self._calculate_lambda(
+        home_base_lambda = self._calculate_lambda(
             home_xgf,
             away_xga,
         )
 
-        away_lambda = self._calculate_lambda(
+        away_base_lambda = self._calculate_lambda(
             away_xgf,
             home_xga,
         )
+
+        # ====================================================
+        # HOME ATTACK EVIDENCE
+        # ====================================================
+
+        home_evidence = (
+            self._calculate_attack_evidence(
+                shots=home_shots,
+                opponent_shots_against=away_shots_against,
+
+                sot_per_shot=home_sot_per_shot,
+                opponent_sot_per_shot=(
+                    away_sot_against_per_shot
+                ),
+
+                big_chances_per_shot=(
+                    home_big_chances_per_shot
+                ),
+                opponent_big_chances_per_shot=(
+                    away_big_chances_against_per_shot
+                ),
+            )
+        )
+
+        # ====================================================
+        # AWAY ATTACK EVIDENCE
+        # ====================================================
+
+        away_evidence = (
+            self._calculate_attack_evidence(
+                shots=away_shots,
+                opponent_shots_against=home_shots_against,
+
+                sot_per_shot=away_sot_per_shot,
+                opponent_sot_per_shot=(
+                    home_sot_against_per_shot
+                ),
+
+                big_chances_per_shot=(
+                    away_big_chances_per_shot
+                ),
+                opponent_big_chances_per_shot=(
+                    home_big_chances_against_per_shot
+                ),
+            )
+        )
+
+        # ====================================================
+        # FINAL LAMBDA
+        # ====================================================
+
+        (
+            home_lambda,
+            home_lambda_adjustment,
+        ) = self._apply_evidence(
+            base_lambda=home_base_lambda,
+            evidence_signal=(
+                home_evidence[
+                    "attack_evidence_signal"
+                ]
+            ),
+        )
+
+        (
+            away_lambda,
+            away_lambda_adjustment,
+        ) = self._apply_evidence(
+            base_lambda=away_base_lambda,
+            evidence_signal=(
+                away_evidence[
+                    "attack_evidence_signal"
+                ]
+            ),
+        )
+
+        # ====================================================
+        # TOTAL LAMBDA
+        # ====================================================
 
         if (
             home_lambda is not None
@@ -1152,6 +1564,16 @@ class GoalModel:
             and away_big_chances_sample > 0
         )
 
+        attack_evidence_available = (
+            home_evidence[
+                "attack_evidence_signal"
+            ] is not None
+            or
+            away_evidence[
+                "attack_evidence_signal"
+            ] is not None
+        )
+
         # ====================================================
         # VALIDITY
         # ====================================================
@@ -1192,7 +1614,14 @@ class GoalModel:
             away_xga_rec=away_xga,
 
             # ------------------------------------------------
-            # Lambda
+            # Base λ
+            # ------------------------------------------------
+
+            home_base_lambda=home_base_lambda,
+            away_base_lambda=away_base_lambda,
+
+            # ------------------------------------------------
+            # Final λ
             # ------------------------------------------------
 
             home_lambda=home_lambda,
@@ -1245,8 +1674,77 @@ class GoalModel:
             home_sot_per_shot=home_sot_per_shot,
             away_sot_per_shot=away_sot_per_shot,
 
-            home_big_chances_per_shot=home_big_chances_per_shot,
-            away_big_chances_per_shot=away_big_chances_per_shot,
+            home_big_chances_per_shot=(
+                home_big_chances_per_shot
+            ),
+
+            away_big_chances_per_shot=(
+                away_big_chances_per_shot
+            ),
+
+            # ------------------------------------------------
+            # Evidence signals
+            # ------------------------------------------------
+
+            home_shot_volume_signal=(
+                home_evidence[
+                    "shot_volume_signal"
+                ]
+            ),
+
+            away_shot_volume_signal=(
+                away_evidence[
+                    "shot_volume_signal"
+                ]
+            ),
+
+            home_sot_quality_signal=(
+                home_evidence[
+                    "sot_quality_signal"
+                ]
+            ),
+
+            away_sot_quality_signal=(
+                away_evidence[
+                    "sot_quality_signal"
+                ]
+            ),
+
+            home_big_chances_quality_signal=(
+                home_evidence[
+                    "big_chances_quality_signal"
+                ]
+            ),
+
+            away_big_chances_quality_signal=(
+                away_evidence[
+                    "big_chances_quality_signal"
+                ]
+            ),
+
+            home_attack_evidence_signal=(
+                home_evidence[
+                    "attack_evidence_signal"
+                ]
+            ),
+
+            away_attack_evidence_signal=(
+                away_evidence[
+                    "attack_evidence_signal"
+                ]
+            ),
+
+            # ------------------------------------------------
+            # λ adjustments
+            # ------------------------------------------------
+
+            home_lambda_adjustment=(
+                home_lambda_adjustment
+            ),
+
+            away_lambda_adjustment=(
+                away_lambda_adjustment
+            ),
 
             # ------------------------------------------------
             # Samples
@@ -1264,8 +1762,13 @@ class GoalModel:
             home_sot_sample=home_sot_sample,
             away_sot_sample=away_sot_sample,
 
-            home_big_chances_sample=home_big_chances_sample,
-            away_big_chances_sample=away_big_chances_sample,
+            home_big_chances_sample=(
+                home_big_chances_sample
+            ),
+
+            away_big_chances_sample=(
+                away_big_chances_sample
+            ),
 
             # ------------------------------------------------
             # Matches
@@ -1284,7 +1787,13 @@ class GoalModel:
 
             sot_available=sot_available,
 
-            big_chances_available=big_chances_available,
+            big_chances_available=(
+                big_chances_available
+            ),
+
+            attack_evidence_available=(
+                attack_evidence_available
+            ),
 
             # ------------------------------------------------
             # Validity
@@ -1528,7 +2037,27 @@ if __name__ == "__main__":
     )
 
     print(
-        "GOAL MODEL v1.1"
+        "GOAL MODEL v1.2"
+    )
+
+    print(
+        "Home base λ:",
+        state.home_base_lambda,
+    )
+
+    print(
+        "Away base λ:",
+        state.away_base_lambda,
+    )
+
+    print(
+        "Home evidence:",
+        state.home_attack_evidence_signal,
+    )
+
+    print(
+        "Away evidence:",
+        state.away_attack_evidence_signal,
     )
 
     print(
