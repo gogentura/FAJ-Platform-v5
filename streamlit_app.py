@@ -2222,6 +2222,247 @@ def extract_expected_value(
     return None
 
 
+def extract_corners_total(
+    prediction: Dict[str, Any],
+) -> Optional[float]:
+    """
+    Display-only extraction of expected total corners.
+
+    Priority:
+        1. Direct Brain-level fields (if Brain ever exposes them).
+        2. corners_state.home/away with per-team expected fields.
+        3. Derive total ONLY from already provided per-team
+           expected fields (no new mathematics).
+
+    Nothing is recalculated here.
+    """
+
+    direct = extract_expected_value(
+        prediction,
+        (
+            "corners",
+            "expected_corners",
+            "corners_total",
+            "corners_expected",
+        ),
+    )
+
+    if direct is not None:
+
+        value = safe_float(direct)
+
+        if value is not None:
+            return value
+
+    corners_state = prediction.get(
+        "corners_state"
+    )
+
+    if not isinstance(
+        corners_state,
+        dict,
+    ):
+
+        return None
+
+    home_state = corners_state.get(
+        "home"
+    )
+
+    away_state = corners_state.get(
+        "away"
+    )
+
+    def _per_team_expected(
+        state: Any,
+        keys: tuple[str, ...],
+    ) -> Optional[float]:
+
+        if not isinstance(
+            state,
+            dict,
+        ):
+
+            return None
+
+        for key in keys:
+
+            value = state.get(
+                key
+            )
+
+            number = safe_float(
+                value
+            )
+
+            if number is not None:
+                return number
+
+        return None
+
+    home_expected = _per_team_expected(
+        home_state,
+        (
+            "home_corners_expected",
+            "corners_expected",
+            "expected_corners",
+            "expected_total",
+            "total_expected_corners",
+        ),
+    )
+
+    away_expected = _per_team_expected(
+        away_state,
+        (
+            "away_corners_expected",
+            "corners_expected",
+            "expected_corners",
+            "expected_total",
+            "total_expected_corners",
+        ),
+    )
+
+    if (
+        home_expected is not None
+        and
+        away_expected is not None
+    ):
+
+        return (
+            home_expected
+            + away_expected
+        )
+
+    if home_expected is not None:
+        return home_expected
+
+    if away_expected is not None:
+        return away_expected
+
+    # --------------------------------------------------------
+    # Fallback: some Brain outputs expose only per-team
+    # historical averages. We do not combine them into
+    # a new total; we simply return None here.
+    # --------------------------------------------------------
+
+    return None
+
+
+def extract_cards_total(
+    prediction: Dict[str, Any],
+) -> Optional[float]:
+    """
+    Display-only extraction of expected total cards.
+
+    Same principle as corners:
+        no recalculation, only reading already supplied fields.
+    """
+
+    direct = extract_expected_value(
+        prediction,
+        (
+            "cards",
+            "expected_cards",
+            "cards_total",
+            "cards_expected",
+        ),
+    )
+
+    if direct is not None:
+
+        value = safe_float(direct)
+
+        if value is not None:
+            return value
+
+    cards_state = prediction.get(
+        "cards_state"
+    )
+
+    if not isinstance(
+        cards_state,
+        dict,
+    ):
+
+        return None
+
+    home_state = cards_state.get(
+        "home"
+    )
+
+    away_state = cards_state.get(
+        "away"
+    )
+
+    def _per_team_expected(
+        state: Any,
+        keys: tuple[str, ...],
+    ) -> Optional[float]:
+
+        if not isinstance(
+            state,
+            dict,
+        ):
+
+            return None
+
+        for key in keys:
+
+            value = state.get(
+                key
+            )
+
+            number = safe_float(
+                value
+            )
+
+            if number is not None:
+                return number
+
+        return None
+
+    home_expected = _per_team_expected(
+        home_state,
+        (
+            "home_cards_expected",
+            "cards_expected",
+            "expected_cards",
+            "expected_total",
+            "total_expected_cards",
+        ),
+    )
+
+    away_expected = _per_team_expected(
+        away_state,
+        (
+            "away_cards_expected",
+            "cards_expected",
+            "expected_cards",
+            "expected_total",
+            "total_expected_cards",
+        ),
+    )
+
+    if (
+        home_expected is not None
+        and
+        away_expected is not None
+    ):
+
+        return (
+            home_expected
+            + away_expected
+        )
+
+    if home_expected is not None:
+        return home_expected
+
+    if away_expected is not None:
+        return away_expected
+
+    return None
+
+
 # ============================================================
 # USER-FACING PREDICTION CARD
 # ============================================================
@@ -2650,28 +2891,16 @@ def render_prediction_card(
     # CORNERS
     # ========================================================
 
-    corners_value = extract_expected_value(
-        prediction,
-        (
-            "corners",
-            "expected_corners",
-            "corners_total",
-            "corners_expected",
-        ),
+    corners_value = extract_corners_total(
+        prediction
     )
 
     # ========================================================
     # CARDS
     # ========================================================
 
-    cards_value = extract_expected_value(
-        prediction,
-        (
-            "cards",
-            "expected_cards",
-            "cards_total",
-            "cards_expected",
-        ),
+    cards_value = extract_cards_total(
+        prediction
     )
 
     if (
