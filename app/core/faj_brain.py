@@ -1146,12 +1146,14 @@ def _run_corners(
 
     Public API:
 
-        analyze(context)
+        synthesize_match(home_context, away_context)
 
-    Brain deliberately calls analyze() separately for each team.
-
-    We DO NOT call synthesize_match() here because the current
-    mathematical contract is being separated into CornerState.
+    IMPORTANT (fix):
+    Calling analyze() per team only returns raw history/avg/trend —
+    the actual expected corners (home_corners_expected,
+    away_corners_expected, total_expected_corners) are computed
+    exclusively inside synthesize_match(). Brain must call it once
+    per match to actually produce a usable Corner State.
 
     No GoalModel / lambda / probability modification.
     """
@@ -1168,19 +1170,14 @@ def _run_corners(
 
         model = CornersModel()
 
-        home_state = model.analyze(
-            home_context
+        result = model.synthesize_match(
+            home_context,
+            away_context,
         )
 
-        away_state = model.analyze(
-            away_context
-        )
+        result["state_type"] = "CornerState"
 
-        return {
-            "home": _serialize(home_state),
-            "away": _serialize(away_state),
-            "state_type": "CornerState",
-        }
+        return result
 
     except Exception as exc:
 
@@ -1207,9 +1204,12 @@ def _run_cards(
 
     Public API:
 
-        analyze(context)
+        synthesize_match(home_context, away_context)
 
-    Brain deliberately calls analyze() separately for each team.
+    IMPORTANT (fix):
+    Same reasoning as CornersModel — analyze() alone never
+    produces home_cards_expected / away_cards_expected /
+    total_expected_cards; those live only in synthesize_match().
 
     Cards remain a separate event state.
 
@@ -1232,19 +1232,14 @@ def _run_cards(
 
         model = CardsModel()
 
-        home_state = model.analyze(
-            home_context
+        result = model.synthesize_match(
+            home_context,
+            away_context,
         )
 
-        away_state = model.analyze(
-            away_context
-        )
+        result["state_type"] = "CardState"
 
-        return {
-            "home": _serialize(home_state),
-            "away": _serialize(away_state),
-            "state_type": "CardState",
-        }
+        return result
 
     except Exception as exc:
 
