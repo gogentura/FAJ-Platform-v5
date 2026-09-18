@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ Platform v12.1
-SCORE PREDICTOR v1.1
+SCORE PREDICTOR v1.2
 ============================================================
 
 ROLE
@@ -29,10 +29,14 @@ ARCHITECTURE
         ▼
     ScorePredictor
         │
-        ├── predicted_score
+        ├── predicted_score          (argmax raw probability)
         ├── second_score
         ├── third_score
-        └── ranked_scores
+        ├── top_scores               (top-N)
+        ├── upper_tail_state
+        ├── separation_state
+        ├── top_scores_identity
+        └── distribution_state
 
 MATHEMATICAL CONTRACT
 ---------------------
@@ -65,7 +69,7 @@ ScorePredictor является ranking/state layer.
 LOW-SCORE CORRECTION
 --------------------
 
-Архитектурно зарезервирована, но в v1.1 НЕ применяется.
+Архитектурно зарезервирована, но в v1.2 НЕ применяется.
 
 Важно:
 
@@ -78,6 +82,34 @@ LOW-SCORE CORRECTION
 из ProbabilityModel.
 
 None != 0.
+============================================================
+CHANGES IN V1.2
+============================================================
+
+Расширение Score State без изменения контракта:
+
+    - добавлен upper_tail_mass и upper_tail_state
+    - добавлен top1_top2_gap / top1_top3_gap
+      и separation_state
+    - добавлен top_scores_identity
+    - добавлен distribution_entropy
+      (Shannon H по нормированной копии
+       распределения; raw_probability
+       не изменяется)
+    - добавлен distribution_state
+
+Все новые поля являются metadata / state.
+
+predicted_score остаётся строгим
+argmax raw probability.
+
+Никаких бонусов, штрафов или корректировок
+в ranking не добавлено.
+
+top_scores не обрезается по вероятности,
+берётся первые TOP_SCORES_COUNT элементов
+отсортированного списка.
+
 ============================================================
 """
 
@@ -92,10 +124,29 @@ import math
 # VERSION
 # ============================================================
 
-VERSION = "1.1"
+VERSION = "1.2"
 FORMULA_STATUS = "CONTRACT_V1"
 
 TOP_SCORES_COUNT = 10
+
+# ------------------------------------------------------------
+# Thresholds for Score State (v1.2)
+#
+# ВНИМАНИЕ:
+#   Это пороги отображения / классификации, а НЕ
+#   пороги, изменяющие predicted_score.
+# ------------------------------------------------------------
+
+UPPER_TAIL_LOW = 0.10
+UPPER_TAIL_HIGH = 0.25
+
+SEPARATION_SHARP = 0.03
+SEPARATION_FLAT = 0.01
+
+DISTRIBUTION_CONCENTRATED = 2.0
+DISTRIBUTION_DIFFUSE = 3.0
+
+UPPER_TAIL_MIN_TOTAL_GOALS = 4
 
 
 # ============================================================
@@ -105,7 +156,7 @@ TOP_SCORES_COUNT = 10
 @dataclass
 class ScorePrediction:
     """
-    Score State v1.1.
+    Score State v1.2.
 
     Основные результаты:
 
@@ -150,7 +201,26 @@ class ScorePrediction:
     score_data_quality: Optional[float] = None
     sample_size: Optional[int] = None
 
+    # --------------------------------------------------------
+    # v1.2 — Score State extensions
+    # --------------------------------------------------------
+
+    upper_tail_mass: Optional[float] = None
+    upper_tail_state: Optional[str] = None
+
+    top1_top2_gap: Optional[float] = None
+    top1_top3_gap: Optional[float] = None
+    separation_state: Optional[str] = None
+
+    top_scores_identity: Optional[str] = None
+
+    distribution_entropy: Optional[float] = None
+    distribution_state: Optional[str] = None
+
+    # --------------------------------------------------------
     # Старые compatibility fields.
+    # --------------------------------------------------------
+
     outcome_fit_score: Optional[float] = None
     margin_fit_score: Optional[float] = None
     btts_fit_score: Optional[float] = None
@@ -323,6 +393,58 @@ class ScorePredictor:
         )
 
         # ----------------------------------------------------
+        # v1.2 — Score State extensions
+        #
+        # Все эти поля — metadata.
+        # Они НЕ меняют predicted_score.
+        # ----------------------------------------------------
+
+        upper_tail_mass = (
+            self._compute_upper_tail_mass(
+                ranked
+            )
+        )
+
+        upper_tail_state = (
+            self._classify_upper_tail(
+                upper_tail_mass
+            )
+        )
+
+        (
+            top1_top2_gap,
+            top1_top3_gap,
+        ) = self._compute_separation(
+            primary_probability,
+            second_probability,
+            third_probability,
+        )
+
+        separation_state = (
+            self._classify_separation(
+                top1_top2_gap
+            )
+        )
+
+        top_scores_identity = (
+            self._classify_top_scores_identity(
+                top_scores
+            )
+        )
+
+        distribution_entropy = (
+            self._compute_entropy(
+                ranked
+            )
+        )
+
+        distribution_state = (
+            self._classify_distribution(
+                distribution_entropy
+            )
+        )
+
+        # ----------------------------------------------------
         # Probability summary
         #
         # Diagnostic only.
@@ -337,12 +459,6 @@ class ScorePredictor:
 
         # ----------------------------------------------------
         # Score data quality
-        #
-        # This is quality of received Score State data,
-        # NOT confidence in the prediction.
-        #
-        # If probabilities are present, quality is 1.0.
-        # If no distribution exists, result is unavailable.
         # ----------------------------------------------------
 
         score_data_quality = 1.0
@@ -386,6 +502,43 @@ class ScorePredictor:
             "probability_normalized": False,
 
             "poisson_recalculated": False,
+
+            # ------------------------------------------------
+            # v1.2 extensions
+            # ------------------------------------------------
+
+            "upper_tail_mass": upper_tail_mass,
+            "upper_tail_state": upper_tail_state,
+            "upper_tail_thresholds": (
+                UPPER_TAIL_LOW,
+                UPPER_TAIL_HIGH,
+            ),
+            "upper_tail_min_total_goals": (
+                UPPER_TAIL_MIN_TOTAL_GOALS
+            ),
+
+            "top1_top2_gap": top1_top2_gap,
+            "top1_top3_gap": top1_top3_gap,
+            "separation_state": separation_state,
+            "separation_thresholds": (
+                SEPARATION_FLAT,
+                SEPARATION_SHARP,
+            ),
+
+            "top_scores_identity": (
+                top_scores_identity
+            ),
+
+            "distribution_entropy": (
+                distribution_entropy
+            ),
+            "distribution_state": (
+                distribution_state
+            ),
+            "distribution_thresholds": (
+                DISTRIBUTION_CONCENTRATED,
+                DISTRIBUTION_DIFFUSE,
+            ),
 
             # ------------------------------------------------
             # Reserved correction
@@ -454,7 +607,26 @@ class ScorePredictor:
             score_data_quality=score_data_quality,
             sample_size=len(candidates),
 
+            # ------------------------------------------------
+            # v1.2 Score State extensions
+            # ------------------------------------------------
+
+            upper_tail_mass=upper_tail_mass,
+            upper_tail_state=upper_tail_state,
+
+            top1_top2_gap=top1_top2_gap,
+            top1_top3_gap=top1_top3_gap,
+            separation_state=separation_state,
+
+            top_scores_identity=top_scores_identity,
+
+            distribution_entropy=distribution_entropy,
+            distribution_state=distribution_state,
+
+            # ------------------------------------------------
             # Compatibility fields.
+            # ------------------------------------------------
+
             outcome_fit_score=None,
             margin_fit_score=None,
             btts_fit_score=None,
@@ -467,6 +639,257 @@ class ScorePredictor:
 
             diagnostics=diagnostics,
         )
+
+    # ========================================================
+    # v1.2 — UPPER TAIL
+    # ========================================================
+
+    @staticmethod
+    def _compute_upper_tail_mass(
+        ranked: List[Dict[str, Any]],
+    ) -> Optional[float]:
+        """
+        Сумма P(score) для счетов с total_goals >= threshold.
+
+        Использует raw_probability как есть.
+        Не нормирует.
+        """
+
+        if not ranked:
+            return None
+
+        total = 0.0
+
+        for item in ranked:
+
+            total_goals = (
+                item.get("total_goals")
+            )
+
+            if total_goals is None:
+                continue
+
+            if total_goals >= (
+                UPPER_TAIL_MIN_TOTAL_GOALS
+            ):
+
+                probability = (
+                    item.get("raw_probability")
+                )
+
+                if probability is None:
+                    continue
+
+                total += float(probability)
+
+        return total
+
+    @staticmethod
+    def _classify_upper_tail(
+        upper_tail_mass: Optional[float],
+    ) -> Optional[str]:
+
+        if upper_tail_mass is None:
+            return None
+
+        if upper_tail_mass < UPPER_TAIL_LOW:
+            return "LOW"
+
+        if upper_tail_mass > UPPER_TAIL_HIGH:
+            return "HIGH"
+
+        return "MEDIUM"
+
+    # ========================================================
+    # v1.2 — SEPARATION
+    # ========================================================
+
+    @staticmethod
+    def _compute_separation(
+        primary: Optional[float],
+        second: Optional[float],
+        third: Optional[float],
+    ) -> tuple[
+        Optional[float],
+        Optional[float],
+    ]:
+
+        if primary is None:
+            return None, None
+
+        top1_top2_gap = None
+        top1_top3_gap = None
+
+        if second is not None:
+            top1_top2_gap = primary - second
+
+        if third is not None:
+            top1_top3_gap = primary - third
+
+        return top1_top2_gap, top1_top3_gap
+
+    @staticmethod
+    def _classify_separation(
+        top1_top2_gap: Optional[float],
+    ) -> Optional[str]:
+
+        if top1_top2_gap is None:
+            return None
+
+        if top1_top2_gap >= SEPARATION_SHARP:
+            return "SHARP"
+
+        if top1_top2_gap <= SEPARATION_FLAT:
+            return "FLAT"
+
+        return "MODERATE"
+
+    # ========================================================
+    # v1.2 — TOP SCORES IDENTITY
+    # ========================================================
+
+    @staticmethod
+    def _classify_top_scores_identity(
+        top_scores: List[Dict[str, Any]],
+    ) -> Optional[str]:
+
+        if not top_scores:
+            return None
+
+        # ----------------------------------------------------
+        # Анализируем первые три (или сколько есть).
+        # ----------------------------------------------------
+
+        sample = top_scores[:3]
+
+        winners = set()
+        btts_states = set()
+
+        for item in sample:
+
+            winner = item.get("winner")
+
+            if winner:
+                winners.add(winner)
+
+            btts = item.get("btts")
+
+            if btts:
+                btts_states.add(btts)
+
+        # ----------------------------------------------------
+        # Определяем характер Top-3
+        # ----------------------------------------------------
+
+        single_winner = (
+            len(winners) == 1
+        )
+
+        single_btts = (
+            len(btts_states) == 1
+        )
+
+        if single_winner and single_btts:
+
+            winner = next(iter(winners))
+            btts = next(iter(btts_states))
+
+            return (
+                f"CONSISTENT_{winner}_"
+                f"BTTS_{btts}"
+            )
+
+        if single_winner:
+
+            winner = next(iter(winners))
+
+            return f"CONSISTENT_{winner}"
+
+        if single_btts:
+
+            btts = next(iter(btts_states))
+
+            return f"BTTS_{btts}"
+
+        return "MIXED"
+
+    # ========================================================
+    # v1.2 — DISTRIBUTION ENTROPY
+    # ========================================================
+
+    @staticmethod
+    def _compute_entropy(
+        ranked: List[Dict[str, Any]],
+    ) -> Optional[float]:
+        """
+        Shannon entropy по нормированной копии
+        raw_probability.
+
+        ВАЖНО:
+
+            raw_probability НЕ изменяется.
+
+            Нормировка выполняется только
+            локально для расчёта энтропии.
+        """
+
+        if not ranked:
+            return None
+
+        values: List[float] = []
+
+        for item in ranked:
+
+            probability = item.get(
+                "raw_probability"
+            )
+
+            if probability is None:
+                continue
+
+            value = float(probability)
+
+            if value <= 0.0:
+                continue
+
+            values.append(value)
+
+        if not values:
+            return None
+
+        total = sum(values)
+
+        if total <= 0.0:
+            return None
+
+        entropy = 0.0
+
+        for value in values:
+
+            p = value / total
+
+            if p <= 0.0:
+                continue
+
+            entropy -= p * math.log(p)
+
+        return entropy
+
+    @staticmethod
+    def _classify_distribution(
+        entropy: Optional[float],
+    ) -> Optional[str]:
+
+        if entropy is None:
+            return None
+
+        if entropy < DISTRIBUTION_CONCENTRATED:
+            return "CONCENTRATED"
+
+        if entropy > DISTRIBUTION_DIFFUSE:
+            return "DIFFUSE"
+
+        return "BALANCED"
 
     # ========================================================
     # READ SCORE DISTRIBUTION
@@ -498,11 +921,6 @@ class ScorePredictor:
 
         # ----------------------------------------------------
         # Dict
-        #
-        # {
-        #     "1:0": 0.18,
-        #     "1:1": 0.14
-        # }
         # ----------------------------------------------------
 
         if isinstance(
@@ -644,11 +1062,11 @@ class ScorePredictor:
         # ----------------------------------------------------
         # Merge duplicate scores.
         #
-        # If the same score is represented more than once,
-        # probabilities are summed because they refer to
-        # the same exact-score state.
+        # Если один и тот же счёт встречается более одного
+        # раза, вероятности складываются, так как относятся
+        # к одному и тому же состоянию.
         #
-        # No normalization is performed.
+        # Нормализация не выполняется.
         # ----------------------------------------------------
 
         merged: Dict[
@@ -1036,6 +1454,37 @@ class ScorePredictor:
 
             "poisson_recalculated": False,
 
+            # ------------------------------------------------
+            # v1.2 extensions
+            # ------------------------------------------------
+
+            "upper_tail_mass": None,
+            "upper_tail_state": None,
+            "upper_tail_thresholds": (
+                UPPER_TAIL_LOW,
+                UPPER_TAIL_HIGH,
+            ),
+            "upper_tail_min_total_goals": (
+                UPPER_TAIL_MIN_TOTAL_GOALS
+            ),
+
+            "top1_top2_gap": None,
+            "top1_top3_gap": None,
+            "separation_state": None,
+            "separation_thresholds": (
+                SEPARATION_FLAT,
+                SEPARATION_SHARP,
+            ),
+
+            "top_scores_identity": None,
+
+            "distribution_entropy": None,
+            "distribution_state": None,
+            "distribution_thresholds": (
+                DISTRIBUTION_CONCENTRATED,
+                DISTRIBUTION_DIFFUSE,
+            ),
+
             "low_score_correction_available": True,
             "low_score_correction_used": False,
 
@@ -1092,6 +1541,26 @@ class ScorePredictor:
             low_score_state=None,
             score_data_quality=None,
             sample_size=None,
+
+            # ------------------------------------------------
+            # v1.2 Score State extensions
+            # ------------------------------------------------
+
+            upper_tail_mass=None,
+            upper_tail_state=None,
+
+            top1_top2_gap=None,
+            top1_top3_gap=None,
+            separation_state=None,
+
+            top_scores_identity=None,
+
+            distribution_entropy=None,
+            distribution_state=None,
+
+            # ------------------------------------------------
+            # Compatibility fields.
+            # ------------------------------------------------
 
             outcome_fit_score=None,
             margin_fit_score=None,
@@ -1216,6 +1685,13 @@ __all__ = [
     "VERSION",
     "FORMULA_STATUS",
     "TOP_SCORES_COUNT",
+    "UPPER_TAIL_LOW",
+    "UPPER_TAIL_HIGH",
+    "SEPARATION_SHARP",
+    "SEPARATION_FLAT",
+    "DISTRIBUTION_CONCENTRATED",
+    "DISTRIBUTION_DIFFUSE",
+    "UPPER_TAIL_MIN_TOTAL_GOALS",
     "ScorePrediction",
     "ScorePredictor",
     "predict_score",
