@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ PLATFORM v12.1
-FORM WIN v1.4
+FORM WIN v1.5
 ============================================================
 
 МАТЕМАТИЧЕСКИЙ ОРГАН FAJ
@@ -63,6 +63,23 @@ FormWin может вернуть win_form_score и relative_form_win.
 Это ограниченное [-1, +1] evidence.
 
 None != 0
+
+============================================================
+VERSION 1.5
+============================================================
+
+Изменения:
+
+    - Исправлено извлечение истории угловых: добавлен алиас
+      "corners_for_history" (реальное имя поля, отдаваемое
+      form_context.py v1.8+) к ключу "corners" в _histories().
+    - Ранее FormWin искал только "corners_history" /
+      "team_corners_history", которых FormContext никогда не
+      предоставлял — corners_signal всегда был None, а вместе
+      с ним 25% веса ATTACK_WEIGHTS["corners"] не участвовали
+      в attack_signal.
+    - Формулы и веса не изменены.
+============================================================
 """
 
 from __future__ import annotations
@@ -72,7 +89,7 @@ from math import isfinite, tanh
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
-FORM_WIN_VERSION = "1.4"
+FORM_WIN_VERSION = "1.5"
 
 EPSILON = 1e-9
 
@@ -727,10 +744,20 @@ class FormWin:
                 "team_crosses_history",
             ),
 
+            # ------------------------------------------------
+            # ИСПРАВЛЕНО (v1.5):
+            #
+            # form_context.py v1.8+ отдаёт угловые под именем
+            # "corners_for_history", а не "corners_history" /
+            # "team_corners_history". Раньше ни один из ключей
+            # не совпадал, и corners_signal всегда был None.
+            # ------------------------------------------------
+
             "corners": _extract_history(
                 context,
                 "corners_history",
                 "team_corners_history",
+                "corners_for_history",
             ),
 
             "possession": _extract_history(
