@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ PLATFORM v12.1
-CORNERS MODEL v1.3
+CORNERS MODEL v1.4
 ============================================================
 
 Назначение
@@ -19,7 +19,7 @@ CornersModel анализирует фактическую историю угл
     - применяет bookmaker odds;
     - создаёт искусственные коэффициенты;
     - интерпретирует 6+ угловых как автоматический гол;
-    - штрафует/бонусит команду за результат;
+    - штрафует/бонусit команду за результат;
     - изменяет FormContext.
 
 Архитектура:
@@ -40,6 +40,65 @@ CornersModel анализирует фактическую историю угл
     None != 0
 
 Отсутствующее значение не превращается в ноль.
+
+============================================================
+CHANGES IN V1.4
+============================================================
+
+Это исследовательская правка наблюдаемого занижения
+угловых по итогам 8 контрольных матчей.
+
+Изменены только 4 параметра:
+
+    CORNERS_CONSERVATIVE_FACTOR: 0.90  -> 1.00
+    CORNERS_AVG_WEIGHT:          0.80  -> 0.55
+    CORNERS_RECENT_WEIGHT:       0.20  -> 0.45
+    trend coefficient:           0.10  -> 0.20
+    trend clip:                  0.50  -> 0.50 (без изменений)
+
+Обоснование направления:
+
+    - 5 из 8 контрольных матчей показали занижение
+      ожидаемых угловых относительно факта;
+    - средний факт 10.38;
+    - средний прогноз v1.3 8.29;
+    - разрыв ~2.09 угловых;
+    - conservative_factor = 0.90 дополнительно усиливал
+      занижение.
+
+ВАЖНО:
+
+    Эти правки эвристические, обоснованные
+    футбольной аналитикой и наблюдаемым
+    разрывом, но НЕ гарантируют улучшение MAE.
+
+    Требуется проверка на 8 контрольных матчах.
+
+    Если MAE, bias или over/under-структура
+    ухудшатся — правки не накапливаются
+    дополнительными коэффициентами поверх v1.4.
+
+Архитектура входов:
+
+    НЕ менялась.
+
+    corners_for_history
+    corners_against_history
+    results
+    points_rate
+    recent_points_rate
+
+    остаются теми же полями FormContext.
+
+Contract v1:
+
+    CornersModel не влияет на:
+
+        - GoalModel
+        - ProbabilityModel
+        - ScorePredictor
+
+    Никакие новые сигналы в v1.4 не вводятся.
 
 ============================================================
 CHANGES IN V1.3
@@ -71,17 +130,20 @@ from typing import Any, Dict, Iterable, List, Optional
 import math
 
 
-CORNERS_MODEL_VERSION = "1.3"
+CORNERS_MODEL_VERSION = "1.4"
 
 MAX_HISTORY_MATCHES = 6
 
 # ============================================================
-# RESEARCH PARAMETERS — V1.3
+# RESEARCH PARAMETERS — V1.4
 # ============================================================
 
-CORNERS_AVG_WEIGHT = 0.80
-CORNERS_RECENT_WEIGHT = 0.20
-CORNERS_CONSERVATIVE_FACTOR = 0.90
+CORNERS_AVG_WEIGHT = 0.55
+CORNERS_RECENT_WEIGHT = 0.45
+CORNERS_CONSERVATIVE_FACTOR = 1.00
+
+CORNERS_TREND_COEFFICIENT = 0.20
+CORNERS_TREND_CLIP = 0.50
 
 
 # ============================================================
@@ -450,13 +512,13 @@ class CornersModel:
     """
     Чистая математическая модель угловых.
 
-    Формула v1.3:
+    Формула v1.4:
 
-        level = 0.80 * avg + 0.20 * recent3
+        level = 0.55 * avg + 0.45 * recent3
         expected = (home_for_level + away_against_level) / 2
-                   + 0.10 * home_for_trend
-                   + 0.10 * away_against_trend
-        conservative_factor = 0.90
+                   + 0.20 * home_for_trend
+                   + 0.20 * away_against_trend
+        conservative_factor = 1.00
         trend clip: ±0.50
     """
 
@@ -664,17 +726,17 @@ class CornersModel:
                 )
             ),
             "formula": (
-                "level = 0.80 * avg + 0.20 * recent3; "
+                "level = 0.55 * avg + 0.45 * recent3; "
                 "expected = (home_for_level + "
                 "away_against_level) / 2 "
-                "+ home_for_trend + away_against_trend; "
-                "conservative_factor = 0.90"
+                "+ 0.20 * home_for_trend + 0.20 * away_against_trend; "
+                "conservative_factor = 1.00"
             ),
             "recent_window": 3,
             "recent_weight": CORNERS_RECENT_WEIGHT,
             "history_weight": CORNERS_AVG_WEIGHT,
-            "trend_coefficient": 0.10,
-            "trend_clip": 0.50,
+            "trend_coefficient": CORNERS_TREND_COEFFICIENT,
+            "trend_clip": CORNERS_TREND_CLIP,
             "conservative_factor": CORNERS_CONSERVATIVE_FACTOR,
             "points_rate_affects_corners": False,
             "result_context_used": True,
@@ -728,8 +790,8 @@ class CornersModel:
         # ----------------------------------------------------
         # LEVEL
         #
-        # Full history = 80%
-        # Recent 3     = 20%
+        # Full history = 55%
+        # Recent 3     = 45%
         #
         # Если recent отсутствует, используется full average.
         # ----------------------------------------------------
@@ -789,7 +851,7 @@ class CornersModel:
         #
         # Correction:
         #
-        #     0.10 * trend
+        #     0.20 * trend
         #
         # capped at ±0.50.
         #
@@ -800,10 +862,10 @@ class CornersModel:
 
         home_for_trend = (
             max(
-                -0.50,
+                -CORNERS_TREND_CLIP,
                 min(
-                    0.50,
-                    0.10 * home.corners_for_trend,
+                    CORNERS_TREND_CLIP,
+                    CORNERS_TREND_COEFFICIENT * home.corners_for_trend,
                 ),
             )
             if home.corners_for_trend is not None
@@ -812,10 +874,10 @@ class CornersModel:
 
         away_against_trend = (
             max(
-                -0.50,
+                -CORNERS_TREND_CLIP,
                 min(
-                    0.50,
-                    0.10 * away.corners_against_trend,
+                    CORNERS_TREND_CLIP,
+                    CORNERS_TREND_COEFFICIENT * away.corners_against_trend,
                 ),
             )
             if away.corners_against_trend is not None
@@ -824,10 +886,10 @@ class CornersModel:
 
         away_for_trend = (
             max(
-                -0.50,
+                -CORNERS_TREND_CLIP,
                 min(
-                    0.50,
-                    0.10 * away.corners_for_trend,
+                    CORNERS_TREND_CLIP,
+                    CORNERS_TREND_COEFFICIENT * away.corners_for_trend,
                 ),
             )
             if away.corners_for_trend is not None
@@ -836,10 +898,10 @@ class CornersModel:
 
         home_against_trend = (
             max(
-                -0.50,
+                -CORNERS_TREND_CLIP,
                 min(
-                    0.50,
-                    0.10 * home.corners_against_trend,
+                    CORNERS_TREND_CLIP,
+                    CORNERS_TREND_COEFFICIENT * home.corners_against_trend,
                 ),
             )
             if home.corners_against_trend is not None
@@ -901,7 +963,12 @@ class CornersModel:
         # ----------------------------------------------------
         # CONSERVATIVE FACTOR
         #
-        # Применяется до total_expected для сдерживания завышения.
+        # Применяется до total_expected.
+        #
+        # В v1.4 conservative_factor = 1.00,
+        # поэтому фактически множитель не меняет
+        # результат. Это оставлено как явная точка
+        # конфигурации для последующей калибровки.
         # ----------------------------------------------------
 
         if home_expected is not None:
