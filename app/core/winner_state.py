@@ -4,7 +4,7 @@
 """
 ============================================================
 FAJ PLATFORM v12.1
-WINNER STATE v1.0
+WINNER STATE v1.1
 ============================================================
 
 НАЗНАЧЕНИЕ
@@ -38,6 +38,46 @@ diagnostic-органах проекта (FormWin, Defence, FormControl,
 FormAnomaly, FormSpecial): evidence описывает, но не решает.
 
 ============================================================
+CHANGES IN V1.1
+============================================================
+
+Нормализация шкал входных сигналов.
+
+Проблема v1.0:
+
+    Все relative-сигналы (form_win, defence, control,
+    special_form) приходят в диапазоне [-1, +1].
+
+    anomaly_differential = home_anomaly_signal - away_anomaly_signal
+    формально приходит в диапазоне [-2, +2], потому что это
+    разность двух сигналов, каждый из которых уже в [-1, +1].
+
+    Из-за этого в сценариях, где anomaly давал крайний сигнал
+    (например, -1.7), медиана из 5 источников могла смещаться
+    в сторону anomaly сильнее, чем остальные сигналы:
+    несовпадение шкал давало асимметричный вклад, хотя все
+    источники по семантике равноправны.
+
+Изменения v1.1:
+
+    1. anomaly_differential явно нормализуется в [-1, +1]
+       делением на 2 внутри WinnerState (Brain остаётся без
+       изменений — он по-прежнему передаёт home - away).
+
+    2. _evidence_lean дополнительно ограничивает итоговую
+       медиану в [-1, +1] — защита от редких случаев, когда
+       отдельный источник передал значение вне ожидаемого
+       диапазона.
+
+    3. В diagnostics добавлена секция anomaly_normalization
+       для прозрачности: она показывает, что именно
+       нормализация произошла и в каком диапазоне пришёл
+       исходный сигнал.
+
+Формулы closeness, пороги CLOSENESS_*, EVIDENCE_LEAN_THRESHOLD
+и архитектура display-only слоя НЕ менялись.
+
+============================================================
 """
 
 from __future__ import annotations
@@ -51,7 +91,7 @@ from typing import Any, Dict, List, Mapping, Optional
 # VERSION / THRESHOLDS
 # ============================================================
 
-WINNER_STATE_VERSION = "1.0"
+WINNER_STATE_VERSION = "1.1"
 
 # Closeness — насколько разошлись top-1 и top-2 исходы 1X2.
 # Это чисто дескриптивные пороги для ярлыка, не коэффициенты
@@ -62,6 +102,12 @@ CLOSENESS_MODERATE_THRESHOLD = 0.10
 # Порог для evidence lean — ниже него матч считается
 # BALANCED (перевес слишком мал, чтобы что-то отображать).
 EVIDENCE_LEAN_THRESHOLD = 0.15
+
+# anomaly_differential приходит из Brain в диапазоне [-2, +2]
+# (разность двух сигналов в [-1, +1]). Делим на этот
+# коэффициент, чтобы привести его к той же шкале, что и
+# остальные relative-сигналы.
+ANOMALY_DIFFERENTIAL_SCALE = 2.0
 
 
 # ============================================================
@@ -85,6 +131,10 @@ def _num(value: Any) -> Optional[float]:
         return None
 
     return result
+
+
+def _clamp(value: float, lo: float = -1.0, hi: float = 1.0) -> float:
+    return max(lo, min(hi, value))
 
 
 def _get(obj: Any, *names: str) -> Any:
@@ -164,9 +214,34 @@ def _match_closeness(
 # EVIDENCE LEAN
 # ============================================================
 
+def _normalize_anomaly_differential(
+    value: Optional[float],
+) -> Optional[float]:
+    """
+    anomaly_differential приходит из Brain как
+    home_anomaly_signal - away_anomaly_signal, где каждый
+    сигнал уже находится в [-1, +1]. Значит, разность — в
+    [-2, +2].
+
+    Приводим к [-1, +1] делением на ANOMALY_DIFFERENTIAL_SCALE,
+    чтобы выровнять шкалу с остальными relative-сигналами
+    (form_win, defence, control, special_form), каждый из
+    которых уже в [-1, +1].
+
+    Дополнительный clамп защищает от некорректных входов.
+    """
+
+    if value is None:
+        return None
+
+    normalized = value / ANOMALY_DIFFERENTIAL_SCALE
+
+    return _clamp(normalized)
+
+
 def _evidence_lean(
     components: Mapping[str, Optional[float]],
-) -> tuple[Optional[float], str, List[str]]:
+) -> tuple[Optional[float], str, List[str], Dict[str, Any]]:
     """
     Медианa доступных relative-сигналов (HOME - AWAY, каждый
     в диапазоне примерно [-1, +1]).
@@ -175,7 +250,7 @@ def _evidence_lean(
     метод, что special_form.aggregate_signals уже использует,
     чтобы ни один источник не стал скрытым коэффициентом.
 
-    Возвращает (lean, direction, sources_used).
+    Возвращает (lean, direction, sources_used, diagnostics).
     direction ∈ {"HOME", "AWAY", "BALANCED", "unknown"}
     """
 
@@ -186,9 +261,17 @@ def _evidence_lean(
     }
 
     if len(available) < 2:
-        return None, "unknown", list(available.keys())
+        return None, "unknown", list(available.keys()), {
+            "reason": "insufficient_sources",
+            "sources_available": list(available.keys()),
+        }
 
-    lean = median(list(available.values()))
+    raw_median = median(list(available.values()))
+
+    # Финальная защита: даже если отдельный источник по каким-то
+    # причинам передал значение вне [-1, +1], медиана остаётся
+    # bounded.
+    lean = _clamp(raw_median)
 
     if lean > EVIDENCE_LEAN_THRESHOLD:
         direction = "HOME"
@@ -197,7 +280,16 @@ def _evidence_lean(
     else:
         direction = "BALANCED"
 
-    return lean, direction, list(available.keys())
+    diagnostics = {
+        "aggregation_method": "median_of_available_relative_evidence",
+        "raw_median": raw_median,
+        "bounded_lean": lean,
+        "clamped": raw_median != lean,
+        "sources_used": list(available.keys()),
+        "components": dict(available),
+    }
+
+    return lean, direction, list(available.keys()), diagnostics
 
 
 # ============================================================
@@ -240,6 +332,10 @@ class WinnerStateBuilder:
           разницы anomaly_signal
 
     Ничего не пересчитывает. Ничего не пишет обратно в Core.
+
+    v1.1: anomaly_differential нормализуется в [-1, +1] перед
+    использованием, чтобы выровнять шкалу с остальными
+    relative-сигналами.
     """
 
     VERSION = WINNER_STATE_VERSION
@@ -274,13 +370,22 @@ class WinnerStateBuilder:
         elif favorite_side == "DRAW":
             favorite_name = "Ничья"
 
-        lean, direction, sources = _evidence_lean(
+        # ----------------------------------------------------
+        # NORMALIZE ANOMALY (v1.1)
+        # ----------------------------------------------------
+
+        anomaly_raw = _num(anomaly_differential)
+        anomaly_normalized = _normalize_anomaly_differential(
+            anomaly_raw
+        )
+
+        lean, direction, sources, lean_diagnostics = _evidence_lean(
             {
                 "form_win": relative_form_win,
                 "defence": relative_defence,
                 "control": relative_control,
                 "special_form": special_differential,
-                "anomaly": anomaly_differential,
+                "anomaly": anomaly_normalized,
             }
         )
 
@@ -328,6 +433,32 @@ class WinnerStateBuilder:
                 "special_form",
                 "anomaly",
             ],
+
+            # ------------------------------------------------
+            # v1.1: anomaly normalization diagnostics
+            # ------------------------------------------------
+
+            "anomaly_normalization": {
+                "raw_input": anomaly_raw,
+                "normalized_input": anomaly_normalized,
+                "scale_divisor": ANOMALY_DIFFERENTIAL_SCALE,
+                "was_normalized": (
+                    anomaly_raw is not None
+                    and anomaly_normalized is not None
+                ),
+                "reason": (
+                    "anomaly_differential arrives as difference of two "
+                    "signals each in [-1, +1], so its natural range is "
+                    "[-2, +2]; divided by 2 to align with other "
+                    "relative signals"
+                ),
+            },
+
+            # ------------------------------------------------
+            # v1.1: lean aggregation diagnostics
+            # ------------------------------------------------
+
+            "lean_aggregation": lean_diagnostics,
         }
 
         return WinnerState(
@@ -389,6 +520,10 @@ __all__ = [
 
 if __name__ == "__main__":
 
+    # --------------------------------------------------------
+    # Сценарий 1: обычный матч, anomaly в нормальном диапазоне
+    # --------------------------------------------------------
+
     state = build_winner_state(
         home_win_probability=0.286,
         draw_probability=0.294,
@@ -402,7 +537,44 @@ if __name__ == "__main__":
         anomaly_differential=-0.02,
     )
 
-    print("WINNER STATE v1.0")
+    print("WINNER STATE v1.1 — case 1")
     print("Closeness:", state.closeness_label, state.closeness_margin)
     print("Favorite:", state.favorite)
     print("Evidence lean:", state.evidence_lean_direction, state.evidence_lean)
+    print(
+        "Anomaly normalization:",
+        state.diagnostics["anomaly_normalization"],
+    )
+    print()
+
+    # --------------------------------------------------------
+    # Сценарий 2: anomaly приходит вне ожидаемого диапазона
+    # (эмулируем некорректный вход), проверяем, что clамп
+    # работает и итоговое значение остаётся в [-1, +1]
+    # --------------------------------------------------------
+
+    state2 = build_winner_state(
+        home_win_probability=0.35,
+        draw_probability=0.30,
+        away_win_probability=0.35,
+        home_team="Команда A",
+        away_team="Команда B",
+        relative_form_win=0.10,
+        relative_defence=None,
+        relative_control=None,
+        special_differential=None,
+        anomaly_differential=-1.7,  # вне [-1, +1], эмуляция сбоя
+    )
+
+    print("WINNER STATE v1.1 — case 2")
+    print("Closeness:", state2.closeness_label, state2.closeness_margin)
+    print("Favorite:", state2.favorite)
+    print("Evidence lean:", state2.evidence_lean_direction, state2.evidence_lean)
+    print(
+        "Anomaly normalization:",
+        state2.diagnostics["anomaly_normalization"],
+    )
+    print(
+        "Lean aggregation:",
+        state2.diagnostics["lean_aggregation"],
+    )
