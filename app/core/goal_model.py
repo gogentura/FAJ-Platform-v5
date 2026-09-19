@@ -4,129 +4,85 @@
 """
 ============================================================
 FAJ PLATFORM v12.1
-GOAL MODEL v1.2
+GOAL MODEL v2.0
 ============================================================
 
 НАЗНАЧЕНИЕ
 ----------
 
-GoalModel преобразует фактическую историю команды
-из FormContext в ожидаемый goal state.
+GoalModel преобразует фактическую xG-историю команды из
+FormContext в λ (ожидаемые голы). Это единственная задача
+GoalModel.
 
-v1.2 сохраняет xG как первичную основу λ,
-но впервые подключает уже существующий
-статистический EVIDENCE STATE к λ.
+ПОЧЕМУ v2.0, А НЕ v1.2
+----------------------
 
-PRIMARY STATE
--------------
+v1.2 добавляла bounded evidence adjustment:
 
-Базовая λ:
+    λ = λ_base × (1 + 0.15 × attack_evidence_signal)
 
-    Home base λ =
-        (Home XGF_rec + Away XGA_rec) / 2
+Это выглядело безопасным (±15%, никаких внешних рейтингов),
+но по факту являлось:
 
-    Away base λ =
-        (Away XGF_rec + Home XGA_rec) / 2
+    1. Скрытым калиброванным коэффициентом (0.15), подобранным
+       на тех же 8 контрольных матчах, на которых потом
+       проверялось "улучшение" — классическая утечка данных
+       (data leakage), а не валидация.
 
+    2. Формой "Form → coefficient → xG", которую сам контракт
+       проекта прямо запрещает (см. п.4 исходного ТЗ).
 
-EVIDENCE STATE
---------------
+    3. Не решала реальную проблему (недооценку разгромов,
+       М8: λ 2.21 vs xG факт 6.65) — сама архитектура
+       "±15% от базовой λ" структурно не может разогнать λ
+       на порядок при экстремальных сериях.
 
-Используются только уже существующие фактические ряды:
+v2.0 полностью убирает влияние evidence на λ. λ считается
+ТОЛЬКО из xG:
 
-    shots
-    shots conceded
-    shots on target
-    shots on target conceded
-    big chances
-    big chances conceded
+    λHome = (Home_XGF_rec + Away_XGA_rec) / 2
+    λAway = (Away_XGF_rec + Home_XGA_rec) / 2
 
-Evidence формирует три сигнала:
+Расчёт evidence (shots/SOT/big chances) из v1.2 СОХРАНЁН, но
+переведён в чисто диагностический статус — он не трогает λ,
+а экспонируется как готовые relative-сигналы для отдельного,
+явно выделенного слоя WinnerState (см. winner_state.py),
+который используется ТОЛЬКО для отображения фаворита и не
+участвует в математике прогноза.
 
-    1. shot volume
-    2. SOT quality
-    3. big-chance quality
+ГИБКОСТЬ БЕЗ СКРЫТЫХ КОЭФФИЦИЕНТОВ
+-----------------------------------
 
-Каждый сигнал нормализуется симметрично:
+Вместо того чтобы зашивать "агрессивность" в виде magic number
+внутри формулы λ, v2.0 делает НАСТРАИВАЕМОЙ саму схему
+взвешивания истории — открыто, как параметр конструктора,
+а не как скрытый adjustment:
 
-    signal =
-        (team_value - opponent_value)
-        /
-        (team_value + opponent_value)
+    temporal_weighting = "linear"       (по умолчанию, как в v1.0/v1.1)
+    temporal_weighting = "quadratic"    (сильнее давит на recency)
+    temporal_weighting = "exponential"  (ещё сильнее, growth настраивается)
 
-Диапазон:
-
-    [-1, +1]
-
-Итоговый evidence signal:
-
-    mean(доступных сигналов)
-
-Если отдельный сигнал недоступен,
-он НЕ заменяется нулём.
-
-Если весь evidence недоступен,
-base λ сохраняется без изменения.
-
-
-EVIDENCE INFLUENCE
-------------------
-
-Ограниченное влияние:
-
-    λ =
-        base_λ ×
-        (1 + 0.15 × attack_evidence_signal)
-
-Следовательно:
-
-    максимальный сдвиг = ±15%
-
-Это НЕ rating multiplier,
-НЕ form multiplier,
-НЕ bookmaker adjustment
-и НЕ внешний коэффициент силы команды.
-
-Evidence корректирует только GoalModel λ.
-
+По умолчанию поведение НЕ меняется (linear, как всегда). Более
+агрессивные схемы существуют для будущих контролируемых
+экспериментов на ОТДЕЛЬНОМ наборе матчей — они не включены
+автоматически и не являются полученным "решением" разгромов,
+только инструментом для его контролируемого исследования.
 
 ВАЖНО
 ------
 
-MISSING != 0
-
-None остаётся None.
-
-Diagnostic organs не используются.
-
-Не используется:
-
-    - FAJ Rating
-    - рейтинг лиги
-    - таблица
-    - bookmaker odds
-    - future result
-    - learning
-    - Winner Override
-    - FormWin
-    - Defence
-    - FormControl
-    - FormAnomaly
-    - SpecialForm
-    - CardsModel
-    - CornersModel
-    - ProbabilityModel
-    - ScorePredictor
-    - geometric mean
-    - finishing bonus
-    - home advantage coefficient
+MISSING != 0. Diagnostic organs (FormWin/Defence/Control/
+Anomaly/SpecialForm) по-прежнему НЕ участвуют в расчёте λ.
+Не используется: FAJ Rating, рейтинг лиги, bookmaker odds,
+future result, learning, Winner Override, home advantage
+coefficient, geometric mean, finishing bonus.
 
 ============================================================
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Any, Dict, List, Optional
 
 
@@ -134,25 +90,25 @@ from typing import Any, Dict, List, Optional
 # VERSION
 # ============================================================
 
-GOAL_MODEL_VERSION = "1.2"
+GOAL_MODEL_VERSION = "2.0"
 
 DEFAULT_MAX_HISTORY = 6
 
-# Максимальное относительное влияние evidence на base λ.
-#
-# Это архитектурный safety bound.
-# Evidence не может изменить λ более чем на ±15%.
-#
-EVIDENCE_LAMBDA_MAX_EFFECT = 0.15
+DEFAULT_TEMPORAL_WEIGHTING = "linear"
+DEFAULT_WEIGHTING_GROWTH = 1.5
+
+VALID_WEIGHTING_SCHEMES = (
+    "linear",
+    "quadratic",
+    "exponential",
+)
 
 
 # ============================================================
 # SAFE HELPERS
 # ============================================================
 
-def _safe_float(
-    value: Any,
-) -> Optional[float]:
+def _safe_float(value: Any) -> Optional[float]:
 
     if value is None:
         return None
@@ -161,7 +117,6 @@ def _safe_float(
         return None
 
     try:
-
         text = str(value).strip()
 
         if not text:
@@ -172,20 +127,12 @@ def _safe_float(
         return float(text)
 
     except (TypeError, ValueError):
-
         return None
 
 
-def _get_value(
-    record: Any,
-    *keys: str,
-) -> Any:
+def _get_value(record: Any, *keys: str) -> Any:
     """
-    Поддерживает:
-
-        dict
-        sqlite3.Row
-        object attributes
+    Поддерживает dict / sqlite3.Row / object attributes.
     """
 
     if record is None:
@@ -193,133 +140,118 @@ def _get_value(
 
     for key in keys:
 
-        # ----------------------------------------------------
-        # dict
-        # ----------------------------------------------------
-
         if isinstance(record, dict):
-
             if key in record:
                 return record[key]
 
-        # ----------------------------------------------------
-        # sqlite3.Row / mapping
-        # ----------------------------------------------------
-
         try:
-
             if key in record.keys():
-
                 return record[key]
-
-        except (
-            AttributeError,
-            TypeError,
-        ):
-
+        except (AttributeError, TypeError):
             pass
 
-        # ----------------------------------------------------
-        # object
-        # ----------------------------------------------------
-
         try:
-
-            return getattr(
-                record,
-                key,
-            )
-
+            return getattr(record, key)
         except AttributeError:
-
             pass
 
     return None
 
 
-# ============================================================
-# HISTORY NORMALIZATION
-# ============================================================
-
-def _to_sequence(
-    value: Any,
-) -> List[Any]:
+def _to_sequence(value: Any) -> List[Any]:
 
     if value is None:
         return []
 
-    if isinstance(
-        value,
-        (list, tuple),
-    ):
+    if isinstance(value, (list, tuple)):
         return list(value)
 
     return [value]
 
 
 # ============================================================
-# RECENCY WEIGHTED MEAN
+# WEIGHTING SCHEMES
 # ============================================================
+
+def _weights_for(
+    n: int,
+    scheme: str = DEFAULT_TEMPORAL_WEIGHTING,
+    growth: float = DEFAULT_WEIGHTING_GROWTH,
+) -> List[float]:
+    """
+    Генерирует веса для позиций 1..n (oldest -> newest).
+
+    Каждая схема — явная, документированная, не калиброванная
+    под конкретные матчи. Разница со скрытым коэффициентом:
+    здесь нет числа, подобранного так, чтобы "починить" один
+    контрольный набор — это выбор МЕТОДА агрегации, известный
+    заранее и одинаковый для всех матчей.
+
+    linear:
+        веса 1, 2, ..., n  (контракт v1.0/v1.1, по умолчанию)
+
+    quadratic:
+        веса 1^2, 2^2, ..., n^2 — сильнее давит на свежие матчи
+
+    exponential:
+        веса growth^0, growth^1, ..., growth^(n-1)
+        growth > 1.0, по умолчанию 1.5
+    """
+
+    if n <= 0:
+        return []
+
+    positions = range(1, n + 1)
+
+    if scheme == "quadratic":
+        return [float(i) ** 2 for i in positions]
+
+    if scheme == "exponential":
+        g = growth if growth and growth > 1.0 else DEFAULT_WEIGHTING_GROWTH
+        return [g ** (i - 1) for i in positions]
+
+    # "linear" и любое нераспознанное значение -> безопасный дефолт
+    return [float(i) for i in positions]
+
 
 def weighted_mean(
     values: List[Optional[float]],
+    weights: Optional[List[float]] = None,
 ) -> Optional[float]:
     """
-    Temporal weighting:
+    Recency-weighted mean.
 
-        M1 = 1
-        M2 = 2
-        ...
-        M6 = 6
+    values предполагается oldest -> newest.
 
-    История должна приходить:
+    None НЕ получает вес и не входит в denominator (Missing != 0).
 
-        oldest -> newest
-
-    None НЕ превращается в 0.
-
-    Индекс исходной временной позиции сохраняется.
-
-    Например:
-
-        [1.0, None, 3.0]
-
-    использует веса:
-
-        1 и 3
-
-    а не:
-
-        1 и 2
+    Если weights не переданы — используется linear-схема
+    (обратная совместимость с v1.0/v1.1).
     """
 
-    weighted_sum = 0.0
-    weight_sum = 0.0
-
-    for index, value in enumerate(
-        values,
-        start=1,
-    ):
-
-        numeric = _safe_float(value)
-
-        if numeric is None:
-            continue
-
-        weighted_sum += (
-            numeric * index
-        )
-
-        weight_sum += index
-
-    if weight_sum == 0:
-
+    if not values:
         return None
 
-    return (
-        weighted_sum
-        / weight_sum
-    )
+    if weights is None:
+        weights = _weights_for(len(values), "linear")
+
+    numerator = 0.0
+    denominator = 0.0
+
+    for value, weight in zip(values, weights):
+
+        number = _safe_float(value)
+
+        if number is None:
+            continue
+
+        numerator += weight * number
+        denominator += weight
+
+    if denominator <= 0:
+        return None
+
+    return numerator / denominator
 
 
 # ============================================================
@@ -329,185 +261,71 @@ def weighted_mean(
 @dataclass
 class GoalState:
 
-    # --------------------------------------------------------
-    # Identity
-    # --------------------------------------------------------
+    model_version: str = GOAL_MODEL_VERSION
 
-    model_version: str
-
-    home_team: Optional[str]
-
-    away_team: Optional[str]
+    home_team: Optional[str] = None
+    away_team: Optional[str] = None
 
     # --------------------------------------------------------
-    # PRIMARY xG STATE
+    # PRIMARY xG STATE — единственный источник λ
     # --------------------------------------------------------
 
-    home_xgf_rec: Optional[float]
+    home_xgf_rec: Optional[float] = None
+    home_xga_rec: Optional[float] = None
 
-    home_xga_rec: Optional[float]
-
-    away_xgf_rec: Optional[float]
-
-    away_xga_rec: Optional[float]
+    away_xgf_rec: Optional[float] = None
+    away_xga_rec: Optional[float] = None
 
     # --------------------------------------------------------
-    # BASE LAMBDA
+    # FINAL LAMBDA — только xG, evidence НЕ применяется
     # --------------------------------------------------------
 
-    home_base_lambda: Optional[float]
+    home_lambda: Optional[float] = None
+    away_lambda: Optional[float] = None
 
-    away_base_lambda: Optional[float]
-
-    # --------------------------------------------------------
-    # FINAL LAMBDA
-    # --------------------------------------------------------
-
-    home_lambda: Optional[float]
-
-    away_lambda: Optional[float]
-
-    total_lambda: Optional[float]
-
-    # ========================================================
-    # ATTACK EVIDENCE
-    # ========================================================
-
-    home_shots_rec: Optional[float]
-
-    away_shots_rec: Optional[float]
-
-    home_sot_rec: Optional[float]
-
-    away_sot_rec: Optional[float]
-
-    home_big_chances_rec: Optional[float]
-
-    away_big_chances_rec: Optional[float]
-
-    # ========================================================
-    # DEFENSIVE EVIDENCE
-    # ========================================================
-
-    home_shots_against_rec: Optional[float]
-
-    away_shots_against_rec: Optional[float]
-
-    home_sot_against_rec: Optional[float]
-
-    away_sot_against_rec: Optional[float]
-
-    home_big_chances_against_rec: Optional[float]
-
-    away_big_chances_against_rec: Optional[float]
-
-    # ========================================================
-    # EVIDENCE DIFFERENTIALS
-    # ========================================================
-
-    home_shots_diff_rec: Optional[float]
-
-    away_shots_diff_rec: Optional[float]
-
-    home_sot_diff_rec: Optional[float]
-
-    away_sot_diff_rec: Optional[float]
-
-    home_big_chances_diff_rec: Optional[float]
-
-    away_big_chances_diff_rec: Optional[float]
-
-    # ========================================================
-    # OPPORTUNITY RATIOS
-    # ========================================================
-
-    home_sot_per_shot: Optional[float]
-
-    away_sot_per_shot: Optional[float]
-
-    home_big_chances_per_shot: Optional[float]
-
-    away_big_chances_per_shot: Optional[float]
-
-    # ========================================================
-    # EVIDENCE SIGNALS
-    # ========================================================
-
-    home_shot_volume_signal: Optional[float]
-
-    away_shot_volume_signal: Optional[float]
-
-    home_sot_quality_signal: Optional[float]
-
-    away_sot_quality_signal: Optional[float]
-
-    home_big_chances_quality_signal: Optional[float]
-
-    away_big_chances_quality_signal: Optional[float]
-
-    home_attack_evidence_signal: Optional[float]
-
-    away_attack_evidence_signal: Optional[float]
-
-    # ========================================================
-    # EVIDENCE LAMBDA ADJUSTMENT
-    # ========================================================
-
-    home_lambda_adjustment: Optional[float]
-
-    away_lambda_adjustment: Optional[float]
-
-    # ========================================================
-    # SAMPLES
-    # ========================================================
-
-    home_xgf_sample: int
-
-    home_xga_sample: int
-
-    away_xgf_sample: int
-
-    away_xga_sample: int
-
-    home_shots_sample: int
-
-    away_shots_sample: int
-
-    home_sot_sample: int
-
-    away_sot_sample: int
-
-    home_big_chances_sample: int
-
-    away_big_chances_sample: int
+    total_lambda: Optional[float] = None
 
     # --------------------------------------------------------
-    # MATCH COUNTS
+    # DIAGNOSTIC-ONLY EVIDENCE (не влияет на λ)
+    #
+    # Сохранено из v1.2 как готовый материал для WinnerState.
     # --------------------------------------------------------
 
-    home_matches: int
+    home_shots_rec: Optional[float] = None
+    away_shots_rec: Optional[float] = None
 
-    away_matches: int
+    home_sot_rec: Optional[float] = None
+    away_sot_rec: Optional[float] = None
 
-    # --------------------------------------------------------
-    # AVAILABILITY
-    # --------------------------------------------------------
+    home_big_chances_rec: Optional[float] = None
+    away_big_chances_rec: Optional[float] = None
 
-    xg_available: bool
-
-    shots_available: bool
-
-    sot_available: bool
-
-    big_chances_available: bool
-
-    attack_evidence_available: bool
+    home_attack_evidence_signal: Optional[float] = None
+    away_attack_evidence_signal: Optional[float] = None
 
     # --------------------------------------------------------
-    # VALIDITY
+    # SAMPLES / AVAILABILITY
     # --------------------------------------------------------
 
-    calculation_valid: bool
+    home_xgf_sample: int = 0
+    home_xga_sample: int = 0
+
+    away_xgf_sample: int = 0
+    away_xga_sample: int = 0
+
+    home_matches: int = 0
+    away_matches: int = 0
+
+    home_lambda_available: bool = False
+    away_lambda_available: bool = False
+
+    calculation_valid: bool = False
+
+    # --------------------------------------------------------
+    # ARCHITECTURE TRANSPARENCY
+    # --------------------------------------------------------
+
+    architecture_notes: Dict[str, Any] = field(default_factory=dict)
 
 
 # ============================================================
@@ -516,269 +334,93 @@ class GoalState:
 
 class GoalModel:
     """
-    FAJ GoalModel v1.2.
+    FAJ GoalModel v2.0.
 
-    xG остаётся первичной основой λ.
+    Единственная математическая задача:
 
-    Уже существующий statistical evidence state
-    теперь получает ограниченное влияние на λ.
+        FACT xG history -> recency-weighted XGF/XGA
+                         -> λHome / λAway
 
-    Архитектура:
-
-        XG base
-           ↓
-        Evidence
-           ↓
-        bounded adjustment
-           ↓
-        final λ
+    Evidence (shots/SOT/big chances) считается для диагностики,
+    но НИКОГДА не изменяет λ. Любая будущая калиброванная
+    коррекция λ должна жить в отдельном, явно одобренном
+    модуле — не здесь и не как скрытый multiplier.
     """
+
+    VERSION = GOAL_MODEL_VERSION
+    MAX_HISTORY = DEFAULT_MAX_HISTORY
 
     def __init__(
         self,
         max_history: int = DEFAULT_MAX_HISTORY,
-    ):
+        temporal_weighting: str = DEFAULT_TEMPORAL_WEIGHTING,
+        weighting_growth: float = DEFAULT_WEIGHTING_GROWTH,
+    ) -> None:
 
-        self.max_history = max(
-            int(max_history),
-            1,
-        )
+        self.max_history = max(int(max_history), 1)
+
+        if temporal_weighting not in VALID_WEIGHTING_SCHEMES:
+            temporal_weighting = DEFAULT_TEMPORAL_WEIGHTING
+
+        self.temporal_weighting = temporal_weighting
+        self.weighting_growth = weighting_growth
 
     # ========================================================
     # HISTORY
     # ========================================================
 
-    def _extract_history(
-        self,
-        context: Any,
-        key: str,
-    ) -> List[Optional[float]]:
-        """
-        Извлекает историю из FormContext.
+    def _extract_history(self, context: Any, key: str) -> List[Optional[float]]:
 
-        Ожидаемый порядок:
+        value = _get_value(context, key)
+        values = _to_sequence(value)[: self.max_history]
 
-            M1 -> M6
+        return [_safe_float(v) for v in values]
 
-        oldest -> newest
-        """
+    def _weighted(self, values: List[Optional[float]]) -> Optional[float]:
 
-        value = _get_value(
-            context,
-            key,
+        weights = _weights_for(
+            len(values),
+            self.temporal_weighting,
+            self.weighting_growth,
         )
 
-        values = _to_sequence(
-            value
-        )
-
-        if len(values) > self.max_history:
-
-            values = values[
-                :self.max_history
-            ]
-
-        result: List[
-            Optional[float]
-        ] = []
-
-        for value in values:
-
-            result.append(
-                _safe_float(value)
-            )
-
-        return result
+        return weighted_mean(values, weights)
 
     # ========================================================
     # XG
     # ========================================================
 
-    def _calculate_xgf(
-        self,
-        context: Any,
-    ) -> Optional[float]:
+    def _calculate_xgf(self, context: Any) -> Optional[float]:
+        return self._weighted(self._extract_history(context, "team_xg_history"))
 
-        return weighted_mean(
-            self._extract_history(
-                context,
-                "team_xg_history",
-            )
+    def _calculate_xga(self, context: Any) -> Optional[float]:
+        return self._weighted(self._extract_history(context, "opponent_xg_history"))
+
+    # ========================================================
+    # DIAGNOSTIC-ONLY EVIDENCE (shots / SOT / big chances)
+    # ========================================================
+
+    def _calculate_shots(self, context: Any) -> Optional[float]:
+        return self._weighted(self._extract_history(context, "shots_history"))
+
+    def _calculate_shots_against(self, context: Any) -> Optional[float]:
+        return self._weighted(self._extract_history(context, "shots_conceded_history"))
+
+    def _calculate_sot(self, context: Any) -> Optional[float]:
+        return self._weighted(self._extract_history(context, "shots_on_target_history"))
+
+    def _calculate_sot_against(self, context: Any) -> Optional[float]:
+        return self._weighted(
+            self._extract_history(context, "shots_on_target_against_history")
         )
 
-    def _calculate_xga(
-        self,
-        context: Any,
-    ) -> Optional[float]:
+    def _calculate_big_chances(self, context: Any) -> Optional[float]:
+        return self._weighted(self._extract_history(context, "big_chances_history"))
 
-        return weighted_mean(
-            self._extract_history(
-                context,
-                "opponent_xg_history",
-            )
+    def _calculate_big_chances_against(self, context: Any) -> Optional[float]:
+        return self._weighted(
+            self._extract_history(context, "big_chances_against_history")
         )
-
-    # ========================================================
-    # ATTACK EVIDENCE
-    # ========================================================
-
-    def _calculate_shots(
-        self,
-        context: Any,
-    ) -> Optional[float]:
-
-        return weighted_mean(
-            self._extract_history(
-                context,
-                "shots_history",
-            )
-        )
-
-    def _calculate_sot(
-        self,
-        context: Any,
-    ) -> Optional[float]:
-
-        return weighted_mean(
-            self._extract_history(
-                context,
-                "shots_on_target_history",
-            )
-        )
-
-    def _calculate_big_chances(
-        self,
-        context: Any,
-    ) -> Optional[float]:
-
-        return weighted_mean(
-            self._extract_history(
-                context,
-                "big_chances_history",
-            )
-        )
-
-    # ========================================================
-    # DEFENCE EVIDENCE
-    # ========================================================
-
-    def _calculate_shots_against(
-        self,
-        context: Any,
-    ) -> Optional[float]:
-
-        return weighted_mean(
-            self._extract_history(
-                context,
-                "shots_conceded_history",
-            )
-        )
-
-    def _calculate_sot_against(
-        self,
-        context: Any,
-    ) -> Optional[float]:
-
-        return weighted_mean(
-            self._extract_history(
-                context,
-                "shots_on_target_against_history",
-            )
-        )
-
-    def _calculate_big_chances_against(
-        self,
-        context: Any,
-    ) -> Optional[float]:
-
-        return weighted_mean(
-            self._extract_history(
-                context,
-                "big_chances_against_history",
-            )
-        )
-
-    # ========================================================
-    # SAMPLE COUNT
-    # ========================================================
-
-    def _count_available(
-        self,
-        values: List[Optional[float]],
-    ) -> int:
-
-        return sum(
-            1
-            for value in values
-            if value is not None
-        )
-
-    # ========================================================
-    # MATCH COUNT
-    # ========================================================
-
-    def _get_matches_count(
-        self,
-        context: Any,
-        fallback_key: str,
-    ) -> int:
-
-        value = _get_value(
-            context,
-            "matches_count",
-        )
-
-        try:
-
-            if value is not None:
-
-                return int(value)
-
-        except (
-            TypeError,
-            ValueError,
-        ):
-
-            pass
-
-        return len(
-            self._extract_history(
-                context,
-                fallback_key,
-            )
-        )
-
-    # ========================================================
-    # BASE LAMBDA
-    # ========================================================
-
-    def _calculate_lambda(
-        self,
-        attack_xgf: Optional[float],
-        opponent_xga: Optional[float],
-    ) -> Optional[float]:
-        """
-        Контрольная xG формула.
-
-        λ_base =
-            (attack XGF + opponent XGA) / 2
-        """
-
-        if (
-            attack_xgf is None
-            or opponent_xga is None
-        ):
-
-            return None
-
-        return (
-            attack_xgf
-            + opponent_xga
-        ) / 2.0
-
-    # ========================================================
-    # NORMALIZED DIFFERENCE
-    # ========================================================
 
     @staticmethod
     def _normalized_difference(
@@ -786,279 +428,111 @@ class GoalModel:
         opponent_value: Optional[float],
     ) -> Optional[float]:
         """
-        Симметричная нормализация:
+        Симметричная нормализация в [-1, +1].
 
-            (team - opponent)
-            /
-            (team + opponent)
+        (team - opponent) / (team + opponent)
 
-        Диапазон:
-
-            [-1, +1]
-
-        None != 0.
-
-        Если обе величины равны нулю,
-        сигнал отсутствует.
+        None != 0. Используется ТОЛЬКО как diagnostic evidence,
+        не как вход в λ.
         """
 
-        if (
-            team_value is None
-            or opponent_value is None
-        ):
-
+        if team_value is None or opponent_value is None:
             return None
 
-        denominator = (
-            team_value
-            + opponent_value
-        )
+        denominator = team_value + opponent_value
 
         if denominator <= 0:
-
             return None
 
-        signal = (
-            team_value
-            - opponent_value
-        ) / denominator
+        signal = (team_value - opponent_value) / denominator
 
-        # Защитное ограничение
-        # математически сигнал уже находится
-        # в [-1, +1].
-        return max(
-            -1.0,
-            min(
-                1.0,
-                signal,
-            ),
-        )
-
-    # ========================================================
-    # SAFE RATIO
-    # ========================================================
+        return max(-1.0, min(1.0, signal))
 
     @staticmethod
-    def _ratio(
-        numerator: Optional[float],
-        denominator: Optional[float],
-    ) -> Optional[float]:
+    def _ratio(numerator: Optional[float], denominator: Optional[float]) -> Optional[float]:
 
-        if (
-            numerator is None
-            or denominator is None
-        ):
-
+        if numerator is None or denominator is None:
             return None
 
         if denominator <= 0:
-
             return None
 
-        return (
-            numerator
-            / denominator
-        )
-
-    # ========================================================
-    # DIFFERENTIAL
-    # ========================================================
+        return numerator / denominator
 
     @staticmethod
-    def _difference(
-        attack: Optional[float],
-        defence: Optional[float],
-    ) -> Optional[float]:
+    def _mean_available(values: List[Optional[float]]) -> Optional[float]:
 
-        if (
-            attack is None
-            or defence is None
-        ):
-
-            return None
-
-        return attack - defence
-
-    # ========================================================
-    # MEAN OF AVAILABLE SIGNALS
-    # ========================================================
-
-    @staticmethod
-    def _mean_available(
-        values: List[Optional[float]],
-    ) -> Optional[float]:
-
-        available = [
-            value
-            for value in values
-            if value is not None
-        ]
+        available = [v for v in values if v is not None]
 
         if not available:
-
             return None
 
-        return (
-            sum(available)
-            / len(available)
-        )
+        return sum(available) / len(available)
 
-    # ========================================================
-    # ATTACK EVIDENCE
-    # ========================================================
-
-    def _calculate_attack_evidence(
+    def _attack_evidence_signal(
         self,
         shots: Optional[float],
         opponent_shots_against: Optional[float],
         sot_per_shot: Optional[float],
-        opponent_sot_per_shot: Optional[float],
+        opponent_sot_against_per_shot: Optional[float],
         big_chances_per_shot: Optional[float],
-        opponent_big_chances_per_shot: Optional[float],
-    ) -> Dict[str, Optional[float]]:
+        opponent_big_chances_against_per_shot: Optional[float],
+    ) -> Optional[float]:
         """
-        Формирует evidence для одной команды.
+        Диагностический композит трёх симметричных сигналов.
 
-        Три компонента:
-
-            1. volume
-            2. SOT quality
-            3. big-chance quality
-
-        Каждый компонент находится в [-1,+1].
-
-        Итоговый signal:
-
-            mean(available components)
-
-        Нет доступных компонентов:
-            None.
+        Это готовое, но НЕ применяемое к λ значение — экспонируется
+        только для WinnerState / будущего Confidence State.
         """
 
-        # ----------------------------------------------------
-        # SHOT VOLUME
-        # ----------------------------------------------------
+        shot_volume = self._normalized_difference(shots, opponent_shots_against)
 
-        shot_volume_signal = (
-            self._normalized_difference(
-                shots,
-                opponent_shots_against,
-            )
+        sot_quality = self._normalized_difference(
+            sot_per_shot, opponent_sot_against_per_shot
         )
 
-        # ----------------------------------------------------
-        # SOT QUALITY
-        # ----------------------------------------------------
-
-        sot_quality_signal = (
-            self._normalized_difference(
-                sot_per_shot,
-                opponent_sot_per_shot,
-            )
+        big_chances_quality = self._normalized_difference(
+            big_chances_per_shot, opponent_big_chances_against_per_shot
         )
 
-        # ----------------------------------------------------
-        # BIG CHANCE QUALITY
-        # ----------------------------------------------------
-
-        big_chances_quality_signal = (
-            self._normalized_difference(
-                big_chances_per_shot,
-                opponent_big_chances_per_shot,
-            )
-        )
-
-        # ----------------------------------------------------
-        # COMPOSITE
-        # ----------------------------------------------------
-
-        attack_evidence_signal = (
-            self._mean_available(
-                [
-                    shot_volume_signal,
-                    sot_quality_signal,
-                    big_chances_quality_signal,
-                ]
-            )
-        )
-
-        return {
-
-            "shot_volume_signal":
-                shot_volume_signal,
-
-            "sot_quality_signal":
-                sot_quality_signal,
-
-            "big_chances_quality_signal":
-                big_chances_quality_signal,
-
-            "attack_evidence_signal":
-                attack_evidence_signal,
-        }
+        return self._mean_available([shot_volume, sot_quality, big_chances_quality])
 
     # ========================================================
-    # APPLY EVIDENCE
+    # LAMBDA (единственная точка, где считается λ)
     # ========================================================
 
     @staticmethod
-    def _apply_evidence(
-        base_lambda: Optional[float],
-        evidence_signal: Optional[float],
-    ) -> tuple[
-        Optional[float],
-        Optional[float],
-    ]:
-        """
-        Применяет bounded evidence adjustment.
+    def _calculate_lambda(
+        attack_xgf: Optional[float],
+        opponent_xga: Optional[float],
+    ) -> Optional[float]:
 
-        λ_final =
-            λ_base ×
-            (1 + 0.15 × evidence_signal)
+        if attack_xgf is None or opponent_xga is None:
+            return None
 
-        evidence_signal ∈ [-1,+1]
-
-        Следовательно:
-
-            λ_final ∈
-                [0.85 × λ_base,
-                 1.15 × λ_base]
-
-        Если evidence отсутствует,
-        λ остаётся равной base λ.
-        """
-
-        if base_lambda is None:
-
-            return (
-                None,
-                None,
-            )
-
-        if evidence_signal is None:
-
-            return (
-                base_lambda,
-                0.0,
-            )
-
-        adjustment = (
-            EVIDENCE_LAMBDA_MAX_EFFECT
-            * evidence_signal
-        )
-
-        final_lambda = (
-            base_lambda
-            * (1.0 + adjustment)
-        )
-
-        return (
-            final_lambda,
-            adjustment,
-        )
+        return (attack_xgf + opponent_xga) / 2.0
 
     # ========================================================
-    # CALCULATE
+    # SAMPLES / MATCH COUNT
+    # ========================================================
+
+    def _count_available(self, values: List[Optional[float]]) -> int:
+        return sum(1 for v in values if v is not None)
+
+    def _get_matches_count(self, context: Any, fallback_key: str) -> int:
+
+        value = _get_value(context, "matches_count")
+
+        try:
+            if value is not None:
+                return int(value)
+        except (TypeError, ValueError):
+            pass
+
+        return len(self._extract_history(context, fallback_key))
+
+    # ========================================================
+    # MAIN CALCULATION
     # ========================================================
 
     def calculate(
@@ -1068,742 +542,168 @@ class GoalModel:
         home_team: Optional[str] = None,
         away_team: Optional[str] = None,
     ) -> GoalState:
-        """
-        Рассчитывает полный GoalState.
-
-        v1.2:
-
-            xG -> base λ
-            evidence -> bounded adjustment
-            final λ
-
-        Evidence других FAJ органов здесь отсутствует.
-        """
-
-        # ====================================================
-        # TEAM NAMES
-        # ====================================================
 
         if home_team is None:
-
-            home_team = _get_value(
-                home_context,
-                "team",
-                "home_team",
-            )
+            home_team = _get_value(home_context, "team", "home_team")
 
         if away_team is None:
+            away_team = _get_value(away_context, "team", "away_team")
 
-            away_team = _get_value(
-                away_context,
-                "team",
-                "away_team",
-            )
+        # ----------------------------------------------------
+        # xG -> λ (единственный вход)
+        # ----------------------------------------------------
 
-        # ====================================================
-        # PRIMARY XG
-        # ====================================================
+        home_xgf = self._calculate_xgf(home_context)
+        home_xga = self._calculate_xga(home_context)
 
-        home_xgf = self._calculate_xgf(
-            home_context
+        away_xgf = self._calculate_xgf(away_context)
+        away_xga = self._calculate_xga(away_context)
+
+        home_lambda = self._calculate_lambda(home_xgf, away_xga)
+        away_lambda = self._calculate_lambda(away_xgf, home_xga)
+
+        total_lambda = (
+            home_lambda + away_lambda
+            if home_lambda is not None and away_lambda is not None
+            else None
         )
 
-        home_xga = self._calculate_xga(
-            home_context
-        )
+        # ----------------------------------------------------
+        # Diagnostic-only evidence (shots / SOT / big chances)
+        # ----------------------------------------------------
 
-        away_xgf = self._calculate_xgf(
-            away_context
-        )
+        home_shots = self._calculate_shots(home_context)
+        away_shots = self._calculate_shots(away_context)
 
-        away_xga = self._calculate_xga(
-            away_context
-        )
+        home_shots_against = self._calculate_shots_against(home_context)
+        away_shots_against = self._calculate_shots_against(away_context)
 
-        # ====================================================
-        # RAW EVIDENCE HISTORIES
-        # ====================================================
+        home_sot = self._calculate_sot(home_context)
+        away_sot = self._calculate_sot(away_context)
 
-        home_shots_values = (
-            self._extract_history(
-                home_context,
-                "shots_history",
-            )
-        )
+        home_sot_against = self._calculate_sot_against(home_context)
+        away_sot_against = self._calculate_sot_against(away_context)
 
-        away_shots_values = (
-            self._extract_history(
-                away_context,
-                "shots_history",
-            )
-        )
+        home_big_chances = self._calculate_big_chances(home_context)
+        away_big_chances = self._calculate_big_chances(away_context)
 
-        home_sot_values = (
-            self._extract_history(
-                home_context,
-                "shots_on_target_history",
-            )
-        )
+        home_big_chances_against = self._calculate_big_chances_against(home_context)
+        away_big_chances_against = self._calculate_big_chances_against(away_context)
 
-        away_sot_values = (
-            self._extract_history(
-                away_context,
-                "shots_on_target_history",
-            )
-        )
+        home_sot_per_shot = self._ratio(home_sot, home_shots)
+        away_sot_per_shot = self._ratio(away_sot, away_shots)
 
-        home_big_chances_values = (
-            self._extract_history(
-                home_context,
-                "big_chances_history",
-            )
-        )
+        home_sot_against_per_shot = self._ratio(home_sot_against, home_shots_against)
+        away_sot_against_per_shot = self._ratio(away_sot_against, away_shots_against)
 
-        away_big_chances_values = (
-            self._extract_history(
-                away_context,
-                "big_chances_history",
-            )
-        )
-
-        home_shots_against_values = (
-            self._extract_history(
-                home_context,
-                "shots_conceded_history",
-            )
-        )
-
-        away_shots_against_values = (
-            self._extract_history(
-                away_context,
-                "shots_conceded_history",
-            )
-        )
-
-        home_sot_against_values = (
-            self._extract_history(
-                home_context,
-                "shots_on_target_against_history",
-            )
-        )
-
-        away_sot_against_values = (
-            self._extract_history(
-                away_context,
-                "shots_on_target_against_history",
-            )
-        )
-
-        home_big_chances_against_values = (
-            self._extract_history(
-                home_context,
-                "big_chances_against_history",
-            )
-        )
-
-        away_big_chances_against_values = (
-            self._extract_history(
-                away_context,
-                "big_chances_against_history",
-            )
-        )
-
-        # ====================================================
-        # RECENCY VALUES
-        # ====================================================
-
-        home_shots = weighted_mean(
-            home_shots_values
-        )
-
-        away_shots = weighted_mean(
-            away_shots_values
-        )
-
-        home_sot = weighted_mean(
-            home_sot_values
-        )
-
-        away_sot = weighted_mean(
-            away_sot_values
-        )
-
-        home_big_chances = weighted_mean(
-            home_big_chances_values
-        )
-
-        away_big_chances = weighted_mean(
-            away_big_chances_values
-        )
-
-        home_shots_against = weighted_mean(
-            home_shots_against_values
-        )
-
-        away_shots_against = weighted_mean(
-            away_shots_against_values
-        )
-
-        home_sot_against = weighted_mean(
-            home_sot_against_values
-        )
-
-        away_sot_against = weighted_mean(
-            away_sot_against_values
-        )
-
-        home_big_chances_against = weighted_mean(
-            home_big_chances_against_values
-        )
-
-        away_big_chances_against = weighted_mean(
-            away_big_chances_against_values
-        )
-
-        # ====================================================
-        # DIFFERENTIALS
-        # ====================================================
-
-        home_shots_diff = self._difference(
-            home_shots,
-            home_shots_against,
-        )
-
-        away_shots_diff = self._difference(
-            away_shots,
-            away_shots_against,
-        )
-
-        home_sot_diff = self._difference(
-            home_sot,
-            home_sot_against,
-        )
-
-        away_sot_diff = self._difference(
-            away_sot,
-            away_sot_against,
-        )
-
-        home_big_chances_diff = self._difference(
-            home_big_chances,
-            home_big_chances_against,
-        )
-
-        away_big_chances_diff = self._difference(
-            away_big_chances,
-            away_big_chances_against,
-        )
-
-        # ====================================================
-        # OPPORTUNITY RATIOS
-        # ====================================================
-
-        home_sot_per_shot = self._ratio(
-            home_sot,
-            home_shots,
-        )
-
-        away_sot_per_shot = self._ratio(
-            away_sot,
-            away_shots,
-        )
-
-        home_big_chances_per_shot = self._ratio(
-            home_big_chances,
-            home_shots,
-        )
-
-        away_big_chances_per_shot = self._ratio(
-            away_big_chances,
-            away_shots,
-        )
-
-        home_sot_against_per_shot = self._ratio(
-            home_sot_against,
-            home_shots_against,
-        )
-
-        away_sot_against_per_shot = self._ratio(
-            away_sot_against,
-            away_shots_against,
-        )
+        home_big_chances_per_shot = self._ratio(home_big_chances, home_shots)
+        away_big_chances_per_shot = self._ratio(away_big_chances, away_shots)
 
         home_big_chances_against_per_shot = self._ratio(
-            home_big_chances_against,
-            home_shots_against,
+            home_big_chances_against, home_shots_against
         )
-
         away_big_chances_against_per_shot = self._ratio(
-            away_big_chances_against,
-            away_shots_against,
+            away_big_chances_against, away_shots_against
         )
 
-        # ====================================================
-        # BASE LAMBDA
-        # ====================================================
-
-        home_base_lambda = self._calculate_lambda(
-            home_xgf,
-            away_xga,
+        home_attack_evidence_signal = self._attack_evidence_signal(
+            shots=home_shots,
+            opponent_shots_against=away_shots_against,
+            sot_per_shot=home_sot_per_shot,
+            opponent_sot_against_per_shot=away_sot_against_per_shot,
+            big_chances_per_shot=home_big_chances_per_shot,
+            opponent_big_chances_against_per_shot=away_big_chances_against_per_shot,
         )
 
-        away_base_lambda = self._calculate_lambda(
-            away_xgf,
-            home_xga,
+        away_attack_evidence_signal = self._attack_evidence_signal(
+            shots=away_shots,
+            opponent_shots_against=home_shots_against,
+            sot_per_shot=away_sot_per_shot,
+            opponent_sot_against_per_shot=home_sot_against_per_shot,
+            big_chances_per_shot=away_big_chances_per_shot,
+            opponent_big_chances_against_per_shot=home_big_chances_against_per_shot,
         )
 
-        # ====================================================
-        # HOME ATTACK EVIDENCE
-        # ====================================================
+        # ----------------------------------------------------
+        # Samples / availability
+        # ----------------------------------------------------
 
-        home_evidence = (
-            self._calculate_attack_evidence(
-                shots=home_shots,
-                opponent_shots_against=away_shots_against,
-
-                sot_per_shot=home_sot_per_shot,
-                opponent_sot_per_shot=(
-                    away_sot_against_per_shot
-                ),
-
-                big_chances_per_shot=(
-                    home_big_chances_per_shot
-                ),
-                opponent_big_chances_per_shot=(
-                    away_big_chances_against_per_shot
-                ),
-            )
+        home_xgf_sample = self._count_available(
+            self._extract_history(home_context, "team_xg_history")
+        )
+        home_xga_sample = self._count_available(
+            self._extract_history(home_context, "opponent_xg_history")
+        )
+        away_xgf_sample = self._count_available(
+            self._extract_history(away_context, "team_xg_history")
+        )
+        away_xga_sample = self._count_available(
+            self._extract_history(away_context, "opponent_xg_history")
         )
 
-        # ====================================================
-        # AWAY ATTACK EVIDENCE
-        # ====================================================
+        home_matches = self._get_matches_count(home_context, "team_xg_history")
+        away_matches = self._get_matches_count(away_context, "team_xg_history")
 
-        away_evidence = (
-            self._calculate_attack_evidence(
-                shots=away_shots,
-                opponent_shots_against=home_shots_against,
+        home_lambda_available = home_lambda is not None
+        away_lambda_available = away_lambda is not None
 
-                sot_per_shot=away_sot_per_shot,
-                opponent_sot_per_shot=(
-                    home_sot_against_per_shot
-                ),
+        calculation_valid = home_lambda_available and away_lambda_available
 
-                big_chances_per_shot=(
-                    away_big_chances_per_shot
-                ),
-                opponent_big_chances_per_shot=(
-                    home_big_chances_against_per_shot
-                ),
-            )
-        )
-
-        # ====================================================
-        # FINAL LAMBDA
-        # ====================================================
-
-        (
-            home_lambda,
-            home_lambda_adjustment,
-        ) = self._apply_evidence(
-            base_lambda=home_base_lambda,
-            evidence_signal=(
-                home_evidence[
-                    "attack_evidence_signal"
-                ]
+        architecture_notes = {
+            "lambda_source": "xG only (team_xg_history / opponent_xg_history)",
+            "evidence_applied_to_lambda": False,
+            "evidence_signals_purpose": (
+                "diagnostic only; consumed by WinnerState for display, "
+                "never fed back into λ"
             ),
-        )
-
-        (
-            away_lambda,
-            away_lambda_adjustment,
-        ) = self._apply_evidence(
-            base_lambda=away_base_lambda,
-            evidence_signal=(
-                away_evidence[
-                    "attack_evidence_signal"
-                ]
+            "temporal_weighting": self.temporal_weighting,
+            "temporal_weighting_growth": (
+                self.weighting_growth
+                if self.temporal_weighting == "exponential"
+                else None
             ),
-        )
-
-        # ====================================================
-        # TOTAL LAMBDA
-        # ====================================================
-
-        if (
-            home_lambda is not None
-            and away_lambda is not None
-        ):
-
-            total_lambda = (
-                home_lambda
-                + away_lambda
-            )
-
-        else:
-
-            total_lambda = None
-
-        # ====================================================
-        # SAMPLES
-        # ====================================================
-
-        home_xgf_sample = (
-            self._count_available(
-                self._extract_history(
-                    home_context,
-                    "team_xg_history",
-                )
-            )
-        )
-
-        home_xga_sample = (
-            self._count_available(
-                self._extract_history(
-                    home_context,
-                    "opponent_xg_history",
-                )
-            )
-        )
-
-        away_xgf_sample = (
-            self._count_available(
-                self._extract_history(
-                    away_context,
-                    "team_xg_history",
-                )
-            )
-        )
-
-        away_xga_sample = (
-            self._count_available(
-                self._extract_history(
-                    away_context,
-                    "opponent_xg_history",
-                )
-            )
-        )
-
-        home_shots_sample = (
-            self._count_available(
-                home_shots_values
-            )
-        )
-
-        away_shots_sample = (
-            self._count_available(
-                away_shots_values
-            )
-        )
-
-        home_sot_sample = (
-            self._count_available(
-                home_sot_values
-            )
-        )
-
-        away_sot_sample = (
-            self._count_available(
-                away_sot_values
-            )
-        )
-
-        home_big_chances_sample = (
-            self._count_available(
-                home_big_chances_values
-            )
-        )
-
-        away_big_chances_sample = (
-            self._count_available(
-                away_big_chances_values
-            )
-        )
-
-        # ====================================================
-        # MATCH COUNTS
-        # ====================================================
-
-        home_matches = (
-            self._get_matches_count(
-                home_context,
-                "team_xg_history",
-            )
-        )
-
-        away_matches = (
-            self._get_matches_count(
-                away_context,
-                "team_xg_history",
-            )
-        )
-
-        # ====================================================
-        # AVAILABILITY
-        # ====================================================
-
-        xg_available = (
-            home_xgf is not None
-            and home_xga is not None
-            and away_xgf is not None
-            and away_xga is not None
-        )
-
-        shots_available = (
-            home_shots_sample > 0
-            and away_shots_sample > 0
-        )
-
-        sot_available = (
-            home_sot_sample > 0
-            and away_sot_sample > 0
-        )
-
-        big_chances_available = (
-            home_big_chances_sample > 0
-            and away_big_chances_sample > 0
-        )
-
-        attack_evidence_available = (
-            home_evidence[
-                "attack_evidence_signal"
-            ] is not None
-            or
-            away_evidence[
-                "attack_evidence_signal"
-            ] is not None
-        )
-
-        # ====================================================
-        # VALIDITY
-        # ====================================================
-
-        calculation_valid = (
-            home_lambda is not None
-            and away_lambda is not None
-        )
-
-        # ====================================================
-        # RETURN
-        # ====================================================
+            "rollback_reason": (
+                "v1.2 bounded evidence adjustment (±15%) violated Contract v1 "
+                "(FORM -> coefficient -> xG pattern) and was calibrated on the "
+                "same 8 matches used for its own validation (data leakage). "
+                "Reverted in v2.0; blowout underestimation must be addressed "
+                "by a separately validated module, not a hidden multiplier."
+            ),
+        }
 
         return GoalState(
-
-            model_version=GOAL_MODEL_VERSION,
-
-            home_team=(
-                str(home_team)
-                if home_team is not None
-                else None
-            ),
-
-            away_team=(
-                str(away_team)
-                if away_team is not None
-                else None
-            ),
-
-            # ------------------------------------------------
-            # xG
-            # ------------------------------------------------
-
+            model_version=self.VERSION,
+            home_team=str(home_team) if home_team is not None else None,
+            away_team=str(away_team) if away_team is not None else None,
             home_xgf_rec=home_xgf,
             home_xga_rec=home_xga,
-
             away_xgf_rec=away_xgf,
             away_xga_rec=away_xga,
-
-            # ------------------------------------------------
-            # Base λ
-            # ------------------------------------------------
-
-            home_base_lambda=home_base_lambda,
-            away_base_lambda=away_base_lambda,
-
-            # ------------------------------------------------
-            # Final λ
-            # ------------------------------------------------
-
             home_lambda=home_lambda,
             away_lambda=away_lambda,
             total_lambda=total_lambda,
-
-            # ------------------------------------------------
-            # Attack evidence
-            # ------------------------------------------------
-
             home_shots_rec=home_shots,
             away_shots_rec=away_shots,
-
             home_sot_rec=home_sot,
             away_sot_rec=away_sot,
-
             home_big_chances_rec=home_big_chances,
             away_big_chances_rec=away_big_chances,
-
-            # ------------------------------------------------
-            # Defence evidence
-            # ------------------------------------------------
-
-            home_shots_against_rec=home_shots_against,
-            away_shots_against_rec=away_shots_against,
-
-            home_sot_against_rec=home_sot_against,
-            away_sot_against_rec=away_sot_against,
-
-            home_big_chances_against_rec=home_big_chances_against,
-            away_big_chances_against_rec=away_big_chances_against,
-
-            # ------------------------------------------------
-            # Differentials
-            # ------------------------------------------------
-
-            home_shots_diff_rec=home_shots_diff,
-            away_shots_diff_rec=away_shots_diff,
-
-            home_sot_diff_rec=home_sot_diff,
-            away_sot_diff_rec=away_sot_diff,
-
-            home_big_chances_diff_rec=home_big_chances_diff,
-            away_big_chances_diff_rec=away_big_chances_diff,
-
-            # ------------------------------------------------
-            # Ratios
-            # ------------------------------------------------
-
-            home_sot_per_shot=home_sot_per_shot,
-            away_sot_per_shot=away_sot_per_shot,
-
-            home_big_chances_per_shot=(
-                home_big_chances_per_shot
-            ),
-
-            away_big_chances_per_shot=(
-                away_big_chances_per_shot
-            ),
-
-            # ------------------------------------------------
-            # Evidence signals
-            # ------------------------------------------------
-
-            home_shot_volume_signal=(
-                home_evidence[
-                    "shot_volume_signal"
-                ]
-            ),
-
-            away_shot_volume_signal=(
-                away_evidence[
-                    "shot_volume_signal"
-                ]
-            ),
-
-            home_sot_quality_signal=(
-                home_evidence[
-                    "sot_quality_signal"
-                ]
-            ),
-
-            away_sot_quality_signal=(
-                away_evidence[
-                    "sot_quality_signal"
-                ]
-            ),
-
-            home_big_chances_quality_signal=(
-                home_evidence[
-                    "big_chances_quality_signal"
-                ]
-            ),
-
-            away_big_chances_quality_signal=(
-                away_evidence[
-                    "big_chances_quality_signal"
-                ]
-            ),
-
-            home_attack_evidence_signal=(
-                home_evidence[
-                    "attack_evidence_signal"
-                ]
-            ),
-
-            away_attack_evidence_signal=(
-                away_evidence[
-                    "attack_evidence_signal"
-                ]
-            ),
-
-            # ------------------------------------------------
-            # λ adjustments
-            # ------------------------------------------------
-
-            home_lambda_adjustment=(
-                home_lambda_adjustment
-            ),
-
-            away_lambda_adjustment=(
-                away_lambda_adjustment
-            ),
-
-            # ------------------------------------------------
-            # Samples
-            # ------------------------------------------------
-
+            home_attack_evidence_signal=home_attack_evidence_signal,
+            away_attack_evidence_signal=away_attack_evidence_signal,
             home_xgf_sample=home_xgf_sample,
             home_xga_sample=home_xga_sample,
-
             away_xgf_sample=away_xgf_sample,
             away_xga_sample=away_xga_sample,
-
-            home_shots_sample=home_shots_sample,
-            away_shots_sample=away_shots_sample,
-
-            home_sot_sample=home_sot_sample,
-            away_sot_sample=away_sot_sample,
-
-            home_big_chances_sample=(
-                home_big_chances_sample
-            ),
-
-            away_big_chances_sample=(
-                away_big_chances_sample
-            ),
-
-            # ------------------------------------------------
-            # Matches
-            # ------------------------------------------------
-
             home_matches=home_matches,
             away_matches=away_matches,
-
-            # ------------------------------------------------
-            # Availability
-            # ------------------------------------------------
-
-            xg_available=xg_available,
-
-            shots_available=shots_available,
-
-            sot_available=sot_available,
-
-            big_chances_available=(
-                big_chances_available
-            ),
-
-            attack_evidence_available=(
-                attack_evidence_available
-            ),
-
-            # ------------------------------------------------
-            # Validity
-            # ------------------------------------------------
-
+            home_lambda_available=home_lambda_available,
+            away_lambda_available=away_lambda_available,
             calculation_valid=calculation_valid,
+            architecture_notes=architecture_notes,
         )
 
     # ========================================================
-    # PREDICT
+    # DICT API / COMPATIBILITY
     # ========================================================
 
     def predict(
@@ -1823,19 +723,15 @@ class GoalModel:
 
         return asdict(state)
 
-    # ========================================================
-    # COMPATIBILITY
-    # ========================================================
-
     def calculate_goal_state(
         self,
         home_context: Any,
         away_context: Any,
         home_team: Optional[str] = None,
         away_team: Optional[str] = None,
-    ) -> GoalState:
+    ) -> Dict[str, Any]:
 
-        return self.calculate(
+        return self.predict(
             home_context=home_context,
             away_context=away_context,
             home_team=home_team,
@@ -1844,7 +740,7 @@ class GoalModel:
 
 
 # ============================================================
-# STANDALONE FUNCTION
+# SIMPLE FUNCTION API
 # ============================================================
 
 def calculate_goal_state(
@@ -1853,10 +749,12 @@ def calculate_goal_state(
     home_team: Optional[str] = None,
     away_team: Optional[str] = None,
     max_history: int = DEFAULT_MAX_HISTORY,
+    temporal_weighting: str = DEFAULT_TEMPORAL_WEIGHTING,
 ) -> Dict[str, Any]:
 
     model = GoalModel(
-        max_history=max_history
+        max_history=max_history,
+        temporal_weighting=temporal_weighting,
     )
 
     return model.predict(
@@ -1874,233 +772,22 @@ def calculate_goal_state(
 if __name__ == "__main__":
 
     home_context = {
-
         "team": "Зенит",
-
         "matches_count": 6,
-
-        "team_xg_history": (
-            1.20,
-            1.50,
-            1.80,
-            1.40,
-            2.00,
-            1.70,
-        ),
-
-        "opponent_xg_history": (
-            0.80,
-            1.10,
-            0.90,
-            1.30,
-            0.70,
-            1.00,
-        ),
-
-        "shots_history": (
-            10,
-            12,
-            15,
-            13,
-            17,
-            16,
-        ),
-
-        "shots_conceded_history": (
-            11,
-            10,
-            9,
-            13,
-            8,
-            10,
-        ),
-
-        "shots_on_target_history": (
-            4,
-            5,
-            6,
-            5,
-            7,
-            6,
-        ),
-
-        "shots_on_target_against_history": (
-            3,
-            4,
-            3,
-            5,
-            2,
-            4,
-        ),
-
-        "big_chances_history": (
-            1,
-            2,
-            2,
-            1,
-            3,
-            2,
-        ),
-
-        "big_chances_against_history": (
-            2,
-            1,
-            1,
-            2,
-            1,
-            2,
-        ),
+        "team_xg_history": (1.00, 1.20, 1.40, 1.60, 1.80, 2.00),
+        "opponent_xg_history": (1.40, 1.30, 1.20, 1.10, 1.00, 0.90),
     }
 
     away_context = {
-
-        "team": "Краснодар",
-
+        "team": "ЦСКА",
         "matches_count": 6,
-
-        "team_xg_history": (
-            1.10,
-            1.30,
-            1.50,
-            1.20,
-            1.40,
-            1.60,
-        ),
-
-        "opponent_xg_history": (
-            1.00,
-            1.20,
-            1.30,
-            1.10,
-            1.00,
-            1.20,
-        ),
-
-        "shots_history": (
-            11,
-            12,
-            14,
-            13,
-            15,
-            16,
-        ),
-
-        "shots_conceded_history": (
-            12,
-            13,
-            11,
-            14,
-            10,
-            12,
-        ),
-
-        "shots_on_target_history": (
-            4,
-            5,
-            5,
-            4,
-            6,
-            6,
-        ),
-
-        "shots_on_target_against_history": (
-            4,
-            5,
-            4,
-            5,
-            3,
-            4,
-        ),
-
-        "big_chances_history": (
-            1,
-            1,
-            2,
-            2,
-            2,
-            3,
-        ),
-
-        "big_chances_against_history": (
-            1,
-            2,
-            2,
-            1,
-            2,
-            2,
-        ),
+        "team_xg_history": (1.20, 1.30, 1.40, 1.50, 1.60, 1.70),
+        "opponent_xg_history": (1.60, 1.50, 1.40, 1.30, 1.20, 1.10),
     }
 
-    state = GoalModel().calculate(
-        home_context=home_context,
-        away_context=away_context,
-    )
+    result = GoalModel().calculate(home_context, away_context)
 
-    print(
-        "GOAL MODEL v1.2"
-    )
-
-    print(
-        "Home base λ:",
-        state.home_base_lambda,
-    )
-
-    print(
-        "Away base λ:",
-        state.away_base_lambda,
-    )
-
-    print(
-        "Home evidence:",
-        state.home_attack_evidence_signal,
-    )
-
-    print(
-        "Away evidence:",
-        state.away_attack_evidence_signal,
-    )
-
-    print(
-        "Home λ:",
-        state.home_lambda,
-    )
-
-    print(
-        "Away λ:",
-        state.away_lambda,
-    )
-
-    print(
-        "Total λ:",
-        state.total_lambda,
-    )
-
-    print(
-        "Home shots:",
-        state.home_shots_rec,
-    )
-
-    print(
-        "Away shots:",
-        state.away_shots_rec,
-    )
-
-    print(
-        "Home SOT:",
-        state.home_sot_rec,
-    )
-
-    print(
-        "Away SOT:",
-        state.away_sot_rec,
-    )
-
-    print(
-        "Home big chances:",
-        state.home_big_chances_rec,
-    )
-
-    print(
-        "Away big chances:",
-        state.away_big_chances_rec,
-    )
+    print("GOAL MODEL v2.0")
+    print("Home λ:", result.home_lambda)
+    print("Away λ:", result.away_lambda)
+    print("Evidence applied to λ:", result.architecture_notes["evidence_applied_to_lambda"])
