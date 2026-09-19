@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-FAJ PREDICTOR — Streamlit Interface (Brain v4.0 adapter)
+FAJ PREDICTOR — Streamlit Interface (Brain v4.1 adapter)
 
 Архитектура:
 
@@ -12,7 +12,7 @@ FAJ PREDICTOR — Streamlit Interface (Brain v4.0 adapter)
         ↓
     factual history
         ↓
-    FAJBrain v4.0 .predict()
+    FAJBrain v4.1 .predict()
         ↓
     BrainPrediction
         ↓
@@ -33,11 +33,16 @@ Streamlit НЕ считает:
     ❌ corners
     ❌ cards
 
-Всё приходит из FAJBrain v4.0 как BrainPrediction.
+Всё приходит из FAJBrain v4.1 как BrainPrediction.
+
+WinnerState (Brain v4.1):
+    display-only слой — отображается отдельно.
+    В математическом ядре НЕ участвует.
+    Передаётся в UI как `prediction["winner_state"]`.
 
 Pair Rating:
     ручной исследовательский сигнал / display only.
-    В Brain v4.0 НЕ передаётся.
+    В Brain v4.1 НЕ передаётся.
     В математическом ядре НЕ участвует.
 """
 
@@ -456,7 +461,7 @@ def create_match_slot() -> Dict[str, Any]:
 
         # ------------------------------------------------
         # Ручной Pair Rating — display / research only.
-        # В Brain v4.0 НЕ передаётся.
+        # В Brain v4.1 НЕ передаётся.
         # ------------------------------------------------
 
         "home_pair_rating":
@@ -1146,7 +1151,7 @@ def build_prediction(
     away_pair_rating: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
-    FAJ Brain v4.0 adapter.
+    FAJ Brain v4.1 adapter.
 
     Pair Rating intentionally remains outside Brain.
     """
@@ -1409,7 +1414,7 @@ def generate_prediction(
         return
 
     with st.spinner(
-        "FAJ Brain v4.0 анализирует матч..."
+        "FAJ Brain v4.1 анализирует матч..."
     ):
 
         try:
@@ -2572,7 +2577,7 @@ def render_prediction_card(
     # ========================================================
     # 1X2
     #
-    # REAL BRAIN v4.0 FIELDS
+    # REAL BRAIN v4.1 FIELDS
     # ========================================================
 
     home_win = prediction.get(
@@ -2656,6 +2661,119 @@ def render_prediction_card(
             away_team,
             pct(away_win),
         )
+
+    # ========================================================
+    # WINNER STATE (Brain v4.1, display-only)
+    # ========================================================
+
+    winner_state = prediction.get(
+        "winner_state"
+    )
+
+    if isinstance(
+        winner_state,
+        dict,
+    ):
+
+        st.markdown(
+            '<div class="faj-section">🎯 Фаворит (display-only)</div>',
+            unsafe_allow_html=True,
+        )
+
+        closeness = (
+            winner_state.get(
+                "closeness_label"
+            )
+            or "—"
+        )
+
+        margin = safe_float(
+            winner_state.get(
+                "closeness_margin"
+            )
+        )
+
+        favorite = (
+            winner_state.get(
+                "favorite"
+            )
+            or "—"
+        )
+
+        wc1, wc2, wc3 = st.columns(3)
+
+        with wc1:
+
+            st.metric(
+                "Фаворит (1X2)",
+                favorite,
+            )
+
+        with wc2:
+
+            st.metric(
+                "Разрыв top-1 / top-2",
+                (
+                    f"{margin * 100:.1f}%"
+                    if margin is not None
+                    else "—"
+                ),
+            )
+
+        with wc3:
+
+            st.metric(
+                "Тип матча",
+                closeness,
+            )
+
+        lean = safe_float(
+            winner_state.get(
+                "evidence_lean"
+            )
+        )
+
+        lean_dir = (
+            winner_state.get(
+                "evidence_lean_direction"
+            )
+            or "unknown"
+        )
+
+        lean_team = winner_state.get(
+            "evidence_lean_team"
+        )
+
+        sources = (
+            winner_state.get(
+                "evidence_sources_used"
+            )
+            or []
+        )
+
+        if lean is None:
+
+            st.caption(
+                "Evidence lean: "
+                "недостаточно источников."
+            )
+
+        elif lean_dir == "BALANCED":
+
+            st.caption(
+                f"Evidence lean: нейтрально "
+                f"(lean = {lean:+.2f}, "
+                f"источников: {len(sources)})"
+            )
+
+        else:
+
+            st.caption(
+                f"Evidence lean: {lean_dir} → "
+                f"{lean_team or '—'} "
+                f"(lean = {lean:+.2f}, "
+                f"источников: {len(sources)})"
+            )
 
     # ========================================================
     # TOP 3 SCORES
@@ -3355,7 +3473,7 @@ def render_match_setup(
         f"Направление пары: {_team} "
         f"({_dir}, gap {_gap:+d}) "
         f"· source: manual · "
-        f"в Brain v4.0 не передаётся."
+        f"в Brain v4.1 не передаётся."
     )
 
     # ========================================================
@@ -3642,7 +3760,7 @@ def main() -> None:
     )
 
     st.caption(
-        "FAJ Brain v4.0 — "
+        "FAJ Brain v4.1 — "
         "математический анализ "
         "футбольной пары."
     )
