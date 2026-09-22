@@ -4,40 +4,90 @@
 """
 ============================================================
 FAJ PLATFORM v12.1
-FAJ BRAIN v4.1
+FAJ BRAIN v4.2
 ============================================================
 
 Чистый orchestration layer FAJ.
 
-КАНОНИЧЕСКАЯ ЦЕПОЧКА (неприкосновенное ядро):
+КАНОНИЧЕСКАЯ ЦЕПОЧКА:
 
-    FACTS -> FormContext -> FormModel -> GoalModel
-          -> home_lambda / away_lambda -> ProbabilityModel
-          -> ScorePredictor -> FINAL BRAIN
+    FACTS
+      ->
+    FormContext
+      ->
+    FormModel
+      ->
+    GoalModel
+      ->
+    λ Home / λ Away
+      ->
+    RatingReconciliation
+      ->
+    λ Home / λ Away
+      ->
+    ProbabilityModel
+      ->
+    ScorePredictor
+      ->
+    FINAL BRAIN
 
-ПАРАЛЛЕЛЬНЫЕ STATE (evidence, не влияют на ядро):
+RATING RECONCILIATION:
 
-    FormWin, Defence, FormControl, FormAnomaly, FormSpecial,
-    CornersModel, CardsModel
+    Club Rating + Pair Rating
+             ->
+       RatingReconciliation
+             ->
+       redistribution of λ
+             ->
+       ProbabilityModel
 
-DISPLAY-ONLY СИНТЕЗ (v4.1, новое):
+ВАЖНО:
 
-    WinnerState — строится ПОСЛЕ ядра, из уже готовых
-    вероятностей 1X2 и relative-evidence уже существующих
-    compare()-методов. НЕ пересчитывает и не изменяет ядро.
+- GoalModel остаётся владельцем исходных λ.
+- RatingReconciliation НЕ считает xG.
+- RatingReconciliation НЕ меняет общий scoring mass.
+- RatingReconciliation только перераспределяет λ между Home/Away.
+- ProbabilityModel получает уже согласованные λ.
+- ScorePredictor получает результат ProbabilityModel.
+- WinnerState не влияет на core.
+- Parallel State не влияет на core.
+- Нет Winner Override.
+- Нет rating multiplier.
+- Нет обучения.
+- Нет записи в database.py.
+- Нет использования будущего результата.
 
-BRAIN НЕ: считает xG/λ/Poisson самостоятельно, пересчитывает
-1X2/BTTS/totals/score, применяет Winner Override или любые
-multiplier'ы, обучается, пишет в database.py, использует
-будущий результат.
+MISSING DATA:
 
-MISSING DATA: None != 0. Отсутствие обязательного Core State
-поднимает BrainCoreError. Отсутствие diagnostic State не
-ломает Core prediction — ошибка сохраняется в diagnostics.
+    None != 0
+
+Если Club Rating отсутствует, используется Pair Rating.
+Если Pair Rating отсутствует, используется Club Rating.
+Если отсутствуют оба источника, λ остаются исходными GoalModel.
+
+RATING RECONCILIATION v1.0:
+
+    ClubGap = ClubHome - ClubAway
+    PairGap  = PairHome - PairAway
+
+    R = 0.50 * ClubGap + 0.50 * PairGap
+
+    S = tanh(R / 15.0)
+
+    B = λH0 / (λH0 + λA0)
+
+    B' = clamp(B + 0.15 * S, 0.20, 0.80)
+
+    λH = T * B'
+    λA = T * (1 - B')
+
+where:
+
+    T = λH0 + λA0
 
 VERSION
 -------
-FAJ-BRAIN-4.1
+FAJ-BRAIN-4.2
 CONTRACT_V1
 ============================================================
 """
@@ -58,6 +108,18 @@ from .form_model import FormModel
 from .goal_model import GoalModel
 from .probability_model import ProbabilityModel
 from .score_predictor import ScorePredictor
+
+
+# ============================================================
+# RATING IMPORTS
+# ============================================================
+
+from .pair_rating import calculate_pair_rating
+
+from .rating_reconciliation import (
+    reconcile_ratings,
+    reconcile_lambda,
+)
 
 
 # ============================================================
@@ -110,7 +172,7 @@ except Exception:
 # VERSION
 # ============================================================
 
-BRAIN_VERSION = "FAJ-BRAIN-4.1"
+BRAIN_VERSION = "FAJ-BRAIN-4.2"
 BRAIN_STATUS = "CONTRACT_V1"
 
 HISTORY_SIZE = 6
@@ -132,8 +194,10 @@ class BrainCoreError(RuntimeError):
 @dataclass
 class BrainPrediction:
     """
-    Final FAJ Brain result. Объединяет результаты уже
-    существующих State/Model, сам новой математикой не является.
+    Final FAJ Brain result.
+
+    BrainPrediction не содержит собственной новой математики.
+    Он объединяет результаты существующих State/Model.
     """
 
     version: str
@@ -161,18 +225,37 @@ class BrainPrediction:
     cards_state: Any = None
 
     # --------------------------------------------------------
-    # WINNER STATE (v4.1, display-only)
+    # WINNER STATE (display-only)
     # --------------------------------------------------------
 
     winner_state: Optional[Dict[str, Any]] = None
+
+    # --------------------------------------------------------
+    # RATING RECONCILIATION
+    # --------------------------------------------------------
+
+    rating_reconciliation: Optional[Dict[str, Any]] = None
+    lambda_reconciliation: Optional[Dict[str, Any]] = None
+
+    # --------------------------------------------------------
+    # CORE λ
+    # --------------------------------------------------------
 
     home_lambda: Optional[float] = None
     away_lambda: Optional[float] = None
     total_lambda: Optional[float] = None
 
+    # --------------------------------------------------------
+    # 1X2
+    # --------------------------------------------------------
+
     home_win_probability: Optional[float] = None
     draw_probability: Optional[float] = None
     away_win_probability: Optional[float] = None
+
+    # --------------------------------------------------------
+    # GOAL MARKETS
+    # --------------------------------------------------------
 
     btts_probability: Optional[float] = None
 
@@ -181,6 +264,10 @@ class BrainPrediction:
     over_35_probability: Optional[float] = None
     under_35_probability: Optional[float] = None
 
+    # --------------------------------------------------------
+    # SCORE
+    # --------------------------------------------------------
+
     predicted_score: Optional[str] = None
     second_score: Optional[str] = None
     third_score: Optional[str] = None
@@ -188,6 +275,10 @@ class BrainPrediction:
     predicted_score_probability: Optional[float] = None
 
     top_scores: List[Dict[str, Any]] = field(default_factory=list)
+
+    # --------------------------------------------------------
+    # FINAL LABELS
+    # --------------------------------------------------------
 
     primary_outcome: Optional[str] = None
     primary_scenario: Optional[str] = None
@@ -251,8 +342,10 @@ def _dict(obj: Any) -> Dict[str, Any]:
     if callable(to_dict):
         try:
             result = to_dict()
+
             if isinstance(result, Mapping):
                 return dict(result)
+
         except Exception:
             pass
 
@@ -268,10 +361,16 @@ def _serialize(obj: Any) -> Any:
         return None
 
     if isinstance(obj, Mapping):
-        return {key: _serialize(value) for key, value in obj.items()}
+        return {
+            key: _serialize(value)
+            for key, value in obj.items()
+        }
 
     if isinstance(obj, (list, tuple)):
-        return [_serialize(value) for value in obj]
+        return [
+            _serialize(value)
+            for value in obj
+        ]
 
     if is_dataclass(obj):
         try:
@@ -347,37 +446,61 @@ def _normalize_record(record: Any) -> Dict[str, Any]:
 
     if callable(to_dict):
         result = to_dict()
+
         if isinstance(result, Mapping):
             return dict(result)
 
     try:
         keys = record.keys()
-        return {key: record[key] for key in keys}
+
+        return {
+            key: record[key]
+            for key in keys
+        }
+
     except (AttributeError, TypeError):
         pass
 
     try:
         return dict(vars(record))
     except Exception as exc:
-        raise BrainCoreError("Historical record cannot be normalized") from exc
+        raise BrainCoreError(
+            "Historical record cannot be normalized"
+        ) from exc
 
 
-def _normalize_history(matches: Sequence[Any]) -> List[Dict[str, Any]]:
-    return [_normalize_record(record) for record in matches]
+def _normalize_history(
+    matches: Sequence[Any],
+) -> List[Dict[str, Any]]:
+
+    return [
+        _normalize_record(record)
+        for record in matches
+    ]
 
 
-def _history(matches: Sequence[Any], team_name: str) -> List[Any]:
+def _history(
+    matches: Sequence[Any],
+    team_name: str,
+) -> List[Any]:
 
     if matches is None:
-        raise BrainCoreError(f"{team_name}: history is missing")
+        raise BrainCoreError(
+            f"{team_name}: history is missing"
+        )
 
     try:
         values = list(matches)
+
     except TypeError as exc:
-        raise BrainCoreError(f"{team_name}: invalid history") from exc
+        raise BrainCoreError(
+            f"{team_name}: invalid history"
+        ) from exc
 
     if not values:
-        raise BrainCoreError(f"{team_name}: empty history")
+        raise BrainCoreError(
+            f"{team_name}: empty history"
+        )
 
     if len(values) > HISTORY_SIZE:
         values = values[-HISTORY_SIZE:]
@@ -389,19 +512,30 @@ def _history(matches: Sequence[Any], team_name: str) -> List[Any]:
 # FORM CONTEXT
 # ============================================================
 
-def _build_context(team_name: str, history: Sequence[Any]) -> Dict[str, Any]:
+def _build_context(
+    team_name: str,
+    history: Sequence[Any],
+) -> Dict[str, Any]:
 
     records = _normalize_history(history)
 
     try:
-        context = build_form_context(team_name=team_name, records=records)
+        context = build_form_context(
+            team_name=team_name,
+            records=records,
+        )
+
     except Exception as exc:
-        raise BrainCoreError(f"FormContext failed for {team_name}") from exc
+        raise BrainCoreError(
+            f"FormContext failed for {team_name}"
+        ) from exc
 
     result = _dict(context)
 
     if not result:
-        raise BrainCoreError(f"FormContext returned empty state for {team_name}")
+        raise BrainCoreError(
+            f"FormContext returned empty state for {team_name}"
+        )
 
     return result
 
@@ -418,16 +552,30 @@ def _run_form_model(
     model = FormModel()
 
     try:
-        home_form = model.analyze(form_context=home_context, next_venue="home")
-        away_form = model.analyze(form_context=away_context, next_venue="away")
+        home_form = model.analyze(
+            form_context=home_context,
+            next_venue="home",
+        )
+
+        away_form = model.analyze(
+            form_context=away_context,
+            next_venue="away",
+        )
+
     except Exception as exc:
-        raise BrainCoreError("FormModel failed") from exc
+        raise BrainCoreError(
+            "FormModel failed"
+        ) from exc
 
     if home_form is None:
-        raise BrainCoreError("FormModel returned None for home")
+        raise BrainCoreError(
+            "FormModel returned None for home"
+        )
 
     if away_form is None:
-        raise BrainCoreError("FormModel returned None for away")
+        raise BrainCoreError(
+            "FormModel returned None for away"
+        )
 
     return home_form, away_form
 
@@ -452,23 +600,187 @@ def _run_goal_model(
             home_team=home_team,
             away_team=away_team,
         )
+
     except Exception as exc:
-        raise BrainCoreError("GoalModel failed") from exc
+        raise BrainCoreError(
+            "GoalModel failed"
+        ) from exc
 
     if result is None:
-        raise BrainCoreError("GoalModel returned None")
+        raise BrainCoreError(
+            "GoalModel returned None"
+        )
 
     return result
 
 
-def _extract_lambdas(goal_state: Any) -> tuple[Optional[float], Optional[float]]:
+def _extract_lambdas(
+    goal_state: Any,
+) -> tuple[Optional[float], Optional[float]]:
 
     data = _dict(goal_state)
 
-    home_lambda = _num(_get(data, "home_lambda", "lambda_home"))
-    away_lambda = _num(_get(data, "away_lambda", "lambda_away"))
+    home_lambda = _num(
+        _get(
+            data,
+            "home_lambda",
+            "lambda_home",
+        )
+    )
+
+    away_lambda = _num(
+        _get(
+            data,
+            "away_lambda",
+            "lambda_away",
+        )
+    )
 
     return home_lambda, away_lambda
+
+
+# ============================================================
+# RATING RECONCILIATION
+# ============================================================
+
+def _build_rating_reconciliation(
+    *,
+    home_team: str,
+    away_team: str,
+    home_rating: Optional[float],
+    away_rating: Optional[float],
+    pair_home_rating: Optional[float],
+    pair_away_rating: Optional[float],
+) -> Any:
+    """
+    Builds the Club Rating + Pair Rating reconciliation state.
+
+    Club Rating:
+        objective / seasonal / club-level strength
+
+    Pair Rating:
+        manual / match-specific context
+
+    The reconciliation organ combines the two signals.
+    """
+
+    pair = None
+
+    if (
+        pair_home_rating is not None
+        and pair_away_rating is not None
+    ):
+        try:
+            pair = calculate_pair_rating(
+                home_rating=pair_home_rating,
+                away_rating=pair_away_rating,
+                home_team=home_team,
+                away_team=away_team,
+            )
+        except Exception as exc:
+            raise BrainCoreError(
+                "PairRating calculation failed"
+            ) from exc
+
+    try:
+        reconciliation = reconcile_ratings(
+            home_team=home_team,
+            away_team=away_team,
+            club_home_rating=home_rating,
+            club_away_rating=away_rating,
+            pair_home_rating=pair_home_rating,
+            pair_away_rating=pair_away_rating,
+        )
+
+    except Exception as exc:
+        raise BrainCoreError(
+            "RatingReconciliation failed"
+        ) from exc
+
+    return pair, reconciliation
+
+
+def _run_lambda_reconciliation(
+    *,
+    lambda_home: Optional[float],
+    lambda_away: Optional[float],
+    reconciliation: Any,
+) -> Any:
+    """
+    Applies RatingReconciliation to GoalModel λ.
+
+    IMPORTANT:
+
+        GoalModel owns λ before reconciliation.
+
+        RatingReconciliation only redistributes
+        the existing total scoring mass.
+
+        T = λH0 + λA0
+
+        T_after == T_before
+    """
+
+    if lambda_home is None or lambda_away is None:
+        raise BrainCoreError(
+            "Cannot reconcile lambda: GoalModel lambda is missing"
+        )
+
+    signal = _num(
+        _get(
+            reconciliation,
+            "reconciled_signal",
+        )
+    )
+
+    try:
+        result = reconcile_lambda(
+            lambda_home=lambda_home,
+            lambda_away=lambda_away,
+            reconciled_signal=signal,
+        )
+
+    except Exception as exc:
+        raise BrainCoreError(
+            "LambdaReconciliation failed"
+        ) from exc
+
+    if result is None:
+        raise BrainCoreError(
+            "LambdaReconciliation returned None"
+        )
+
+    return result
+
+
+def _serialize_rating_state(
+    state: Any,
+) -> Optional[Dict[str, Any]]:
+
+    if state is None:
+        return None
+
+    result = _serialize(state)
+
+    if isinstance(result, dict):
+        return result
+
+    return None
+
+
+def _serialize_lambda_reconciliation(
+    state: Any,
+) -> Optional[Dict[str, Any]]:
+
+    if state is None:
+        return None
+
+    result = _serialize(state)
+
+    if isinstance(result, dict):
+        return result
+
+    return None
 
 
 # ============================================================
@@ -483,12 +795,20 @@ def _run_probability_model(
     model = ProbabilityModel()
 
     try:
-        result = model.calculate(home_lambda=home_lambda, away_lambda=away_lambda)
+        result = model.calculate(
+            home_lambda=home_lambda,
+            away_lambda=away_lambda,
+        )
+
     except Exception as exc:
-        raise BrainCoreError("ProbabilityModel failed") from exc
+        raise BrainCoreError(
+            "ProbabilityModel failed"
+        ) from exc
 
     if result is None:
-        raise BrainCoreError("ProbabilityModel returned None")
+        raise BrainCoreError(
+            "ProbabilityModel returned None"
+        )
 
     return result
 
@@ -504,7 +824,11 @@ def _run_score_predictor(
 ) -> Any:
 
     probability_data = _dict(probability_state)
-    score_distribution = _get(probability_data, "score_distribution")
+
+    score_distribution = _get(
+        probability_data,
+        "score_distribution",
+    )
 
     predictor = ScorePredictor()
 
@@ -515,11 +839,16 @@ def _run_score_predictor(
             away_lambda=away_lambda,
             probability_result=probability_state,
         )
+
     except Exception as exc:
-        raise BrainCoreError("ScorePredictor failed") from exc
+        raise BrainCoreError(
+            "ScorePredictor failed"
+        ) from exc
 
     if result is None:
-        raise BrainCoreError("ScorePredictor returned None")
+        raise BrainCoreError(
+            "ScorePredictor returned None"
+        )
 
     return result
 
@@ -528,8 +857,15 @@ def _run_score_predictor(
 # ORGAN ERROR HELPER
 # ============================================================
 
-def _record_organ_error(errors: List[str], name: str, exc: Exception) -> None:
-    errors.append(f"{name}: {type(exc).__name__}: {exc}")
+def _record_organ_error(
+    errors: List[str],
+    name: str,
+    exc: Exception,
+) -> None:
+
+    errors.append(
+        f"{name}: {type(exc).__name__}: {exc}"
+    )
 
 
 # ============================================================
@@ -545,33 +881,56 @@ def _run_form_win(
 ) -> Dict[str, Any]:
 
     if FormWin is None:
-        errors.append("FormWin: MODULE_UNAVAILABLE")
+        errors.append(
+            "FormWin: MODULE_UNAVAILABLE"
+        )
         return {}
 
     try:
         model = FormWin()
 
-        home_state = model.calculate(home_context, team_name=home_team)
-        away_state = model.calculate(away_context, team_name=away_team)
+        home_state = model.calculate(
+            home_context,
+            team_name=home_team,
+        )
+
+        away_state = model.calculate(
+            away_context,
+            team_name=away_team,
+        )
 
         result = {
             "home": _serialize(home_state),
             "away": _serialize(away_state),
         }
 
-        compare_method = getattr(model, "compare", None)
+        compare_method = getattr(
+            model,
+            "compare",
+            None,
+        )
 
         if callable(compare_method):
+
             comparison = compare_method(
-                home_context, away_context,
-                home_team=home_team, away_team=away_team,
+                home_context,
+                away_context,
+                home_team=home_team,
+                away_team=away_team,
             )
-            result["comparison"] = _serialize(comparison)
+
+            result["comparison"] = _serialize(
+                comparison
+            )
 
         return result
 
     except Exception as exc:
-        _record_organ_error(errors, "FormWin", exc)
+        _record_organ_error(
+            errors,
+            "FormWin",
+            exc,
+        )
         return {}
 
 
@@ -586,39 +945,57 @@ def _run_defence(
     away_team: str,
     errors: List[str],
 ) -> Dict[str, Any]:
-    """
-    Defence v2.0. Использует .compare(), который сам вызывает
-    .calculate() на обе команды и попутно даёт relative-evidence
-    (нужно WinnerState) — без отдельных лишних вызовов.
-    """
 
     if Defence is None:
-        errors.append("Defence: MODULE_UNAVAILABLE")
+        errors.append(
+            "Defence: MODULE_UNAVAILABLE"
+        )
         return {}
 
     try:
         model = Defence()
 
         comparison = model.compare(
-            home_context, away_context,
-            home_team=home_team, away_team=away_team,
+            home_context,
+            away_context,
+            home_team=home_team,
+            away_team=away_team,
         )
 
         return {
-            "home": _serialize(comparison.home_state),
-            "away": _serialize(comparison.away_state),
+            "home": _serialize(
+                comparison.home_state
+            ),
+            "away": _serialize(
+                comparison.away_state
+            ),
             "comparison": {
-                "relative_defence_advantage": comparison.relative_defence_advantage,
-                "relative_creation": comparison.relative_creation,
-                "relative_process": comparison.relative_process,
-                "relative_control": comparison.relative_control,
-                "relative_outcome": comparison.relative_outcome,
-                "relative_momentum": comparison.relative_momentum,
+                "relative_defence_advantage":
+                    comparison.relative_defence_advantage,
+
+                "relative_creation":
+                    comparison.relative_creation,
+
+                "relative_process":
+                    comparison.relative_process,
+
+                "relative_control":
+                    comparison.relative_control,
+
+                "relative_outcome":
+                    comparison.relative_outcome,
+
+                "relative_momentum":
+                    comparison.relative_momentum,
             },
         }
 
     except Exception as exc:
-        _record_organ_error(errors, "Defence", exc)
+        _record_organ_error(
+            errors,
+            "Defence",
+            exc,
+        )
         return {}
 
 
@@ -633,31 +1010,45 @@ def _run_form_control(
     away_team: str,
     errors: List[str],
 ) -> Dict[str, Any]:
-    """
-    FormControl v1.2. Использует module-level compare_control(),
-    который уже даёт relative_control без дублирования вызовов.
-    """
 
-    if FormControl is None or compare_control is None:
-        errors.append("FormControl: MODULE_UNAVAILABLE")
+    if (
+        FormControl is None
+        or compare_control is None
+    ):
+        errors.append(
+            "FormControl: MODULE_UNAVAILABLE"
+        )
         return {}
 
     try:
         comparison = compare_control(
-            home_context, away_context,
-            home_team=home_team, away_team=away_team,
+            home_context,
+            away_context,
+            home_team=home_team,
+            away_team=away_team,
         )
 
         return {
-            "home": comparison.get("home_control"),
-            "away": comparison.get("away_control"),
+            "home": comparison.get(
+                "home_control"
+            ),
+            "away": comparison.get(
+                "away_control"
+            ),
             "comparison": {
-                "relative_control": comparison.get("relative_control"),
+                "relative_control":
+                    comparison.get(
+                        "relative_control"
+                    ),
             },
         }
 
     except Exception as exc:
-        _record_organ_error(errors, "FormControl", exc)
+        _record_organ_error(
+            errors,
+            "FormControl",
+            exc,
+        )
         return {}
 
 
@@ -672,14 +1063,21 @@ def _run_form_anomaly(
 ) -> Dict[str, Any]:
 
     if FormAnomaly is None:
-        errors.append("FormAnomaly: MODULE_UNAVAILABLE")
+        errors.append(
+            "FormAnomaly: MODULE_UNAVAILABLE"
+        )
         return {}
 
     try:
         model = FormAnomaly()
 
-        home_state = model.analyze(home_context)
-        away_state = model.analyze(away_context)
+        home_state = model.analyze(
+            home_context
+        )
+
+        away_state = model.analyze(
+            away_context
+        )
 
         return {
             "home": _serialize(home_state),
@@ -687,7 +1085,11 @@ def _run_form_anomaly(
         }
 
     except Exception as exc:
-        _record_organ_error(errors, "FormAnomaly", exc)
+        _record_organ_error(
+            errors,
+            "FormAnomaly",
+            exc,
+        )
         return {}
 
 
@@ -702,33 +1104,44 @@ def _run_form_special(
     away_team: str,
     errors: List[str],
 ) -> Dict[str, Any]:
-    """
-    FormSpecial v2.0. Использует .compare(), даёт "differential"
-    напрямую — нужен WinnerState.
-    """
 
     if FormSpecial is None:
-        errors.append("FormSpecial: MODULE_UNAVAILABLE")
+        errors.append(
+            "FormSpecial: MODULE_UNAVAILABLE"
+        )
         return {}
 
     try:
         model = FormSpecial()
 
         comparison = model.compare(
-            home_context, away_context,
-            home_team=home_team, away_team=away_team,
+            home_context,
+            away_context,
+            home_team=home_team,
+            away_team=away_team,
         )
 
         return {
-            "home": _serialize(comparison.get("home")),
-            "away": _serialize(comparison.get("away")),
+            "home": _serialize(
+                comparison.get("home")
+            ),
+            "away": _serialize(
+                comparison.get("away")
+            ),
             "comparison": {
-                "differential": comparison.get("differential"),
+                "differential":
+                    comparison.get(
+                        "differential"
+                    ),
             },
         }
 
     except Exception as exc:
-        _record_organ_error(errors, "FormSpecial", exc)
+        _record_organ_error(
+            errors,
+            "FormSpecial",
+            exc,
+        )
         return {}
 
 
@@ -741,25 +1154,31 @@ def _run_corners(
     away_context: Dict[str, Any],
     errors: List[str],
 ) -> Optional[Dict[str, Any]]:
-    """
-    CornersModel v1.3. .synthesize_match() — единственный метод,
-    реально считающий home/away/total_expected_corners.
-    """
 
     if CornersModel is None:
-        errors.append("CornersModel: MODULE_UNAVAILABLE")
+        errors.append(
+            "CornersModel: MODULE_UNAVAILABLE"
+        )
         return None
 
     try:
         model = CornersModel()
 
-        result = model.synthesize_match(home_context, away_context)
+        result = model.synthesize_match(
+            home_context,
+            away_context,
+        )
+
         result["state_type"] = "CornerState"
 
         return result
 
     except Exception as exc:
-        _record_organ_error(errors, "CornersModel", exc)
+        _record_organ_error(
+            errors,
+            "CornersModel",
+            exc,
+        )
         return None
 
 
@@ -772,25 +1191,31 @@ def _run_cards(
     away_context: Dict[str, Any],
     errors: List[str],
 ) -> Optional[Dict[str, Any]]:
-    """
-    CardsModel v1.3. .synthesize_match() — единственный метод,
-    реально считающий home/away/total_expected_cards.
-    """
 
     if CardsModel is None:
-        errors.append("CardsModel: MODULE_UNAVAILABLE")
+        errors.append(
+            "CardsModel: MODULE_UNAVAILABLE"
+        )
         return None
 
     try:
         model = CardsModel()
 
-        result = model.synthesize_match(home_context, away_context)
+        result = model.synthesize_match(
+            home_context,
+            away_context,
+        )
+
         result["state_type"] = "CardState"
 
         return result
 
     except Exception as exc:
-        _record_organ_error(errors, "CardsModel", exc)
+        _record_organ_error(
+            errors,
+            "CardsModel",
+            exc,
+        )
         return None
 
 
@@ -808,14 +1233,36 @@ def _run_parallel_states(
     errors: List[str] = []
 
     result: Dict[str, Any] = {
-        "form_win": {"home": None, "away": None},
-        "defence": {"home": None, "away": None},
-        "control": {"home": None, "away": None},
-        "anomaly": {"home": None, "away": None},
-        "special_form": {"home": None, "away": None},
+        "form_win": {
+            "home": None,
+            "away": None,
+        },
+
+        "defence": {
+            "home": None,
+            "away": None,
+        },
+
+        "control": {
+            "home": None,
+            "away": None,
+        },
+
+        "anomaly": {
+            "home": None,
+            "away": None,
+        },
+
+        "special_form": {
+            "home": None,
+            "away": None,
+        },
+
         "corners": None,
         "cards": None,
+
         "errors": errors,
+
         "contract": {
             "changes_lambda": False,
             "changes_probability": False,
@@ -824,36 +1271,85 @@ def _run_parallel_states(
         },
     }
 
-    form_win = _run_form_win(home_context, away_context, home_team, away_team, errors)
-    if isinstance(form_win, dict):
-        result["form_win"] = {"home": form_win.get("home"), "away": form_win.get("away")}
-        if "comparison" in form_win:
-            result["form_win"]["comparison"] = form_win["comparison"]
+    form_win = _run_form_win(
+        home_context,
+        away_context,
+        home_team,
+        away_team,
+        errors,
+    )
 
-    defence = _run_defence(home_context, away_context, home_team, away_team, errors)
+    if isinstance(form_win, dict):
+
+        result["form_win"] = {
+            "home": form_win.get("home"),
+            "away": form_win.get("away"),
+        }
+
+        if "comparison" in form_win:
+            result["form_win"]["comparison"] = (
+                form_win["comparison"]
+            )
+
+    defence = _run_defence(
+        home_context,
+        away_context,
+        home_team,
+        away_team,
+        errors,
+    )
+
     if isinstance(defence, dict):
         result["defence"] = defence
 
-    control = _run_form_control(home_context, away_context, home_team, away_team, errors)
+    control = _run_form_control(
+        home_context,
+        away_context,
+        home_team,
+        away_team,
+        errors,
+    )
+
     if isinstance(control, dict):
         result["control"] = control
 
-    anomaly = _run_form_anomaly(home_context, away_context, errors)
+    anomaly = _run_form_anomaly(
+        home_context,
+        away_context,
+        errors,
+    )
+
     if isinstance(anomaly, dict):
         result["anomaly"] = anomaly
 
-    special_form = _run_form_special(home_context, away_context, home_team, away_team, errors)
+    special_form = _run_form_special(
+        home_context,
+        away_context,
+        home_team,
+        away_team,
+        errors,
+    )
+
     if isinstance(special_form, dict):
         result["special_form"] = special_form
 
-    result["corners"] = _run_corners(home_context, away_context, errors)
-    result["cards"] = _run_cards(home_context, away_context, errors)
+    result["corners"] = _run_corners(
+        home_context,
+        away_context,
+        errors,
+    )
+
+    result["cards"] = _run_cards(
+        home_context,
+        away_context,
+        errors,
+    )
 
     return result
 
 
 # ============================================================
-# WINNER STATE (display-only, после ядра)
+# WINNER STATE
 # ============================================================
 
 def _extract_comparison_value(
@@ -862,22 +1358,53 @@ def _extract_comparison_value(
     field_name: str,
 ) -> Optional[float]:
 
-    organ = parallel.get(organ_key) or {}
-    comparison = organ.get("comparison") or {}
+    organ = parallel.get(
+        organ_key
+    ) or {}
 
-    return _num(comparison.get(field_name))
+    comparison = organ.get(
+        "comparison"
+    ) or {}
+
+    return _num(
+        comparison.get(field_name)
+    )
 
 
-def _anomaly_differential(parallel: Dict[str, Any]) -> Optional[float]:
+def _anomaly_differential(
+    parallel: Dict[str, Any],
+) -> Optional[float]:
 
-    anomaly = parallel.get("anomaly") or {}
-    home = anomaly.get("home") or {}
-    away = anomaly.get("away") or {}
+    anomaly = parallel.get(
+        "anomaly"
+    ) or {}
 
-    home_signal = _num(_get(home, "anomaly_signal"))
-    away_signal = _num(_get(away, "anomaly_signal"))
+    home = anomaly.get(
+        "home"
+    ) or {}
 
-    if home_signal is None or away_signal is None:
+    away = anomaly.get(
+        "away"
+    ) or {}
+
+    home_signal = _num(
+        _get(
+            home,
+            "anomaly_signal",
+        )
+    )
+
+    away_signal = _num(
+        _get(
+            away,
+            "anomaly_signal",
+        )
+    )
+
+    if (
+        home_signal is None
+        or away_signal is None
+    ):
         return None
 
     return home_signal - away_signal
@@ -895,15 +1422,40 @@ def _run_winner_state(
 ) -> Optional[Dict[str, Any]]:
 
     if WinnerStateBuilder is None:
-        errors.append("WinnerState: MODULE_UNAVAILABLE")
+        errors.append(
+            "WinnerState: MODULE_UNAVAILABLE"
+        )
         return None
 
     try:
-        relative_form_win = _extract_comparison_value(parallel, "form_win", "relative_form_win")
-        relative_defence = _extract_comparison_value(parallel, "defence", "relative_defence_advantage")
-        relative_control = _extract_comparison_value(parallel, "control", "relative_control")
-        special_differential = _extract_comparison_value(parallel, "special_form", "differential")
-        anomaly_differential = _anomaly_differential(parallel)
+
+        relative_form_win = _extract_comparison_value(
+            parallel,
+            "form_win",
+            "relative_form_win",
+        )
+
+        relative_defence = _extract_comparison_value(
+            parallel,
+            "defence",
+            "relative_defence_advantage",
+        )
+
+        relative_control = _extract_comparison_value(
+            parallel,
+            "control",
+            "relative_control",
+        )
+
+        special_differential = _extract_comparison_value(
+            parallel,
+            "special_form",
+            "differential",
+        )
+
+        anomaly_differential = _anomaly_differential(
+            parallel
+        )
 
         state = WinnerStateBuilder().build(
             home_win_probability=home_win_probability,
@@ -921,7 +1473,11 @@ def _run_winner_state(
         return state.to_dict()
 
     except Exception as exc:
-        _record_organ_error(errors, "WinnerState", exc)
+        _record_organ_error(
+            errors,
+            "WinnerState",
+            exc,
+        )
         return None
 
 
@@ -929,10 +1485,19 @@ def _run_winner_state(
 # PRIMARY OUTCOME / SCENARIO / QUALITY
 # ============================================================
 
-def _extract_probability(probability_state: Any, field_name: str) -> Optional[float]:
+def _extract_probability(
+    probability_state: Any,
+    field_name: str,
+) -> Optional[float]:
 
     data = _dict(probability_state)
-    return _prob(_get(data, field_name))
+
+    return _prob(
+        _get(
+            data,
+            field_name,
+        )
+    )
 
 
 def _primary_outcome(
@@ -941,40 +1506,102 @@ def _primary_outcome(
     away_probability: Optional[float],
 ) -> Optional[str]:
 
-    values = {"HOME": home_probability, "DRAW": draw_probability, "AWAY": away_probability}
-    available = {key: value for key, value in values.items() if value is not None}
+    values = {
+        "HOME": home_probability,
+        "DRAW": draw_probability,
+        "AWAY": away_probability,
+    }
+
+    available = {
+        key: value
+        for key, value in values.items()
+        if value is not None
+    }
 
     if not available:
         return None
 
-    return max(available, key=available.get)
+    return max(
+        available,
+        key=available.get,
+    )
 
 
-def _primary_scenario(score_state: Any) -> Optional[str]:
+def _primary_scenario(
+    score_state: Any,
+) -> Optional[str]:
 
     data = _dict(score_state)
-    score = _get(data, "predicted_score", "likely_score")
 
-    return str(score) if score is not None else None
+    score = _get(
+        data,
+        "predicted_score",
+        "likely_score",
+    )
+
+    return (
+        str(score)
+        if score is not None
+        else None
+    )
 
 
-def _core_quality(goal_state: Any, probability_state: Any, score_state: Any) -> Optional[float]:
+def _core_quality(
+    goal_state: Any,
+    probability_state: Any,
+    score_state: Any,
+) -> Optional[float]:
 
-    goal_data = _dict(goal_state)
-    probability_data = _dict(probability_state)
-    score_data = _dict(score_state)
+    goal_data = _dict(
+        goal_state
+    )
+
+    probability_data = _dict(
+        probability_state
+    )
+
+    score_data = _dict(
+        score_state
+    )
 
     checks = [
-        _num(_get(goal_data, "home_lambda")) is not None,
-        _num(_get(goal_data, "away_lambda")) is not None,
-        _get(probability_data, "score_distribution") not in (None, {}),
-        _get(score_data, "predicted_score", "likely_score") is not None,
+        _num(
+            _get(
+                goal_data,
+                "home_lambda",
+            )
+        ) is not None,
+
+        _num(
+            _get(
+                goal_data,
+                "away_lambda",
+            )
+        ) is not None,
+
+        _get(
+            probability_data,
+            "score_distribution",
+        ) not in (None, {}),
+
+        _get(
+            score_data,
+            "predicted_score",
+            "likely_score",
+        ) is not None,
     ]
 
     if not checks:
         return None
 
-    return sum(1 for value in checks if value) / len(checks)
+    return (
+        sum(
+            1
+            for value in checks
+            if value
+        )
+        / len(checks)
+    )
 
 
 # ============================================================
@@ -983,9 +1610,27 @@ def _core_quality(goal_state: Any, probability_state: Any, score_state: Any) -> 
 
 class FAJBrain:
     """
-    FAJ Brain v4.1. Собирает существующие математические органы
-    в одну чистую предматчевую цепочку и добавляет display-only
-    WinnerState поверх готового результата.
+    FAJ Brain v4.2.
+
+    Каноническое ядро:
+
+        FormContext
+        ->
+        FormModel
+        ->
+        GoalModel
+        ->
+        RatingReconciliation
+        ->
+        ProbabilityModel
+        ->
+        ScorePredictor
+
+    RatingReconciliation является единственным новым
+    математическим органом между GoalModel и ProbabilityModel.
+
+    Club Rating и Pair Rating не заменяют друг друга.
+    Они объединяются в отдельный диагностический сигнал.
     """
 
     VERSION = BRAIN_VERSION
@@ -997,77 +1642,303 @@ class FAJBrain:
         away_team: str,
         home_history: Sequence[Any],
         away_history: Sequence[Any],
+        home_rating: Optional[float] = None,
+        away_rating: Optional[float] = None,
+        pair_home_rating: Optional[float] = None,
+        pair_away_rating: Optional[float] = None,
     ) -> BrainPrediction:
 
         errors: List[str] = []
 
-        home_history = _history(home_history, home_team)
-        away_history = _history(away_history, away_team)
+        # ====================================================
+        # 0. HISTORY
+        # ====================================================
 
+        home_history = _history(
+            home_history,
+            home_team,
+        )
+
+        away_history = _history(
+            away_history,
+            away_team,
+        )
+
+        # ====================================================
         # 1. FORM CONTEXT
-        home_context = _build_context(home_team, home_history)
-        away_context = _build_context(away_team, away_history)
+        # ====================================================
 
+        home_context = _build_context(
+            home_team,
+            home_history,
+        )
+
+        away_context = _build_context(
+            away_team,
+            away_history,
+        )
+
+        # ====================================================
         # 2. FORM MODEL
-        home_form, away_form = _run_form_model(home_context, away_context)
+        # ====================================================
 
+        home_form, away_form = _run_form_model(
+            home_context,
+            away_context,
+        )
+
+        # ====================================================
         # 3. PARALLEL STATES
-        parallel = _run_parallel_states(home_context, away_context, home_team, away_team)
-        errors.extend(parallel.get("errors", []))
+        # ====================================================
 
-        # 4. GOAL STATE
-        goal_state = _run_goal_model(home_context, away_context, home_team, away_team)
-        home_lambda, away_lambda = _extract_lambdas(goal_state)
+        parallel = _run_parallel_states(
+            home_context,
+            away_context,
+            home_team,
+            away_team,
+        )
+
+        errors.extend(
+            parallel.get(
+                "errors",
+                [],
+            )
+        )
+
+        # ====================================================
+        # 4. GOAL MODEL
+        # ====================================================
+
+        goal_state = _run_goal_model(
+            home_context,
+            away_context,
+            home_team,
+            away_team,
+        )
+
+        # GoalModel is the OWNER of original λ
+        home_lambda_before, away_lambda_before = (
+            _extract_lambdas(goal_state)
+        )
+
+        if (
+            home_lambda_before is None
+            or away_lambda_before is None
+        ):
+            raise BrainCoreError(
+                "GoalModel returned incomplete lambda state"
+            )
+
+        total_lambda_before = (
+            home_lambda_before
+            + away_lambda_before
+        )
+
+        # ====================================================
+        # 5. RATING RECONCILIATION
+        # ====================================================
+
+        pair_rating_state, rating_reconciliation = (
+            _build_rating_reconciliation(
+                home_team=home_team,
+                away_team=away_team,
+                home_rating=home_rating,
+                away_rating=away_rating,
+                pair_home_rating=pair_home_rating,
+                pair_away_rating=pair_away_rating,
+            )
+        )
+
+        lambda_reconciliation = _run_lambda_reconciliation(
+            lambda_home=home_lambda_before,
+            lambda_away=away_lambda_before,
+            reconciliation=rating_reconciliation,
+        )
+
+        lambda_reconciliation_data = (
+            _serialize_lambda_reconciliation(
+                lambda_reconciliation
+            )
+        )
+
+        if lambda_reconciliation_data is None:
+            raise BrainCoreError(
+                "LambdaReconciliation returned invalid state"
+            )
+
+        # ----------------------------------------------------
+        # FINAL λ AFTER RECONCILIATION
+        # ----------------------------------------------------
+
+        home_lambda = _num(
+            _get(
+                lambda_reconciliation_data,
+                "lambda_home_after",
+                "home_lambda_after",
+            )
+        )
+
+        away_lambda = _num(
+            _get(
+                lambda_reconciliation_data,
+                "lambda_away_after",
+                "away_lambda_after",
+            )
+        )
+
+        if home_lambda is None:
+            raise BrainCoreError(
+                "LambdaReconciliation returned no home lambda"
+            )
+
+        if away_lambda is None:
+            raise BrainCoreError(
+                "LambdaReconciliation returned no away lambda"
+            )
 
         total_lambda = (
-            home_lambda + away_lambda
-            if home_lambda is not None and away_lambda is not None
-            else None
+            home_lambda
+            + away_lambda
         )
 
-        # 5. PROBABILITY STATE
-        probability_state = _run_probability_model(home_lambda, away_lambda)
+        # ====================================================
+        # 6. PROBABILITY MODEL
+        # ====================================================
 
-        # 6. SCORE STATE
-        score_state = _run_score_predictor(probability_state, home_lambda, away_lambda)
+        probability_state = _run_probability_model(
+            home_lambda,
+            away_lambda,
+        )
 
-        # 7. CORE PROBABILITIES
-        home_win_probability = _extract_probability(probability_state, "home_win")
-        draw_probability = _extract_probability(probability_state, "draw")
-        away_win_probability = _extract_probability(probability_state, "away_win")
-        btts_probability = _extract_probability(probability_state, "btts")
-        over_25_probability = _extract_probability(probability_state, "over_25")
-        under_25_probability = _extract_probability(probability_state, "under_25")
-        over_35_probability = _extract_probability(probability_state, "over_35")
-        under_35_probability = _extract_probability(probability_state, "under_35")
+        # ====================================================
+        # 7. SCORE STATE
+        # ====================================================
 
-        # 8. SCORE OUTPUT
-        score_data = _dict(score_state)
+        score_state = _run_score_predictor(
+            probability_state,
+            home_lambda,
+            away_lambda,
+        )
 
-        predicted_score = _get(score_data, "predicted_score", "likely_score")
-        second_score = _get(score_data, "second_score")
-        third_score = _get(score_data, "third_score")
+        # ====================================================
+        # 8. CORE PROBABILITIES
+        # ====================================================
+
+        home_win_probability = _extract_probability(
+            probability_state,
+            "home_win",
+        )
+
+        draw_probability = _extract_probability(
+            probability_state,
+            "draw",
+        )
+
+        away_win_probability = _extract_probability(
+            probability_state,
+            "away_win",
+        )
+
+        btts_probability = _extract_probability(
+            probability_state,
+            "btts",
+        )
+
+        over_25_probability = _extract_probability(
+            probability_state,
+            "over_25",
+        )
+
+        under_25_probability = _extract_probability(
+            probability_state,
+            "under_25",
+        )
+
+        over_35_probability = _extract_probability(
+            probability_state,
+            "over_35",
+        )
+
+        under_35_probability = _extract_probability(
+            probability_state,
+            "under_35",
+        )
+
+        # ====================================================
+        # 9. SCORE OUTPUT
+        # ====================================================
+
+        score_data = _dict(
+            score_state
+        )
+
+        predicted_score = _get(
+            score_data,
+            "predicted_score",
+            "likely_score",
+        )
+
+        second_score = _get(
+            score_data,
+            "second_score",
+        )
+
+        third_score = _get(
+            score_data,
+            "third_score",
+        )
 
         predicted_score_probability = _num(
-            _get(score_data, "probability_score", "primary_score_value")
+            _get(
+                score_data,
+                "probability_score",
+                "primary_score_value",
+            )
         )
 
-        top_scores = _get(score_data, "top_scores")
-        if not isinstance(top_scores, list):
+        top_scores = _get(
+            score_data,
+            "top_scores",
+        )
+
+        if not isinstance(
+            top_scores,
+            list,
+        ):
             top_scores = []
 
-        # 9. PRIMARY OUTCOME
+        # ====================================================
+        # 10. PRIMARY OUTCOME
+        # ====================================================
+
         primary_outcome = _primary_outcome(
-            home_win_probability, draw_probability, away_win_probability
+            home_win_probability,
+            draw_probability,
+            away_win_probability,
         )
 
-        # 10. PRIMARY SCENARIO
-        primary_scenario = _primary_scenario(score_state)
+        # ====================================================
+        # 11. PRIMARY SCENARIO
+        # ====================================================
 
-        # 11. CORE QUALITY
-        core_quality = _core_quality(goal_state, probability_state, score_state)
+        primary_scenario = _primary_scenario(
+            score_state
+        )
 
-        # 12. WINNER STATE (display-only, после core; НЕ влияет на core)
+        # ====================================================
+        # 12. CORE QUALITY
+        # ====================================================
+
+        core_quality = _core_quality(
+            goal_state,
+            probability_state,
+            score_state,
+        )
+
+        # ====================================================
+        # 13. WINNER STATE
+        # ====================================================
+
         winner_state = _run_winner_state(
             home_team=home_team,
             away_team=away_team,
@@ -1078,88 +1949,282 @@ class FAJBrain:
             errors=errors,
         )
 
-        # 13. DIAGNOSTICS
+        # ====================================================
+        # 14. RATING DIAGNOSTICS
+        # ====================================================
+
+        rating_reconciliation_data = (
+            _serialize_rating_state(
+                rating_reconciliation
+            )
+        )
+
+        pair_rating_data = (
+            _serialize_rating_state(
+                pair_rating_state
+            )
+        )
+
+        # ====================================================
+        # 15. DIAGNOSTICS
+        # ====================================================
+
         diagnostics = {
+
             "brain_version": BRAIN_VERSION,
             "brain_status": BRAIN_STATUS,
             "formula_status": "CONTRACT_V1",
 
+            # ------------------------------------------------
+            # CANONICAL CHAIN
+            # ------------------------------------------------
+
             "chain": [
-                "FACTS", "FormContext", "FormModel", "GoalModel",
-                "ProbabilityModel", "ScorePredictor", "FINAL_BRAIN",
+                "FACTS",
+                "FormContext",
+                "FormModel",
+                "GoalModel",
+                "RatingReconciliation",
+                "ProbabilityModel",
+                "ScorePredictor",
+                "FINAL_BRAIN",
             ],
+
+            # ------------------------------------------------
+            # PARALLEL STATES
+            # ------------------------------------------------
 
             "parallel_states": [
-                "FormWin", "Defence", "FormControl", "FormAnomaly",
-                "FormSpecial", "CornersModel", "CardsModel",
+                "FormWin",
+                "Defence",
+                "FormControl",
+                "FormAnomaly",
+                "FormSpecial",
+                "CornersModel",
+                "CardsModel",
             ],
 
-            "display_only_states": ["WinnerState"],
+            "display_only_states": [
+                "WinnerState"
+            ],
+
+            # ------------------------------------------------
+            # OWNERSHIP
+            # ------------------------------------------------
 
             "lambda_owner": "GoalModel",
-            "probability_owner": "ProbabilityModel",
-            "score_distribution_owner": "ProbabilityModel",
-            "score_ranking_owner": "ScorePredictor",
+
+            "lambda_reconciliation_owner": (
+                "RatingReconciliation"
+            ),
+
+            "probability_owner": (
+                "ProbabilityModel"
+            ),
+
+            "score_distribution_owner": (
+                "ProbabilityModel"
+            ),
+
+            "score_ranking_owner": (
+                "ScorePredictor"
+            ),
+
+            # ------------------------------------------------
+            # RATING ARCHITECTURE
+            # ------------------------------------------------
+
+            "club_rating_used": (
+                home_rating is not None
+                and away_rating is not None
+            ),
+
+            "pair_rating_used": (
+                pair_home_rating is not None
+                and pair_away_rating is not None
+            ),
+
+            "pair_rating_state": pair_rating_data,
+
+            "rating_reconciliation": (
+                rating_reconciliation_data
+            ),
+
+            "lambda_reconciliation": (
+                lambda_reconciliation_data
+            ),
+
+            # ------------------------------------------------
+            # λ INTEGRITY
+            # ------------------------------------------------
+
+            "lambda_before": {
+                "home": home_lambda_before,
+                "away": away_lambda_before,
+                "total": total_lambda_before,
+            },
+
+            "lambda_after": {
+                "home": home_lambda,
+                "away": away_lambda,
+                "total": total_lambda,
+            },
+
+            "lambda_total_preserved": (
+                math.isclose(
+                    total_lambda_before,
+                    total_lambda,
+                    rel_tol=1e-9,
+                    abs_tol=1e-9,
+                )
+            ),
+
+            # ------------------------------------------------
+            # NO UNAUTHORIZED FEEDBACK
+            # ------------------------------------------------
 
             "diagnostic_feedback_to_goal": False,
-            "diagnostic_feedback_to_probability": False,
-            "diagnostic_feedback_to_score": False,
+
+            "diagnostic_feedback_to_probability": (
+                False
+            ),
+
+            "diagnostic_feedback_to_score": (
+                False
+            ),
+
+            # ------------------------------------------------
+            # RATING IS THE EXPLICIT CORE INPUT
+            # ------------------------------------------------
+
+            "rating_reconciliation_changes_lambda": (
+                True
+            ),
+
+            "rating_reconciliation_changes_total_lambda": (
+                False
+            ),
+
+            "rating_reconciliation_changes_home_away_allocation": (
+                True
+            ),
+
+            # ------------------------------------------------
+            # OVERRIDES / MULTIPLIERS
+            # ------------------------------------------------
 
             "winner_override": False,
+
             "rating_multiplier": False,
+
             "form_multiplier": False,
+
             "control_multiplier": False,
+
             "defence_multiplier": False,
+
             "anomaly_multiplier": False,
+
             "special_multiplier": False,
+
             "finishing_bonus": False,
+
             "low_score_correction": False,
 
+            # ------------------------------------------------
+            # LEARNING / DB / FUTURE
+            # ------------------------------------------------
+
             "learning": False,
+
             "database_write": False,
+
             "future_result_used": False,
+
             "bookmaker_odds_used": False,
 
+            # ------------------------------------------------
+            # QUALITY
+            # ------------------------------------------------
+
             "core_data_quality": core_quality,
-            "home_history_size": len(home_history),
-            "away_history_size": len(away_history),
+
+            "home_history_size": len(
+                home_history
+            ),
+
+            "away_history_size": len(
+                away_history
+            ),
+
             "missing_is_zero": False,
 
+            # ------------------------------------------------
+            # CONFIDENCE / RISK
+            # ------------------------------------------------
+
             "confidence_calculated": False,
+
             "risk_calculated": False,
 
             "reason_confidence_none": (
-                "Confidence State coefficients are not defined/calibrated in Brain v4.1"
+                "Confidence State coefficients are "
+                "not defined/calibrated in Brain v4.2"
             ),
+
             "reason_risk_none": (
-                "Risk State decomposition is not yet calculated by Brain"
+                "Risk State decomposition is not yet "
+                "calculated by Brain"
             ),
         }
 
-        diagnostics["parallel_contract"] = parallel.get("contract", {})
+        diagnostics["parallel_contract"] = (
+            parallel.get(
+                "contract",
+                {},
+            )
+        )
+
+        # ====================================================
+        # ORGAN CONTRACTS
+        # ====================================================
 
         diagnostics["organ_contracts"] = {
+
             "FormWin": {
-                "api": "calculate(context, team_name=...) / compare(...)",
+                "api": (
+                    "calculate(context, team_name=...) "
+                    "/ compare(...)"
+                ),
                 "role": "evidence",
                 "modifies_goal_model": False,
                 "modifies_probability": False,
                 "winner_override": False,
             },
+
             "Defence": {
-                "api": "compare(home_context, away_context, home_team=..., away_team=...)",
+                "api": (
+                    "compare(home_context, away_context, "
+                    "home_team=..., away_team=...)"
+                ),
                 "role": "evidence",
                 "modifies_goal_model": False,
                 "modifies_probability": False,
                 "winner_override": False,
             },
+
             "FormControl": {
-                "api": "compare_control(home_context, away_context, home_team=..., away_team=...)",
+                "api": (
+                    "compare_control(home_context, "
+                    "away_context, home_team=..., "
+                    "away_team=...)"
+                ),
                 "role": "evidence",
                 "modifies_goal_model": False,
                 "modifies_probability": False,
                 "winner_override": False,
             },
+
             "FormAnomaly": {
                 "api": "analyze(context)",
                 "role": "evidence",
@@ -1167,90 +2232,237 @@ class FAJBrain:
                 "modifies_probability": False,
                 "winner_override": False,
             },
+
             "FormSpecial": {
-                "api": "compare(home_context, away_context, home_team=..., away_team=...)",
+                "api": (
+                    "compare(home_context, away_context, "
+                    "home_team=..., away_team=...)"
+                ),
                 "role": "evidence",
                 "modifies_goal_model": False,
                 "modifies_probability": False,
                 "winner_override": False,
             },
+
             "CornersModel": {
-                "api": "synthesize_match(home_context, away_context)",
+                "api": (
+                    "synthesize_match("
+                    "home_context, away_context)"
+                ),
                 "role": "separate_state",
                 "modifies_goal_model": False,
                 "modifies_probability": False,
                 "winner_override": False,
             },
+
             "CardsModel": {
-                "api": "synthesize_match(home_context, away_context)",
+                "api": (
+                    "synthesize_match("
+                    "home_context, away_context)"
+                ),
                 "role": "separate_state",
                 "modifies_goal_model": False,
                 "modifies_probability": False,
                 "winner_override": False,
             },
+
+            "RatingReconciliation": {
+                "api": (
+                    "reconcile_ratings(...) / "
+                    "reconcile_lambda(...)"
+                ),
+                "role": (
+                    "core_lambda_allocation"
+                ),
+                "modifies_goal_model_formula": False,
+                "modifies_goal_model_output": False,
+                "modifies_lambda_allocation": True,
+                "modifies_total_lambda": False,
+                "modifies_probability": False,
+                "winner_override": False,
+            },
+
             "WinnerState": {
-                "api": "build(home_win_probability=..., draw_probability=..., away_win_probability=..., ...)",
-                "role": "display_only_synthesis",
+                "api": (
+                    "build(home_win_probability=..., "
+                    "draw_probability=..., "
+                    "away_win_probability=..., ...)"
+                ),
+                "role": (
+                    "display_only_synthesis"
+                ),
                 "modifies_goal_model": False,
                 "modifies_probability": False,
                 "winner_override": False,
             },
         }
 
+        # ====================================================
+        # CORE INTEGRITY
+        # ====================================================
+
         diagnostics["core_integrity"] = {
+
             "goal_model_owner_of_lambda": True,
-            "probability_model_owner_of_probability": True,
-            "score_predictor_owner_of_score_ranking": True,
+
+            "rating_reconciliation_owner_of_lambda_allocation": (
+                True
+            ),
+
+            "rating_reconciliation_changes_total_lambda": (
+                False
+            ),
+
+            "probability_model_owner_of_probability": (
+                True
+            ),
+
+            "score_predictor_owner_of_score_ranking": (
+                True
+            ),
+
             "diagnostic_organs_modify_lambda": False,
-            "diagnostic_organs_modify_probability": False,
-            "diagnostic_organs_modify_score_distribution": False,
+
+            "diagnostic_organs_modify_probability": (
+                False
+            ),
+
+            "diagnostic_organs_modify_score_distribution": (
+                False
+            ),
+
             "winner_state_modifies_core": False,
+
             "none_is_zero": False,
+
             "future_result_used": False,
+
             "database_write": False,
+
             "learning": False,
         }
 
+        # ====================================================
+        # FINAL RESULT
+        # ====================================================
+
         return BrainPrediction(
+
             version=BRAIN_VERSION,
+
             home_team=home_team,
             away_team=away_team,
+
             home_context=home_context,
             away_context=away_context,
+
             home_form=home_form,
             away_form=away_form,
+
             goal_state=goal_state,
+
             probability_state=probability_state,
+
             score_state=score_state,
-            form_win=parallel["form_win"],
-            defence=parallel["defence"],
-            control=parallel["control"],
-            anomaly=parallel["anomaly"],
-            special_form=parallel["special_form"],
-            corners_state=parallel["corners"],
-            cards_state=parallel["cards"],
+
+            form_win=parallel[
+                "form_win"
+            ],
+
+            defence=parallel[
+                "defence"
+            ],
+
+            control=parallel[
+                "control"
+            ],
+
+            anomaly=parallel[
+                "anomaly"
+            ],
+
+            special_form=parallel[
+                "special_form"
+            ],
+
+            corners_state=parallel[
+                "corners"
+            ],
+
+            cards_state=parallel[
+                "cards"
+            ],
+
             winner_state=winner_state,
+
+            rating_reconciliation=(
+                rating_reconciliation_data
+            ),
+
+            lambda_reconciliation=(
+                lambda_reconciliation_data
+            ),
+
             home_lambda=home_lambda,
+
             away_lambda=away_lambda,
+
             total_lambda=total_lambda,
-            home_win_probability=home_win_probability,
-            draw_probability=draw_probability,
-            away_win_probability=away_win_probability,
-            btts_probability=btts_probability,
-            over_25_probability=over_25_probability,
-            under_25_probability=under_25_probability,
-            over_35_probability=over_35_probability,
-            under_35_probability=under_35_probability,
+
+            home_win_probability=(
+                home_win_probability
+            ),
+
+            draw_probability=(
+                draw_probability
+            ),
+
+            away_win_probability=(
+                away_win_probability
+            ),
+
+            btts_probability=(
+                btts_probability
+            ),
+
+            over_25_probability=(
+                over_25_probability
+            ),
+
+            under_25_probability=(
+                under_25_probability
+            ),
+
+            over_35_probability=(
+                over_35_probability
+            ),
+
+            under_35_probability=(
+                under_35_probability
+            ),
+
             predicted_score=predicted_score,
+
             second_score=second_score,
+
             third_score=third_score,
-            predicted_score_probability=predicted_score_probability,
+
+            predicted_score_probability=(
+                predicted_score_probability
+            ),
+
             top_scores=top_scores,
+
             primary_outcome=primary_outcome,
+
             primary_scenario=primary_scenario,
+
             confidence=None,
+
             risk=None,
+
             diagnostics=diagnostics,
+
             errors=errors,
         )
 
@@ -1264,6 +2476,10 @@ def predict(
     away_team: str,
     home_history: Sequence[Any],
     away_history: Sequence[Any],
+    home_rating: Optional[float] = None,
+    away_rating: Optional[float] = None,
+    pair_home_rating: Optional[float] = None,
+    pair_away_rating: Optional[float] = None,
 ) -> BrainPrediction:
 
     return FAJBrain().predict(
@@ -1271,6 +2487,10 @@ def predict(
         away_team=away_team,
         home_history=home_history,
         away_history=away_history,
+        home_rating=home_rating,
+        away_rating=away_rating,
+        pair_home_rating=pair_home_rating,
+        pair_away_rating=pair_away_rating,
     )
 
 
@@ -1279,6 +2499,10 @@ def predict_match(
     away_team: str,
     home_history: Sequence[Any],
     away_history: Sequence[Any],
+    home_rating: Optional[float] = None,
+    away_rating: Optional[float] = None,
+    pair_home_rating: Optional[float] = None,
+    pair_away_rating: Optional[float] = None,
 ) -> BrainPrediction:
 
     return predict(
@@ -1286,11 +2510,20 @@ def predict_match(
         away_team=away_team,
         home_history=home_history,
         away_history=away_history,
+        home_rating=home_rating,
+        away_rating=away_rating,
+        pair_home_rating=pair_home_rating,
+        pair_away_rating=pair_away_rating,
     )
 
 
 __all__ = [
-    "BRAIN_VERSION", "BRAIN_STATUS", "HISTORY_SIZE",
-    "BrainCoreError", "BrainPrediction", "FAJBrain",
-    "predict", "predict_match",
+    "BRAIN_VERSION",
+    "BRAIN_STATUS",
+    "HISTORY_SIZE",
+    "BrainCoreError",
+    "BrainPrediction",
+    "FAJBrain",
+    "predict",
+    "predict_match",
 ]
