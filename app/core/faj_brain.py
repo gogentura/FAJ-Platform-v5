@@ -31,6 +31,7 @@ FAJ BRAIN v4.2
       ->
     FINAL BRAIN
 
+
 RATING RECONCILIATION:
 
     Club Rating + Pair Rating
@@ -40,6 +41,7 @@ RATING RECONCILIATION:
        redistribution of λ
              ->
        ProbabilityModel
+
 
 ВАЖНО:
 
@@ -56,14 +58,31 @@ RATING RECONCILIATION:
 - Нет обучения.
 - Нет записи в database.py.
 - Нет использования будущего результата.
+- PredictionManager НЕ используется.
+
 
 MISSING DATA:
 
     None != 0
 
-Если Club Rating отсутствует, используется Pair Rating.
-Если Pair Rating отсутствует, используется Club Rating.
-Если отсутствуют оба источника, λ остаются исходными GoalModel.
+Если оба Club Rating доступны:
+    используется ClubGap.
+
+Если оба Pair Rating доступны:
+    используется PairGap.
+
+Если доступны оба источника:
+    R = 0.50 * ClubGap + 0.50 * PairGap
+
+Если доступен только Club Rating:
+    используется ClubGap.
+
+Если доступен только Pair Rating:
+    используется PairGap.
+
+Если нет ни одного полного источника:
+    λ остаются исходными GoalModel.
+
 
 RATING RECONCILIATION v1.0:
 
@@ -84,6 +103,22 @@ RATING RECONCILIATION v1.0:
 where:
 
     T = λH0 + λA0
+
+
+ИНТЕГРАЦИОННЫЙ КОНТРАК:
+
+    GoalModel
+        owns base λ
+
+    RatingReconciliation
+        owns λ allocation adjustment
+
+    ProbabilityModel
+        owns probabilities
+
+    ScorePredictor
+        owns score ranking
+
 
 VERSION
 -------
@@ -177,6 +212,9 @@ BRAIN_STATUS = "CONTRACT_V1"
 
 HISTORY_SIZE = 6
 
+# Rating reconciliation integration constants.
+RATING_RECONCILIATION_VERSION = "1.0"
+
 
 # ============================================================
 # EXCEPTION
@@ -225,7 +263,7 @@ class BrainPrediction:
     cards_state: Any = None
 
     # --------------------------------------------------------
-    # WINNER STATE (display-only)
+    # WINNER STATE
     # --------------------------------------------------------
 
     winner_state: Optional[Dict[str, Any]] = None
@@ -651,20 +689,29 @@ def _build_rating_reconciliation(
     away_rating: Optional[float],
     pair_home_rating: Optional[float],
     pair_away_rating: Optional[float],
-) -> Any:
+) -> tuple[Any, Any]:
     """
     Builds the Club Rating + Pair Rating reconciliation state.
 
     Club Rating:
-        objective / seasonal / club-level strength
+        objective / seasonal / club-level strength.
 
     Pair Rating:
-        manual / match-specific context
+        manual / match-specific context.
 
-    The reconciliation organ combines the two signals.
+    RatingReconciliation combines the available complete
+    rating sources.
+
+    Partial pairs are NOT converted to zero and are NOT
+    treated as valid rating gaps.
     """
 
     pair = None
+
+    # --------------------------------------------------------
+    # PairRating is only validated when the complete pair
+    # exists. It is not used to perform another λ calculation.
+    # --------------------------------------------------------
 
     if (
         pair_home_rating is not None
@@ -677,10 +724,15 @@ def _build_rating_reconciliation(
                 home_team=home_team,
                 away_team=away_team,
             )
+
         except Exception as exc:
             raise BrainCoreError(
                 "PairRating calculation failed"
             ) from exc
+
+    # --------------------------------------------------------
+    # Main reconciliation
+    # --------------------------------------------------------
 
     try:
         reconciliation = reconcile_ratings(
@@ -697,6 +749,11 @@ def _build_rating_reconciliation(
             "RatingReconciliation failed"
         ) from exc
 
+    if reconciliation is None:
+        raise BrainCoreError(
+            "RatingReconciliation returned None"
+        )
+
     return pair, reconciliation
 
 
@@ -709,14 +766,20 @@ def _run_lambda_reconciliation(
     """
     Applies RatingReconciliation to GoalModel λ.
 
-    IMPORTANT:
+    GoalModel owns:
 
-        GoalModel owns λ before reconciliation.
+        λH0
+        λA0
 
-        RatingReconciliation only redistributes
-        the existing total scoring mass.
+    RatingReconciliation owns only:
 
-        T = λH0 + λA0
+        λH0/λA0 allocation.
+
+    Total scoring mass must remain unchanged.
+
+        T_before = λH0 + λA0
+
+        T_after  = λH + λA
 
         T_after == T_before
     """
@@ -792,6 +855,11 @@ def _run_probability_model(
     away_lambda: Optional[float],
 ) -> Any:
 
+    if home_lambda is None or away_lambda is None:
+        raise BrainCoreError(
+            "ProbabilityModel received incomplete lambda state"
+        )
+
     model = ProbabilityModel()
 
     try:
@@ -823,12 +891,22 @@ def _run_score_predictor(
     away_lambda: Optional[float],
 ) -> Any:
 
+    if home_lambda is None or away_lambda is None:
+        raise BrainCoreError(
+            "ScorePredictor received incomplete lambda state"
+        )
+
     probability_data = _dict(probability_state)
 
     score_distribution = _get(
         probability_data,
         "score_distribution",
     )
+
+    if score_distribution in (None, {}):
+        raise BrainCoreError(
+            "ProbabilityModel returned no score distribution"
+        )
 
     predictor = ScorePredictor()
 
@@ -1626,11 +1704,22 @@ class FAJBrain:
         ->
         ScorePredictor
 
-    RatingReconciliation является единственным новым
-    математическим органом между GoalModel и ProbabilityModel.
 
-    Club Rating и Pair Rating не заменяют друг друга.
-    Они объединяются в отдельный диагностический сигнал.
+    GoalModel:
+        владелец исходных λ.
+
+    RatingReconciliation:
+        владелец перераспределения исходного
+        scoring mass между Home/Away.
+
+    ProbabilityModel:
+        владелец вероятностей.
+
+    ScorePredictor:
+        владелец ranking score distribution.
+
+
+    PredictionManager здесь НЕ используется.
     """
 
     VERSION = BRAIN_VERSION
@@ -1716,7 +1805,7 @@ class FAJBrain:
             away_team,
         )
 
-        # GoalModel is the OWNER of original λ
+        # GoalModel is the OWNER of original λ.
         home_lambda_before, away_lambda_before = (
             _extract_lambdas(goal_state)
         )
@@ -1729,10 +1818,23 @@ class FAJBrain:
                 "GoalModel returned incomplete lambda state"
             )
 
+        if (
+            home_lambda_before < 0.0
+            or away_lambda_before < 0.0
+        ):
+            raise BrainCoreError(
+                "GoalModel returned negative lambda"
+            )
+
         total_lambda_before = (
             home_lambda_before
             + away_lambda_before
         )
+
+        if not math.isfinite(total_lambda_before):
+            raise BrainCoreError(
+                "GoalModel returned invalid total lambda"
+            )
 
         # ====================================================
         # 5. RATING RECONCILIATION
@@ -1796,10 +1898,34 @@ class FAJBrain:
                 "LambdaReconciliation returned no away lambda"
             )
 
+        if home_lambda < 0.0 or away_lambda < 0.0:
+            raise BrainCoreError(
+                "LambdaReconciliation returned negative lambda"
+            )
+
         total_lambda = (
             home_lambda
             + away_lambda
         )
+
+        # ----------------------------------------------------
+        # HARD CONTRACT:
+        # RatingReconciliation MUST NOT alter T.
+        # ----------------------------------------------------
+
+        lambda_total_preserved = math.isclose(
+            total_lambda_before,
+            total_lambda,
+            rel_tol=1e-9,
+            abs_tol=1e-9,
+        )
+
+        if not lambda_total_preserved:
+            raise BrainCoreError(
+                "RatingReconciliation changed total lambda: "
+                f"before={total_lambda_before}, "
+                f"after={total_lambda}"
+            )
 
         # ====================================================
         # 6. PROBABILITY MODEL
@@ -2012,9 +2138,22 @@ class FAJBrain:
             # OWNERSHIP
             # ------------------------------------------------
 
+            # Base λ belongs to GoalModel.
             "lambda_owner": "GoalModel",
 
+            # Final λ allocation belongs to
+            # RatingReconciliation.
             "lambda_reconciliation_owner": (
+                "RatingReconciliation"
+            ),
+
+            "base_lambda_owner": "GoalModel",
+
+            "final_lambda_allocation_owner": (
+                "RatingReconciliation"
+            ),
+
+            "probability_input_owner": (
                 "RatingReconciliation"
             ),
 
@@ -2034,14 +2173,32 @@ class FAJBrain:
             # RATING ARCHITECTURE
             # ------------------------------------------------
 
-            "club_rating_used": (
+            "rating_reconciliation_version": (
+                RATING_RECONCILIATION_VERSION
+            ),
+
+            "club_rating_supplied": (
                 home_rating is not None
                 and away_rating is not None
             ),
 
-            "pair_rating_used": (
+            "pair_rating_supplied": (
                 pair_home_rating is not None
                 and pair_away_rating is not None
+            ),
+
+            "club_rating_used": (
+                rating_reconciliation_data is not None
+                and rating_reconciliation_data.get(
+                    "club_gap"
+                ) is not None
+            ),
+
+            "pair_rating_used": (
+                rating_reconciliation_data is not None
+                and rating_reconciliation_data.get(
+                    "pair_gap"
+                ) is not None
             ),
 
             "pair_rating_state": pair_rating_data,
@@ -2071,12 +2228,7 @@ class FAJBrain:
             },
 
             "lambda_total_preserved": (
-                math.isclose(
-                    total_lambda_before,
-                    total_lambda,
-                    rel_tol=1e-9,
-                    abs_tol=1e-9,
-                )
+                lambda_total_preserved
             ),
 
             # ------------------------------------------------
@@ -2094,7 +2246,7 @@ class FAJBrain:
             ),
 
             # ------------------------------------------------
-            # RATING IS THE EXPLICIT CORE INPUT
+            # RATING IS CORE INPUT
             # ------------------------------------------------
 
             "rating_reconciliation_changes_lambda": (
@@ -2107,6 +2259,18 @@ class FAJBrain:
 
             "rating_reconciliation_changes_home_away_allocation": (
                 True
+            ),
+
+            "rating_reconciliation_in_probability_formula": (
+                False
+            ),
+
+            "rating_reconciliation_before_probability": (
+                True
+            ),
+
+            "rating_reconciliation_in_score_predictor_formula": (
+                False
             ),
 
             # ------------------------------------------------
@@ -2142,6 +2306,8 @@ class FAJBrain:
             "future_result_used": False,
 
             "bookmaker_odds_used": False,
+
+            "prediction_manager_used": False,
 
             # ------------------------------------------------
             # QUALITY
@@ -2279,6 +2445,7 @@ class FAJBrain:
                 "modifies_lambda_allocation": True,
                 "modifies_total_lambda": False,
                 "modifies_probability": False,
+                "modifies_score_distribution": False,
                 "winner_override": False,
             },
 
@@ -2303,7 +2470,7 @@ class FAJBrain:
 
         diagnostics["core_integrity"] = {
 
-            "goal_model_owner_of_lambda": True,
+            "goal_model_owner_of_base_lambda": True,
 
             "rating_reconciliation_owner_of_lambda_allocation": (
                 True
@@ -2311,6 +2478,10 @@ class FAJBrain:
 
             "rating_reconciliation_changes_total_lambda": (
                 False
+            ),
+
+            "lambda_total_preserved": (
+                lambda_total_preserved
             ),
 
             "probability_model_owner_of_probability": (
@@ -2322,6 +2493,8 @@ class FAJBrain:
             ),
 
             "diagnostic_organs_modify_lambda": False,
+
+            "rating_reconciliation_is_core": True,
 
             "diagnostic_organs_modify_probability": (
                 False
@@ -2340,6 +2513,8 @@ class FAJBrain:
             "database_write": False,
 
             "learning": False,
+
+            "prediction_manager_used": False,
         }
 
         # ====================================================
