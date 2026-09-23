@@ -44,8 +44,9 @@ Predictor только:
 
     1. получает FACTS;
     2. нормализует историю;
-    3. передаёт history в Brain;
-    4. отображает BrainPrediction.
+    3. получает FAJ Club Rating;
+    4. передаёт history + rating в Brain;
+    5. отображает BrainPrediction.
 
 FAJ Brain v4.0:
 
@@ -63,6 +64,20 @@ FAJ Brain v4.0:
       ↓
     FINAL BRAIN
 
+Rating:
+
+    Club Rating
+        ↓
+    FAJBrain
+        ↓
+    Rating Reconciliation
+        ↓
+    λ Home / λ Away
+        ↓
+    ProbabilityModel
+        ↓
+    ScorePredictor
+
 Параллельно:
 
     FormWin
@@ -79,7 +94,6 @@ FAJ Brain v4.0:
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
-from datetime import datetime
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import streamlit as st
@@ -98,10 +112,13 @@ from app.parsers.soccer365_parser import Soccer365Parser
 
 
 # ============================================================
-# OPTIONAL RATING
+# FAJ CLUB RATING
 #
-# Rating is DISPLAY ONLY.
-# It is NEVER passed into FAJBrain.
+# Rating is now an INPUT to FAJBrain.
+#
+# Predictor does NOT calculate rating.
+# Predictor only reads the existing FAJ Club Rating
+# and passes it unchanged to FAJBrain.
 # ============================================================
 
 try:
@@ -1291,6 +1308,34 @@ def collect_history(
 
 
 # ============================================================
+# RATING
+# ============================================================
+
+def get_display_rating(
+    team_name: str,
+) -> Optional[Any]:
+    """
+    Read the existing FAJ Club Rating.
+
+    This function does NOT calculate or modify rating.
+
+    Missing rating remains None.
+    """
+
+    if get_team_rating is None:
+        return None
+
+    try:
+
+        return get_team_rating(
+            team_name
+        )
+
+    except Exception:
+        return None
+
+
+# ============================================================
 # BRAIN CALL
 # ============================================================
 
@@ -1299,24 +1344,24 @@ def calculate_prediction(
     away_team: str,
     home_records: Sequence[Mapping[str, Any]],
     away_records: Sequence[Mapping[str, Any]],
+    home_rating: Optional[float] = None,
+    away_rating: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Run FAJ Brain v4.0.
 
-    IMPORTANT:
-
-    Brain v4.0 requires:
+    Brain receives:
 
         home_history
         away_history
+        home_rating
+        away_rating
 
-    NOT:
+    Rating is NOT calculated here.
 
-        home_matches
-        away_matches
+    Rating reconciliation belongs to FAJ Brain.
 
-    BrainPrediction is converted to dict here
-    for compatibility with Streamlit UI.
+    PredictionManager is intentionally NOT used.
     """
 
     if not home_records:
@@ -1336,6 +1381,21 @@ def calculate_prediction(
         away_team=away_team,
         home_history=list(home_records),
         away_history=list(away_records),
+
+        # ----------------------------------------------------
+        # IMPORTANT:
+        #
+        # Existing Club Rating is now actually passed
+        # into FAJ Brain.
+        # ----------------------------------------------------
+
+        home_rating=safe_float(
+            home_rating
+        ),
+
+        away_rating=safe_float(
+            away_rating
+        ),
     )
 
     if result is None:
@@ -1579,32 +1639,6 @@ def _render_state_summary(
 
 
 # ============================================================
-# RATING DISPLAY
-# ============================================================
-
-def get_display_rating(
-    team_name: str,
-) -> Optional[Any]:
-    """
-    Rating is informational only.
-
-    It does NOT enter Brain.
-    """
-
-    if get_team_rating is None:
-        return None
-
-    try:
-
-        return get_team_rating(
-            team_name
-        )
-
-    except Exception:
-        return None
-
-
-# ============================================================
 # PAGE HEADER
 # ============================================================
 
@@ -1799,6 +1833,26 @@ if run_prediction:
         st.stop()
 
     # --------------------------------------------------------
+    # GET CLUB RATINGS
+    #
+    # IMPORTANT:
+    # Read ratings BEFORE Brain call.
+    # They are the existing FAJ Club Ratings.
+    # --------------------------------------------------------
+
+    home_rating = safe_float(
+        get_display_rating(
+            home_team
+        )
+    )
+
+    away_rating = safe_float(
+        get_display_rating(
+            away_team
+        )
+    )
+
+    # --------------------------------------------------------
     # SHOW FACT COLLECTION
     # --------------------------------------------------------
 
@@ -1864,6 +1918,13 @@ if run_prediction:
                 away_team=away_team,
                 home_records=home_records,
                 away_records=away_records,
+
+                # ------------------------------------------------
+                # CLUB RATING → BRAIN
+                # ------------------------------------------------
+
+                home_rating=home_rating,
+                away_rating=away_rating,
             )
 
     except Exception as exc:
@@ -2224,7 +2285,6 @@ if run_prediction:
             corners_state
         )
 
-        # Try common current field names.
         home_corners = _get(
             corners_data,
             "home_corners",
@@ -2439,10 +2499,6 @@ if run_prediction:
         "lambda, Poisson, вероятностей или ranking score."
     )
 
-    # --------------------------------------------------------
-    # Form
-    # --------------------------------------------------------
-
     form_col1, form_col2 = st.columns(2)
 
     with form_col1:
@@ -2462,10 +2518,6 @@ if run_prediction:
                 "away_form"
             ),
         )
-
-    # --------------------------------------------------------
-    # FormWin
-    # --------------------------------------------------------
 
     fw_col1, fw_col2 = st.columns(2)
 
@@ -2494,10 +2546,6 @@ if run_prediction:
             ),
         )
 
-    # --------------------------------------------------------
-    # Defence
-    # --------------------------------------------------------
-
     def_col1, def_col2 = st.columns(2)
 
     defence = prediction.get(
@@ -2524,10 +2572,6 @@ if run_prediction:
                 "away",
             ),
         )
-
-    # --------------------------------------------------------
-    # Control
-    # --------------------------------------------------------
 
     ctrl_col1, ctrl_col2 = st.columns(2)
 
@@ -2556,10 +2600,6 @@ if run_prediction:
             ),
         )
 
-    # --------------------------------------------------------
-    # Anomaly
-    # --------------------------------------------------------
-
     an_col1, an_col2 = st.columns(2)
 
     anomaly = prediction.get(
@@ -2586,10 +2626,6 @@ if run_prediction:
                 "away",
             ),
         )
-
-    # --------------------------------------------------------
-    # Special Form
-    # --------------------------------------------------------
 
     sf_col1, sf_col2 = st.columns(2)
 
@@ -2791,27 +2827,25 @@ if run_prediction:
                 )
 
     # ========================================================
-    # RATING — DISPLAY ONLY
+    # RATING
     # ========================================================
 
     st.divider()
 
     st.subheader(
-        "FAJ Rating — informational only"
+        "FAJ Club Rating → Brain"
     )
 
     st.caption(
-        "Рейтинг не передавался в Brain "
-        "и не участвовал в математике прогноза."
+        "Club Rating является входным сигналом FAJ Brain. "
+        "Brain самостоятельно выполняет Rating Reconciliation "
+        "и передаёт скорректированные λ в ProbabilityModel "
+        "и ScorePredictor."
     )
 
     rating_col1, rating_col2 = st.columns(2)
 
     with rating_col1:
-
-        home_rating = get_display_rating(
-            home_team
-        )
 
         st.metric(
             home_team,
@@ -2824,10 +2858,6 @@ if run_prediction:
 
     with rating_col2:
 
-        away_rating = get_display_rating(
-            away_team
-        )
-
         st.metric(
             away_team,
             (
@@ -2836,6 +2866,125 @@ if run_prediction:
                 else "—"
             ),
         )
+
+    # --------------------------------------------------------
+    # RATING RECONCILIATION DIAGNOSTIC
+    # --------------------------------------------------------
+
+    rating_reconciliation = prediction.get(
+        "rating_reconciliation"
+    )
+
+    lambda_reconciliation = prediction.get(
+        "lambda_reconciliation"
+    )
+
+    if (
+        rating_reconciliation is not None
+        or lambda_reconciliation is not None
+    ):
+
+        st.markdown(
+            "#### Rating Reconciliation"
+        )
+
+        rr_data = _as_dict(
+            rating_reconciliation
+        )
+
+        lr_data = _as_dict(
+            lambda_reconciliation
+        )
+
+        rr1, rr2, rr3 = st.columns(3)
+
+        with rr1:
+
+            st.metric(
+                "Club Gap",
+                fmt_number(
+                    rr_data.get(
+                        "club_gap"
+                    )
+                ),
+            )
+
+        with rr2:
+
+            st.metric(
+                "Reconciled Gap",
+                fmt_number(
+                    rr_data.get(
+                        "reconciled_gap"
+                    )
+                ),
+            )
+
+        with rr3:
+
+            st.metric(
+                "Signal",
+                fmt_number(
+                    rr_data.get(
+                        "reconciled_signal"
+                    ),
+                    3,
+                ),
+            )
+
+        lr1, lr2, lr3 = st.columns(3)
+
+        with lr1:
+
+            st.metric(
+                "λ Home Before",
+                fmt_number(
+                    lr_data.get(
+                        "home_lambda_before"
+                    )
+                ),
+            )
+
+        with lr2:
+
+            st.metric(
+                "λ Home After",
+                fmt_number(
+                    lr_data.get(
+                        "home_lambda_after"
+                    )
+                ),
+            )
+
+        with lr3:
+
+            st.metric(
+                "Share Shift",
+                fmt_number(
+                    lr_data.get(
+                        "share_shift"
+                    ),
+                    4,
+                ),
+            )
+
+        with st.expander(
+            "Rating reconciliation raw state",
+            expanded=False,
+        ):
+
+            st.json(
+                {
+                    "rating_reconciliation":
+                        _serialize(
+                            rr_data
+                        ),
+                    "lambda_reconciliation":
+                        _serialize(
+                            lr_data
+                        ),
+                }
+            )
 
     # ========================================================
     # RAW BRAIN PREDICTION
@@ -2858,6 +3007,13 @@ if run_prediction:
     # COPYABLE DIAGNOSTIC REPORT
     # ========================================================
 
+    diagnostics_data = (
+        prediction.get(
+            "diagnostics",
+            {}
+        )
+    )
+
     report_lines = [
 
         "============================================================",
@@ -2868,10 +3024,30 @@ if run_prediction:
         f"HOME: {home_team}",
         f"AWAY: {away_team}",
         "",
+        "CLUB RATING",
+        f"Home: {fmt_number(home_rating)}",
+        f"Away: {fmt_number(away_rating)}",
+        f"Club Rating supplied: "
+        f"{diagnostics_data.get('club_rating_supplied', False)}",
+        "",
         "LAMBDA",
         f"Home: {fmt_number(home_lambda)}",
         f"Away: {fmt_number(away_lambda)}",
         f"Total: {fmt_number(total_lambda)}",
+        "",
+        "RATING RECONCILIATION",
+        f"Club gap: "
+        f"{fmt_number(diagnostics_data.get('club_gap'))}",
+        f"Pair gap: "
+        f"{fmt_number(diagnostics_data.get('pair_gap'))}",
+        f"Reconciled gap: "
+        f"{fmt_number(diagnostics_data.get('reconciled_gap'))}",
+        f"Reconciled signal: "
+        f"{fmt_number(diagnostics_data.get('reconciled_signal'), 3)}",
+        f"Share shift: "
+        f"{fmt_number(diagnostics_data.get('lambda_share_shift'), 4)}",
+        f"Lambda total preserved: "
+        f"{diagnostics_data.get('lambda_total_preserved', '—')}",
         "",
         "1X2",
         f"Home: {fmt_probability(home_win)}",
@@ -2903,7 +3079,10 @@ if run_prediction:
         "—",
         "",
         "IMPORTANT",
-        "Diagnostic states do not modify Core prediction.",
+        "Club Rating is passed into FAJ Brain.",
+        "Rating Reconciliation is performed inside FAJ Brain.",
+        "Adjusted lambda is passed to ProbabilityModel.",
+        "Adjusted lambda is passed to ScorePredictor.",
         "No rating multiplier.",
         "No form multiplier.",
         "No control multiplier.",
@@ -2913,6 +3092,7 @@ if run_prediction:
         "No Winner Override.",
         "No future result.",
         "No database write.",
+        "PredictionManager is not used.",
         "============================================================",
     ]
 
@@ -2948,5 +3128,6 @@ st.caption(
     "Missing ≠ 0 · "
     "Brain does not learn · "
     "Brain does not write database · "
-    "Diagnostic States do not override Core mathematics"
+    "Club Rating is an input to Brain · "
+    "Rating Reconciliation belongs to Brain"
 )
