@@ -2,40 +2,53 @@
 # -*- coding: utf-8 -*-
 
 """
+============================================================
 FAJ PLATFORM v12.1
 RATING RECONCILIATION v1.0
+============================================================
 
-Объединяет:
+НАЗНАЧЕНИЕ
+----------
 
-    Club Rating
-    Pair Rating
+Объединяет FAJ Club Rating (объективный, посезонный) и
+FAJ Pair Rating (ручной, per-match) в единый сигнал и
+перераспределяет уже существующие λ (от GoalModel) между
+Home/Away — БЕЗ изменения их суммы.
 
-и формирует силовой сигнал для перераспределения
-GoalModel scoring mass между Home и Away.
+Контракт зафиксирован в faj_brain.py v4.2:
 
-ВАЖНО:
+    ClubGap = ClubHome - ClubAway
+    PairGap = PairHome - PairAway
 
-Reconciliation НЕ увеличивает и НЕ уменьшает общий λ.
+    Оба источника доступны:
+        R = 0.50 * ClubGap + 0.50 * PairGap
+    Только Club:
+        R = ClubGap
+    Только Pair:
+        R = PairGap
+    Ничего нет:
+        R = None (adjustment не применяется)
 
-GoalModel сначала определяет:
+    S = tanh(R / 15.0)                         # [-1, +1]
 
-    lambda_home
-    lambda_away
+    B  = λH0 / (λH0 + λA0)                      # исходная доля Home
+    B' = clamp(B + 0.15 * S, 0.20, 0.80)        # скорректированная доля
 
-Reconciliation меняет только их распределение:
+    T  = λH0 + λA0
+    λH = T * B'
+    λA = T * (1 - B')
 
-    total_lambda = lambda_home + lambda_away
+ГАРАНТИЯ: λH + λA == λH0 + λA0 всегда (проверяется самим
+Brain через math.isclose после вызова reconcile_lambda —
+при расхождении Brain поднимает BrainCoreError).
 
-Club Rating:
-    сезонная базовая сила клуба.
+НЕ считает xG. НЕ владеет GoalModel. НЕ трогает
+ProbabilityModel/ScorePredictor напрямую — только
+перераспределяет то, что уже посчитал GoalModel.
 
-Pair Rating:
-    ручная оценка конкретного матча.
-
-Disagreement:
-    pair_gap - club_gap
-
-Это отдельный диагностический сигнал.
+None != 0. Отсутствие данных не подставляется нулём —
+adjustment просто не применяется.
+============================================================
 """
 
 from __future__ import annotations
@@ -47,35 +60,33 @@ from typing import Optional
 
 RATING_RECONCILIATION_VERSION = "1.0"
 
-# Вес Pair относительно Club при формировании
-# reconciled rating gap.
-DEFAULT_PAIR_WEIGHT = 0.50
+# Веса объединения Club/Pair. Явные, не калиброванные под
+# контрольные матчи — 50/50 по умолчанию.
+CLUB_WEIGHT_DEFAULT = 0.50
+PAIR_WEIGHT_DEFAULT = 0.50
 
-# Вес Club.
-DEFAULT_CLUB_WEIGHT = 0.50
-
-# Нормализация rating gap.
+# Шкала нормализации R -> S через tanh. Согласована с той же
+# шкалой, что использовалась для club-rating-only сигнала
+# в GoalModel ранее.
 RATING_SCALE = 15.0
 
-# Максимальный сдвиг доли Home.
-#
-# Например:
-# baseline Home share = 0.55
-# rating signal = +1
-# beta = 0.15
-#
-# final Home share = 0.70
-#
-# Общий lambda при этом НЕ изменяется.
-LAMBDA_SHARE_ADJUSTMENT = 0.15
+# Насколько сильно сигнал S может сдвинуть долю λ у Home.
+# 0.15 = максимум ±15 процентных пунктов доли при S = ±1.
+SHARE_ADJUSTMENT_WEIGHT = 0.15
 
-# Жёсткие границы распределения scoring mass.
-MIN_HOME_SHARE = 0.20
-MAX_HOME_SHARE = 0.80
+# Жёсткие границы итоговой доли — не даём одной команде
+# забрать почти всю λ только из-за рейтинга.
+SHARE_MIN = 0.20
+SHARE_MAX = 0.80
 
+
+# ============================================================
+# RATING RECONCILIATION (Club + Pair -> signal)
+# ============================================================
 
 @dataclass(frozen=True)
 class RatingReconciliation:
+
     version: str
 
     home_team: str
@@ -89,86 +100,31 @@ class RatingReconciliation:
     pair_away_rating: Optional[float]
     pair_gap: Optional[float]
 
-    disagreement: Optional[float]
-    high_disagreement: bool
-
-    reconciled_gap: Optional[float]
-    reconciled_signal: Optional[float]
+    reconciled_gap: Optional[float]      # R
+    reconciled_signal: Optional[float]   # S = tanh(R / RATING_SCALE)
 
     club_weight: float
     pair_weight: float
+
+    sources_used: str  # "club_and_pair" | "club_only" | "pair_only" | "none"
 
     def to_dict(self) -> dict:
         return {
             "version": self.version,
             "home_team": self.home_team,
             "away_team": self.away_team,
-
             "club_home_rating": self.club_home_rating,
             "club_away_rating": self.club_away_rating,
             "club_gap": self.club_gap,
-
             "pair_home_rating": self.pair_home_rating,
             "pair_away_rating": self.pair_away_rating,
             "pair_gap": self.pair_gap,
-
-            "disagreement": self.disagreement,
-            "high_disagreement": self.high_disagreement,
-
             "reconciled_gap": self.reconciled_gap,
             "reconciled_signal": self.reconciled_signal,
-
             "club_weight": self.club_weight,
             "pair_weight": self.pair_weight,
+            "sources_used": self.sources_used,
         }
-
-
-@dataclass(frozen=True)
-class LambdaReconciliation:
-    version: str
-
-    lambda_home_before: float
-    lambda_away_before: float
-
-    total_lambda: float
-
-    baseline_home_share: float
-    final_home_share: float
-
-    lambda_home_after: float
-    lambda_away_after: float
-
-    share_shift: float
-
-    reconciled_signal: Optional[float]
-
-    def to_dict(self) -> dict:
-        return {
-            "version": self.version,
-
-            "lambda_home_before": self.lambda_home_before,
-            "lambda_away_before": self.lambda_away_before,
-
-            "total_lambda": self.total_lambda,
-
-            "baseline_home_share": self.baseline_home_share,
-            "final_home_share": self.final_home_share,
-
-            "lambda_home_after": self.lambda_home_after,
-            "lambda_away_after": self.lambda_away_after,
-
-            "share_shift": self.share_shift,
-
-            "reconciled_signal": self.reconciled_signal,
-        }
-
-
-def _clamp(
-    value: float,
-    minimum: float,
-    maximum: float,
-) -> float:
-    return max(minimum, min(maximum, value))
 
 
 def reconcile_ratings(
@@ -178,241 +134,205 @@ def reconcile_ratings(
     club_away_rating: Optional[float] = None,
     pair_home_rating: Optional[float] = None,
     pair_away_rating: Optional[float] = None,
-    club_weight: float = DEFAULT_CLUB_WEIGHT,
-    pair_weight: float = DEFAULT_PAIR_WEIGHT,
+    club_weight: float = CLUB_WEIGHT_DEFAULT,
+    pair_weight: float = PAIR_WEIGHT_DEFAULT,
 ) -> RatingReconciliation:
+    """
+    Строит единый reconciled_gap/reconciled_signal из доступных
+    источников. Любой источник может отсутствовать целиком —
+    тогда используется только другой; если нет обоих — сигнал
+    None, и λ дальше по цепочке останется без изменений
+    (это решает уже reconcile_lambda, не эта функция).
+    """
 
-    club_gap = None
+    club_gap: Optional[float] = None
 
-    if (
-        club_home_rating is not None
-        and club_away_rating is not None
-    ):
-        club_gap = (
-            float(club_home_rating)
-            - float(club_away_rating)
-        )
+    if club_home_rating is not None and club_away_rating is not None:
+        club_gap = float(club_home_rating) - float(club_away_rating)
 
-    pair_gap = None
+    pair_gap: Optional[float] = None
 
-    if (
-        pair_home_rating is not None
-        and pair_away_rating is not None
-    ):
-        pair_gap = (
-            float(pair_home_rating)
-            - float(pair_away_rating)
-        )
+    if pair_home_rating is not None and pair_away_rating is not None:
+        pair_gap = float(pair_home_rating) - float(pair_away_rating)
 
-    have_club = club_gap is not None
-    have_pair = pair_gap is not None
+    reconciled_gap: Optional[float] = None
+    sources_used = "none"
 
-    reconciled_gap = None
+    if club_gap is not None and pair_gap is not None:
 
-    if have_club and have_pair:
-        total_weight = (
-            float(club_weight)
-            + float(pair_weight)
-        )
+        total_weight = club_weight + pair_weight
 
         if total_weight <= 0:
             total_weight = 1.0
-            club_weight = DEFAULT_CLUB_WEIGHT
-            pair_weight = DEFAULT_PAIR_WEIGHT
+            club_weight, pair_weight = CLUB_WEIGHT_DEFAULT, PAIR_WEIGHT_DEFAULT
 
         reconciled_gap = (
-            (
-                float(club_weight) * club_gap
-                + float(pair_weight) * pair_gap
-            )
-            / total_weight
-        )
+            club_weight * club_gap + pair_weight * pair_gap
+        ) / total_weight
 
-    elif have_club:
+        sources_used = "club_and_pair"
+
+    elif club_gap is not None:
         reconciled_gap = club_gap
+        sources_used = "club_only"
 
-    elif have_pair:
+    elif pair_gap is not None:
         reconciled_gap = pair_gap
+        sources_used = "pair_only"
 
-    reconciled_signal = None
+    reconciled_signal: Optional[float] = None
 
     if reconciled_gap is not None:
-        reconciled_signal = tanh(
-            reconciled_gap / RATING_SCALE
-        )
-
-    disagreement = None
-    high_disagreement = False
-
-    if have_club and have_pair:
-        disagreement = pair_gap - club_gap
-
-        # Диагностический порог.
-        high_disagreement = (
-            abs(disagreement) >= 10.0
-        )
+        reconciled_signal = tanh(reconciled_gap / RATING_SCALE)
 
     return RatingReconciliation(
         version=RATING_RECONCILIATION_VERSION,
-
         home_team=home_team,
         away_team=away_team,
-
         club_home_rating=club_home_rating,
         club_away_rating=club_away_rating,
         club_gap=club_gap,
-
         pair_home_rating=pair_home_rating,
         pair_away_rating=pair_away_rating,
         pair_gap=pair_gap,
-
-        disagreement=disagreement,
-        high_disagreement=high_disagreement,
-
         reconciled_gap=reconciled_gap,
         reconciled_signal=reconciled_signal,
-
-        club_weight=float(club_weight),
-        pair_weight=float(pair_weight),
+        club_weight=club_weight,
+        pair_weight=pair_weight,
+        sources_used=sources_used,
     )
+
+
+# ============================================================
+# LAMBDA RECONCILIATION (signal -> λ redistribution)
+# ============================================================
+
+@dataclass(frozen=True)
+class LambdaReconciliation:
+
+    lambda_home_before: float
+    lambda_away_before: float
+    total_lambda: float
+
+    base_share_home: Optional[float]
+    adjusted_share_home: Optional[float]
+
+    signal_used: Optional[float]
+    share_shift: Optional[float]
+    weight_used: float
+
+    lambda_home_after: float
+    lambda_away_after: float
+
+    def to_dict(self) -> dict:
+        return {
+            "lambda_home_before": self.lambda_home_before,
+            "lambda_away_before": self.lambda_away_before,
+            "total_lambda": self.total_lambda,
+            "base_share_home": self.base_share_home,
+            "adjusted_share_home": self.adjusted_share_home,
+            "signal_used": self.signal_used,
+            "share_shift": self.share_shift,
+            "weight_used": self.weight_used,
+            "lambda_home_after": self.lambda_home_after,
+            "lambda_away_after": self.lambda_away_after,
+        }
 
 
 def reconcile_lambda(
     lambda_home: float,
     lambda_away: float,
     reconciled_signal: Optional[float],
-    adjustment: float = LAMBDA_SHARE_ADJUSTMENT,
+    weight: float = SHARE_ADJUSTMENT_WEIGHT,
+    share_min: float = SHARE_MIN,
+    share_max: float = SHARE_MAX,
 ) -> LambdaReconciliation:
     """
-    Перераспределяет scoring mass между Home и Away.
+    Перераспределяет λH0/λA0 в λH/λA по формуле:
 
-    НЕ изменяет:
+        B  = λH0 / (λH0 + λA0)
+        B' = clamp(B + weight * signal, share_min, share_max)
+        T  = λH0 + λA0
+        λH = T * B'
+        λA = T * (1 - B')
 
-        total_lambda
+    T всегда сохраняется в точности — Home и Away могут
+    только "обменяться" долей внутри одной и той же общей
+    массы λ, но не создать и не потерять голы в сумме.
 
-    Изменяется только:
+    reconciled_signal is None (нет ни club, ни pair рейтинга)
+    -> λ возвращаются без изменений (B' = B).
 
-        Home share
-        Away share
-
-    Формула:
-
-        baseline_share =
-            lambda_home / total_lambda
-
-        final_share =
-            clamp(
-                baseline_share
-                + adjustment * signal,
-                0.20,
-                0.80
-            )
-
-        lambda_home =
-            total_lambda * final_share
-
-        lambda_away =
-            total_lambda * (1 - final_share)
+    total <= 0 (оба λ нулевые) -> нечего перераспределять,
+    λ возвращаются без изменений.
     """
 
-    lambda_home = float(lambda_home)
-    lambda_away = float(lambda_away)
+    total = lambda_home + lambda_away
 
-    if lambda_home < 0:
-        raise ValueError(
-            "lambda_home must be >= 0"
-        )
+    if total <= 0:
 
-    if lambda_away < 0:
-        raise ValueError(
-            "lambda_away must be >= 0"
-        )
-
-    total_lambda = lambda_home + lambda_away
-
-    if total_lambda <= 0:
         return LambdaReconciliation(
-            version=RATING_RECONCILIATION_VERSION,
-
             lambda_home_before=lambda_home,
             lambda_away_before=lambda_away,
-
-            total_lambda=total_lambda,
-
-            baseline_home_share=0.5,
-            final_home_share=0.5,
-
+            total_lambda=total,
+            base_share_home=None,
+            adjusted_share_home=None,
+            signal_used=reconciled_signal,
+            share_shift=None,
+            weight_used=weight,
             lambda_home_after=lambda_home,
             lambda_away_after=lambda_away,
-
-            share_shift=0.0,
-
-            reconciled_signal=reconciled_signal,
         )
 
-    baseline_home_share = (
-        lambda_home / total_lambda
-    )
+    base_share = lambda_home / total
 
     if reconciled_signal is None:
-        final_home_share = baseline_home_share
-    else:
-        signal = _clamp(
-            float(reconciled_signal),
-            -1.0,
-            1.0,
+
+        return LambdaReconciliation(
+            lambda_home_before=lambda_home,
+            lambda_away_before=lambda_away,
+            total_lambda=total,
+            base_share_home=base_share,
+            adjusted_share_home=base_share,
+            signal_used=None,
+            share_shift=0.0,
+            weight_used=weight,
+            lambda_home_after=lambda_home,
+            lambda_away_after=lambda_away,
         )
 
-        final_home_share = _clamp(
-            baseline_home_share
-            + float(adjustment) * signal,
-            MIN_HOME_SHARE,
-            MAX_HOME_SHARE,
-        )
+    adjusted_share = base_share + weight * reconciled_signal
+    adjusted_share = max(share_min, min(share_max, adjusted_share))
 
-    lambda_home_after = (
-        total_lambda * final_home_share
-    )
+    share_shift = adjusted_share - base_share
 
-    lambda_away_after = (
-        total_lambda * (1.0 - final_home_share)
-    )
-
-    share_shift = (
-        final_home_share
-        - baseline_home_share
-    )
+    lambda_home_after = total * adjusted_share
+    lambda_away_after = total * (1.0 - adjusted_share)
 
     return LambdaReconciliation(
-        version=RATING_RECONCILIATION_VERSION,
-
         lambda_home_before=lambda_home,
         lambda_away_before=lambda_away,
-
-        total_lambda=total_lambda,
-
-        baseline_home_share=baseline_home_share,
-        final_home_share=final_home_share,
-
+        total_lambda=total,
+        base_share_home=base_share,
+        adjusted_share_home=adjusted_share,
+        signal_used=reconciled_signal,
+        share_shift=share_shift,
+        weight_used=weight,
         lambda_home_after=lambda_home_after,
         lambda_away_after=lambda_away_after,
-
-        share_shift=share_shift,
-
-        reconciled_signal=reconciled_signal,
     )
 
 
 __all__ = [
     "RATING_RECONCILIATION_VERSION",
-    "DEFAULT_CLUB_WEIGHT",
-    "DEFAULT_PAIR_WEIGHT",
+    "CLUB_WEIGHT_DEFAULT",
+    "PAIR_WEIGHT_DEFAULT",
     "RATING_SCALE",
-    "LAMBDA_SHARE_ADJUSTMENT",
-    "MIN_HOME_SHARE",
-    "MAX_HOME_SHARE",
+    "SHARE_ADJUSTMENT_WEIGHT",
+    "SHARE_MIN",
+    "SHARE_MAX",
     "RatingReconciliation",
-    "LambdaReconciliation",
     "reconcile_ratings",
+    "LambdaReconciliation",
     "reconcile_lambda",
-  ]
+]
