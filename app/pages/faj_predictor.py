@@ -122,7 +122,7 @@ from app.parsers.soccer365_parser import Soccer365Parser
 # ============================================================
 
 try:
-    from app.database import get_team_rating
+    from app.faj_club_ratings import get_team_rating
 except Exception:
     get_team_rating = None
 
@@ -2866,6 +2866,19 @@ if run_prediction:
                 else "—"
             ),
         )
+
+    # --------------------------------------------------------
+    # RATING DEBUG CAPTION
+    #
+    # Fast diagnostic: показывает, доступна ли функция
+    # get_team_rating и какие значения реально ушли в Brain.
+    # --------------------------------------------------------
+
+    st.caption(
+        f"get_team_rating доступен: {get_team_rating is not None} · "
+        f"{home_team} rating: {home_rating} · "
+        f"{away_team} rating: {away_rating}"
+    )
 
     # --------------------------------------------------------
     # RATING RECONCILIATION DIAGNOSTIC
